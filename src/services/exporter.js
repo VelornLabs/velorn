@@ -24,6 +24,7 @@ import {
   hasPixelFilterEffect,
   hasVignetteEffect,
 } from '../utils/effects'
+import { applyGlslEffectsToCanvas, hasGlslEffect } from '../utils/glslEffects'
 
 const DEFAULT_SAMPLE_RATE = 44100
 const AUDIO_FETCH_TIMEOUT_MS = 15000
@@ -530,6 +531,7 @@ const hasManagedPixelOrVignetteEffect = (clip, clipTime) => {
   if (!clip) return false
   const effects = clip.effects || []
   return hasPixelFilterEffect(effects, clipTime)
+    || hasGlslEffect(effects)
     || hasVignetteEffect(effects, clipTime)
     || hasLetterboxEffect(effects, clipTime)
 }
@@ -565,6 +567,9 @@ const applyClipManagedEffectsToOffCanvas = (offCanvas, offCtx, width, height, cl
   // filter API and globalCompositeOperation.
   if (hasGlowEffect(effects)) {
     applyGlowPassesToCanvas(offCanvas, offCtx, width, height, effects, clipTime)
+  }
+  if (hasGlslEffect(effects)) {
+    applyGlslEffectsToCanvas(offCanvas, offCtx, width, height, effects, clipTime)
   }
   const vignetteEffect = getActiveVignetteEffect(effects, clipTime)
   if (vignetteEffect) {

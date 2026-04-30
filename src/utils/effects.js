@@ -54,6 +54,38 @@ export const EFFECT_TYPES = Object.freeze([
     ]),
   },
   {
+    id: 'glslCameraShake',
+    label: 'Camera Shake',
+    category: EFFECT_CATEGORIES.motion,
+    icon: 'Waves',
+    description: 'GPU UV camera shake with procedural position, rotation, zoom, and shutter blur.',
+    params: [
+      { key: 'intensity', label: 'Intensity', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'speed', label: 'Speed', min: 0.25, max: 30, step: 0.25, unit: 'Hz' },
+      { key: 'position', label: 'Position', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'rotation', label: 'Rotation', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'zoom', label: 'Zoom', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'motionBlur', label: 'Motion Blur', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'samples', label: 'Samples', min: 1, max: 24, step: 1 },
+      { key: 'seed', label: 'Seed', min: 0, max: 9999, step: 1 },
+    ],
+    defaults: Object.freeze({
+      intensity: 24,
+      speed: 6,
+      position: 55,
+      rotation: 28,
+      zoom: 18,
+      motionBlur: 35,
+      samples: 8,
+      seed: 2341,
+    }),
+    presets: Object.freeze([
+      { id: 'handheld', label: 'Handheld', settings: { intensity: 18, speed: 4.5, position: 45, rotation: 18, zoom: 8, motionBlur: 20, samples: 6, seed: 2341 } },
+      { id: 'runAndGun', label: 'Run & Gun', settings: { intensity: 34, speed: 8, position: 70, rotation: 35, zoom: 20, motionBlur: 45, samples: 10, seed: 5341 } },
+      { id: 'impact', label: 'Impact', settings: { intensity: 56, speed: 14, position: 80, rotation: 55, zoom: 35, motionBlur: 65, samples: 12, seed: 8912 } },
+    ]),
+  },
+  {
     id: 'gaussianBlur',
     label: 'Gaussian Blur',
     category: EFFECT_CATEGORIES.stylistic,
@@ -94,6 +126,78 @@ export const EFFECT_TYPES = Object.freeze([
     ]),
   },
   {
+    id: 'glslDirectionalBlur',
+    label: 'Directional Blur',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'MoveRight',
+    description: 'GPU directional blur for motion streaks and speed-ramp accents.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 80, step: 0.25, unit: 'px' },
+      { key: 'angle', label: 'Angle', min: -180, max: 180, step: 1, unit: '°' },
+      { key: 'samples', label: 'Samples', min: 4, max: 32, step: 2 },
+      { key: 'gain', label: 'Gain', min: 0, max: 200, step: 1, unit: '%' },
+    ],
+    defaults: Object.freeze({
+      amount: 12,
+      angle: 0,
+      samples: 16,
+      gain: 100,
+    }),
+    presets: Object.freeze([
+      { id: 'horizontal', label: 'Horizontal', settings: { amount: 12, angle: 0, samples: 16, gain: 100 } },
+      { id: 'vertical', label: 'Vertical', settings: { amount: 12, angle: 90, samples: 16, gain: 100 } },
+      { id: 'speedLine', label: 'Speed Line', settings: { amount: 28, angle: 0, samples: 24, gain: 105 } },
+    ]),
+  },
+  {
+    id: 'glslLensBlur',
+    label: 'Lens Blur',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'CircleDot',
+    description: 'GPU polygon bokeh blur with highlight bloom and subtle chromatic spread.',
+    params: [
+      { key: 'amount', label: 'Radius', min: 0, max: 48, step: 0.5, unit: 'px' },
+      { key: 'sides', label: 'Sides', min: 3, max: 9, step: 1 },
+      { key: 'highlights', label: 'Highlights', min: 0, max: 300, step: 1, unit: '%' },
+      { key: 'threshold', label: 'Threshold', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'chroma', label: 'Chroma', min: 0, max: 20, step: 0.25, unit: 'px' },
+      { key: 'samples', label: 'Samples', min: 8, max: 40, step: 4 },
+    ],
+    defaults: Object.freeze({
+      amount: 14,
+      sides: 6,
+      highlights: 70,
+      threshold: 72,
+      chroma: 1.5,
+      samples: 24,
+    }),
+    presets: Object.freeze([
+      { id: 'soft', label: 'Soft', settings: { amount: 8, sides: 7, highlights: 35, threshold: 75, chroma: 0.75, samples: 16 } },
+      { id: 'cinematic', label: 'Cinematic', settings: { amount: 16, sides: 6, highlights: 75, threshold: 70, chroma: 1.5, samples: 24 } },
+      { id: 'dream', label: 'Dream Bokeh', settings: { amount: 26, sides: 5, highlights: 130, threshold: 58, chroma: 3, samples: 32 } },
+    ]),
+  },
+  {
+    id: 'glslFisheye',
+    label: 'Fisheye',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'CircleDot',
+    description: 'GPU barrel and anti-barrel lens distortion.',
+    params: [
+      { key: 'amount', label: 'Distortion', min: -100, max: 100, step: 1, unit: '%' },
+      { key: 'zoom', label: 'Auto Zoom', min: 0, max: 100, step: 1, unit: '%' },
+    ],
+    defaults: Object.freeze({
+      amount: 35,
+      zoom: 45,
+    }),
+    presets: Object.freeze([
+      { id: 'subtle', label: 'Subtle', settings: { amount: 18, zoom: 25 } },
+      { id: 'fisheye', label: 'Fisheye', settings: { amount: 45, zoom: 50 } },
+      { id: 'wide', label: 'Wide Lens', settings: { amount: -35, zoom: 25 } },
+    ]),
+  },
+  {
     id: 'chromaticAberration',
     label: 'Chromatic Aberration',
     category: EFFECT_CATEGORIES.stylistic,
@@ -115,11 +219,83 @@ export const EFFECT_TYPES = Object.freeze([
     ]),
   },
   {
+    id: 'glslChromaWarp',
+    label: 'Chroma Warp',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'Radio',
+    description: 'Radial spectrum-style chromatic aberration with optional barrel warp.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 20, step: 0.1, unit: 'px' },
+      { key: 'distortion', label: 'Distortion', min: -100, max: 100, step: 1, unit: '%' },
+      { key: 'saturation', label: 'Spectrum', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'iterations', label: 'Iterations', min: 4, max: 32, step: 2 },
+    ],
+    defaults: Object.freeze({
+      amount: 4,
+      distortion: 25,
+      saturation: 100,
+      iterations: 16,
+    }),
+    presets: Object.freeze([
+      { id: 'subtle', label: 'Subtle', settings: { amount: 1.5, distortion: 8, saturation: 70, iterations: 12 } },
+      { id: 'prism', label: 'Prism', settings: { amount: 5, distortion: 18, saturation: 100, iterations: 18 } },
+      { id: 'warp', label: 'Warped', settings: { amount: 11, distortion: 35, saturation: 100, iterations: 24 } },
+    ]),
+  },
+  {
+    id: 'glslDigitalGlitch',
+    label: 'Digital Glitch',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'Radio',
+    description: 'GPU digital glitch with horizontal slices, RGB split, block noise, and scanline bursts.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'speed', label: 'Speed', min: 0.25, max: 30, step: 0.25, unit: 'Hz' },
+      { key: 'slice', label: 'Slice Offset', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'rgbOffset', label: 'RGB Offset', min: 0, max: 40, step: 0.25, unit: 'px' },
+      { key: 'blockiness', label: 'Blockiness', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'bwNoise', label: 'B&W Noise', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'seed', label: 'Seed', min: 0, max: 9999, step: 1 },
+    ],
+    defaults: Object.freeze({
+      amount: 35,
+      speed: 10,
+      slice: 45,
+      rgbOffset: 8,
+      blockiness: 35,
+      bwNoise: 18,
+      seed: 2048,
+    }),
+    presets: Object.freeze([
+      { id: 'signalHit', label: 'Signal Hit', settings: { amount: 28, speed: 12, slice: 45, rgbOffset: 7, blockiness: 22, bwNoise: 10, seed: 2048 } },
+      { id: 'datamosh', label: 'Datamosh', settings: { amount: 48, speed: 7, slice: 70, rgbOffset: 12, blockiness: 45, bwNoise: 18, seed: 4096 } },
+      { id: 'corrupt', label: 'Corrupt', settings: { amount: 72, speed: 16, slice: 85, rgbOffset: 20, blockiness: 75, bwNoise: 45, seed: 8192 } },
+    ]),
+  },
+  {
     id: 'sharpen',
     label: 'Sharpen',
     category: EFFECT_CATEGORIES.stylistic,
     icon: 'CircleDot',
     description: 'Adds crisp local contrast to soft footage without using AI.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 100, step: 1, unit: '%' },
+    ],
+    defaults: Object.freeze({
+      amount: 35,
+    }),
+    presets: Object.freeze([
+      { id: 'subtle', label: 'Subtle', settings: { amount: 18 } },
+      { id: 'crisp', label: 'Crisp', settings: { amount: 35 } },
+      { id: 'strong', label: 'Strong', settings: { amount: 65 } },
+    ]),
+  },
+  {
+    id: 'glslSharpen',
+    label: 'Sharpen',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'CircleDot',
+    description: 'GPU shader sharpen for comparing against the standard Sharpen effect.',
     params: [
       { key: 'amount', label: 'Amount', min: 0, max: 100, step: 1, unit: '%' },
     ],
@@ -152,6 +328,86 @@ export const EFFECT_TYPES = Object.freeze([
       { id: 'clean16mm', label: 'Clean 16mm', settings: { amount: 14, size: 1, monochrome: 1 } },
       { id: 'super8', label: 'Super8', settings: { amount: 32, size: 1.8, monochrome: 0 } },
       { id: 'vhs', label: 'Heavy VHS', settings: { amount: 55, size: 2.6, monochrome: 0 } },
+    ]),
+  },
+  {
+    id: 'glslFilmGrain',
+    label: 'Film Grain',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'Sparkles',
+    description: 'GPU procedural film grain inspired by film-stock re-grain shaders.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'size', label: 'Size', min: 0.5, max: 6, step: 0.1, unit: 'px' },
+      { key: 'color', label: 'Color', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'stock', label: 'Stock', min: 0, max: 9, step: 1 },
+    ],
+    defaults: Object.freeze({
+      amount: 32,
+      size: 1.4,
+      color: 65,
+      stock: 7,
+    }),
+    presets: Object.freeze([
+      { id: 'fine5245', label: 'Fine 5245', settings: { amount: 22, size: 1.0, color: 55, stock: 0 } },
+      { id: 'vision500t', label: '5218 500T', settings: { amount: 34, size: 1.5, color: 70, stock: 7 } },
+      { id: 'bw', label: 'B&W', settings: { amount: 36, size: 1.3, color: 0, stock: 8 } },
+      { id: 'push', label: 'Pushed', settings: { amount: 55, size: 2.2, color: 75, stock: 4 } },
+    ]),
+  },
+  {
+    id: 'glslFilmLook',
+    label: 'Film Look',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'Sun',
+    description: 'GPU film print style color looks adapted from Flame film-look presets.',
+    params: [
+      { key: 'look', label: 'Look', min: 0, max: 8, step: 1 },
+      { key: 'blend', label: 'Blend', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'saturation', label: 'Saturation', min: 0, max: 200, step: 1, unit: '%' },
+      { key: 'contrast', label: 'Contrast', min: 0, max: 200, step: 1, unit: '%' },
+      { key: 'gamma', label: 'Gamma', min: 25, max: 200, step: 1, unit: '%' },
+    ],
+    defaults: Object.freeze({
+      look: 3,
+      blend: 100,
+      saturation: 100,
+      contrast: 100,
+      gamma: 100,
+    }),
+    presets: Object.freeze([
+      { id: 'kodak2395', label: 'Kodak 2395', settings: { look: 3, blend: 100, saturation: 100, contrast: 100, gamma: 100 } },
+      { id: 'agfa1978', label: 'Agfa 1978', settings: { look: 4, blend: 90, saturation: 90, contrast: 110, gamma: 100 } },
+      { id: 'polaroid', label: 'Polaroid', settings: { look: 5, blend: 85, saturation: 110, contrast: 100, gamma: 100 } },
+      { id: 'bw', label: 'B&W', settings: { look: 8, blend: 100, saturation: 100, contrast: 115, gamma: 90 } },
+    ]),
+  },
+  {
+    id: 'glslFlicker',
+    label: 'Flicker',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'Sparkles',
+    description: 'Animated exposure, saturation, and contrast flicker.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'speed', label: 'Speed', min: 0.25, max: 30, step: 0.25, unit: 'Hz' },
+      { key: 'brightness', label: 'Brightness', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'saturation', label: 'Saturation', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'contrast', label: 'Contrast', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'seed', label: 'Seed', min: 0, max: 9999, step: 1 },
+    ],
+    defaults: Object.freeze({
+      amount: 35,
+      speed: 8,
+      brightness: 70,
+      saturation: 15,
+      contrast: 20,
+      seed: 1337,
+    }),
+    presets: Object.freeze([
+      { id: 'projector', label: 'Projector', settings: { amount: 24, speed: 10, brightness: 70, saturation: 10, contrast: 12, seed: 1337 } },
+      { id: 'fluorescent', label: 'Fluorescent', settings: { amount: 38, speed: 18, brightness: 80, saturation: 0, contrast: 8, seed: 2244 } },
+      { id: 'unstable', label: 'Unstable', settings: { amount: 62, speed: 7, brightness: 80, saturation: 45, contrast: 45, seed: 9182 } },
     ]),
   },
   {
@@ -200,6 +456,36 @@ export const EFFECT_TYPES = Object.freeze([
       { id: 'cleanTape', label: 'Clean Tape', settings: { amount: 18, jitter: 2, scanlines: 20, colorBleed: 3 } },
       { id: 'musicVideo', label: '90s Music Video', settings: { amount: 38, jitter: 5, scanlines: 35, colorBleed: 6 } },
       { id: 'damaged', label: 'Damaged Tape', settings: { amount: 70, jitter: 14, scanlines: 60, colorBleed: 12 } },
+    ]),
+  },
+  {
+    id: 'glslVhsLook',
+    label: 'VHS Look',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'Radio',
+    description: 'GPU VHS-style tape wave, scanlines, color bleed, and analog tint.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'resolution', label: 'Resolution', min: 20, max: 100, step: 1, unit: '%' },
+      { key: 'wave', label: 'Tape Wave', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'bleed', label: 'Color Bleed', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'scanlines', label: 'Scanlines', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'tint', label: 'Tint', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'speed', label: 'Speed', min: 0.25, max: 10, step: 0.25, unit: 'x' },
+    ],
+    defaults: Object.freeze({
+      amount: 45,
+      resolution: 58,
+      wave: 42,
+      bleed: 45,
+      scanlines: 35,
+      tint: 30,
+      speed: 1,
+    }),
+    presets: Object.freeze([
+      { id: 'clean', label: 'Clean Tape', settings: { amount: 24, resolution: 70, wave: 20, bleed: 22, scanlines: 20, tint: 18, speed: 1 } },
+      { id: 'analog', label: 'Analog', settings: { amount: 48, resolution: 55, wave: 45, bleed: 48, scanlines: 38, tint: 32, speed: 1.2 } },
+      { id: 'damaged', label: 'Damaged', settings: { amount: 74, resolution: 38, wave: 78, bleed: 72, scanlines: 62, tint: 45, speed: 1.7 } },
     ]),
   },
   {
@@ -272,7 +558,90 @@ export const EFFECT_TYPES = Object.freeze([
       { id: 'tunnel', label: 'Tunnel', settings: { amount: 75, size: 50, softness: 40 } },
     ]),
   },
+  {
+    id: 'glslVignette',
+    label: 'Vignette',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'CircleDot',
+    description: 'GPU shader vignette with the same basic controls as the standard version.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 100, step: 1, unit: '%' },
+      { key: 'size', label: 'Size', min: 10, max: 100, step: 1, unit: '%' },
+      { key: 'softness', label: 'Softness', min: 0, max: 100, step: 1, unit: '%' },
+    ],
+    defaults: Object.freeze({
+      amount: 45,
+      size: 70,
+      softness: 60,
+    }),
+    presets: Object.freeze([
+      { id: 'soft', label: 'Soft', settings: { amount: 25, size: 80, softness: 80 } },
+      { id: 'cinematic', label: 'Cinematic', settings: { amount: 45, size: 65, softness: 60 } },
+      { id: 'tunnel', label: 'Tunnel', settings: { amount: 75, size: 50, softness: 40 } },
+    ]),
+  },
 ])
+
+const LEGACY_EFFECTS_WITH_GLSL_REPLACEMENTS = new Set([
+  'cameraShake',
+  'directionalBlur',
+  'chromaticAberration',
+  'sharpen',
+  'filmGrain',
+  'vhsDamage',
+  'vignette',
+])
+
+export const EFFECT_PICKER_TYPES = Object.freeze(
+  EFFECT_TYPES.filter((type) => !LEGACY_EFFECTS_WITH_GLSL_REPLACEMENTS.has(type.id))
+)
+
+const EFFECT_PICKER_CATEGORY_DEFINITIONS = Object.freeze([
+  {
+    id: 'motion',
+    label: 'Motion',
+    effectIds: ['glslCameraShake'],
+  },
+  {
+    id: 'blur-focus',
+    label: 'Blur & Focus',
+    effectIds: ['gaussianBlur', 'glslDirectionalBlur', 'glslLensBlur', 'glslSharpen'],
+  },
+  {
+    id: 'lens-distortion',
+    label: 'Lens & Distortion',
+    effectIds: ['glslFisheye', 'glslChromaWarp'],
+  },
+  {
+    id: 'film-color',
+    label: 'Film & Color',
+    effectIds: ['glslFilmGrain', 'glslFilmLook', 'glslFlicker', 'halation', 'glow'],
+  },
+  {
+    id: 'analog-glitch',
+    label: 'Analog & Glitch',
+    effectIds: ['glslVhsLook', 'glslDigitalGlitch'],
+  },
+  {
+    id: 'framing',
+    label: 'Framing',
+    effectIds: ['letterbox', 'glslVignette'],
+  },
+])
+
+export const EFFECT_PICKER_GROUPS = Object.freeze(
+  EFFECT_PICKER_CATEGORY_DEFINITIONS
+    .map((category) => Object.freeze({
+      id: category.id,
+      label: category.label,
+      effects: Object.freeze(
+        category.effectIds
+          .map((id) => EFFECT_PICKER_TYPES.find((type) => type.id === id))
+          .filter(Boolean)
+      ),
+    }))
+    .filter((category) => category.effects.length > 0)
+)
 
 const EFFECT_TYPE_MAP = new Map(EFFECT_TYPES.map((type) => [type.id, type]))
 const STYLISTIC_EFFECT_IDS = new Set(

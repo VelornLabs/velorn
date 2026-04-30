@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, protocol, net } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell } = require('electron')
 const crypto = require('crypto')
 const path = require('path')
 const fs = require('fs').promises
@@ -1445,6 +1445,18 @@ ipcMain.handle('fs:deleteFile', async (event, filePath) => {
 ipcMain.handle('fs:deleteDirectory', async (event, dirPath, options = {}) => {
   try {
     await fs.rm(dirPath, { recursive: options.recursive !== false, force: true })
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('fs:trashItem', async (event, itemPath) => {
+  try {
+    if (!itemPath || typeof itemPath !== 'string') {
+      return { success: false, error: 'No path provided' }
+    }
+    await shell.trashItem(itemPath)
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }

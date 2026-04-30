@@ -161,6 +161,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<{success: boolean, error?: string}>}
    */
   deleteDirectory: (dirPath, options) => ipcRenderer.invoke('fs:deleteDirectory', dirPath, options),
+
+  /**
+   * Move a file or directory to the OS trash/recycle bin
+   * @param {string} itemPath
+   * @returns {Promise<{success: boolean, error?: string}>}
+   */
+  trashItem: (itemPath) => ipcRenderer.invoke('fs:trashItem', itemPath),
   
   /**
    * Copy a file

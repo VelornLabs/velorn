@@ -28,7 +28,9 @@ import {
   hasPixelFilterEffect,
   hasVignetteEffect,
 } from '../utils/effects'
+import { canUseGlslEffects, hasGlslEffect } from '../utils/glslEffects'
 import ClipEffectSvgFilter from './effects/ClipEffectSvgFilter'
+import GlslEffectCanvas from './effects/GlslEffectCanvas'
 
 /**
  * Returns true if this layer fully obscures all layers below it (opaque, normal blend, covers frame).
@@ -1033,6 +1035,7 @@ const VideoLayer = memo(function VideoLayer({
   const [showHoldFrame, setShowHoldFrame] = useState(false)
   const [showSprite, setShowSprite] = useState(false)
   const [spriteContainerSize, setSpriteContainerSize] = useState({ width: 0, height: 0 })
+  const [glslRendered, setGlslRendered] = useState(false)
   const lastSyncTime = useRef(0)
   const lastSeekTime = useRef(0)
   const seekDebounceRef = useRef(null)
@@ -1657,6 +1660,7 @@ const VideoLayer = memo(function VideoLayer({
     return filterValue !== 'none' ? filterValue : undefined
   }, [adjustmentFilterId, adjustmentSettings, hasTonalAdjustments])
   const hasClipPixelEffects = hasPixelFilterEffect(clip?.effects)
+  const hasClipGlslEffects = hasGlslEffect(clip?.effects)
   const clipEffectsFilterId = useMemo(
     () => getClipEffectFilterId(clip?.id, 'video'),
     [clip?.id]
@@ -1690,9 +1694,14 @@ const VideoLayer = memo(function VideoLayer({
   // a brief frame of unmasked content rather than try to apply the mask
   // to the hold-frame layer (render cache covers that use case better).
   const maskActive = maskSelection.isActive
+  const glslPreviewActive = hasClipGlslEffects && !maskActive && canUseGlslEffects()
   const containerOpacity = maskActive
     ? 0
-    : ((showSprite && spriteInfo) || showHoldFrame ? 0 : 1)
+    : (glslRendered || (showSprite && spriteInfo) || showHoldFrame ? 0 : 1)
+
+  useEffect(() => {
+    if (!glslPreviewActive) setGlslRendered(false)
+  }, [glslPreviewActive])
 
   return (
     <>
@@ -1737,6 +1746,43 @@ const VideoLayer = memo(function VideoLayer({
           </div>
         )}
       </div>
+
+      {glslPreviewActive && (
+        <div
+          className="pointer-events-none"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: layerIndex + 2,
+            overflow: 'hidden',
+            ...transformStyle,
+            ...maskStyles,
+            filter: combinedFilter,
+          }}
+        >
+          <GlslEffectCanvas
+            sourceRef={videoElementRef}
+            effects={clip?.effects}
+            clipTime={clipTime}
+            onRenderState={setGlslRendered}
+            style={{
+              ...getCenteredMediaFitStyle(),
+              objectFit: 'contain',
+            }}
+          />
+          {vignetteOverlayStyle && (
+            <div aria-hidden style={vignetteOverlayStyle} />
+          )}
+          {letterboxOverlayStyles && (
+            <div aria-hidden style={letterboxOverlayStyles.wrapper}>
+              <div style={letterboxOverlayStyles.inner} />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Masked video compositor. Rendered only when a mask effect is
           active on this clip; reads the same video element as the
@@ -1813,6 +1859,8 @@ const ImageLayer = memo(function ImageLayer({
   getClipTransform,
   onClipPointerDown,
 }) {
+  const imageElementRef = useRef(null)
+  const [glslRendered, setGlslRendered] = useState(false)
   // Get the current valid URL (may be cached render or original)
   const { url: clipUrl, isCached: isCachedRender } = useClipUrl(clip)
   
@@ -1850,6 +1898,11 @@ const ImageLayer = memo(function ImageLayer({
     return filterValue !== 'none' ? filterValue : undefined
   }, [adjustmentFilterId, adjustmentSettings, hasTonalAdjustments])
   const hasClipPixelEffects = hasPixelFilterEffect(clip?.effects)
+  const hasClipGlslEffects = hasGlslEffect(clip?.effects)
+  const glslPreviewActive = hasClipGlslEffects && canUseGlslEffects()
+  useEffect(() => {
+    if (!glslPreviewActive) setGlslRendered(false)
+  }, [glslPreviewActive])
   const clipEffectsFilterId = useMemo(
     () => getClipEffectFilterId(clip?.id, 'image'),
     [clip?.id]
@@ -1905,16 +1958,33 @@ const ImageLayer = memo(function ImageLayer({
         }}
       >
         <img
+          ref={imageElementRef}
           src={clipUrl}
           alt={clip.name || 'Image'}
           className="bg-transparent"
           style={{
             ...getCenteredMediaFitStyle(),
             objectFit: 'contain',
+            opacity: glslRendered ? 0 : 1,
+            zIndex: 1,
           }}
           onContextMenu={(e) => e.preventDefault()}
           draggable={false}
         />
+        {glslPreviewActive && (
+          <GlslEffectCanvas
+            sourceRef={imageElementRef}
+            sourceUrl={clipUrl}
+            effects={clip?.effects}
+            clipTime={clipTime}
+            onRenderState={setGlslRendered}
+            style={{
+              ...getCenteredMediaFitStyle(),
+              objectFit: 'contain',
+              zIndex: 2,
+            }}
+          />
+        )}
         {vignetteOverlayStyle && (
           <div aria-hidden style={vignetteOverlayStyle} />
         )}

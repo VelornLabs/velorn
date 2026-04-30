@@ -18,7 +18,7 @@ import {
   Tv,
 } from 'lucide-react'
 import {
-  EFFECT_TYPES,
+  EFFECT_PICKER_GROUPS,
   getEffectTypeDefinition,
   getEffectPropertyId,
   isManagedEffectType,
@@ -29,15 +29,27 @@ import { getKeyframeAtTime } from '../../utils/keyframes'
 
 const EFFECT_ICONS = {
   cameraShake: Waves,
+  glslCameraShake: Waves,
   gaussianBlur: CircleDot,
   directionalBlur: MoveRight,
+  glslDirectionalBlur: MoveRight,
+  glslLensBlur: CircleDot,
+  glslFisheye: CircleDot,
   chromaticAberration: Radio,
+  glslChromaWarp: Radio,
+  glslDigitalGlitch: Radio,
   sharpen: CircleDot,
+  glslSharpen: CircleDot,
   filmGrain: Sparkles,
+  glslFilmGrain: Sparkles,
+  glslFilmLook: Sun,
+  glslFlicker: Sparkles,
   glow: Sun,
   halation: Sun,
   vhsDamage: Tv,
+  glslVhsLook: Tv,
   vignette: CircleDot,
+  glslVignette: CircleDot,
   letterbox: RectangleHorizontal,
 }
 
@@ -436,21 +448,28 @@ export default function EffectsStack({
             Add Effect
           </button>
           {isAddOpen && (
-            <div className="absolute right-0 top-full mt-1 z-10 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl min-w-[180px] overflow-hidden">
-              {EFFECT_TYPES.map((def) => {
-                const Icon = EFFECT_ICONS[def.id] || Sparkles
-                return (
-                  <button
-                    key={def.id}
-                    type="button"
-                    onClick={() => handleAdd(def.id)}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-sf-dark-700 transition-colors"
-                  >
-                    <Icon className="w-3.5 h-3.5 text-sf-text-secondary" />
-                    <span className="text-[11px] text-sf-text-primary">{def.label}</span>
-                  </button>
-                )
-              })}
+            <div className="absolute right-0 top-full mt-1 z-10 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl min-w-[230px] max-h-80 overflow-y-auto py-1">
+              {EFFECT_PICKER_GROUPS.map((group) => (
+                <div key={group.id} className="py-1">
+                  <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-sf-text-muted">
+                    {group.label}
+                  </div>
+                  {group.effects.map((def) => {
+                    const Icon = EFFECT_ICONS[def.id] || Sparkles
+                    return (
+                      <button
+                        key={def.id}
+                        type="button"
+                        onClick={() => handleAdd(def.id)}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-sf-dark-700 transition-colors"
+                      >
+                        <Icon className="w-3.5 h-3.5 text-sf-text-secondary" />
+                        <span className="text-[11px] text-sf-text-primary">{def.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              ))}
             </div>
           )}
         </div>

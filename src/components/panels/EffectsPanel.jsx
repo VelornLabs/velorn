@@ -1,16 +1,28 @@
 import { useMemo, useState, useEffect } from 'react'
-import { Search, Info, ChevronDown, ChevronRight, Waves, Radio, Sparkles, CircleDot, Sun, RectangleHorizontal, Plus } from 'lucide-react'
+import { Search, Info, ChevronDown, ChevronRight, Waves, Radio, Sparkles, CircleDot, Sun, RectangleHorizontal, MoveRight, Plus } from 'lucide-react'
 import { useTimelineStore } from '../../stores/timelineStore'
 import { TRANSITION_TYPES, TRANSITION_DURATIONS, FRAME_RATE, TRANSITION_DEFAULT_SETTINGS, TRANSITION_CATEGORIES } from '../../constants/transitions'
-import { EFFECT_TYPES, getEffectTypeDefinition } from '../../utils/effects'
+import { EFFECT_PICKER_GROUPS, getEffectTypeDefinition } from '../../utils/effects'
 
 const EFFECT_PANEL_ICONS = {
   cameraShake: Waves,
+  glslCameraShake: Waves,
+  glslDirectionalBlur: MoveRight,
+  glslLensBlur: CircleDot,
+  glslFisheye: CircleDot,
   chromaticAberration: Radio,
+  glslChromaWarp: Radio,
+  glslDigitalGlitch: Radio,
   sharpen: CircleDot,
+  glslSharpen: CircleDot,
+  glslVignette: CircleDot,
   filmGrain: Sparkles,
+  glslFilmGrain: Sparkles,
+  glslFilmLook: Sun,
+  glslFlicker: Sparkles,
   glow: Sun,
   vignette: CircleDot,
+  glslVhsLook: Radio,
   letterbox: RectangleHorizontal,
 }
 
@@ -42,6 +54,7 @@ function EffectsPanel() {
   })
   const [edgeMode, setEdgeMode] = useState('between') // between | in | out
   const [expandedCategories, setExpandedCategories] = useState(() => TRANSITION_CATEGORIES.map(c => c.id))
+  const [expandedEffectCategories, setExpandedEffectCategories] = useState([])
   
   const durationSeconds = Math.max(1, durationFrames) / FRAME_RATE
   const minTransitionSeconds = 1 / FRAME_RATE
@@ -137,6 +150,14 @@ function EffectsPanel() {
 
   const toggleCategory = (categoryId) => {
     setExpandedCategories(prev =>
+      prev.includes(categoryId)
+        ? prev.filter(id => id !== categoryId)
+        : [...prev, categoryId]
+    )
+  }
+
+  const toggleEffectCategory = (categoryId) => {
+    setExpandedEffectCategories(prev =>
       prev.includes(categoryId)
         ? prev.filter(id => id !== categoryId)
         : [...prev, categoryId]
@@ -388,46 +409,76 @@ function EffectsPanel() {
             </div>
           )}
 
-          <div className="space-y-3">
-            {EFFECT_TYPES.map((def) => {
-              const Icon = EFFECT_PANEL_ICONS[def.id] || Sparkles
+          <div className="space-y-2">
+            {EFFECT_PICKER_GROUPS.map((group) => {
+              const expanded = expandedEffectCategories.includes(group.id)
               return (
                 <div
-                  key={def.id}
+                  key={group.id}
                   className="border border-sf-dark-700 rounded-lg overflow-hidden bg-sf-dark-900"
                 >
-                  <div
-                    draggable
-                    onDragStart={(e) => handleEffectDragStart(e, def.id)}
-                    onClick={() => applyEffect(def.id)}
-                    className="flex items-center gap-2 px-3 py-2 bg-sf-dark-800 hover:bg-sf-dark-700 transition-colors cursor-pointer"
-                    title="Click to apply to selected clips"
+                  <button
+                    type="button"
+                    onClick={() => toggleEffectCategory(group.id)}
+                    className="w-full flex items-center gap-2 px-3 py-2 bg-sf-dark-800 hover:bg-sf-dark-700 transition-colors"
                   >
-                    <Icon className="w-4 h-4 text-sf-accent" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[12px] text-sf-text-primary">{def.label}</div>
-                      {def.description && (
-                        <div className="text-[10px] text-sf-text-muted truncate">{def.description}</div>
-                      )}
-                    </div>
-                    <Plus className="w-3.5 h-3.5 text-sf-text-muted" />
-                  </div>
+                    {expanded ? (
+                      <ChevronDown className="w-3.5 h-3.5 text-sf-text-muted" />
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5 text-sf-text-muted" />
+                    )}
+                    <span className="flex-1 text-left text-[11px] uppercase tracking-wider text-sf-text-secondary">
+                      {group.label}
+                    </span>
+                    <span className="text-[10px] text-sf-text-muted">{group.effects.length}</span>
+                  </button>
 
-                  {def.presets && def.presets.length > 0 && (
-                    <div className="p-2 flex flex-wrap gap-1">
-                      {def.presets.map((preset) => (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          draggable
-                          onDragStart={(e) => handleEffectDragStart(e, def.id, preset.id)}
-                          onClick={() => applyEffect(def.id, preset.id)}
-                          className="px-2 py-0.5 rounded text-[10px] border border-sf-dark-600 bg-sf-dark-900 text-sf-text-secondary hover:border-sf-accent hover:text-sf-text-primary transition-colors"
-                          title={`Apply ${def.label} preset "${preset.label}"`}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
+                  {expanded && (
+                    <div className="space-y-2 p-2">
+                      {group.effects.map((def) => {
+                        const Icon = EFFECT_PANEL_ICONS[def.id] || Sparkles
+                        return (
+                          <div
+                            key={def.id}
+                            className="border border-sf-dark-700 rounded-lg overflow-hidden bg-sf-dark-900"
+                          >
+                            <div
+                              draggable
+                              onDragStart={(e) => handleEffectDragStart(e, def.id)}
+                              onClick={() => applyEffect(def.id)}
+                              className="flex items-center gap-2 px-3 py-2 bg-sf-dark-800/70 hover:bg-sf-dark-700 transition-colors cursor-pointer"
+                              title="Click to apply to selected clips"
+                            >
+                              <Icon className="w-4 h-4 text-sf-accent" />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-[12px] text-sf-text-primary">{def.label}</div>
+                                {def.description && (
+                                  <div className="text-[10px] text-sf-text-muted truncate">{def.description}</div>
+                                )}
+                              </div>
+                              <Plus className="w-3.5 h-3.5 text-sf-text-muted" />
+                            </div>
+
+                            {def.presets && def.presets.length > 0 && (
+                              <div className="p-2 flex flex-wrap gap-1">
+                                {def.presets.map((preset) => (
+                                  <button
+                                    key={preset.id}
+                                    type="button"
+                                    draggable
+                                    onDragStart={(e) => handleEffectDragStart(e, def.id, preset.id)}
+                                    onClick={() => applyEffect(def.id, preset.id)}
+                                    className="px-2 py-0.5 rounded text-[10px] border border-sf-dark-600 bg-sf-dark-900 text-sf-text-secondary hover:border-sf-accent hover:text-sf-text-primary transition-colors"
+                                    title={`Apply ${def.label} preset "${preset.label}"`}
+                                  >
+                                    {preset.label}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
                 </div>

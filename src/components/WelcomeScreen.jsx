@@ -162,6 +162,9 @@ function WelcomeScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsInitialSection, setSettingsInitialSection] = useState(null)
   const [windowState, setWindowState] = useState({ isMaximized: false, isFullScreen: false })
+  const [deleteProjectDialog, setDeleteProjectDialog] = useState(null)
+  const [deleteProjectError, setDeleteProjectError] = useState('')
+  const [isDeletingProject, setIsDeletingProject] = useState(false)
   
   const {
     isFirstRun,
@@ -289,6 +292,59 @@ function WelcomeScreen() {
   const handleOpenRecent = async (project) => {
     // Use the unified openRecentProject function which handles both Electron and web modes
     await openRecentProject(project)
+  }
+
+  const removeProjectFromRecentList = (project) => {
+    if (!project) return
+    removeRecentProject(project)
+    setRecentProjectsList((prev) =>
+      prev.filter((p) => !(p.name === project.name && (p.path || '') === (project.path || '')))
+    )
+  }
+
+  const openDeleteProjectDialog = (event, project) => {
+    event.stopPropagation()
+    setDeleteProjectError('')
+    setDeleteProjectDialog(project)
+  }
+
+  const closeDeleteProjectDialog = () => {
+    if (isDeletingProject) return
+    setDeleteProjectDialog(null)
+    setDeleteProjectError('')
+  }
+
+  const handleRemoveProjectFromList = () => {
+    removeProjectFromRecentList(deleteProjectDialog)
+    closeDeleteProjectDialog()
+  }
+
+  const handleTrashProjectFolder = async () => {
+    if (!deleteProjectDialog) return
+    const projectPath = deleteProjectDialog.path
+    if (!projectPath) {
+      setDeleteProjectError('This project does not have a folder path available, so it can only be removed from the list.')
+      return
+    }
+    if (!isElectronMode || !window.electronAPI?.trashItem) {
+      setDeleteProjectError('Moving a project folder to the Recycle Bin is only available in the desktop app.')
+      return
+    }
+
+    setIsDeletingProject(true)
+    setDeleteProjectError('')
+    try {
+      const result = await window.electronAPI.trashItem(projectPath)
+      if (!result?.success) {
+        throw new Error(result?.error || 'Could not move project folder to the Recycle Bin.')
+      }
+      removeProjectFromRecentList(deleteProjectDialog)
+      setDeleteProjectDialog(null)
+    } catch (err) {
+      setDeleteProjectError(err?.message || 'Could not move project folder to the Recycle Bin.')
+    } finally {
+      setIsDeletingProject(false)
+    }
   }
 
   // Keep native-style window controls in sync with the Electron main window.
@@ -734,15 +790,9 @@ function WelcomeScreen() {
                     {/* Remove from recent */}
                     <button
                       type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        removeRecentProject(project)
-                        setRecentProjectsList((prev) =>
-                          prev.filter((p) => !(p.name === project.name && (p.path || '') === (project.path || '')))
-                        )
-                      }}
+                      onClick={(e) => openDeleteProjectDialog(e, project)}
                       className="flex-shrink-0 p-1.5 rounded-md hover:bg-sf-error/80 text-sf-text-muted hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="Remove from recent projects"
+                      title="Delete or remove project"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -812,15 +862,9 @@ function WelcomeScreen() {
                     {/* Remove from recent */}
                     <button
                       type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        removeRecentProject(project)
-                        setRecentProjectsList((prev) =>
-                          prev.filter((p) => !(p.name === project.name && (p.path || '') === (project.path || '')))
-                        )
-                      }}
+                      onClick={(e) => openDeleteProjectDialog(e, project)}
                       className="absolute top-1.5 right-1.5 p-1 rounded-md bg-sf-dark-900/90 hover:bg-sf-error/80 text-sf-text-muted hover:text-white opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                      title="Remove from recent projects"
+                      title="Delete or remove project"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -882,6 +926,77 @@ function WelcomeScreen() {
         onClose={() => setApiKeyDialogOpen(false)}
         onSaved={(value) => setPartnerKeyConfigured(Boolean(String(value || '').trim()))}
       />
+
+      {deleteProjectDialog && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70" onClick={closeDeleteProjectDialog}>
+          <div
+            className="w-full max-w-lg mx-4 rounded-xl border border-sf-dark-600 bg-sf-dark-900 shadow-xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-sf-dark-700">
+              <h3 className="text-sm font-medium text-sf-text-primary">Delete project?</h3>
+              <button
+                type="button"
+                onClick={closeDeleteProjectDialog}
+                disabled={isDeletingProject}
+                className="p-1 rounded hover:bg-sf-dark-700 text-sf-text-muted disabled:opacity-50"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-4 py-4 space-y-3">
+              <div>
+                <p className="text-sm text-sf-text-primary">
+                  What do you want to do with <span className="font-medium">{deleteProjectDialog.name}</span>?
+                </p>
+                {deleteProjectDialog.path && (
+                  <p className="mt-1 text-[11px] text-sf-text-muted break-all">{deleteProjectDialog.path}</p>
+                )}
+              </div>
+              <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-800/60 p-3 text-[11px] text-sf-text-secondary">
+                <p>
+                  <span className="font-medium text-sf-text-primary">Remove from list</span> only hides this project from the selection screen.
+                </p>
+                <p className="mt-1">
+                  <span className="font-medium text-sf-text-primary">Move to Recycle Bin</span> moves the whole project folder, including assets, renders, autosaves, and cache files.
+                </p>
+              </div>
+              {deleteProjectError && (
+                <div className="rounded border border-sf-error/40 bg-sf-error/10 px-3 py-2 text-[11px] text-sf-error">
+                  {deleteProjectError}
+                </div>
+              )}
+            </div>
+            <div className="px-4 py-3 border-t border-sf-dark-700 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeDeleteProjectDialog}
+                disabled={isDeletingProject}
+                className="px-3 py-1.5 rounded bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-secondary text-xs disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRemoveProjectFromList}
+                disabled={isDeletingProject}
+                className="px-3 py-1.5 rounded bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-primary text-xs disabled:opacity-50"
+              >
+                Remove from list
+              </button>
+              <button
+                type="button"
+                onClick={handleTrashProjectFolder}
+                disabled={isDeletingProject || !deleteProjectDialog.path || !isElectronMode}
+                className="px-3 py-1.5 rounded bg-sf-error hover:bg-red-500 text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isDeletingProject ? 'Moving...' : 'Move to Recycle Bin'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

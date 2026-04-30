@@ -70,6 +70,8 @@ function appendLauncherLog(stream, text) {
 // avoid unbounded growth in long sessions.
 const MAX_SIGNATURES = 2000
 const importedSignatures = new Set()
+const COMFYSTUDIO_MANAGED_OUTPUT_RE = /^(director_job_|comfystudio_job_|flow_ai_|topaz_video_upscale_|ComfyStudioMask_)/i
+
 function markSignature(sig) {
   if (!sig) return false
   if (importedSignatures.has(sig)) return true
@@ -83,6 +85,65 @@ function markSignature(sig) {
 function sigFor(fileDesc) {
   if (!fileDesc?.filename) return null
   return `${fileDesc.filename}|${fileDesc.subfolder || ''}|${fileDesc.type || 'output'}`
+}
+
+function normalizeSourceText(value) {
+  return String(value || '').trim()
+}
+
+function sameSourceText(left, right) {
+  return normalizeSourceText(left).toLowerCase() === normalizeSourceText(right).toLowerCase()
+}
+
+function isComfyStudioManagedOutput(fileDesc) {
+  const filename = normalizeSourceText(fileDesc?.filename)
+  return COMFYSTUDIO_MANAGED_OUTPUT_RE.test(filename)
+}
+
+function getAutoImportSourceFields(fileDesc, promptId) {
+  return {
+    source: 'comfyui-auto-import',
+    promptId,
+    sourceNodeId: fileDesc?.nodeId,
+    sourceFilename: fileDesc?.filename || '',
+    sourceSubfolder: fileDesc?.subfolder || '',
+    sourceOutputType: fileDesc?.type || 'output',
+  }
+}
+
+function sequenceSourceIncludesFile(sequenceSource, fileDesc) {
+  const originalFiles = Array.isArray(sequenceSource?.originalFiles) ? sequenceSource.originalFiles : []
+  return originalFiles.some((entry) => (
+    sameSourceText(entry?.filename, fileDesc?.filename)
+    && sameSourceText(entry?.subfolder || '', fileDesc?.subfolder || '')
+    && sameSourceText(entry?.type || 'output', fileDesc?.type || 'output')
+  ))
+}
+
+function hasExistingAutoImportedFile(promptId, fileDesc) {
+  if (!promptId || !fileDesc?.filename) return false
+  const { assets = [] } = useAssetsStore.getState()
+  const promptKey = normalizeSourceText(promptId)
+  const nodeKey = normalizeSourceText(fileDesc.nodeId)
+  const filename = normalizeSourceText(fileDesc.filename)
+  const subfolder = normalizeSourceText(fileDesc.subfolder || '')
+  const outputType = normalizeSourceText(fileDesc.type || 'output')
+
+  return assets.some((asset) => {
+    if (!asset || asset.source !== 'comfyui-auto-import') return false
+    if (normalizeSourceText(asset.promptId) !== promptKey) return false
+    if (nodeKey && asset.sourceNodeId && normalizeSourceText(asset.sourceNodeId) !== nodeKey) return false
+    if (sequenceSourceIncludesFile(asset.sequenceSource, fileDesc)) return true
+
+    if (asset.sourceFilename) {
+      return sameSourceText(asset.sourceFilename, filename)
+        && sameSourceText(asset.sourceSubfolder || '', subfolder)
+        && sameSourceText(asset.sourceOutputType || 'output', outputType)
+    }
+
+    // Backward-compatible dedupe for projects saved before sourceFilename existed.
+    return sameSourceText(asset.name, filename)
+  })
 }
 
 // Same ensureAssetFolderPath logic used in GenerateWorkspace — inlined
@@ -388,7 +449,15 @@ async function runImportPipeline(promptId, preFetchedEntry, projectDir) {
   const fresh = allOutputFiles.filter((f) => {
     const sig = sigFor(f)
     if (!sig) return false
+    if (isComfyStudioManagedOutput(f)) {
+      importedSignatures.add(sig)
+      return false
+    }
     if (importedSignatures.has(sig)) return false
+    if (hasExistingAutoImportedFile(promptId, f)) {
+      importedSignatures.add(sig)
+      return false
+    }
     return true
   })
   if (fresh.length === 0) return
@@ -466,6 +535,14 @@ async function runImportPipeline(promptId, preFetchedEntry, projectDir) {
 
 async function importSingleFile({ file, kind, apiWorkflow, promptId, projectDir }) {
   const sig = sigFor(file)
+  if (isComfyStudioManagedOutput(file)) {
+    if (sig) importedSignatures.add(sig)
+    return
+  }
+  if (hasExistingAutoImportedFile(promptId, file)) {
+    if (sig) importedSignatures.add(sig)
+    return
+  }
   if (markSignature(sig)) return
 
   const category = kind === 'image' ? 'images' : kind
@@ -483,6 +560,7 @@ async function importSingleFile({ file, kind, apiWorkflow, promptId, projectDir 
   // Electron path: download, importAsset copies to project, addAsset registers.
   // Browser fallback: just register with the direct /view URL.
   const { addAsset } = useAssetsStore.getState()
+  const sourceFields = getAutoImportSourceFields(file, promptId)
   if (!isElectron() || !projectDir) {
     addAsset({
       name: file.filename,
@@ -490,9 +568,7 @@ async function importSingleFile({ file, kind, apiWorkflow, promptId, projectDir 
       url,
       folderId,
       isImported: true,
-      source: 'comfyui-auto-import',
-      promptId,
-      sourceNodeId: file.nodeId,
+      ...sourceFields,
     })
     return
   }
@@ -508,9 +584,7 @@ async function importSingleFile({ file, kind, apiWorkflow, promptId, projectDir 
       url,
       folderId,
       isImported: true,
-      source: 'comfyui-auto-import',
-      promptId,
-      sourceNodeId: file.nodeId,
+      ...sourceFields,
     })
     return
   }
@@ -527,9 +601,7 @@ async function importSingleFile({ file, kind, apiWorkflow, promptId, projectDir 
       url: blobUrl,
       folderId,
       isImported: true,
-      source: 'comfyui-auto-import',
-      promptId,
-      sourceNodeId: file.nodeId,
+      ...sourceFields,
     })
     return
   }
@@ -543,9 +615,7 @@ async function importSingleFile({ file, kind, apiWorkflow, promptId, projectDir 
     url: blobUrl,
     folderId,
     isImported: true,
-    source: 'comfyui-auto-import',
-    promptId,
-    sourceNodeId: file.nodeId,
+    ...sourceFields,
   })
 
   // Sidecar (best effort)
@@ -560,6 +630,15 @@ async function importSingleFile({ file, kind, apiWorkflow, promptId, projectDir 
 }
 
 async function importStitchedSequence({ classification, apiWorkflow, promptId, projectDir }) {
+  const hasExistingSequence = classification.files.some((file) => hasExistingAutoImportedFile(promptId, file))
+  if (hasExistingSequence) {
+    for (const file of classification.files) {
+      const sig = sigFor(file)
+      if (sig) importedSignatures.add(sig)
+    }
+    return null
+  }
+
   const fps = projectFps()
   const stitchResult = await stitchSequenceToVideo({
     files: classification.files,
@@ -628,6 +707,9 @@ async function importStitchedSequence({ classification, apiWorkflow, promptId, p
     source: 'comfyui-auto-import',
     promptId,
     sourceNodeId: classification.nodeId,
+    sourceFilename: stitchResult.filename,
+    sourceSubfolder: '',
+    sourceOutputType: 'output',
     sequenceSource: {
       kind: 'comfy-stitched',
       frameDir: stitchResult.frameDir,
