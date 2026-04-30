@@ -22,6 +22,12 @@ const STRUCTURED_FIELD_PATTERNS = Object.freeze([
   // parser/normalizer doesn't need to care which was used.
   { key: 'duration', pattern: /^(?:duration|length)(?:\s*\(s\))?\s*:\s*(.*)$/i },
   { key: 'takes', pattern: /^takes?\s*:\s*(.*)$/i },
+  { key: 'adBeat', pattern: /^(?:ad\s*beat|commercial\s*beat|beat)\s*:\s*(.*)$/i },
+  { key: 'productMode', pattern: /^(?:product\s*mode|product\s*view|product)\s*:\s*(.*)$/i },
+  { key: 'talentMode', pattern: /^(?:talent\s*mode|talent|spokesperson\s*mode)\s*:\s*(.*)$/i },
+  { key: 'textOverlay', pattern: /^(?:text\s*overlay|overlay\s*text|caption|claim)\s*:\s*(.*)$/i },
+  { key: 'endCard', pattern: /^(?:end\s*card|endcard|cta\s*card)\s*:\s*(.*)$/i },
+  { key: 'dialogue', pattern: /^(?:dialogue|voice\s*line|voiceover\s*line|spoken\s*line)\s*:\s*(.*)$/i },
   // Music-video-only: the specific lyric line this shot should sit on. The
   // ad path never sets this; the music planner reads it out when present to
   // pin audioStart to the right moment in the song.
@@ -273,6 +279,14 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
       cameraPresetId: 'auto',
       shotType,
       cameraDirection,
+      // Ad-specific commercial grammar. These are pass-through metadata for
+      // prompt composition, chip UX, lip-sync routing, and native text layers.
+      adBeat: sanitizeSnippet(currentShot.adBeat || '', 120),
+      productMode: sanitizeSnippet(currentShot.productMode || '', 120),
+      talentMode: sanitizeSnippet(currentShot.talentMode || '', 120),
+      textOverlay: sanitizeSnippet(currentShot.textOverlay || '', 220),
+      endCard: sanitizeSnippet(currentShot.endCard || '', 260),
+      dialogue: sanitizeSnippet(currentShot.dialogue || '', 260),
       // Music-video-only pass-through. The ad flow never sets lyricMoment; the
       // music planner reads it downstream to align audioStart to a lyric.
       lyricMoment: sanitizeSnippet(currentShot.lyricMoment || '', 220),
@@ -359,6 +373,12 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
         camera: '',
         duration: '',
         takes: '',
+        adBeat: '',
+        productMode: '',
+        talentMode: '',
+        textOverlay: '',
+        endCard: '',
+        dialogue: '',
         // Music-video-only (null-op for ads). Collected by the shared
         // structured-field matcher — see STRUCTURED_FIELD_PATTERNS above.
         lyricMoment: '',
@@ -490,20 +510,29 @@ export function flattenYoloPlanVariants(plan = []) {
       const imageBeat = String(shot?.imageBeat || shot?.beat || '').trim()
       const videoBeat = String(shot?.videoBeat || shot?.beat || '').trim()
       const cameraDirection = String(shot?.cameraDirection || '').trim()
+      const adBeat = sanitizeSnippet(shot?.adBeat || '', 120)
+      const productMode = sanitizeSnippet(shot?.productMode || '', 120)
+      const talentMode = sanitizeSnippet(shot?.talentMode || '', 120)
+      const textOverlay = sanitizeSnippet(shot?.textOverlay || '', 220)
+      const endCard = sanitizeSnippet(shot?.endCard || '', 260)
+      const dialogue = sanitizeSnippet(shot?.dialogue || '', 260)
 
       for (const angle of angles) {
         for (let take = 1; take <= takes; take += 1) {
           const key = `${scene.id}|${shot.id}|${angle}|T${take}`
+          const isAdShot = Boolean(adBeat || productMode || talentMode || textOverlay || endCard || dialogue)
           const videoPrompt = [
             sceneBody ? `${sceneBody}.` : scene.summary,
+            productMode ? `Product mode: ${productMode}.` : '',
+            talentMode ? `Talent mode: ${talentMode}.` : '',
+            dialogue ? `Dialogue cue for performance timing: "${dialogue}".` : '',
             videoBeat,
             `Compose with a ${String(angle || 'medium shot').toLowerCase()} camera setup.`,
             cameraDirection ? `Camera direction: ${cameraDirection}.` : '',
-            'No on-screen text, no captions, no subtitles, no labels, no watermarks.',
             strictConsistency
               ? 'Maintain strict continuity with adjacent shots: same person identity, same wardrobe, and same key props/actions from the script.'
               : 'Maintain continuity with adjacent shots and preserve key props/actions from the script.',
-            scene.styleNotes,
+            isAdShot ? '' : scene.styleNotes,
             take > 1
               ? (
                 strictConsistency
@@ -518,9 +547,14 @@ export function flattenYoloPlanVariants(plan = []) {
           const storyboardPrompt = [
             `Single cinematic keyframe still for ${scene.id} ${shot.id}.`,
             sceneBody ? `Scene context: ${sceneBody}.` : '',
+            adBeat ? `Commercial beat: ${adBeat}.` : '',
+            productMode ? `Product mode: ${productMode}.` : '',
+            talentMode ? `Talent mode: ${talentMode}.` : '',
             keyframeMoment ? `Capture this exact moment: ${keyframeMoment}.` : '',
             `Camera framing: ${String(angle || 'medium shot').toLowerCase()}.`,
             cameraDirection ? `Camera treatment: ${cameraDirection}.` : '',
+            textOverlay ? `Reserve clean negative space for editor-native text overlay: "${textOverlay}". Do not render the words into the image.` : '',
+            endCard ? `End-card intent: reserve a clean packshot/brand-safe layout for editor-native typography: "${endCard}". Do not render the words into the image.` : '',
             'Render one image only: one frame, one moment, one continuous camera view.',
             'Do not create split-screen, collage, diptych, triptych, storyboard grid, comic panels, or multiple images in one frame.',
             'Do not depict a before/after sequence or montage in a single image.',
@@ -530,6 +564,7 @@ export function flattenYoloPlanVariants(plan = []) {
               ? 'Keep the same person identity and wardrobe fully locked to references.'
               : 'Keep character identity and wardrobe reasonably consistent with adjacent shots.',
             scene.styleNotes,
+            'Hard rule: do not render overlay words, end-card words, captions, subtitles, labels, watermarks, random letters, or fake typography in the image.',
           ]
             .filter(Boolean)
             .join(' ')
@@ -544,6 +579,12 @@ export function flattenYoloPlanVariants(plan = []) {
             prompt: sanitizeSnippet(videoPrompt, 1100),
             videoPrompt: sanitizeSnippet(videoPrompt, 1100),
             storyboardPrompt: sanitizeSnippet(storyboardPrompt, 1100),
+            adBeat,
+            productMode,
+            talentMode,
+            textOverlay,
+            endCard,
+            dialogue,
             // Music-video-only pass-throughs. Unset for ads. The queue code
             // reads resolvedArtistAssetIds (ordered list of up to 2 cast asset
             // ids) in music mode to override the default-artist reference.

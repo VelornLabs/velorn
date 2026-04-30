@@ -6,8 +6,8 @@
  * applied first in the rendering pipeline (bottom of the stack in editing
  * terms), the last entry is applied last. Transform-based effects like
  * `cameraShake` contribute procedural transform overrides, while pixel
- * effects (`chromaticAberration`, `filmGrain`, `vignette`) run as a filter
- * chain over the rendered clip.
+ * effects (`chromaticAberration`, `sharpen`, `filmGrain`, `vignette`) run
+ * as a filter chain over the rendered clip.
  *
  * Effect parameters can be keyframed using the property id
  * `effect.<effectId>.<paramKey>` on the clip's keyframe map.
@@ -112,6 +112,24 @@ export const EFFECT_TYPES = Object.freeze([
       { id: 'dreamy', label: 'Dreamy', settings: { amount: 8, angle: 0 } },
       { id: 'glitch', label: 'Glitch Hit', settings: { amount: 18, angle: 0 } },
       { id: 'vhs', label: 'VHS', settings: { amount: 12, angle: 90 } },
+    ]),
+  },
+  {
+    id: 'sharpen',
+    label: 'Sharpen',
+    category: EFFECT_CATEGORIES.stylistic,
+    icon: 'CircleDot',
+    description: 'Adds crisp local contrast to soft footage without using AI.',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 100, step: 1, unit: '%' },
+    ],
+    defaults: Object.freeze({
+      amount: 35,
+    }),
+    presets: Object.freeze([
+      { id: 'subtle', label: 'Subtle', settings: { amount: 18 } },
+      { id: 'crisp', label: 'Crisp', settings: { amount: 35 } },
+      { id: 'strong', label: 'Strong', settings: { amount: 65 } },
     ]),
   },
   {
@@ -470,6 +488,7 @@ export function getFilterChainEffects(effects, clipTime) {
     if (effect.type !== 'gaussianBlur'
       && effect.type !== 'directionalBlur'
       && effect.type !== 'chromaticAberration'
+      && effect.type !== 'sharpen'
       && effect.type !== 'filmGrain'
       && effect.type !== 'glow'
       && effect.type !== 'halation'
@@ -508,6 +527,7 @@ export function hasPixelFilterEffect(effects) {
         e.type === 'gaussianBlur'
         || e.type === 'directionalBlur'
         || e.type === 'chromaticAberration'
+        || e.type === 'sharpen'
         || e.type === 'filmGrain'
         || e.type === 'glow'
         || e.type === 'halation'
@@ -623,6 +643,44 @@ function applyChromaticAberrationToImageData(imageData, settings, canvasWidth, c
   }
 }
 
+function applySharpenToImageData(imageData, settings) {
+  const amount = Math.max(0, Math.min(100, Number(settings?.amount) || 0))
+  if (amount <= 0) return
+
+  const { data, width, height } = imageData
+  if (!width || !height) return
+
+  const src = new Uint8ClampedArray(data)
+  const strength = (amount / 100) * 0.55
+  const centerWeight = 1 + 4 * strength
+  const adjacentWeight = -strength
+
+  const sampleIndex = (x, y) => {
+    const sx = Math.max(0, Math.min(width - 1, x))
+    const sy = Math.max(0, Math.min(height - 1, y))
+    return (sy * width + sx) * 4
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const dst = (y * width + x) * 4
+      const center = sampleIndex(x, y)
+      const left = sampleIndex(x - 1, y)
+      const right = sampleIndex(x + 1, y)
+      const up = sampleIndex(x, y - 1)
+      const down = sampleIndex(x, y + 1)
+
+      for (let channel = 0; channel < 3; channel++) {
+        const value =
+          src[center + channel] * centerWeight
+          + (src[left + channel] + src[right + channel] + src[up + channel] + src[down + channel]) * adjacentWeight
+        data[dst + channel] = Math.max(0, Math.min(255, value))
+      }
+      data[dst + 3] = src[center + 3]
+    }
+  }
+}
+
 function applyFilmGrainToImageData(imageData, settings, clipTime, frameIndex) {
   const amount = Number(settings?.amount) || 0
   if (amount <= 0) return
@@ -710,9 +768,10 @@ function applyVhsDamageToImageData(imageData, effect, settings, clipTime, frameI
 }
 
 /**
- * Apply pixel effects (chromatic aberration, film grain, VHS damage) to image data
- * in-place. Vignette is handled separately via `drawVignetteOverlay` because
- * it composites on top rather than inside the clip's pixel pipeline.
+ * Apply pixel effects (chromatic aberration, sharpening, film grain, VHS damage)
+ * to image data in-place. Vignette is handled separately via
+ * `drawVignetteOverlay` because it composites on top rather than inside the
+ * clip's pixel pipeline.
  */
 export function applyPixelEffectsToImageData(imageData, effects, clipTime, frameIndex = 0) {
   if (!imageData?.data) return imageData
@@ -725,6 +784,9 @@ export function applyPixelEffectsToImageData(imageData, effects, clipTime, frame
     if (effect.type === 'chromaticAberration') {
       const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime)
       applyChromaticAberrationToImageData(imageData, animated.settings, width, height)
+    } else if (effect.type === 'sharpen') {
+      const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime)
+      applySharpenToImageData(imageData, animated.settings)
     } else if (effect.type === 'filmGrain') {
       const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime)
       applyFilmGrainToImageData(imageData, animated.settings, clipTime, frameIndex)

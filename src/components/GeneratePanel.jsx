@@ -5,6 +5,7 @@ import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
 import { comfyui } from '../services/comfyui'
 import { importAsset } from '../services/fileSystem'
+import { getVideoDurationPresets } from '../config/generateWorkspaceConfig'
 
 // Cinematography categories and options for filmmakers
 const SHOT_CATEGORIES = {
@@ -207,6 +208,7 @@ function GeneratePanel() {
   const workflows = [
     { id: 'wan22-i2v', name: 'WAN 2.2 Image to Video', description: 'High quality image-to-video generation' },
   ]
+  const durationPresets = getVideoDurationPresets(selectedWorkflow)
 
   const resolutions = [
     { label: '1920 x 1080 (Full HD)', width: 1920, height: 1080 },
@@ -464,7 +466,7 @@ function GeneratePanel() {
                   <span className="text-sf-text-muted">{duration}s</span>
                 </div>
                 <div className="flex gap-0.5">
-                  {[2, 3, 5, 8].map(d => (
+                  {durationPresets.map(d => (
                     <button
                       key={d}
                       onClick={() => setDuration(d)}

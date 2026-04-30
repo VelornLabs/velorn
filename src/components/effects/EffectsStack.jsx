@@ -32,6 +32,7 @@ const EFFECT_ICONS = {
   gaussianBlur: CircleDot,
   directionalBlur: MoveRight,
   chromaticAberration: Radio,
+  sharpen: CircleDot,
   filmGrain: Sparkles,
   glow: Sun,
   halation: Sun,

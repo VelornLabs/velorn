@@ -274,12 +274,35 @@ export default function GettingStartedModal({
     const readyCount = [
       Boolean(defaultProjectsLocation),
       connectionState.status === 'success',
-      partnerKeyConfigured,
-      pexelsConfigured,
+      true,
+      connectionState.status === 'success' || partnerKeyConfigured,
     ].filter(Boolean).length
 
-    return `${readyCount}/4 detected setup checks ready`
-  }, [connectionState.status, defaultProjectsLocation, partnerKeyConfigured, pexelsConfigured])
+    return `${readyCount}/4 ready-to-generate steps complete`
+  }, [connectionState.status, defaultProjectsLocation, partnerKeyConfigured])
+
+  const readyPathSteps = useMemo(() => ([
+    {
+      label: 'Projects Folder',
+      ready: Boolean(defaultProjectsLocation),
+      detail: defaultProjectsLocation ? 'Ready' : 'Pick where projects and generated media live.',
+    },
+    {
+      label: 'ComfyUI Connection',
+      ready: connectionState.status === 'success',
+      detail: connectionState.status === 'success' ? 'Connected' : 'Connect to local ComfyUI or use cloud workflows.',
+    },
+    {
+      label: 'Workflow Setup',
+      ready: true,
+      detail: 'Open starter kits to prepare models and nodes by use case.',
+    },
+    {
+      label: 'Ready To Generate',
+      ready: connectionState.status === 'success' || partnerKeyConfigured,
+      detail: connectionState.status === 'success' || partnerKeyConfigured ? 'Local or cloud generation is available.' : 'Connect local ComfyUI or add a cloud API key.',
+    },
+  ]), [connectionState.status, defaultProjectsLocation, partnerKeyConfigured])
 
   if (!isOpen) return null
 
@@ -300,10 +323,10 @@ export default function GettingStartedModal({
                 Getting Started
               </div>
               <h2 className="text-xl font-semibold text-sf-text-primary">
-                Get ComfyStudio running smoothly on this machine
+                Get from install to first generation
               </h2>
               <p className="mt-2 max-w-3xl text-sm text-sf-text-muted">
-                This is the quick in-app guide: setup first, then orientation. Use it to get unblocked fast, and save the deeper teaching for your onboarding videos later.
+                ComfyStudio can run local, cloud, and hybrid AI workflows. This guide keeps the first-run path simple: choose how you want to connect, prepare the workflows you need, then start creating.
               </p>
             </div>
             <button
@@ -359,8 +382,49 @@ export default function GettingStartedModal({
         <div className="flex-1 overflow-y-auto px-5 py-5">
           {activeTab === 'setup' ? (
             <div className="space-y-4">
-              <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 px-4 py-3 text-sm text-sf-text-secondary">
-                ComfyStudio includes the workflow JSONs, but your own ComfyUI install still needs the right nodes, models, API keys, and local port. The goal here is to make that setup obvious, not mysterious.
+              <div className="rounded-xl border border-sf-accent/30 bg-sf-accent/10 px-4 py-4">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="max-w-2xl">
+                    <div className="text-sm font-semibold text-sf-text-primary">Choose your setup path</div>
+                    <p className="mt-1 text-xs leading-relaxed text-sf-text-secondary">
+                      Use <span className="text-sf-text-primary">Quick Start</span> if you want ComfyStudio to guide you through a starter kit. Use <span className="text-sf-text-primary">Bring Your Own ComfyUI</span> if you already have a custom ComfyUI install and just need ComfyStudio pointed at it.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenSettings(WORKFLOW_SETUP_SECTION_ID)}
+                      className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent-hover"
+                    >
+                      Quick Start Setup
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenSettings('connection')}
+                      className="rounded-lg border border-sf-dark-500 bg-sf-dark-900 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-400 hover:text-sf-text-primary"
+                    >
+                      Bring Your Own ComfyUI
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-2 md:grid-cols-4">
+                  {readyPathSteps.map((step) => (
+                    <div
+                      key={step.label}
+                      className={`rounded-lg border px-3 py-2 ${
+                        step.ready
+                          ? 'border-green-500/25 bg-green-500/10'
+                          : 'border-sf-dark-600 bg-sf-dark-900/65'
+                      }`}
+                    >
+                      <div className={`text-[10px] font-semibold uppercase tracking-[0.16em] ${step.ready ? 'text-green-400' : 'text-sf-text-muted'}`}>
+                        {step.ready ? 'Ready' : 'Next'}
+                      </div>
+                      <div className="mt-1 text-xs font-medium text-sf-text-primary">{step.label}</div>
+                      <div className="mt-1 text-[10px] leading-relaxed text-sf-text-muted">{step.detail}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2">

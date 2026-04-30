@@ -27,7 +27,7 @@ import {
 } from 'lucide-react'
 import ApiKeyDialog from './ApiKeyDialog'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
-import { getWorkflowSetupGalleryMeta } from '../config/workflowSetupGallery'
+import { WORKFLOW_SETUP_STARTER_KITS, getWorkflowSetupGalleryMeta } from '../config/workflowSetupGallery'
 import { checkLocalComfyConnection, getLocalComfyConnectionSync } from '../services/localComfyConnection'
 import {
   WORKFLOW_SETUP_SECTION_ID,
@@ -213,6 +213,52 @@ const WORKFLOW_GALLERY_ICONS = {
 function WorkflowGalleryHeroIcon({ name, className = 'h-10 w-10 opacity-90' }) {
   const Icon = WORKFLOW_GALLERY_ICONS[name] || Boxes
   return <Icon className={className} />
+}
+
+function StarterKitCard({
+  kit,
+  summary,
+  selected,
+  onSelect,
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(kit)}
+      className={`rounded-xl border p-3 text-left transition-colors ${
+        selected
+          ? 'border-sf-accent/70 bg-sf-accent/10'
+          : 'border-sf-dark-700 bg-sf-dark-900/60 hover:border-sf-dark-500 hover:bg-sf-dark-800/60'
+      }`}
+      title={`Select ${kit.label} workflows`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-sf-text-primary">{kit.label}</div>
+          <div className="mt-1 text-[11px] text-sf-text-secondary">{kit.tagline}</div>
+        </div>
+        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+          selected
+            ? 'border-sf-accent/50 bg-sf-accent/15 text-sf-accent'
+            : 'border-sf-dark-600 bg-sf-dark-800 text-sf-text-muted'
+        }`}>
+          {selected ? 'Selected' : 'Pick kit'}
+        </span>
+      </div>
+      <p className="mt-2 text-[11px] text-sf-text-muted">{kit.description}</p>
+      <div className="mt-3 grid grid-cols-3 gap-1 text-[10px]">
+        <div className="rounded bg-sf-dark-950/65 px-2 py-1 text-sf-text-secondary">
+          {summary.total} workflows
+        </div>
+        <div className="rounded bg-green-500/10 px-2 py-1 text-green-400">
+          {summary.ready} ready
+        </div>
+        <div className="rounded bg-orange-400/10 px-2 py-1 text-orange-300">
+          {summary.actionable} installable
+        </div>
+      </div>
+    </button>
+  )
 }
 
 function WorkflowSetupExpandedBody({
@@ -946,6 +992,30 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
     })
   }, [runInstallPlan, workflowResults])
 
+  const starterKitSummaries = useMemo(() => {
+    const byId = new Map(workflowResults.map((result) => [result.workflowId, result]))
+    return WORKFLOW_SETUP_STARTER_KITS.map((kit) => {
+      const results = kit.workflowIds
+        .map((workflowId) => byId.get(workflowId))
+        .filter(Boolean)
+      return {
+        kit,
+        total: results.length,
+        ready: results.filter((result) => result.setupStatus === 'ready').length,
+        actionable: results.filter((result) => result.hasActionableInstalls).length,
+        selected: kit.workflowIds.some((workflowId) => selectedWorkflowIds.includes(workflowId)),
+      }
+    })
+  }, [selectedWorkflowIds, workflowResults])
+
+  const handleSelectStarterKit = useCallback((kit) => {
+    const workflowIds = new Set(workflowResults.map((result) => result.workflowId))
+    setSelectedWorkflowIds(
+      kit.workflowIds.filter((workflowId) => workflowIds.has(workflowId))
+    )
+    setStatusMessage(`${kit.label} selected. Review the install plan below, then install anything missing.`)
+  }, [workflowResults])
+
   const workflowCount = getWorkflowSetupWorkflows().length
   const actionableWorkflowCount = workflowResults.filter((result) => result.hasActionableInstalls).length
   const readyWorkflowCount = workflowResults.filter((result) => result.setupStatus === 'ready').length
@@ -1299,6 +1369,40 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
           )}
           {rootValidation.warnings.map((warning) => (
             <div key={warning} className="text-yellow-300">{warning}</div>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-sf-accent" />
+              <span className="text-sm font-medium text-sf-text-primary">Starter Kits</span>
+            </div>
+            <p className="mt-1 max-w-2xl text-[11px] text-sf-text-secondary">
+              Pick what you want to make first. ComfyStudio selects the matching workflows below so new users do not have to decode every model graph on day one.
+            </p>
+          </div>
+          {selectedWorkflowIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelectedWorkflowIds([])}
+              className="rounded px-2.5 py-1.5 text-[11px] text-sf-text-muted transition-colors hover:bg-sf-dark-800 hover:text-sf-text-secondary"
+            >
+              Clear selection
+            </button>
+          )}
+        </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {starterKitSummaries.map(({ kit, selected, ...summary }) => (
+            <StarterKitCard
+              key={kit.id}
+              kit={kit}
+              summary={summary}
+              selected={selected}
+              onSelect={handleSelectStarterKit}
+            />
           ))}
         </div>
       </div>

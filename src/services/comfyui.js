@@ -2009,6 +2009,12 @@ export function modifyMusicVideoShotWorkflow(workflow, options = {}) {
 
   const shot = normalizeMusicVideoShot(rawShot)
   const shotTypeOption = getMusicVideoShotTypeOption(shot.shotType) || getMusicVideoShotTypeOption('performance')
+  const hasExplicitImageStrength = Number.isFinite(Number(rawShot?.imageStrength))
+  const resolvedImageStrength = hasExplicitImageStrength
+    ? shot.imageStrength
+    : (Number.isFinite(Number(shotTypeOption?.defaultImageStrength))
+        ? Number(shotTypeOption.defaultImageStrength)
+        : shot.imageStrength)
 
   const resolvedPrompt = [shot.shotPrompt, shotTypeOption.promptSuffix]
     .map((value) => String(value || '').trim())
@@ -2068,7 +2074,7 @@ export function modifyMusicVideoShotWorkflow(workflow, options = {}) {
   }
   // Image strength — node 1722
   if (modified['1722']?.inputs && 'value' in modified['1722'].inputs) {
-    modified['1722'].inputs.value = shot.imageStrength
+    modified['1722'].inputs.value = resolvedImageStrength
   }
   // Prompt enhancer toggle — node 2116
   if (modified['2116']?.inputs && 'value' in modified['2116'].inputs) {

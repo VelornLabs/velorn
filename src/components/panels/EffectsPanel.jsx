@@ -7,6 +7,7 @@ import { EFFECT_TYPES, getEffectTypeDefinition } from '../../utils/effects'
 const EFFECT_PANEL_ICONS = {
   cameraShake: Waves,
   chromaticAberration: Radio,
+  sharpen: CircleDot,
   filmGrain: Sparkles,
   glow: Sun,
   vignette: CircleDot,

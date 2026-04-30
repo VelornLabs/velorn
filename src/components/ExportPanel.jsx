@@ -86,6 +86,12 @@ const AUDIO_CHANNELS = [
   { id: 1, label: 'Mono' },
 ]
 
+const EXPORT_RESOLUTION_SCALE_OPTIONS = [
+  { id: 'timeline-half', label: 'Half Timeline Resolution', scale: 0.5 },
+  { id: 'timeline-third', label: 'Third Timeline Resolution', scale: 1 / 3 },
+  { id: 'timeline-quarter', label: 'Quarter Timeline Resolution', scale: 0.25 },
+]
+
 const DEFAULT_CRF = {
   h264: 18,
   h265: 20,
@@ -124,6 +130,8 @@ function ExportPanel() {
     keyframeMode: 'auto',
     keyframeInterval: 48,
     resolution: 'project',
+    customWidth: 1920,
+    customHeight: 1080,
     fps: 'project',
     range: 'full',
     renderMode: 'single',
@@ -132,6 +140,7 @@ function ExportPanel() {
     audioSampleRate: 44100,
     audioChannels: 2,
     useCachedRenders: false,
+    useProxyMedia: false,
     fastSeek: false,
   })
   const [queue, setQueue] = useState([])
@@ -276,6 +285,17 @@ function ExportPanel() {
           next.audioCodec = supportedAudio[0]?.id || next.audioCodec
         }
       }
+
+      if (key === 'resolution' && value === 'custom') {
+        const timelineSettings = getCurrentTimelineSettings() || { width: 1920, height: 1080 }
+        next.customWidth = Number(prev.customWidth) || timelineSettings.width || 1920
+        next.customHeight = Number(prev.customHeight) || timelineSettings.height || 1080
+      }
+
+      if (key === 'customWidth' || key === 'customHeight') {
+        const numeric = Math.max(2, Math.round(Number(value) || 2))
+        next[key] = numeric
+      }
       
       return next
     })
@@ -409,14 +429,47 @@ function ExportPanel() {
   }
 
   const resolveResolution = () => {
+    const timelineSettings = getCurrentTimelineSettings() || { width: 1920, height: 1080, fps: 24 }
+    const makeEvenDimension = (value) => Math.max(2, Math.round((Number(value) || 2) / 2) * 2)
     if (settings.resolution === 'project') {
-      return getCurrentTimelineSettings() || { width: 1920, height: 1080, fps: 24 }
+      return timelineSettings
+    }
+    if (settings.resolution === 'custom') {
+      return {
+        width: makeEvenDimension(settings.customWidth || timelineSettings.width),
+        height: makeEvenDimension(settings.customHeight || timelineSettings.height),
+        fps: timelineSettings.fps || 24,
+      }
+    }
+    const scaleOption = EXPORT_RESOLUTION_SCALE_OPTIONS.find(option => option.id === settings.resolution)
+    if (scaleOption) {
+      return {
+        width: makeEvenDimension((timelineSettings.width || 1920) * scaleOption.scale),
+        height: makeEvenDimension((timelineSettings.height || 1080) * scaleOption.scale),
+        fps: timelineSettings.fps || 24,
+      }
     }
     const preset = RESOLUTION_PRESETS.find(p => p.name === settings.resolution)
     if (preset) {
-      return { width: preset.width, height: preset.height, fps: getCurrentTimelineSettings()?.fps || 24 }
+      return { width: preset.width, height: preset.height, fps: timelineSettings.fps || 24 }
     }
-    return getCurrentTimelineSettings() || { width: 1920, height: 1080, fps: 24 }
+    return timelineSettings
+  }
+
+  const getResolutionLabel = (exportSettings = settings) => {
+    const timelineSettings = getCurrentTimelineSettings() || { width: 1920, height: 1080, fps: 24 }
+    const makeEvenDimension = (value) => Math.max(2, Math.round((Number(value) || 2) / 2) * 2)
+    if (exportSettings.resolution === 'project') {
+      return `Project (${timelineSettings.width}×${timelineSettings.height})`
+    }
+    if (exportSettings.resolution === 'custom') {
+      return `Custom (${makeEvenDimension(exportSettings.customWidth)}×${makeEvenDimension(exportSettings.customHeight)})`
+    }
+    const scaleOption = EXPORT_RESOLUTION_SCALE_OPTIONS.find(option => option.id === exportSettings.resolution)
+    if (scaleOption) {
+      return `${scaleOption.label} (${makeEvenDimension((timelineSettings.width || 1920) * scaleOption.scale)}×${makeEvenDimension((timelineSettings.height || 1080) * scaleOption.scale)})`
+    }
+    return exportSettings.resolution
   }
 
   const resolveFps = () => {
@@ -447,17 +500,37 @@ function ExportPanel() {
     return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
   }
 
+  const proxyCoverage = useMemo(() => {
+    const videoAssetIds = new Set(
+      clips
+        .filter((clip) => clip.type === 'video' && clip.assetId)
+        .map((clip) => clip.assetId)
+    )
+    let ready = 0
+    let total = 0
+    for (const assetId of videoAssetIds) {
+      const asset = assets.find((entry) => entry.id === assetId)
+      if (!asset || asset.type !== 'video') continue
+      total += 1
+      if (asset.proxyStatus === 'ready' && asset.proxyPath) ready += 1
+    }
+    return { ready, total, missing: Math.max(0, total - ready) }
+  }, [assets, clips])
+
   const performanceHints = useMemo(() => {
     const hints = []
     const timelineSettings = getCurrentTimelineSettings() || { width: 1920, height: 1080, fps: 24 }
-    const resolution = settings.resolution === 'project'
-      ? timelineSettings
-      : RESOLUTION_PRESETS.find(p => p.name === settings.resolution) || timelineSettings
+    const resolution = resolveResolution()
     const effectiveFps = settings.fps === 'project' ? timelineSettings.fps : Number(settings.fps || timelineSettings.fps)
     const pixelCount = (resolution.width || 1920) * (resolution.height || 1080)
     
     if (pixelCount >= 3840 * 2160) {
       hints.push('4K exports are heavy. Consider proxies or lower resolution for previews.')
+    }
+    if (settings.useProxyMedia && proxyCoverage.ready > 0) {
+      hints.push(`Proxy export will use ${proxyCoverage.ready}/${proxyCoverage.total} ready video prox${proxyCoverage.ready === 1 ? 'y' : 'ies'}.`)
+    } else if (settings.useProxyMedia && proxyCoverage.total > 0) {
+      hints.push('Proxy export is enabled, but no ready proxies were found; originals will be used.')
     }
     if (effectiveFps >= 60) {
       hints.push('60fps export doubles frame workload. Lower FPS for faster renders.')
@@ -497,7 +570,7 @@ function ExportPanel() {
     }
     
     return hints.slice(0, 5)
-  }, [clips, transitions, tracks, settings, getCurrentTimelineSettings, nvencStatus])
+  }, [clips, transitions, tracks, settings, getCurrentTimelineSettings, nvencStatus, proxyCoverage])
 
   const runExportJob = async (jobSettings, labelOverride = null) => {
     if (jobSettings.format === 'gif' || jobSettings.format === 'png-seq') {
@@ -523,6 +596,7 @@ function ExportPanel() {
     const { width, height } = resolveResolution()
     const fps = resolveFps()
     const range = resolveRange()
+    const timelineSettings = getCurrentTimelineSettings() || { width: 1920, height: 1080, fps: 24 }
     const options = {
       filename: jobSettings.filename?.trim() || defaultFilename,
       format: jobSettings.format,
@@ -538,6 +612,8 @@ function ExportPanel() {
       keyframeInterval: jobSettings.keyframeMode === 'auto' ? null : Number(jobSettings.keyframeInterval),
       width,
       height,
+      sourceTimelineWidth: timelineSettings.width || width,
+      sourceTimelineHeight: timelineSettings.height || height,
       fps,
       rangeStart: range.start,
       rangeEnd: range.end,
@@ -546,6 +622,7 @@ function ExportPanel() {
       audioSampleRate: Number(jobSettings.audioSampleRate),
       audioChannels: Number(jobSettings.audioChannels),
       useCachedRenders: jobSettings.useCachedRenders,
+      useProxyMedia: jobSettings.useProxyMedia,
       fastSeek: jobSettings.fastSeek,
     }
 
@@ -574,6 +651,8 @@ function ExportPanel() {
             isImported: a.isImported,
             settings: a.settings,
             duration: a.duration,
+            proxyPath: a.proxyPath,
+            proxyStatus: a.proxyStatus,
             maskFrames: a.maskFrames?.map((f) => ({ ...f, url: undefined })),
           })),
         }
@@ -910,11 +989,48 @@ function ExportPanel() {
                     className="mt-1 w-full bg-sf-dark-800 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
                   >
                     <option value="project">Project Settings</option>
+                    {EXPORT_RESOLUTION_SCALE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                    <option value="custom">Custom...</option>
                     {RESOLUTION_PRESETS.map((preset) => (
                       <option key={preset.name} value={preset.name}>{preset.name}</option>
                     ))}
                   </select>
+                  <div className="mt-1 text-[10px] text-sf-text-muted">
+                    Output: {getResolutionLabel()}
+                  </div>
                 </div>
+
+                {settings.resolution === 'custom' && (
+                  <div>
+                    <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">Custom Size</label>
+                    <div className="mt-1 grid grid-cols-[1fr_auto_1fr] items-center gap-1">
+                      <input
+                        type="number"
+                        min={2}
+                        step={2}
+                        value={settings.customWidth}
+                        onChange={(e) => handleSettingChange('customWidth', Number(e.target.value))}
+                        className="w-full bg-sf-dark-800 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                        aria-label="Custom export width"
+                      />
+                      <span className="text-[10px] text-sf-text-muted">×</span>
+                      <input
+                        type="number"
+                        min={2}
+                        step={2}
+                        value={settings.customHeight}
+                        onChange={(e) => handleSettingChange('customHeight', Number(e.target.value))}
+                        className="w-full bg-sf-dark-800 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                        aria-label="Custom export height"
+                      />
+                    </div>
+                    <div className="mt-1 text-[10px] text-sf-text-muted">
+                      Values are rounded to even pixels for video encoders.
+                    </div>
+                  </div>
+                )}
                 
                 <div>
                   <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">Frame Rate</label>
@@ -944,6 +1060,20 @@ function ExportPanel() {
                       Use cached renders
                     </button>
                     <button
+                      onClick={() => handleSettingChange('useProxyMedia', !settings.useProxyMedia)}
+                      disabled={proxyCoverage.total === 0}
+                      title={proxyCoverage.total === 0
+                        ? 'No video clips on this timeline'
+                        : `Use ready low-res proxies for faster draft exports. ${proxyCoverage.ready}/${proxyCoverage.total} video asset${proxyCoverage.total === 1 ? '' : 's'} have proxies.`}
+                      className={`px-2 py-1 text-xs rounded border transition-colors ${
+                        settings.useProxyMedia
+                          ? 'bg-sf-accent/20 text-sf-accent border-sf-accent/40'
+                          : 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600'
+                      } ${proxyCoverage.total === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      Use video proxies
+                    </button>
+                    <button
                       onClick={() => handleSettingChange('fastSeek', !settings.fastSeek)}
                       title="Fast seek jumps to keyframes for speed (less accurate)"
                       className={`px-2 py-1 text-xs rounded border transition-colors ${
@@ -956,7 +1086,12 @@ function ExportPanel() {
                     </button>
                   </div>
                   <div className="mt-1 text-[10px] text-sf-text-muted">
-                    Cached renders reuse effect pre-renders. Fast seek trades accuracy for speed.
+                    Cached renders reuse effect pre-renders. Video proxies use low-res proxy files when available. Fast seek trades accuracy for speed.
+                    {settings.useProxyMedia && proxyCoverage.total > 0 && (
+                      <span className="ml-1 text-sf-accent">
+                        {proxyCoverage.ready}/{proxyCoverage.total} ready.
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1174,7 +1309,7 @@ function ExportPanel() {
                   <div className="min-w-0">
                     <div className="text-xs text-sf-text-primary truncate">{item.name}</div>
                     <div className="text-[10px] text-sf-text-muted">
-                      {item.settings.format.toUpperCase()} • {item.settings.videoCodec?.toUpperCase()} • {item.settings.resolution} • {item.settings.fps} fps
+                      {item.settings.format.toUpperCase()} • {item.settings.videoCodec?.toUpperCase()} • {getResolutionLabel(item.settings)} • {item.settings.fps} fps
                     </div>
                     <div className="text-[10px] text-sf-text-muted">
                       Range: {item.settings.range}

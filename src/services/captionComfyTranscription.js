@@ -262,7 +262,7 @@ function extractSubtitleTextFromHistory(history, promptId) {
   return null
 }
 
-async function uploadVideoToComfy(asset) {
+async function uploadMediaToComfy(asset) {
   let fileToUpload = null
   const safeName = String(asset.name || `caption_source_${Date.now()}`)
     .replace(/[^a-zA-Z0-9_\-.\s]/g, '_')
@@ -284,7 +284,7 @@ async function uploadVideoToComfy(asset) {
   }
 
   if (!fileToUpload) {
-    throw new Error('Could not read the source video for upload to ComfyUI.')
+    throw new Error('Could not read the source media for upload to ComfyUI.')
   }
 
   const uploadResult = await comfyui.uploadFile(fileToUpload, safeName)
@@ -406,7 +406,7 @@ async function pollForCompletion(promptId, onProgress) {
 
 export async function transcribeWithComfyUI(asset, { onProgress } = {}) {
   if (!asset) {
-    throw new Error('A source video is required to generate captions.')
+    throw new Error('A source audio or video asset is required to generate captions.')
   }
 
   const connected = await comfyui.checkConnection()
@@ -415,10 +415,10 @@ export async function transcribeWithComfyUI(asset, { onProgress } = {}) {
   }
 
   if (typeof onProgress === 'function') {
-    onProgress({ stage: 'upload', message: 'Uploading video to ComfyUI...' })
+    onProgress({ stage: 'upload', message: 'Uploading media to ComfyUI...' })
   }
 
-  const uploadedFilename = await uploadVideoToComfy(asset)
+  const uploadedFilename = await uploadMediaToComfy(asset)
 
   if (typeof onProgress === 'function') {
     onProgress({ stage: 'workflow', message: 'Loading caption workflow...' })

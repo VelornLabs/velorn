@@ -126,6 +126,37 @@ const ClipEffectSvgFilter = memo(function ClipEffectSvgFilter({ filterId, effect
         )
 
         inputName = blendTwo
+      } else if (effect.type === 'sharpen') {
+        const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime || 0)
+        const amount = Math.max(0, Math.min(100, Number(animated.settings?.amount) || 0))
+        if (amount <= 0) return
+
+        const prefix = `${filterId}-sharpen-${index}`
+        const sharpenName = `${prefix}-convolve`
+        const strength = (amount / 100) * 0.55
+        const centerWeight = 1 + 4 * strength
+        const adjacentWeight = -strength
+        const kernel = [
+          0, adjacentWeight, 0,
+          adjacentWeight, centerWeight, adjacentWeight,
+          0, adjacentWeight, 0,
+        ].map((value) => Number(value.toFixed(4))).join(' ')
+
+        children.push(
+          <feConvolveMatrix
+            key={sharpenName}
+            in={inputName}
+            order="3"
+            kernelMatrix={kernel}
+            divisor="1"
+            bias="0"
+            edgeMode="duplicate"
+            preserveAlpha="true"
+            result={sharpenName}
+          />
+        )
+
+        inputName = sharpenName
       } else if (effect.type === 'vhsDamage') {
         const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime || 0)
         const amount = Math.max(0, Math.min(100, Number(animated.settings?.amount) || 0))

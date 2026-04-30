@@ -224,7 +224,7 @@ function AssetsPanel() {
     setAssetAudioEnabled,
   } = useAssetsStore()
   const { currentProject, currentProjectHandle, currentTimelineId, switchTimeline, renameTimeline, setTimelineColor, duplicateTimeline, deleteTimeline, getCurrentTimelineSettings } = useProjectStore()
-  const { isPlaying: timelineIsPlaying, togglePlay: timelineTogglePlay, removeAudioClipsForAsset } = useTimelineStore()
+  const { isPlaying: timelineIsPlaying, togglePlay: timelineTogglePlay, removeAudioClipsForAsset, clearSelection: clearTimelineSelection } = useTimelineStore()
   
   // Load thumbnail size from localStorage
   useEffect(() => {
@@ -629,6 +629,8 @@ function AssetsPanel() {
   
   // Handle single-click to select and preview (with multi-select: Ctrl/Cmd toggle, Shift range)
   const handleClick = (e, asset) => {
+    panelRef.current?.focus?.()
+    clearTimelineSelection()
     setSelectedSequenceId(null)
     if (timelineIsPlaying) {
       timelineTogglePlay()
@@ -657,6 +659,8 @@ function AssetsPanel() {
 
   const handleSequenceClick = (timeline) => {
     if (!timeline?.id) return
+    panelRef.current?.focus?.()
+    clearTimelineSelection()
     setSelectedSequenceId(timeline.id)
     setSelectedAssetIds([])
   }
@@ -719,15 +723,14 @@ function AssetsPanel() {
       if (editingId || (active && (['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) || active.isContentEditable))) return
 
       if (e.key === 'Escape') {
+        clearTimelineSelection()
         setSelectedAssetIds([])
         return
       }
-      // Don't delete assets when timeline has selected clips — let the timeline handle Delete (clip removal)
-      const timelineSelectedClipIds = useTimelineStore.getState().selectedClipIds
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedAssetIds.length > 0) {
-        if (timelineSelectedClipIds?.length > 0) return
         e.preventDefault()
         e.stopPropagation()
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation()
         const count = selectedAssetIds.length
         const confirmed = await requestConfirm({
           title: count === 1 ? 'Delete asset?' : 'Delete selected assets?',
@@ -742,12 +745,14 @@ function AssetsPanel() {
         }
       }
     }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedAssetIds, editingId, removeAsset, requestConfirm, confirmDialog])
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [selectedAssetIds, editingId, removeAsset, requestConfirm, confirmDialog, clearTimelineSelection])
   
   // Handle folder click
   const handleFolderClick = (folderId) => {
+    panelRef.current?.focus?.()
+    clearTimelineSelection()
     setSelectedSequenceId(null)
     setCurrentFolderId(folderId)
   }

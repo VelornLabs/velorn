@@ -6,7 +6,7 @@
     <title>ComfyStudio Pro</title>
     <meta
       name="description"
-      content="AI-powered editing for ComfyUI creators. Download the Windows or Mac app directly, then explore releases, demos, and updates."
+      content="ComfyStudio is a full AI video workstation for ComfyUI creators: generate, direct, edit, upscale, and finish projects with local, cloud, or hybrid workflows."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -255,6 +255,31 @@
         gap: 18px;
       }
 
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+      }
+
+      .section-heading {
+        max-width: 760px;
+        margin: 18px auto 4px;
+        text-align: center;
+      }
+
+      .section-heading h2 {
+        font-size: clamp(26px, 3.4vw, 42px);
+        line-height: 1.12;
+        letter-spacing: -0.03em;
+      }
+
+      .section-heading p {
+        margin-top: 12px;
+        color: var(--muted);
+        line-height: 1.7;
+        font-size: 15px;
+      }
+
       .card {
         padding: 24px;
         border-radius: 22px;
@@ -268,9 +293,27 @@
       .card h2 { font-size: 22px; }
       .card h3 { font-size: 17px; }
 
+      .kicker {
+        display: inline-flex;
+        margin-bottom: 12px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(110, 167, 255, 0.22);
+        background: rgba(110, 167, 255, 0.08);
+        color: #cfe0ff;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
       .card p, .card li {
         color: var(--muted);
         line-height: 1.7;
+      }
+
+      .card strong {
+        color: var(--text);
       }
 
       .list {
@@ -285,6 +328,56 @@
         color: var(--accent-warm);
         font-weight: 800;
         margin-right: 10px;
+      }
+
+      .steps {
+        counter-reset: setup-step;
+      }
+
+      .step-card {
+        position: relative;
+        padding-left: 58px;
+      }
+
+      .step-card::before {
+        counter-increment: setup-step;
+        content: counter(setup-step);
+        position: absolute;
+        left: 22px;
+        top: 24px;
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, rgba(110, 167, 255, 0.35), rgba(159, 123, 255, 0.28));
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .faq {
+        display: grid;
+        gap: 12px;
+      }
+
+      .faq details {
+        padding: 18px 20px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(11, 15, 22, 0.72);
+      }
+
+      .faq summary {
+        cursor: pointer;
+        color: var(--text);
+        font-weight: 800;
+      }
+
+      .faq p {
+        margin-top: 10px;
+        color: var(--muted);
+        line-height: 1.7;
       }
 
       /* ---- FOOTER ---- */
@@ -308,6 +401,7 @@
       /* ---- RESPONSIVE ---- */
       @media (max-width: 980px) {
         .grid-3 { grid-template-columns: 1fr; }
+        .grid-2 { grid-template-columns: 1fr; }
       }
 
       @media (max-width: 640px) {
@@ -323,10 +417,11 @@
     <div class="shell">
       <main>
         <section class="hero">
-          <h1>AI-powered editing for ComfyUI creators.</h1>
+          <h1>The AI video workstation for ComfyUI creators.</h1>
           <p class="hero-sub">
-            <strong>ComfyStudio Pro</strong> brings together timeline editing, shot development,
-            AI-assisted generation, and post-production iteration in one desktop environment.
+            <strong>ComfyStudio Pro</strong> lets you generate, direct, edit, upscale,
+            and finish videos with any ComfyUI workflow — local when you want it,
+            cloud when it helps, timeline always included.
           </p>
           <div class="eyebrow">
             <span class="eyebrow-dot" aria-hidden="true"></span>
@@ -378,62 +473,231 @@
           </div>
 
           <div class="signal-row">
-            <span class="signal">Desktop editor for AI-first creative workflows</span>
-            <span class="signal">ComfyUI-native local and cloud generation</span>
-            <span class="signal">Built for previs, animatics, and shot iteration</span>
+            <span class="signal">A full creative workstation, not a single-model launcher</span>
+            <span class="signal">ComfyUI-native local, cloud, and hybrid generation</span>
+            <span class="signal">Director Mode, Flow AI, timeline editing, and export</span>
           </div>
         </section>
 
         <section class="sections">
+          <div class="section-heading">
+            <h2>Designed for finished AI video work.</h2>
+            <p>
+              Generate clips when you need clips. Build a real project when you need a finished
+              video. ComfyStudio keeps assets, prompts, workflows, timeline edits, effects, and
+              exports in one place.
+            </p>
+          </div>
+
           <div class="grid-3">
             <article class="card">
-              <h3>Edit and generate in one flow</h3>
+              <span class="kicker">Workstation</span>
+              <h3>Make the whole video</h3>
               <p>
-                Move between timeline work, shot generation, storyboards, and exports without splitting
-                the creative process across too many disconnected tools.
+                Lightweight model launchers are great for one-off clips. ComfyStudio is for the whole
+                production flow: script, shot plan, generation, timeline edit, upscale, effects, and export.
               </p>
             </article>
             <article class="card">
-              <h3>Built for AI-native post</h3>
+              <span class="kicker">Open workflow</span>
+              <h3>Any model, any workflow</h3>
               <p>
-                Designed for creators working with ComfyUI, local and cloud workflows, voiceover,
-                b-roll, extending clips, and iterating fast from first idea to edit.
+                Use LTX, WAN, Qwen, Kling, Vidu, Topaz, Nano Banana, Grok, Seedream,
+                or whatever ComfyUI creators ship next. Your project stays in one workspace.
               </p>
             </article>
             <article class="card">
-              <h3>Open source and evolving fast</h3>
+              <span class="kicker">Guided setup</span>
+              <h3>Approachable, still powerful</h3>
               <p>
-                Available now on GitHub. This site is becoming the home for releases, demos,
-                documentation, and future updates around ComfyStudio Pro.
+                Starter kits help new users get to a working setup, while power users keep the
+                flexibility to bring their own ComfyUI install, custom nodes, and model stack.
               </p>
             </article>
           </div>
 
+          <div class="section-heading">
+            <h2>Choose how you want to run.</h2>
+            <p>
+              ComfyStudio is not locked to one backend. Use local ComfyUI on your own GPU,
+              cloud workflows when local hardware is not enough, or mix both in the same project.
+            </p>
+          </div>
+
+          <div class="grid-3">
+            <article class="card">
+              <span class="kicker">Local</span>
+              <h3>Bring your own ComfyUI</h3>
+              <p>
+                Point ComfyStudio at an existing local ComfyUI install, scan workflows, install
+                curated dependencies, and keep generation on your own machine when the workflow fits.
+              </p>
+            </article>
+            <article class="card">
+              <span class="kicker">Cloud</span>
+              <h3>Use API workflows when it helps</h3>
+              <p>
+                Premium cloud workflows are available for models like Kling, Vidu, Grok, Nano Banana,
+                Seedream, and Topaz. They are useful for low-VRAM machines or specialty tasks.
+              </p>
+            </article>
+            <article class="card">
+              <span class="kicker">Hybrid</span>
+              <h3>Mix models in one timeline</h3>
+              <p>
+                Generate references locally, use cloud video for hero shots, upscale selected clips,
+                then cut everything together with audio, effects, and export controls.
+              </p>
+            </article>
+          </div>
+
+          <div class="section-heading">
+            <h2>Quick start paths, not mystery setup.</h2>
+            <p>
+              The app now guides setup around outcomes: low-VRAM local work, high-quality local work,
+              cloud quality, and music videos. You choose the goal; ComfyStudio selects the workflows.
+            </p>
+          </div>
+
+          <div class="grid-2 steps">
+            <article class="card step-card">
+              <h3>Low VRAM Local Video</h3>
+              <p>
+                Start with lighter local workflows like fast image generation, LTX image-to-video,
+                and Qwen image edits before moving into heavier model stacks.
+              </p>
+            </article>
+            <article class="card step-card">
+              <h3>Best Local Quality</h3>
+              <p>
+                Prepare larger local workflows for high-VRAM systems, including WAN, LTX,
+                Qwen Edit, and multi-angle character or scene generation.
+              </p>
+            </article>
+            <article class="card step-card">
+              <h3>Cloud Quality</h3>
+              <p>
+                Use partner workflows for premium video, image, and upscale jobs while keeping
+                outputs inside the same ComfyStudio project.
+              </p>
+            </article>
+            <article class="card step-card">
+              <h3>Music Video Kit</h3>
+              <p>
+                Prepare Qwen ASR transcription, vocal extraction, and LTX audio-conditioned
+                shot generation for timed lyric-driven Director Mode music videos.
+              </p>
+            </article>
+          </div>
+
+          <div class="section-heading">
+            <h2>Built for creators who want control.</h2>
+            <p>
+              ComfyStudio focuses on the production surface around generation: planning, editing,
+              managing media, trying multiple passes, and finishing the timeline.
+            </p>
+          </div>
+
           <div class="grid-3">
             <section class="card">
-              <h2>Made for creative operators</h2>
+              <h2>Director Mode</h2>
               <ul class="list">
-                <li>Filmmakers and previs artists</li>
-                <li>Animatic editors and ad concept teams</li>
-                <li>ComfyUI creators building local or hybrid workflows</li>
+                <li>Music videos with SRT/LRC timing and cast references</li>
+                <li>Ad and concept workflows with structured shot planning</li>
+                <li>Style cards and shot-control chips for faster direction</li>
               </ul>
             </section>
             <section class="card">
-              <h2>What the site is for</h2>
+              <h2>Flow AI</h2>
               <ul class="list">
-                <li>Release downloads and updates</li>
-                <li>Feature demos and workflow examples</li>
-                <li>Docs, onboarding, and public roadmap</li>
+                <li>Node-based chaining for generation steps</li>
+                <li>Reusable workflows that route outputs back into assets</li>
+                <li>Power-user control without leaving the project</li>
               </ul>
             </section>
             <section class="card">
-              <h2>Follow the project</h2>
+              <h2>Timeline and export</h2>
               <ul class="list">
-                <li>Track releases on GitHub</li>
-                <li>See product progress on X</li>
-                <li>Sponsor development if you want to support it</li>
+                <li>Trim, move, razor, slip, fades, effects, and speed controls</li>
+                <li>Organize generated and imported assets together</li>
+                <li>Export finished videos from the same workspace</li>
               </ul>
             </section>
+          </div>
+
+          <div class="section-heading">
+            <h2>Practical requirements.</h2>
+            <p>
+              Requirements depend on the workflows you choose. That is the point: ComfyStudio can be
+              lightweight, heavy local, cloud-first, or hybrid depending on your machine and project.
+            </p>
+          </div>
+
+          <div class="grid-3">
+            <article class="card">
+              <h3>For lighter local work</h3>
+              <p>
+                Use lower-VRAM local workflows and draft passes when you want fast iteration on consumer
+                hardware. Workflow Setup will show what each graph needs before you queue.
+              </p>
+            </article>
+            <article class="card">
+              <h3>For heavy local video</h3>
+              <p>
+                Larger video workflows can require significant VRAM and disk space for model weights.
+                High-end NVIDIA cards are best for WAN and LTX-style local video stacks.
+              </p>
+            </article>
+            <article class="card">
+              <h3>For weaker GPUs</h3>
+              <p>
+                Cloud workflows let users generate premium shots or upscale videos without forcing every
+                project through local hardware. Credits and API keys depend on the provider.
+              </p>
+            </article>
+          </div>
+
+          <div class="section-heading">
+            <h2>Common questions.</h2>
+          </div>
+
+          <div class="faq">
+            <details>
+              <summary>Do I need ComfyUI?</summary>
+              <p>
+                Yes for local generation. ComfyStudio is a desktop creative workstation that talks to a
+                local ComfyUI server, manages bundled workflows, and keeps generated outputs inside your project.
+              </p>
+            </details>
+            <details>
+              <summary>Can I use my existing ComfyUI install?</summary>
+              <p>
+                Yes. Use Bring Your Own ComfyUI, set the local port and ComfyUI folder, then run Workflow Setup
+                to check nodes and models for the built-in workflows.
+              </p>
+            </details>
+            <details>
+              <summary>Does everything run locally?</summary>
+              <p>
+                Local workflows run through your ComfyUI install. Cloud workflows use provider APIs and credits.
+                You can mix local and cloud outputs in the same project timeline.
+              </p>
+            </details>
+            <details>
+              <summary>How is this different from a single-model video app?</summary>
+              <p>
+                Single-model apps are excellent for generating clips with one engine. ComfyStudio is built around
+                the whole video: multiple models, Director Mode, Flow AI, asset management, timeline editing,
+                effects, upscaling, and export.
+              </p>
+            </details>
+            <details>
+              <summary>Where do generated files go?</summary>
+              <p>
+                Generated media is imported into the current ComfyStudio project so you can review, organize,
+                edit, and export without chasing files across output folders.
+              </p>
+            </details>
           </div>
         </section>
       </main>

@@ -40,6 +40,14 @@ const EXPORT_STATUS = {
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 
+const getLocalStorageFlag = (key) => {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
+}
+
 const withTimeout = (promise, timeoutMs, label = 'Operation') => {
   return Promise.race([
     promise,
@@ -110,6 +118,20 @@ async function getExportAssetUrl(asset, projectHandle) {
   return asset.url
 }
 
+async function getExportProxyUrl(asset, projectHandle) {
+  if (!asset || asset.type !== 'video') return null
+  if (asset.proxyStatus !== 'ready' || !asset.proxyPath) return null
+  if (isElectron() && projectHandle && asset.proxyPath) {
+    try {
+      const filePath = await window.electronAPI.pathJoin(projectHandle, asset.proxyPath)
+      return await window.electronAPI.getFileUrlDirect(filePath)
+    } catch (e) {
+      console.warn('Export: could not resolve proxy URL, using original:', asset.name, e)
+    }
+  }
+  return asset.proxyUrl || null
+}
+
 const loadImage = async (url) => {
   const img = new Image()
   img.crossOrigin = 'anonymous'
@@ -146,11 +168,7 @@ const loadVideo = async (url) => {
 // decoder actually confirmed a fresh presentation. Rate-limited so we don't
 // drown the console on large exports.
 const SEEK_DEBUG_ENABLED = (() => {
-  try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem('exportSeekDebug') === '1'
-  } catch {
-    return false
-  }
+  return getLocalStorageFlag('exportSeekDebug')
 })()
 let seekDebugLogCount = 0
 const SEEK_DEBUG_LIMIT = 120
@@ -190,19 +208,34 @@ const seekDebug = (...args) => {
  * best-effort. That's worse than rVFC but strictly better than pausing
  * immediately.
  */
-const presentFreshFrame = async (video, { maxPlayMs = 600 } = {}) => {
+const presentFreshFrame = async (video, { maxPlayMs = 600, expectedTime = null } = {}) => {
   const hasRVFC = typeof video.requestVideoFrameCallback === 'function'
   let confirmed = false
   let rvfcHandle = null
+  const expected = Number(expectedTime)
+  const shouldConfirmMediaTime = Number.isFinite(expected)
+  const mediaTimeTolerance = Math.max(0.08, (1 / 24) * 2)
 
   const presentedPromise = hasRVFC
     ? new Promise((resolve) => {
         let done = false
-        const callback = () => {
+        const callback = (_now, metadata = {}) => {
           if (done) return
-          done = true
-          confirmed = true
-          resolve()
+          const mediaTime = Number(metadata.mediaTime)
+          const matchesExpected = !shouldConfirmMediaTime
+            || (Number.isFinite(mediaTime) && Math.abs(mediaTime - expected) <= mediaTimeTolerance)
+          if (matchesExpected) {
+            done = true
+            confirmed = true
+            resolve()
+            return
+          }
+          try {
+            rvfcHandle = video.requestVideoFrameCallback(callback)
+          } catch {
+            done = true
+            resolve()
+          }
         }
         try {
           rvfcHandle = video.requestVideoFrameCallback(callback)
@@ -302,7 +335,7 @@ const seekVideo = async (video, time, fastSeek = true) => {
   // Large seek: this is the condition that causes the cut-boundary flash.
   // Force and confirm a presentation so drawImage doesn't pull the previous
   // clip's frame out of the compositor buffer.
-  const confirmed = await presentFreshFrame(video, { maxPlayMs: 600 })
+  const confirmed = await presentFreshFrame(video, { maxPlayMs: 600, expectedTime: targetTime })
 
   if (!confirmed) {
     seekDebug('large-seek NO rVFC confirm, fallback delay', { targetTime, prevTime, currentTime: video.currentTime })
@@ -511,12 +544,19 @@ const hasManagedPixelOrVignetteEffect = (clip, clipTime) => {
 const applyClipManagedEffectsToOffCanvas = (offCanvas, offCtx, width, height, clip, clipTime, frameIndex) => {
   if (!clip) return
   const effects = clip.effects || []
-  // CA + film grain: ImageData pass. applyPixelEffectsToImageData silently
-  // skips glow, so this stays fast when only glow is enabled.
-  const hasCAorGrain = effects.some((e) => (
-    e && e.enabled !== false && (e.type === 'chromaticAberration' || e.type === 'filmGrain')
+  // Channel shifts, sharpening, grain, and analog damage are ImageData passes.
+  // Glow stays separate because it needs canvas blur + screen blending.
+  const hasImageDataEffects = effects.some((e) => (
+    e
+    && e.enabled !== false
+    && (
+      e.type === 'chromaticAberration'
+      || e.type === 'sharpen'
+      || e.type === 'filmGrain'
+      || e.type === 'vhsDamage'
+    )
   ))
-  if (hasCAorGrain) {
+  if (hasImageDataEffects) {
     const imageData = offCtx.getImageData(0, 0, width, height)
     applyPixelEffectsToImageData(imageData, effects, clipTime, frameIndex)
     offCtx.putImageData(imageData, 0, 0)
@@ -552,17 +592,18 @@ const applyTransitionClip = (ctx, rect, transitionStyle) => {
   ctx.clip()
 }
 
-export const drawText = (ctx, rect, clip) => {
+export const drawText = (ctx, rect, clip, textScale = 1) => {
   const textProps = clip.textProperties || {}
   const lines = String(textProps.text || '').split('\n')
-  const fontSize = textProps.fontSize || 48
+  const scale = Number.isFinite(textScale) && textScale > 0 ? textScale : 1
+  const fontSize = (textProps.fontSize || 48) * scale
   const fontFamily = textProps.fontFamily || 'Inter'
   const fontWeight = textProps.fontWeight || 'normal'
   const fontStyle = textProps.fontStyle || 'normal'
   const lineHeight = (textProps.lineHeight || 1.2) * fontSize
   const textAlign = textProps.textAlign || 'center'
   const verticalAlign = textProps.verticalAlign || 'center'
-  const padding = textProps.backgroundPadding || 20
+  const padding = (textProps.backgroundPadding || 20) * scale
   
   ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`
   ctx.textAlign = textAlign
@@ -584,9 +625,9 @@ export const drawText = (ctx, rect, clip) => {
   
   if (textProps.shadow) {
     ctx.shadowColor = textProps.shadowColor || 'rgba(0,0,0,0.5)'
-    ctx.shadowBlur = textProps.shadowBlur || 4
-    ctx.shadowOffsetX = textProps.shadowOffsetX || 2
-    ctx.shadowOffsetY = textProps.shadowOffsetY || 2
+    ctx.shadowBlur = (textProps.shadowBlur || 4) * scale
+    ctx.shadowOffsetX = (textProps.shadowOffsetX || 2) * scale
+    ctx.shadowOffsetY = (textProps.shadowOffsetY || 2) * scale
   } else {
     ctx.shadowColor = 'transparent'
     ctx.shadowBlur = 0
@@ -617,7 +658,7 @@ export const drawText = (ctx, rect, clip) => {
   ctx.globalAlpha = 1
   
   if (textProps.strokeWidth > 0) {
-    ctx.lineWidth = textProps.strokeWidth
+    ctx.lineWidth = textProps.strokeWidth * scale
     ctx.strokeStyle = textProps.strokeColor || '#000000'
   }
   
@@ -715,15 +756,29 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     crf = 18,
     bitrateKbps = 8000,
     keyframeInterval = null,
+    sourceTimelineWidth = width,
+    sourceTimelineHeight = height,
     audioBitrateKbps = 192,
     audioSampleRate = DEFAULT_SAMPLE_RATE,
     audioChannels = 2,
     useCachedRenders = true,
+    useProxyMedia = false,
     fastSeek = true,
   } = options
   
   const totalDuration = Math.max(0, rangeEnd - rangeStart)
   const totalFrames = Math.ceil(totalDuration * fps)
+  const transformScaleX = width / Math.max(1, Number(sourceTimelineWidth) || width)
+  const transformScaleY = height / Math.max(1, Number(sourceTimelineHeight) || height)
+  const textStyleScale = Math.min(transformScaleX, transformScaleY)
+  const scaleTransformToExport = (transform = {}) => ({
+    ...transform,
+    // Position is stored in timeline pixels. When exporting at half/quarter
+    // resolution, scale those offsets into the smaller export canvas so clips
+    // stay in the same visual location instead of moving off-frame.
+    positionX: (Number(transform.positionX) || 0) * transformScaleX,
+    positionY: (Number(transform.positionY) || 0) * transformScaleY,
+  })
   
   if (!projectState.currentProjectHandle || typeof projectState.currentProjectHandle !== 'string') {
     throw new Error('Project folder not available for export.')
@@ -833,7 +888,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   for (const clip of [...videoClips, ...imageClips]) {
     const asset = assetsState.getAssetById(clip.assetId)
     if (!asset?.url) continue
-    const resolvedUrl = await getExportAssetUrl(asset, projectHandle)
+    const proxyUrl = clip.type === 'video' && useProxyMedia
+      ? await getExportProxyUrl(asset, projectHandle)
+      : null
+    const resolvedUrl = proxyUrl || await getExportAssetUrl(asset, projectHandle)
     if (!resolvedUrl) continue
     resolvedAssetUrls.set(clip.assetId, resolvedUrl)
     if (clip.type === 'video') {
@@ -910,7 +968,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const baseClipTransform = getAnimatedTransform(clip, clipTime) || clip.transform || {}
         // Apply camera shake / transform-affecting effects to the adjustment
         // layer so shake propagates to every clip beneath.
-        const clipTransform = applyEffectsToTransform(baseClipTransform, clip.effects, clipTime)
+        const clipTransform = scaleTransformToExport(applyEffectsToTransform(baseClipTransform, clip.effects, clipTime))
         const usesManagedPixelEffects = hasManagedPixelOrVignetteEffect(clip, clipTime)
         const adjustmentIsActive = hasAdjustmentEffect(adjustmentSettings)
 
@@ -980,7 +1038,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       
       const clipTime = time - clip.startTime
       const baseClipTransform = getAnimatedTransform(clip, clipTime) || clip.transform || {}
-      const clipTransform = applyEffectsToTransform(baseClipTransform, clip.effects, clipTime)
+      const clipTransform = scaleTransformToExport(applyEffectsToTransform(baseClipTransform, clip.effects, clipTime))
       const clipAdjustmentSettings = normalizeAdjustmentSettings(
         getAnimatedAdjustmentSettings(clip, clipTime) || clip.adjustments || {}
       )
@@ -1019,7 +1077,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
           applyClipCrop(offCtx, rect, clipTransform)
           applyTransitionClip(offCtx, rect, transitionStyle)
-          drawText(offCtx, rect, clip)
+          drawText(offCtx, rect, clip, textStyleScale)
           offCtx.restore()
 
           const processedCanvasForText = applyAdvancedAdjustmentsToCanvas(offCanvas, clipAdjustmentSettings, blurPx)
@@ -1058,7 +1116,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
           applyClipCrop(offCtx, rect, clipTransform)
           applyTransitionClip(offCtx, rect, transitionStyle)
-          drawText(offCtx, rect, clip)
+          drawText(offCtx, rect, clip, textStyleScale)
           offCtx.restore()
 
           applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex)
@@ -1082,7 +1140,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         applyClipTransform(ctx, rect, clipTransform, transitionStyle)
         applyClipCrop(ctx, rect, clipTransform)
         applyTransitionClip(ctx, rect, transitionStyle)
-        drawText(ctx, rect, clip)
+        drawText(ctx, rect, clip, textStyleScale)
         ctx.restore()
         continue
       }
@@ -1738,10 +1796,14 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   }
 
   // Cleanup temp render files
-  try {
-    await window.electronAPI.deleteDirectory(tempFolder, { recursive: true })
-  } catch (err) {
-    console.warn('Failed to clean export temp folder:', err)
+  if (getLocalStorageFlag('exportKeepFrames')) {
+    console.log('[Export] Keeping temp frame folder for diagnostics:', tempFolder)
+  } else {
+    try {
+      await window.electronAPI.deleteDirectory(tempFolder, { recursive: true })
+    } catch (err) {
+      console.warn('Failed to clean export temp folder:', err)
+    }
   }
   
   onProgress({ status: EXPORT_STATUS.done, progress: 100 })

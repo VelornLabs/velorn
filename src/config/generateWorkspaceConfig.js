@@ -94,7 +94,15 @@ export const YOLO_MUSIC_PROFILES = Object.freeze({
   }),
 })
 
-export const VIDEO_DURATION_PRESETS = [2, 3, 5, 8]
+export const VIDEO_DURATION_PRESETS = Object.freeze([2, 3, 5, 8])
+export const LTX23_VIDEO_DURATION_PRESETS = Object.freeze([5, 8, 10, 15])
+
+export function getVideoDurationPresets(workflowId = '') {
+  return String(workflowId || '').trim() === 'ltx23-i2v'
+    ? LTX23_VIDEO_DURATION_PRESETS
+    : VIDEO_DURATION_PRESETS
+}
+
 export const YOLO_QUEUE_CONFIRM_THRESHOLD = 10
 export const ACTIVE_JOB_STATUSES = ['uploading', 'configuring', 'queuing', 'running', 'saving']
 export const NON_TERMINAL_JOB_STATUSES = ['queued', 'paused', ...ACTIVE_JOB_STATUSES]
@@ -104,6 +112,108 @@ export const YOLO_AD_REFERENCE_CONSISTENCY_OPTIONS = Object.freeze({
   medium: 'Medium (balanced consistency)',
   strict: 'Strict (maximize identity match)',
 })
+
+export const YOLO_AD_LOCAL_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
+  {
+    id: 'ltx23-i2v',
+    label: 'LTX 2.3',
+    description: 'Better for longer takes, faces, and dialogue-style motion. Use for people-heavy shots.',
+  },
+  {
+    id: 'wan22-i2v',
+    label: 'WAN 2.2',
+    description: 'Often stronger for product motion and physical movement. Use for product/demo variants.',
+  },
+])
+
+export const YOLO_AD_FORMAT_PRESETS = Object.freeze([
+  {
+    id: 'product_demo',
+    label: 'Product Demo',
+    description: 'Hook, product reveal, feature demo, benefit, CTA.',
+    styleNotes: 'Product demo structure: clear product reveal, functional demonstration, benefit-driven proof, clean CTA.',
+  },
+  {
+    id: 'beauty_spot',
+    label: 'Beauty Spot',
+    description: 'Premium sensory shots, texture, skin/product macro detail.',
+    styleNotes: 'Beauty spot structure: premium lighting, macro texture, formula/material detail, elegant packshot, refined end card.',
+  },
+  {
+    id: 'tech_demo',
+    label: 'Tech Demo',
+    description: 'Exploded views, UI, feature clarity, clean proof moments.',
+    styleNotes: 'Tech demo structure: precise feature callouts, exploded view, UI/app screen clarity, before-after proof, clean modern graphics.',
+  },
+  {
+    id: 'fashion_lifestyle',
+    label: 'Fashion / Lifestyle',
+    description: 'Model-led commercial with product in use and aspirational context.',
+    styleNotes: 'Fashion lifestyle structure: consistent model identity, wardrobe coherence, product-in-use moments, aspirational environment.',
+  },
+  {
+    id: 'ugc_testimonial',
+    label: 'UGC Testimonial',
+    description: 'Spokesperson or customer talks to camera, natural social pacing.',
+    styleNotes: 'UGC testimonial structure: handheld authenticity, direct-to-camera proof, natural spokesperson delivery, social-platform pacing.',
+  },
+  {
+    id: 'cinematic_brand',
+    label: 'Cinematic Brand Ad',
+    description: 'Emotional hero shots, atmosphere, product as brand symbol.',
+    styleNotes: 'Cinematic brand structure: emotional hook, atmospheric product reveal, premium camera movement, restrained typography, memorable end card.',
+  },
+])
+
+export const YOLO_AD_PLATFORM_PRESETS = Object.freeze([
+  { id: 'landscape_16x9', label: '16:9 Landscape', width: 1280, height: 720, durationPresets: [15, 30, 60] },
+  { id: 'vertical_9x16', label: '9:16 Vertical', width: 720, height: 1280, durationPresets: [6, 15, 30] },
+  { id: 'square_1x1', label: '1:1 Square', width: 1024, height: 1024, durationPresets: [6, 15, 30] },
+])
+
+export const YOLO_AD_COMMERCIAL_BEAT_OPTIONS = Object.freeze([
+  { id: 'hook', label: 'Hook', scriptLine: 'Ad beat: hook\nText overlay: Stop scrolling — see the product transformation.' },
+  { id: 'problem', label: 'Problem', scriptLine: 'Ad beat: problem\nText overlay: Show the pain point clearly and visually.' },
+  { id: 'reveal', label: 'Reveal', scriptLine: 'Ad beat: product reveal\nProduct mode: hero' },
+  { id: 'demo', label: 'Demo', scriptLine: 'Ad beat: demo\nProduct mode: in-hand' },
+  { id: 'proof', label: 'Proof', scriptLine: 'Ad beat: proof\nText overlay: Add a concise claim or result.' },
+  { id: 'cta', label: 'CTA', scriptLine: 'Ad beat: CTA\nText overlay: Shop now / Learn more / Try it today.' },
+  { id: 'end-card', label: 'End Card', scriptLine: 'Ad beat: end card\nEnd card: Brand name, product name, CTA, URL, and disclaimer.' },
+])
+
+export const YOLO_AD_PRODUCT_VIEW_OPTIONS = Object.freeze([
+  { id: 'hero', label: 'Hero product', scriptLine: 'Product mode: hero\nKeyframe prompt: Premium hero packshot with product centered, clean brand lighting, readable shape and silhouette.' },
+  { id: 'macro', label: 'Macro detail', scriptLine: 'Product mode: macro detail\nKeyframe prompt: Extreme macro detail of product material, texture, finish, formula, stitching, glass, metal, or packaging.' },
+  { id: 'exploded', label: 'Exploded view', scriptLine: 'Product mode: exploded view\nKeyframe prompt: Professional exploded view of the product components arranged cleanly, premium technical commercial style.' },
+  { id: 'in-hand', label: 'In hand', scriptLine: 'Product mode: in-hand\nKeyframe prompt: Product held naturally in hand with believable scale, premium lifestyle lighting.' },
+  { id: 'packaging', label: 'Packaging', scriptLine: 'Product mode: packaging\nKeyframe prompt: Product packaging and label hero shot, clean shelf-ready composition, brand colors preserved.' },
+  { id: 'app-ui', label: 'App screen', scriptLine: 'Product mode: app UI\nKeyframe prompt: Clean app interface or technology screen shown clearly in context, modern UI commercial style.' },
+  { id: 'before-after', label: 'Before/after', scriptLine: 'Product mode: before/after\nKeyframe prompt: Clear before-and-after comparison composition, product benefit visible without clutter.' },
+])
+
+export const YOLO_AD_CAMERA_CHIP_OPTIONS = Object.freeze([
+  { id: 'push-in', label: 'Push in', scriptLine: 'Camera: Slow premium push-in toward the product or spokesperson.' },
+  { id: 'orbit', label: 'Orbit', scriptLine: 'Camera: Smooth product orbit with controlled parallax and premium studio motion.' },
+  { id: 'macro-slide', label: 'Macro slide', scriptLine: 'Camera: Slow macro slider move across product details and material texture.' },
+  { id: 'top-down', label: 'Top-down', scriptLine: 'Camera: Locked top-down commercial layout, clean hands/product choreography.' },
+  { id: 'handheld-ugc', label: 'Handheld UGC', scriptLine: 'Camera: Natural handheld phone-style movement, authentic social testimonial feel.' },
+  { id: 'locked-packshot', label: 'Locked packshot', scriptLine: 'Camera: Locked-off packshot frame, product centered and stable for CTA or end card.' },
+])
+
+export const YOLO_AD_ENERGY_OPTIONS = Object.freeze([
+  { id: 'premium-calm', label: 'Premium calm', scriptLine: 'Motion prompt: Calm premium movement, elegant pacing, no frantic cuts.' },
+  { id: 'social-fast', label: 'Social fast-cut', scriptLine: 'Motion prompt: Fast social ad pacing, energetic action, strong first-second hook.' },
+  { id: 'technical-clean', label: 'Technical clean', scriptLine: 'Motion prompt: Precise clean motion, clear demonstration, minimal distractions.' },
+  { id: 'emotional-cinematic', label: 'Emotional cinematic', scriptLine: 'Motion prompt: Emotional cinematic movement, atmospheric lighting, memorable brand feeling.' },
+])
+
+export const YOLO_AD_TALENT_MODE_OPTIONS = Object.freeze([
+  { id: 'none', label: 'No talent', scriptLine: 'Talent mode: none' },
+  { id: 'hand-model', label: 'Hand model', scriptLine: 'Talent mode: hand model\nKeyframe prompt: Product interaction with natural hands, believable scale, no visible face.' },
+  { id: 'spokesperson', label: 'Spokesperson', scriptLine: 'Talent mode: spokesperson\nDialogue: The spokesperson speaks this product benefit clearly to camera.' },
+  { id: 'testimonial', label: 'Customer testimonial', scriptLine: 'Talent mode: testimonial\nDialogue: A customer-style testimonial line delivered naturally to camera.' },
+  { id: 'lifestyle-model', label: 'Lifestyle model', scriptLine: 'Talent mode: lifestyle model\nKeyframe prompt: Model uses the product naturally in an aspirational lifestyle setting.' },
+])
 
 export const GENERATED_ASSET_FOLDERS = Object.freeze({
   image: ['Generated', 'Images'],

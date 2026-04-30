@@ -9,9 +9,19 @@
 
 ## Highlights
 
+- Adds an LTX-inspired first-run setup path so new users can choose Quick Start or Bring Your Own ComfyUI and see what is ready before generating
+- Adds Workflow Setup starter kits for Low VRAM Local Video, Best Local Quality, Cloud Quality, and Music Video Kit
+- Adds Music Video Director Mode shot-control chips for camera movement, shot size, energy, and performance mode, plus project style cards for reusable looks
 - Fixes Settings > File Paths so Output Directory and Workflows Directory can be selected with the native folder picker and persist after reopening Settings
 - Fixes LTX 2.3 spatial upscaler setup so the model is checked and installed under `latent_upscale_models`, matching ComfyUI's `LatentUpscaleModelLoader`
 - Fixes Music Video Director Mode shot timing so explicit `Length:` values above 5 seconds are preserved up to the music-video limit
+
+## UX And Positioning
+
+- Reframes onboarding around a simple ready-to-generate path: Projects Folder, ComfyUI Connection, Workflow Setup, and Ready To Generate
+- Adds starter kits in Workflow Setup so users pick the kind of project they want to make instead of manually decoding every workflow graph
+- Updates site copy to position ComfyStudio as a full AI video workstation: generate, direct, edit, upscale, and finish with local, cloud, or hybrid workflows
+- Makes Music Video Project Cast and Style Cards feel like first-class project controls, not hidden prompt plumbing
 
 ## Fixes
 

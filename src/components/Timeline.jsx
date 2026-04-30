@@ -51,12 +51,14 @@ const AUDIO_WAVEFORM_PENDING = new Map()
 let audioWaveformContext = null
 const TIMELINE_TOOL_STORAGE_KEY = 'comfystudio-timeline-active-tool-v1'
 const TIMELINE_TOOLS = Object.freeze({
+  AUTO: 'auto',
   SELECT: 'select',
   TRIM: 'trim',
   RAZOR: 'razor',
   SLIP: 'slip',
 })
 const TIMELINE_TOOL_LABELS = Object.freeze({
+  [TIMELINE_TOOLS.AUTO]: 'Auto tool',
   [TIMELINE_TOOLS.SELECT]: 'Move tool',
   [TIMELINE_TOOLS.TRIM]: 'Trim tool',
   [TIMELINE_TOOLS.RAZOR]: 'Razor tool',
@@ -499,7 +501,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       const saved = localStorage.getItem(TIMELINE_TOOL_STORAGE_KEY)
       if (Object.values(TIMELINE_TOOLS).includes(saved)) return saved
     } catch (_) {}
-    return TIMELINE_TOOLS.SELECT
+    return TIMELINE_TOOLS.AUTO
   })
 
   const getDefaultTrackHeight = (track) => {
@@ -538,7 +540,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     }
   }, [activeTimelineTool, onActiveToolChange])
 
+  const isAutoToolActive = activeTimelineTool === TIMELINE_TOOLS.AUTO
   const isTrimToolActive = activeTimelineTool === TIMELINE_TOOLS.TRIM
+  const trimHandlesEnabled = isTrimToolActive || isAutoToolActive
   const isRazorToolActive = activeTimelineTool === TIMELINE_TOOLS.RAZOR
   const isSlipToolActive = activeTimelineTool === TIMELINE_TOOLS.SLIP
 
@@ -989,11 +993,18 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   }`
   const timelineToolOptions = useMemo(() => ([
     {
+      id: TIMELINE_TOOLS.AUTO,
+      label: 'Auto',
+      shortcut: 'A',
+      icon: Sparkles,
+      title: 'Smart edit tool: drag clip centers to move, drag clip edges to trim.',
+    },
+    {
       id: TIMELINE_TOOLS.SELECT,
       label: 'Move',
       shortcut: 'V',
       icon: ArrowRightLeft,
-      title: 'Move/select clips. Clip edges stay draggable for moving, not trimming.',
+      title: 'Move/select clips only. Use Auto to trim from clip edges without switching tools.',
     },
     {
       id: TIMELINE_TOOLS.TRIM,
@@ -2164,6 +2175,11 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       if (isTextEditingElement(active)) return
 
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (key === 'a') {
+          e.preventDefault()
+          setActiveTimelineTool(TIMELINE_TOOLS.AUTO)
+          return
+        }
         if (key === 'v') {
           e.preventDefault()
           setActiveTimelineTool(TIMELINE_TOOLS.SELECT)
@@ -5256,7 +5272,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                     {/* Hover overlay */}
                     <div className="absolute inset-0 bg-white/0 group-hover:bg-white/5 transition-colors pointer-events-none" />
                     
-                    {isTrimToolActive && (
+                    {trimHandlesEnabled && (
                       <>
                         {/* Left trim handle - wider hit area for easier grabbing */}
                         <div
@@ -5710,7 +5726,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                     <div className="absolute left-0 top-0 bottom-0 w-px bg-black/40 pointer-events-none" />
                     <div className="absolute right-0 top-0 bottom-0 w-px bg-black/40 pointer-events-none" />
                     
-                    {isTrimToolActive && (
+                    {trimHandlesEnabled && (
                       <>
                         {/* Trim handles on hover - wider hit area for easier grabbing */}
                         <div

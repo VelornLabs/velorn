@@ -168,6 +168,37 @@ const LONG_DESCRIPTIONS = {
   'mask-gen': 'Text-prompted video/image masking using SAM 3 plus MatAnyone. Describe the subject you want isolated and it produces an alpha mask you can use for rotoscoping, replacement, or compositing.',
 }
 
+export const WORKFLOW_SETUP_STARTER_KITS = Object.freeze([
+  Object.freeze({
+    id: 'low-vram-local-video',
+    label: 'Low VRAM Local Video',
+    tagline: 'Fast local image and video experiments for consumer GPUs.',
+    description: 'Start with lighter local workflows before moving to heavier 14B/22B video graphs.',
+    workflowIds: Object.freeze(['z-image-turbo', 'ltx23-i2v', 'image-edit']),
+  }),
+  Object.freeze({
+    id: 'best-local-quality',
+    label: 'Best Local Quality',
+    tagline: 'High-VRAM local workflows for stronger images, references, and motion.',
+    description: 'Prepare the bigger local model stack when the machine has room for heavier downloads.',
+    workflowIds: Object.freeze(['wan22-i2v', 'ltx23-i2v', 'image-edit', 'multi-angles', 'multi-angles-scene']),
+  }),
+  Object.freeze({
+    id: 'cloud-quality',
+    label: 'Cloud Quality',
+    tagline: 'Premium video, image, and upscale workflows without relying on local VRAM.',
+    description: 'Uses Comfy partner nodes and credits, but keeps the generated assets inside ComfyStudio.',
+    workflowIds: Object.freeze(['kling-o3-i2v', 'vidu-q2-i2v', 'grok-video-i2v', 'nano-banana-2', 'grok-text-to-image', 'seedream-5-lite-image-edit', TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID]),
+  }),
+  Object.freeze({
+    id: 'music-video-kit',
+    label: 'Music Video Kit',
+    tagline: 'Timed lyrics, vocal prep, and LTX audio-conditioned shot generation.',
+    description: 'The fastest setup path for Director Mode music videos and lip-sync-oriented shot passes.',
+    workflowIds: Object.freeze(['caption-qwen-asr', VOCAL_EXTRACT_WORKFLOW_ID, MUSIC_VIDEO_SHOT_WORKFLOW_ID, 'image-edit']),
+  }),
+])
+
 function categoryBaseBadge(category) {
   switch (category) {
     case 'video':

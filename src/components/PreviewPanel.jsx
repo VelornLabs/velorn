@@ -2221,7 +2221,7 @@ function PreviewPanel() {
                 
                 {/* Asset Info Overlay */}
                 {showInfoOverlay && (
-                  <div className="absolute top-2 left-2 right-2 flex items-start justify-between pointer-events-none">
+                  <div className="absolute top-2 left-2 right-2 z-50 flex items-start justify-between pointer-events-none">
                     <div className="flex items-center gap-2 flex-wrap">
                       {/* Type Badge */}
                       <div className={`px-2 py-1 rounded text-xs text-white flex items-center gap-1 ${
@@ -2316,7 +2316,7 @@ function PreviewPanel() {
 
                 {/* Prompt Overlay (bottom) - only for AI-generated assets */}
                 {showInfoOverlay && currentPreview.prompt && (
-                  <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/80 to-transparent pointer-events-none">
+                  <div className="absolute bottom-0 left-0 right-0 z-50 p-3 bg-gradient-to-t from-black/80 to-transparent pointer-events-none">
                     <p className="text-xs text-white/80 line-clamp-2">
                       {currentPreview.prompt}
                     </p>
