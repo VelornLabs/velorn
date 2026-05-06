@@ -843,16 +843,46 @@ function formatReferenceConsistencyLabel(consistency = 'medium') {
   return 'Medium'
 }
 
+function getOwnTextFieldValue(source, key) {
+  if (!source || typeof source !== 'object' || !Object.prototype.hasOwnProperty.call(source, key)) {
+    return undefined
+  }
+  return source[key] == null ? '' : String(source[key])
+}
+
+function firstDefinedTextValue(...values) {
+  const found = values.find((value) => value !== undefined && value !== null)
+  return found == null ? '' : String(found)
+}
+
 function normalizeShotForScene(sceneId, shot, shotIndex, fallback = {}, options = {}) {
   const minDurationSeconds = Math.max(0.1, Number(options.minDurationSeconds) || 2)
   const maxDurationSeconds = Math.max(minDurationSeconds, Number(options.maxDurationSeconds) || 5)
   const fallbackAngles = parseAnglesInput(fallback?.angles || ['Medium shot'])
   const parsedAngles = parseAnglesInput(shot?.angles)
-  const fallbackBeat = String(fallback?.videoBeat || fallback?.imageBeat || fallback?.beat || '').trim()
-  const imageBeat = String(shot?.imageBeat || shot?.beat || fallback?.imageBeat || fallback?.beat || '').trim()
-  const videoBeat = String(shot?.videoBeat || shot?.beat || fallback?.videoBeat || fallbackBeat).trim()
+  // Preserve free-text fields exactly while editing. Prompt builders trim at queue time.
+  const fallbackBeat = firstDefinedTextValue(
+    getOwnTextFieldValue(fallback, 'videoBeat'),
+    getOwnTextFieldValue(fallback, 'imageBeat'),
+    getOwnTextFieldValue(fallback, 'beat')
+  )
+  const imageBeat = firstDefinedTextValue(
+    getOwnTextFieldValue(shot, 'imageBeat'),
+    getOwnTextFieldValue(shot, 'beat'),
+    getOwnTextFieldValue(fallback, 'imageBeat'),
+    getOwnTextFieldValue(fallback, 'beat')
+  )
+  const videoBeat = firstDefinedTextValue(
+    getOwnTextFieldValue(shot, 'videoBeat'),
+    getOwnTextFieldValue(shot, 'beat'),
+    getOwnTextFieldValue(fallback, 'videoBeat'),
+    fallbackBeat
+  )
   const shotType = String(shot?.shotType || fallback?.shotType || '').trim()
-  const cameraDirection = String(shot?.cameraDirection || fallback?.cameraDirection || '').trim()
+  const cameraDirection = firstDefinedTextValue(
+    getOwnTextFieldValue(shot, 'cameraDirection'),
+    getOwnTextFieldValue(fallback, 'cameraDirection')
+  )
   const duration = clampNumberValue(
     shot?.durationSeconds,
     minDurationSeconds,
