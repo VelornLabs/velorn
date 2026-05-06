@@ -52,7 +52,7 @@ export const MUSIC_VIDEO_SHOT_TYPE_OPTIONS = Object.freeze([
     cameraLoraOn: false,
     cameraLoraStrength: 0.3,
     defaultImageStrength: 0.92,
-    promptSuffix: 'B-roll cutaway only. Preserve the starting keyframe composition for the full clip. No performers, no singing, no close-up faces, no human figures unless the shot explicitly asks for them. No dissolve, no crossfade, no scene transition, no morph into a different subject. Focus on environment, action, or objects.',
+    promptSuffix: 'B-roll cutaway. Focus on the environment, action, or objects described in the director script.',
     needsVocalAlignment: false,
   },
 ])
@@ -182,16 +182,16 @@ export const MUSIC_VIDEO_SHOT_DEFAULTS = Object.freeze({
  */
 export const MUSIC_VIDEO_AUDIO_KIND_OPTIONS = Object.freeze([
   {
+    id: 'mixed_track',
+    label: 'Finished song (full mix)',
+    description: 'Full song with music and vocals together. We will run vocal isolation once.',
+    requiresVocalExtraction: true,
+  },
+  {
     id: 'vocal_stem',
     label: 'Vocal stem (isolated vocals)',
     description: 'A clean vocal-only file. No preprocessing needed.',
     requiresVocalExtraction: false,
-  },
-  {
-    id: 'mixed_track',
-    label: 'Mixed track (full song)',
-    description: 'Full mix with music and vocals together. We will run vocal isolation once.',
-    requiresVocalExtraction: true,
   },
   {
     id: 'instrumental',
@@ -279,6 +279,9 @@ Length: 2
 # Tip: "Start at:" is authoritative — if you paste an SRT, use the real
 # timing from it. "Artist:" matches your Cast roster by slug ("rose",
 # "jake") or by "both" / "all" / "band" to feature every cast member.
+# The script is the creative source of truth: put story, setting, wardrobe,
+# lighting, color palette, continuity, and camera style directly in each
+# Keyframe prompt and Motion prompt.
 # You can also drop [Rose] / [Jake] / [Rose, Jake] tag lines above verses
 # in the lyrics and shots pick up the nearest tag automatically.`
 

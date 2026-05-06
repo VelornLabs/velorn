@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { RefreshCw, ExternalLink } from 'lucide-react'
+import { RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
 import TitleBar from './components/TitleBar'
 import ExportPanel from './components/ExportPanel'
 import GenerateWorkspace from './components/GenerateWorkspace'
@@ -21,6 +21,7 @@ import GettingStartedModal from './components/GettingStartedModal'
 import WelcomeScreen from './components/WelcomeScreen'
 import BottomBar from './components/BottomBar'
 import useProjectStore from './stores/projectStore'
+import useAssetsStore from './stores/assetsStore'
 import { WORKFLOW_SETUP_SECTION_ID } from './services/workflowSetupManager'
 import {
   COMFY_CONNECTION_CHANGED_EVENT,
@@ -225,6 +226,13 @@ function App() {
     autoSaveEnabled,
     autoSaveInterval,
   } = useProjectStore()
+  const mediaPreparation = useAssetsStore((state) => state.mediaPreparation)
+  const mediaPreparationTotal = Math.max(0, Number(mediaPreparation?.total) || 0)
+  const mediaPreparationCompleted = Math.max(0, Math.min(mediaPreparationTotal, Number(mediaPreparation?.completed) || 0))
+  const mediaPreparationPercent = mediaPreparationTotal > 0
+    ? Math.round((mediaPreparationCompleted / mediaPreparationTotal) * 100)
+    : 0
+  const showMediaPreparation = Boolean(mediaPreparation?.active && mediaPreparationTotal > 0)
   
   // Initialize project store on mount
   useEffect(() => {
@@ -335,7 +343,7 @@ function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-sf-dark-950 no-select">
+    <div className="relative h-screen flex flex-col bg-sf-dark-950 no-select">
       {/* Title Bar */}
       <TitleBar 
         projectName={currentProject?.name || 'Untitled'} 
@@ -344,6 +352,30 @@ function App() {
         centerInsetLeft={editorLeftInset}
         centerInsetRight={editorRightInset}
       />
+
+      {showMediaPreparation && (
+        <div className="pointer-events-none fixed left-1/2 top-1/2 z-50 w-[min(420px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-sf-dark-600 bg-sf-dark-900/95 px-3 py-2 shadow-2xl shadow-black/40 backdrop-blur">
+          <div className="mb-1.5 flex items-center gap-2 text-xs">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-sf-accent" />
+            <span className="font-medium text-sf-text-primary">
+              {mediaPreparation?.critical ? 'Opening project media' : 'Preparing project media'}
+            </span>
+            <span className="ml-auto font-mono text-[10px] text-sf-text-muted">
+              {mediaPreparationCompleted}/{mediaPreparationTotal}
+            </span>
+          </div>
+          <div className="mb-1 h-1.5 overflow-hidden rounded-full bg-sf-dark-700">
+            <div
+              className="h-full rounded-full bg-sf-accent transition-[width] duration-200"
+              style={{ width: `${mediaPreparationPercent}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-3 text-[10px] text-sf-text-muted">
+            <span>{mediaPreparation?.label || 'Preparing media...'}</span>
+            <span>{mediaPreparationPercent}%</span>
+          </div>
+        </div>
+      )}
       
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden min-h-0">

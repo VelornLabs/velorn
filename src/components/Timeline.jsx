@@ -193,6 +193,10 @@ const getClipSourceDurationForExtension = (clip) => {
   return Number.isFinite(fallbackTrimEnd) && fallbackTrimEnd > 0 ? fallbackTrimEnd : null
 }
 
+const isInfinitelyExtendableClip = (clip) => (
+  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text'
+)
+
 const getAudioWaveformContext = () => {
   if (typeof window === 'undefined') return null
   if (audioWaveformContext) return audioWaveformContext
@@ -653,6 +657,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     selectedTransitionId,
     selectedGap,
     activeTrackId,
+    showTimelineClipThumbnails,
     setActiveTrack,
     snappingEnabled,
     activeSnapTime,
@@ -3256,7 +3261,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         // If timeDelta is negative (extending left), trimStart decreases
         // trimStart can't go below 0 (can't reveal footage before the source start)
         let newTrimStart = trimState.startTrimStart + timeDelta * timeScale
-        if (newTrimStart < 0) {
+        if (newTrimStart < 0 && !isInfinitelyExtendableClip(clip)) {
           // Clamp: can only extend to where trimStart would be 0
           const minStartTime = trimState.startTime - (trimState.startTrimStart / timeScale)
           newStartTime = Math.max(newStartTime, minStartTime)
@@ -3282,7 +3287,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           
           // Check source footage constraint
           const snappedTrimStart = trimState.startTrimStart + (snappedTime - trimState.startTime) * timeScale
-          if (snappedTrimStart < 0) {
+          if (snappedTrimStart < 0 && !isInfinitelyExtendableClip(clip)) {
             snappedTime = trimState.startTime - (trimState.startTrimStart / timeScale)
           }
           
@@ -3352,7 +3357,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           : (rawSourceDuration === null || rawSourceDuration === undefined || rawSourceDuration === ''
               ? null
               : Number(rawSourceDuration))
-        const sourceDuration = parsedSourceDuration === Infinity || clip.type === 'image'
+        const sourceDuration = parsedSourceDuration === Infinity || isInfinitelyExtendableClip(clip)
           ? Infinity
           : ((Number.isFinite(parsedSourceDuration) && parsedSourceDuration > 0)
               ? parsedSourceDuration
@@ -4887,6 +4892,10 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   const isTextClip = clip.type === 'text'
                   const isAdjustmentClip = clip.type === 'adjustment'
                   const clipEnabled = isClipEnabled(clip)
+                  const shouldRenderClipThumbnails = showTimelineClipThumbnails !== false
+                  const clipMediaUrl = shouldRenderClipThumbnails && (clip.type === 'image' || clip.type === 'video')
+                    ? getClipUrl(clip)
+                    : null
                   
                   return (
                   <div
@@ -5086,10 +5095,10 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                         />
                         
                         {/* Single image thumbnail repeated */}
-                        {getClipUrl(clip) && (
+                        {clipMediaUrl && (
                           <div className="absolute inset-0 top-[3px] flex overflow-hidden">
                             <img
-                              src={getClipUrl(clip)}
+                              src={clipMediaUrl}
                               alt={clip.name}
                               className="h-full object-cover opacity-80 pointer-events-none"
                               style={{ 
@@ -5163,7 +5172,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                         />
                         
                         {/* Filmstrip thumbnails */}
-                        {getClipUrl(clip) && (
+                        {clipMediaUrl && (
                           <div className="absolute inset-0 top-[3px] flex overflow-hidden">
                             {Array.from({ length: thumbCount }).map((_, i) => (
                               <div 
@@ -5172,7 +5181,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                                 style={{ width: `${renderedClipWidth / thumbCount}px` }}
                               >
                                 <video
-                                  src={getClipUrl(clip)}
+                                  src={clipMediaUrl}
                                   className="absolute inset-0 w-full h-full object-cover opacity-80 pointer-events-none"
                                   muted
                                   style={{

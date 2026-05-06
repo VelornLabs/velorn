@@ -91,9 +91,9 @@ export const YOLO_AD_PROFILES = Object.freeze({
   }),
 })
 
-// Music Video uses an audio-conditioned per-shot LTX 2.3 workflow that can't be
-// swapped for cloud i2v — lip-sync grounding only exists on the local model.
-// The only knob is storyboard quality; the video pass workflow is fixed.
+// Music Video defaults to an audio-conditioned per-shot LTX 2.3 workflow for
+// vocal grounding. Alternate local i2v passes can be used for animation tests,
+// but only the default music workflow consumes song audio for lip-sync.
 export const YOLO_MUSIC_PROFILES = Object.freeze({
   draft: Object.freeze({
     storyboardWorkflowId: 'image-edit',
@@ -108,6 +108,19 @@ export const YOLO_MUSIC_PROFILES = Object.freeze({
     videoWorkflowId: MUSIC_VIDEO_SHOT_WORKFLOW_ID,
   }),
 })
+
+export const YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
+  {
+    id: MUSIC_VIDEO_SHOT_WORKFLOW_ID,
+    label: 'LTX 2.3 Music',
+    description: 'Default music-video pass. Uses the song timing/audio payload for performance and lip-sync shots.',
+  },
+  {
+    id: 'wan22-i2v',
+    label: 'WAN 2.2',
+    description: 'Alternate image-to-video pass. Often gives stronger physical animation, but does not use song audio for lip-sync.',
+  },
+])
 
 export const VIDEO_DURATION_PRESETS = Object.freeze([2, 3, 5, 8])
 export const LTX23_VIDEO_DURATION_PRESETS = Object.freeze([5, 8, 10, 15])

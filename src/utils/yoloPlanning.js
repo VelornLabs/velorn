@@ -9,10 +9,12 @@ const DEFAULT_ANGLE_PRESETS = [
   'Tracking shot',
 ]
 
-const SCENE_HEADING_PATTERN = /^(?:scene\s+\d+|sc\s*\d+|#\s*scene|\d+\.)\b/i
+const SCENE_HEADING_PATTERN = /^(?:scene\s+\d+|sc\s*\d+|#\s*scene|\d+\.|coverage\s+\d+|pass\s+\d+)\b/i
 const SHOT_HEADING_PATTERN = /^(?:shot\s+\d+|sh\s*\d+)\b/i
 const STRUCTURED_FIELD_PATTERNS = Object.freeze([
   { key: 'sceneContext', pattern: /^scene\s+context\s*:\s*(.*)$/i },
+  { key: 'coverageType', pattern: /^(?:coverage\s*type|coverage\s*pass|pass\s*type)\s*:\s*(.*)$/i },
+  { key: 'coverageLabel', pattern: /^(?:coverage\s*label|coverage)\s*:\s*(.*)$/i },
   { key: 'shotType', pattern: /^(?:shot\s*type|framing)\s*:\s*(.*)$/i },
   { key: 'keyframePrompt', pattern: /^(?:keyframe\s*prompt|image\s*action|opening\s*frame|keyframe)\s*:\s*(.*)$/i },
   { key: 'motionPrompt', pattern: /^(?:motion\s*prompt|video\s*action|video\s*prompt|motion)\s*:\s*(.*)$/i },
@@ -50,9 +52,20 @@ function parseSceneHeadingLine(line = '') {
     return { isHeading: false, label: '' }
   }
   const label = text
-    .replace(/^(?:scene\s+\d+|sc\s*\d+|#\s*scene|\d+\.)\s*[:\-]?\s*/i, '')
+    .replace(/^(?:scene\s+\d+|sc\s*\d+|#\s*scene|\d+\.|coverage\s+\d+|pass\s+\d+)\s*[:\-]?\s*/i, '')
     .trim()
   return { isHeading: true, label }
+}
+
+function parseCoverageHeadingLine(line = '') {
+  const text = String(line || '').trim()
+  const match = text.match(/^(?:coverage|pass)\s+(\d+)\s*[:\-]?\s*(.*)$/i)
+  if (!match) return { isHeading: false, label: '' }
+  return {
+    isHeading: true,
+    index: Number(match[1]) || null,
+    label: sanitizeSnippet(String(match[2] || '').trim(), 100),
+  }
 }
 
 function getSceneLines(sceneText = '') {
@@ -109,7 +122,7 @@ function splitScriptIntoScenes(script = '') {
   if (!normalized) return []
 
   const explicitScenes = normalized
-    .split(/\n(?=\s*(?:scene\s+\d+|sc\s*\d+|#\s*scene|\d+\.)\b)/i)
+    .split(/\n(?=\s*(?:scene\s+\d+|sc\s*\d+|#\s*scene|\d+\.|coverage\s+\d+|pass\s+\d+)\b)/i)
     .map((chunk) => chunk.trim())
     .filter(Boolean)
   if (explicitScenes.length > 1) return explicitScenes
@@ -200,6 +213,51 @@ function buildStructuredSceneSummary(sceneLabel, sceneContext, fallbackText = ''
   )
 }
 
+function normalizeCoverageType(value = '', fallbackText = '') {
+  const text = [value, fallbackText].filter(Boolean).join(' ').toLowerCase()
+  if (!text.trim()) return ''
+  if (/\b(?:main|master|primary|scripted)\b/.test(text)) return 'main_sequence'
+  if (/\bperformance\b/.test(text)) return 'performance_pass'
+  if (/\b(?:story|narrative|cutaway|cutaways)\b/.test(text)) return 'story_broll'
+  if (/\b(?:detail|insert|macro|texture|textural)\b/.test(text)) return 'detail_broll'
+  if (/\b(?:environment|environmental|place|places|atmosphere|world|location)\b/.test(text)) return 'environmental_broll'
+  return sanitizeSnippet(String(value || '').trim().replace(/\s+/g, '_').toLowerCase(), 60)
+}
+
+function buildSceneCoverageMeta(scene = {}) {
+  const explicitType = String(scene.coverageType || '').trim()
+  const explicitLabel = sanitizeSnippet(scene.coverageLabel || '', 100)
+  const sectionLabel = sanitizeSnippet(scene.coverageSectionLabel || '', 100)
+  const headingLabel = sanitizeSnippet(scene.label || '', 100)
+  const contextText = [
+    explicitType,
+    explicitLabel,
+    sectionLabel,
+    headingLabel,
+    Array.isArray(scene.contextLines) ? scene.contextLines.join(' ') : '',
+  ].filter(Boolean).join(' ')
+  const type = normalizeCoverageType(explicitType, contextText)
+  const genericLabels = new Set([
+    'main sequence',
+    'main scripted sequence',
+    'performance pass',
+    'story b-roll',
+    'story broll',
+    'environmental b-roll',
+    'environmental broll',
+    'detail inserts',
+    'detail b-roll',
+    'detail broll',
+  ])
+  const isGenericExplicitLabel = explicitLabel
+    && sectionLabel
+    && genericLabels.has(explicitLabel.toLowerCase())
+  const label = (isGenericExplicitLabel ? sectionLabel : explicitLabel)
+    || sectionLabel
+    || (type ? headingLabel : '')
+  return { type, label }
+}
+
 export function parseStructuredDirectorScript(script = '', options = {}) {
   const normalized = String(script || '').replace(/\r\n/g, '\n').trim()
   if (!normalized) return null
@@ -218,6 +276,7 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
   const scenes = []
   let currentScene = null
   let currentShot = null
+  let coverageContext = null
   let activeField = ''
   let sawStructuredField = false
 
@@ -225,6 +284,10 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
     if (currentScene) return currentScene
     currentScene = {
       label: '',
+      coverageType: coverageContext?.coverageType || '',
+      coverageLabel: coverageContext?.coverageLabel || coverageContext?.label || '',
+      coverageSectionIndex: coverageContext?.index || null,
+      coverageSectionLabel: coverageContext?.label || '',
       rawLines: [],
       contextLines: [],
       shots: [],
@@ -263,6 +326,15 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
     )
     const shotType = sanitizeSnippet(currentShot.shotType || currentShot.label || fallbackAngle, 90)
     const cameraDirection = sanitizeSnippet(currentShot.camera || '', 160)
+    const sceneCoverage = buildSceneCoverageMeta(currentScene)
+    const shotCoverageType = normalizeCoverageType(
+      currentShot.coverageType,
+      [currentShot.coverageLabel, sceneCoverage.type, sceneCoverage.label].filter(Boolean).join(' ')
+    )
+    const shotCoverageLabel = sanitizeSnippet(
+      currentShot.coverageLabel || sceneCoverage.label || '',
+      100
+    )
 
     currentScene.shots.push({
       id: shotId,
@@ -282,6 +354,10 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
       // Ad-specific commercial grammar. These are pass-through metadata for
       // prompt composition, chip UX, lip-sync routing, and native text layers.
       adBeat: sanitizeSnippet(currentShot.adBeat || '', 120),
+      coverageType: shotCoverageType || sceneCoverage.type,
+      coverageLabel: shotCoverageLabel,
+      coverageSectionIndex: currentScene.coverageSectionIndex || null,
+      coverageSectionLabel: sanitizeSnippet(currentScene.coverageSectionLabel || '', 100),
       productMode: sanitizeSnippet(currentShot.productMode || '', 120),
       talentMode: sanitizeSnippet(currentShot.talentMode || '', 120),
       textOverlay: sanitizeSnippet(currentShot.textOverlay || '', 220),
@@ -321,6 +397,7 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
     const sceneId = `S${sceneIndex + 1}`
     const sceneContext = sanitizeSnippet(currentScene.contextLines.join(' '), 280)
     const sceneSummary = buildStructuredSceneSummary(currentScene.label, sceneContext, currentScene.rawLines.join(' '))
+    const sceneCoverage = buildSceneCoverageMeta(currentScene)
 
     scenes.push({
       id: sceneId,
@@ -329,8 +406,16 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
       contextText: sceneContext,
       summary: sceneSummary,
       styleNotes,
+      coverageType: sceneCoverage.type,
+      coverageLabel: sceneCoverage.label,
+      coverageSectionIndex: currentScene.coverageSectionIndex || null,
+      coverageSectionLabel: sanitizeSnippet(currentScene.coverageSectionLabel || '', 100),
       shots: currentScene.shots.map((shot, shotIndex) => ({
         ...shot,
+        coverageType: shot.coverageType || sceneCoverage.type,
+        coverageLabel: shot.coverageLabel || sceneCoverage.label,
+        coverageSectionIndex: shot.coverageSectionIndex || currentScene.coverageSectionIndex || null,
+        coverageSectionLabel: shot.coverageSectionLabel || currentScene.coverageSectionLabel || '',
         id: `${sceneId}_SH${shotIndex + 1}`,
         index: shotIndex + 1,
       })),
@@ -347,15 +432,56 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
       continue
     }
 
+    const coverageHeading = parseCoverageHeadingLine(line)
+    if (coverageHeading.isHeading) {
+      flushScene()
+      coverageContext = {
+        index: coverageHeading.index,
+        label: coverageHeading.label,
+        coverageType: '',
+        coverageLabel: '',
+      }
+      activeField = ''
+      continue
+    }
+
     const sceneHeading = parseSceneHeadingLine(line)
     if (sceneHeading.isHeading) {
       flushScene()
       currentScene = {
         label: sceneHeading.label,
+        coverageType: coverageContext?.coverageType || '',
+        coverageLabel: coverageContext?.coverageLabel || coverageContext?.label || '',
+        coverageSectionIndex: coverageContext?.index || null,
+        coverageSectionLabel: coverageContext?.label || '',
         rawLines: [line],
         contextLines: [],
         shots: [],
       }
+      continue
+    }
+
+    const structuredField = matchStructuredFieldLine(line)
+    if (
+      structuredField
+      && !currentShot
+      && !currentScene
+      && coverageContext
+      && (structuredField.key === 'coverageType' || structuredField.key === 'coverageLabel')
+    ) {
+      sawStructuredField = true
+      activeField = structuredField.key
+      appendToActiveField(coverageContext, structuredField.key, structuredField.value)
+      continue
+    }
+
+    if (
+      !currentShot
+      && !currentScene
+      && coverageContext
+      && (activeField === 'coverageType' || activeField === 'coverageLabel')
+    ) {
+      appendToActiveField(coverageContext, activeField, line)
       continue
     }
 
@@ -379,6 +505,8 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
         textOverlay: '',
         endCard: '',
         dialogue: '',
+        coverageType: '',
+        coverageLabel: '',
         // Music-video-only (null-op for ads). Collected by the shared
         // structured-field matcher — see STRUCTURED_FIELD_PATTERNS above.
         lyricMoment: '',
@@ -389,12 +517,13 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
       continue
     }
 
-    const structuredField = matchStructuredFieldLine(line)
     if (structuredField) {
       sawStructuredField = true
       activeField = structuredField.key
       if (currentShot) {
         appendToActiveField(currentShot, structuredField.key, structuredField.value)
+      } else if (structuredField.key === 'coverageType' || structuredField.key === 'coverageLabel') {
+        appendToActiveField(scene, structuredField.key, structuredField.value)
       } else {
         appendSceneContextLine(scene, structuredField.value)
       }
@@ -410,7 +539,11 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
       continue
     }
 
-    scene.contextLines.push(line)
+    if (activeField === 'coverageType' || activeField === 'coverageLabel') {
+      appendToActiveField(scene, activeField, line)
+    } else {
+      scene.contextLines.push(line)
+    }
   }
 
   flushScene()
@@ -501,6 +634,12 @@ export function flattenYoloPlanVariants(plan = []) {
     // is stamped onto the scene by buildYoloMusicPlan. Pass it through so the
     // queue layer can tag generated assets with their origin pass.
     const scenePass = scene?.pass && typeof scene.pass === 'object' ? scene.pass : null
+    const sceneCoverage = {
+      type: sanitizeSnippet(scene?.coverageType || '', 80),
+      label: sanitizeSnippet(scene?.coverageLabel || '', 100),
+      sectionIndex: Number(scene?.coverageSectionIndex) || null,
+      sectionLabel: sanitizeSnippet(scene?.coverageSectionLabel || '', 100),
+    }
 
     for (const shot of scene?.shots || []) {
       const takes = Math.max(1, Number(shot?.takesPerAngle) || 1)
@@ -516,6 +655,12 @@ export function flattenYoloPlanVariants(plan = []) {
       const textOverlay = sanitizeSnippet(shot?.textOverlay || '', 220)
       const endCard = sanitizeSnippet(shot?.endCard || '', 260)
       const dialogue = sanitizeSnippet(shot?.dialogue || '', 260)
+      const coverage = {
+        type: sanitizeSnippet(shot?.coverageType || sceneCoverage.type || '', 80),
+        label: sanitizeSnippet(shot?.coverageLabel || sceneCoverage.label || '', 100),
+        sectionIndex: Number(shot?.coverageSectionIndex || sceneCoverage.sectionIndex) || null,
+        sectionLabel: sanitizeSnippet(shot?.coverageSectionLabel || sceneCoverage.sectionLabel || '', 100),
+      }
 
       for (const angle of angles) {
         for (let take = 1; take <= takes; take += 1) {
@@ -595,6 +740,7 @@ export function flattenYoloPlanVariants(plan = []) {
             // legacy plans that pre-date pass tagging. Consumers of this field
             // must tolerate null and fall back to the pre-pass behavior.
             pass: scenePass,
+            coverage: coverage.type || coverage.label ? coverage : null,
           })
         }
       }

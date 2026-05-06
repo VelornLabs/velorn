@@ -42,6 +42,36 @@ export const useAssetsStore = create(
   // Counter for auto-naming
   assetCounter: 1,
   folderCounter: 1,
+
+  // Transient project/media preparation progress for heavy project opens.
+  mediaPreparation: {
+    active: false,
+    phase: 'idle',
+    label: '',
+    completed: 0,
+    total: 0,
+    critical: false,
+  },
+  setMediaPreparation: (updates = {}) => {
+    set((state) => ({
+      mediaPreparation: {
+        ...state.mediaPreparation,
+        ...updates,
+      },
+    }))
+  },
+  clearMediaPreparation: () => {
+    set({
+      mediaPreparation: {
+        active: false,
+        phase: 'idle',
+        label: '',
+        completed: 0,
+        total: 0,
+        critical: false,
+      },
+    })
+  },
   
   // Video playback state (shared between PreviewPanel and TransportControls)
   videoRef: null,
@@ -312,23 +342,28 @@ export const useAssetsStore = create(
   },
 
   /**
-   * Remove a folder (moves contained assets to parent folder)
+   * Remove a folder recursively (deletes nested folders and their assets)
    * @param {string} folderId - The folder ID to remove
    */
   removeFolder: (folderId) => {
     const state = get()
-    const folder = state.folders.find(f => f.id === folderId)
-    if (!folder) return
+    if (!state.folders.some((f) => f.id === folderId)) return
 
-    // Move all assets in this folder to the parent folder
-    const updatedAssets = state.assets.map(a =>
-      a.folderId === folderId ? { ...a, folderId: folder.parentId } : a
-    )
+    const idsToDelete = new Set([folderId])
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const folder of state.folders) {
+        if (idsToDelete.has(folder.id)) continue
+        if (idsToDelete.has(folder.parentId || null)) {
+          idsToDelete.add(folder.id)
+          changed = true
+        }
+      }
+    }
 
-    // Move all subfolders to the parent folder
-    const updatedFolders = state.folders
-      .filter(f => f.id !== folderId)
-      .map(f => f.parentId === folderId ? { ...f, parentId: folder.parentId } : f)
+    const updatedAssets = state.assets.filter((a) => !idsToDelete.has(a.folderId || null))
+    const updatedFolders = state.folders.filter((f) => !idsToDelete.has(f.id))
 
     set({
       assets: updatedAssets,
@@ -367,6 +402,14 @@ export const useAssetsStore = create(
       currentPreview: null,
       assetCounter: 1,
       folderCounter: 1,
+      mediaPreparation: {
+        active: false,
+        phase: 'idle',
+        label: '',
+        completed: 0,
+        total: 0,
+        critical: false,
+      },
       isPlaying: false,
       currentTime: 0,
       duration: 0,
@@ -383,11 +426,25 @@ export const useAssetsStore = create(
   loadFromProject: async (projectAssets, projectHandle, projectFolders, projectFolderCounter) => {
     // Clear existing assets first
     get().clearProject()
-    
+
+    const sourceAssets = projectAssets || []
+    const totalAssets = sourceAssets.length
+    set({
+      mediaPreparation: {
+        active: totalAssets > 0,
+        phase: 'assets',
+        label: 'Loading project assets...',
+        completed: 0,
+        total: totalAssets,
+        critical: true,
+      },
+    })
+
     // Load assets - URLs need to be regenerated for imported assets
     const assetsWithUrls = []
+    let loadedAssetCount = 0
     
-    for (const asset of (projectAssets || [])) {
+    for (const asset of sourceAssets) {
       const needsUrlRefresh = asset?.url?.startsWith?.('blob:')
       const hasPath = !!asset?.path
       const hasAbsolutePath = !!asset?.absolutePath
@@ -492,11 +549,41 @@ export const useAssetsStore = create(
         // For AI/external assets, keep the URL as-is (may need ComfyUI to be running)
         assetsWithUrls.push(asset)
       }
+      loadedAssetCount += 1
+      set({
+        mediaPreparation: {
+          active: true,
+          phase: 'assets',
+          label: 'Loading project assets...',
+          completed: loadedAssetCount,
+          total: totalAssets,
+          critical: true,
+        },
+      })
     }
     
+    const videoAssetCount = assetsWithUrls.filter((asset) => asset?.type === 'video').length
+    const willLoadSprites = typeof projectHandle === 'string' && videoAssetCount > 0
     const nextState = {
       assets: assetsWithUrls,
       assetCounter: (projectAssets?.length || 0) + 1,
+      mediaPreparation: willLoadSprites
+        ? {
+            active: true,
+            phase: 'sprites',
+            label: 'Loading video thumbnails...',
+            completed: 0,
+            total: videoAssetCount,
+            critical: false,
+          }
+        : {
+            active: false,
+            phase: 'idle',
+            label: '',
+            completed: 0,
+            total: 0,
+            critical: false,
+          },
     }
     // Restore folder structure from project file so folders persist across sessions
     if (Array.isArray(projectFolders)) {
@@ -640,8 +727,23 @@ export const useAssetsStore = create(
     const state = get()
     
     const videoAssets = state.assets.filter(a => a.type === 'video')
+    if (videoAssets.length === 0) {
+      get().clearMediaPreparation()
+      return
+    }
+
+    set({
+      mediaPreparation: {
+        active: true,
+        phase: 'sprites',
+        label: 'Loading video thumbnails...',
+        completed: 0,
+        total: videoAssets.length,
+        critical: false,
+      },
+    })
     
-    for (const asset of videoAssets) {
+    for (const [index, asset] of videoAssets.entries()) {
       try {
         const sprite = await loadSpriteFromProject(projectPath, asset.id)
         if (sprite) {
@@ -650,8 +752,20 @@ export const useAssetsStore = create(
         }
       } catch (err) {
         // Sprite might not exist yet, that's OK
+      } finally {
+        set({
+          mediaPreparation: {
+            active: true,
+            phase: 'sprites',
+            label: 'Loading video thumbnails...',
+            completed: index + 1,
+            total: videoAssets.length,
+            critical: false,
+          },
+        })
       }
     }
+    get().clearMediaPreparation()
   },
 
   /**

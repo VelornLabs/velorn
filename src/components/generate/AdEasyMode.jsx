@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Film, Loader2 } from 'lucide-react'
 
 const STEPS = [
   { id: 'brief', label: 'Brief' },
@@ -494,6 +495,7 @@ export default function AdEasyMode({
   yoloQueueVariants,
   yoloStoryboardAssetMap,
   yoloStoryboardReadyCount,
+  yoloActivePlanIsStale,
   yoloDependencyCheckInProgress,
   yoloScript,
   setYoloScript,
@@ -528,6 +530,7 @@ export default function AdEasyMode({
   handleYoloShotImageBeatChange,
   handleYoloShotVideoBeatChange,
   handleYoloShotTakesChange,
+  handleAssembleAdTimeline,
 }) {
   const initialDraft = useMemo(() => loadAdEasyModeDraft(), [])
   const [step, setStep] = useState('brief')
@@ -553,9 +556,12 @@ export default function AdEasyMode({
   const [selectedVideoIndex, setSelectedVideoIndex] = useState(0)
   const [keyframeStatus, setKeyframeStatus] = useState('Ready to generate one keyframe.')
   const [videoStatus, setVideoStatus] = useState('Ready to generate one video.')
+  const [timelineStatus, setTimelineStatus] = useState('')
+  const [timelineStatusOk, setTimelineStatusOk] = useState(true)
   const [llmCopyStatus, setLlmCopyStatus] = useState('')
   const [isQueuingKeyframes, setIsQueuingKeyframes] = useState(false)
   const [isQueuingVideos, setIsQueuingVideos] = useState(false)
+  const [isAssemblingTimeline, setIsAssemblingTimeline] = useState(false)
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return
@@ -964,6 +970,32 @@ export default function AdEasyMode({
     const cardState = getVideoCardState(variant, asset, hasKeyframe)
     return count + (cardState.state === 'generating' ? 1 : 0)
   }, 0)
+  const videoReadyCount = planShots.reduce((count, { scene, shot }) => {
+    const variant = getFirstVariantForShot(scene.id, shot.id)
+    const asset = getVideoAssetForVariant(variant)
+    return count + (asset ? 1 : 0)
+  }, 0)
+
+  const handleAssembleTimeline = async () => {
+    if (!handleAssembleAdTimeline) return
+    setIsAssemblingTimeline(true)
+    setTimelineStatus('')
+    setTimelineStatusOk(true)
+    try {
+      const result = await handleAssembleAdTimeline({
+        workflowId: videoWorkflowId,
+        workflowLabel: selectedVideoWorkflow.label,
+        resolution: outputResolution,
+      })
+      setTimelineStatus(result?.message || 'Timeline assembled.')
+      setTimelineStatusOk(result?.ok !== false)
+    } catch (error) {
+      setTimelineStatus(`Could not assemble timeline: ${error?.message || 'Unknown error'}`)
+      setTimelineStatusOk(false)
+    } finally {
+      setIsAssemblingTimeline(false)
+    }
+  }
 
   const stepIndex = STEPS.findIndex((item) => item.id === step)
 
@@ -1418,11 +1450,30 @@ export default function AdEasyMode({
               {VIDEO_MODEL_OPTIONS.map((option) => renderChoiceButton(videoWorkflowId === option.id, option.label, () => handleVideoWorkflowChange(option.id), option.helper))}
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={!handleAssembleAdTimeline || videoReadyCount === 0 || yoloActivePlanIsStale || isAssemblingTimeline}
+                onClick={handleAssembleTimeline}
+                title={videoReadyCount === 0 ? 'Generate at least one ready video first.' : 'Place the ready ad videos on a timeline track using the shot order and durations.'}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isAssemblingTimeline ? <Loader2 className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}
+                Assemble Timeline
+              </button>
               <button type="button" disabled={isQueuingVideos || yoloDependencyCheckInProgress || yoloStoryboardReadyCount === 0} onClick={handleRegenerateAllVideos} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover disabled:cursor-not-allowed disabled:opacity-50">
                 {isQueuingVideos ? `Queueing ${selectedVideoWorkflow.label}...` : `Generate All With ${selectedVideoWorkflow.label}`}
               </button>
               <span className="text-[10px] text-sf-text-muted">{videoStatus}</span>
             </div>
+            {timelineStatus && (
+              <div className={`mt-3 rounded-lg border p-3 text-xs ${
+                timelineStatusOk
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100'
+                  : 'border-yellow-500/40 bg-yellow-500/10 text-yellow-100'
+              }`}>
+                {timelineStatus}
+              </div>
+            )}
           </div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
             {planShots.map(({ scene, shot }, index) => {

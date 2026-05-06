@@ -57,6 +57,7 @@ const createDefaultTimeline = (name = 'Timeline 1', id = null, settings = null) 
   id: id || `timeline-${Date.now()}`,
   name,
   color: settings?.color || null,
+  folderId: settings?.folderId || null,
   created: new Date().toISOString(),
   modified: new Date().toISOString(),
   // Timeline-specific resolution and frame rate (optional - falls back to project settings if null)
@@ -871,6 +872,7 @@ export const useProjectStore = create(
           height: options?.height || null,
           fps: options?.fps || null,
           color: options?.color || null,
+          folderId: options?.folderId || null,
         }
         
         const existingTimelines = state.currentProject.timelines || []
@@ -981,6 +983,35 @@ export const useProjectStore = create(
             timelines: currentState.currentProject.timelines.map((timeline) =>
               timeline.id === timelineId
                 ? { ...timeline, color: color ?? null, modified: new Date().toISOString() }
+                : timeline
+            ),
+          },
+        }))
+
+        return true
+      },
+
+      /**
+       * Move a timeline to a folder (or root when null)
+       * @param {string} timelineId - ID of the timeline to move
+       * @param {string|null} folderId - Destination folder ID (null = root)
+       */
+      moveTimelineToFolder: (timelineId, folderId = null) => {
+        const state = get()
+        if (!state.currentProject?.timelines) return false
+        const normalizedFolderId = folderId || null
+        const existingTimeline = state.currentProject.timelines.find((timeline) => timeline.id === timelineId)
+        if (!existingTimeline) return false
+        if ((existingTimeline.folderId || null) === normalizedFolderId) return true
+
+        get().saveTimelineStructureToHistory()
+
+        set((currentState) => ({
+          currentProject: {
+            ...currentState.currentProject,
+            timelines: currentState.currentProject.timelines.map((timeline) =>
+              timeline.id === timelineId
+                ? { ...timeline, folderId: normalizedFolderId, modified: new Date().toISOString() }
                 : timeline
             ),
           },

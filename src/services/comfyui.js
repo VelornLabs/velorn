@@ -37,6 +37,35 @@ function parseNumericLike(value) {
   return null
 }
 
+function inferUploadExtension(file, filename) {
+  const nameMatch = String(filename || file?.name || '').match(/\.([a-zA-Z0-9]{1,8})(?:[?#].*)?$/)
+  if (nameMatch) return `.${nameMatch[1].toLowerCase()}`
+  const mimeType = String(file?.type || '').toLowerCase()
+  if (mimeType.includes('jpeg')) return '.jpg'
+  if (mimeType.includes('png')) return '.png'
+  if (mimeType.includes('webp')) return '.webp'
+  if (mimeType.includes('gif')) return '.gif'
+  if (mimeType.includes('mp4')) return '.mp4'
+  if (mimeType.includes('mpeg')) return '.mp3'
+  if (mimeType.includes('wav')) return '.wav'
+  return ''
+}
+
+function sanitizeUploadFilename(file, filename) {
+  const rawName = String(filename || file?.name || `upload_${Date.now()}`)
+  const extension = inferUploadExtension(file, rawName)
+  const base = rawName
+    .split(/[\\/]/)
+    .pop()
+    .replace(/\.[a-zA-Z0-9]{1,8}$/, '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80) || `upload_${Date.now()}`
+  return `${base}${extension}`
+}
+
 function extractCreditBalanceFromPayload(payload) {
   if (!payload || typeof payload !== 'object') return null
 
@@ -772,7 +801,7 @@ class ComfyUIService {
       const formData = new FormData();
       
       // Use provided filename or file's name
-      const uploadFilename = filename || file.name || `upload_${Date.now()}`;
+      const uploadFilename = sanitizeUploadFilename(file, filename || file.name || `upload_${Date.now()}`);
       
       // Append the file with the correct filename
       formData.append('image', file, uploadFilename);
@@ -1775,7 +1804,12 @@ export function modifyOpenAIGPTImage2Workflow(workflow, options = {}) {
   } = options
 
   const modified = JSON.parse(JSON.stringify(workflow))
-  const size = `${Math.max(256, Math.round(Number(width) || 1024))}x${Math.max(256, Math.round(Number(height) || 1024))}`
+  const requestedWidth = Math.max(256, Math.round(Number(width) || 1024))
+  const requestedHeight = Math.max(256, Math.round(Number(height) || 1024))
+  const size = resolveOpenAIGPTImage2Size(requestedWidth, requestedHeight)
+  if (size !== `${requestedWidth}x${requestedHeight}`) {
+    console.warn(`[modifyOpenAIGPTImage2Workflow] Unsupported size ${requestedWidth}x${requestedHeight}; mapped to ${size}`)
+  }
 
   for (const node of Object.values(modified)) {
     if (!node?.inputs) continue
@@ -1802,6 +1836,45 @@ export function modifyOpenAIGPTImage2Workflow(workflow, options = {}) {
   }
 
   return modified
+}
+
+const OPENAI_GPT_IMAGE_2_ALLOWED_SIZES = Object.freeze([
+  Object.freeze({ width: 1024, height: 1024 }),
+  Object.freeze({ width: 1024, height: 1536 }),
+  Object.freeze({ width: 1536, height: 1024 }),
+  Object.freeze({ width: 2048, height: 2048 }),
+  Object.freeze({ width: 2048, height: 1152 }),
+  Object.freeze({ width: 1152, height: 2048 }),
+  Object.freeze({ width: 3840, height: 2160 }),
+  Object.freeze({ width: 2160, height: 3840 }),
+])
+
+function resolveOpenAIGPTImage2Size(width, height) {
+  const w = Math.max(256, Math.round(Number(width) || 1024))
+  const h = Math.max(256, Math.round(Number(height) || 1024))
+  const exactMatch = OPENAI_GPT_IMAGE_2_ALLOWED_SIZES.find((entry) => entry.width === w && entry.height === h)
+  if (exactMatch) return `${exactMatch.width}x${exactMatch.height}`
+
+  const targetRatio = w / h
+  const targetArea = w * h
+  const targetLandscape = w >= h
+  let best = OPENAI_GPT_IMAGE_2_ALLOWED_SIZES[0]
+  let bestScore = Number.POSITIVE_INFINITY
+
+  for (const candidate of OPENAI_GPT_IMAGE_2_ALLOWED_SIZES) {
+    const candidateRatio = candidate.width / candidate.height
+    const candidateArea = candidate.width * candidate.height
+    const ratioDelta = Math.abs(Math.log(candidateRatio / targetRatio))
+    const areaDelta = Math.abs(Math.log(candidateArea / targetArea))
+    const orientationPenalty = (candidate.width >= candidate.height) === targetLandscape ? 0 : 0.25
+    const score = (ratioDelta * 6) + areaDelta + orientationPenalty
+    if (score < bestScore) {
+      best = candidate
+      bestScore = score
+    }
+  }
+
+  return `${best.width}x${best.height}`
 }
 
 function resolveSeedanceResolution(height) {

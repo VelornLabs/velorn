@@ -9,6 +9,7 @@ import useViewportClampedPosition from '../hooks/useViewportClampedPosition'
 import { captureTimelineFrameAt, getTopmostVideoOrImageClipAtTime } from '../utils/captureTimelineFrame'
 import { getAnimatedTransform } from '../utils/keyframes'
 import VideoLayerRenderer from './VideoLayerRenderer'
+import CanvasPreviewRenderer from './CanvasPreviewRenderer'
 import AudioLayerRenderer from './AudioLayerRenderer'
 import PreviewTransformGizmo from './PreviewTransformGizmo'
 import {
@@ -289,6 +290,8 @@ function PreviewPanel() {
     setUseProxyPlaybackForAssets,
     glslPreviewQuality,
     setGlslPreviewQuality,
+    previewCompositorMode,
+    setPreviewCompositorMode,
   } = useTimelineStore()
   
   // Use timeline playback hook
@@ -1996,16 +1999,26 @@ function PreviewPanel() {
                 ) : (
                   <>
                     <AudioLayerRenderer />
-                    <VideoLayerRenderer
-                      buildVideoTransform={buildVideoTransform}
-                      getClipTransform={getClipTransform}
-                      transitionInfo={transitionInfo}
-                      getTransitionStyles={getTransitionStyles}
-                      getTransitionOverlay={getTransitionOverlay}
-                      onClipPointerDown={handlePreviewClipPointerDown}
-                      onClipDoubleClick={handlePreviewTextDoubleClick}
-                      previewScale={previewScale.uniform}
-                    />
+                    {previewCompositorMode === 'dom' ? (
+                      <VideoLayerRenderer
+                        buildVideoTransform={buildVideoTransform}
+                        getClipTransform={getClipTransform}
+                        transitionInfo={transitionInfo}
+                        getTransitionStyles={getTransitionStyles}
+                        getTransitionOverlay={getTransitionOverlay}
+                        onClipPointerDown={handlePreviewClipPointerDown}
+                        onClipDoubleClick={handlePreviewTextDoubleClick}
+                        previewScale={previewScale.uniform}
+                      />
+                    ) : (
+                      <CanvasPreviewRenderer
+                        timelineWidth={timelineWidth}
+                        timelineHeight={timelineHeight}
+                        timelineFps={timelineSettings?.fps || timelineFps || 30}
+                        onClipPointerDown={handlePreviewClipPointerDown}
+                        onClipDoubleClick={handlePreviewTextDoubleClick}
+                      />
+                    )}
                   </>
                 )}
                 
@@ -2041,6 +2054,11 @@ function PreviewPanel() {
                       {proxyVideoUrl && useProxyPlayback && (
                         <div className="px-2 py-1 bg-green-600/80 rounded text-xs text-white">
                           Smooth preview
+                        </div>
+                      )}
+                      {!useProxyPlayback && previewCompositorMode === 'canvas' && (
+                        <div className="px-2 py-1 bg-blue-700/80 rounded text-xs text-white">
+                          Canvas preview
                         </div>
                       )}
                       {previewComplexity.maxConcurrentVideoLayers >= 2 && (
@@ -2088,6 +2106,20 @@ function PreviewPanel() {
                           <option value="full">Full</option>
                           <option value="half">Half</option>
                           <option value="quarter">Quarter</option>
+                        </select>
+                      </label>
+                      <label
+                        className="flex items-center gap-1 rounded bg-sf-dark-700 px-2 py-1 text-xs text-sf-text-muted"
+                        title="Canvas preview avoids Windows cut-frame flashes. DOM keeps the old renderer as a fallback."
+                      >
+                        <span>Renderer</span>
+                        <select
+                          value={previewCompositorMode === 'dom' ? 'dom' : 'canvas'}
+                          onChange={(event) => setPreviewCompositorMode(event.target.value)}
+                          className="bg-sf-dark-800 text-sf-text-secondary outline-none"
+                        >
+                          <option value="canvas">Canvas</option>
+                          <option value="dom">DOM</option>
                         </select>
                       </label>
                       {useProxyPlaybackForAssets && currentProjectHandle && window.electronAPI && proxyCoverage.total > 0 && (

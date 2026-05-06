@@ -5,6 +5,7 @@ import {
   KeyRound, CheckCircle2, ExternalLink,
 } from 'lucide-react'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
+import useTimelineStore from '../stores/timelineStore'
 import { THEMES, getStoredThemeId, applyTheme } from '../config/themes'
 import { getPexelsApiKey, setPexelsApiKey } from '../services/pexelsSettings'
 import WorkflowSetupSection from './WorkflowSetupSection'
@@ -185,6 +186,8 @@ function GeneralTab({ initialSection = null }) {
     defaultFps,
     setDefaultProjectSettings,
   } = useProjectStore()
+  const showTimelineClipThumbnails = useTimelineStore((state) => state.showTimelineClipThumbnails)
+  const setShowTimelineClipThumbnails = useTimelineStore((state) => state.setShowTimelineClipThumbnails)
 
   useEffect(() => {
     getPexelsApiKey().then((key) => setPexelsApiKeyLocal(key || ''))
@@ -710,44 +713,60 @@ function GeneralTab({ initialSection = null }) {
     case 'appearance':
       activeSectionContent = (
         <div className="space-y-4">
-          <label className="block text-xs text-sf-text-muted">Theme</label>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {THEMES.map((theme) => {
-              const isActive = theme.id === activeThemeId
-              return (
-                <button
-                  key={theme.id}
-                  type="button"
-                  onClick={() => {
-                    setActiveThemeId(theme.id)
-                    applyTheme(theme.id)
-                  }}
-                  className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${
-                    isActive
-                      ? 'border-sf-accent bg-sf-accent/10'
-                      : 'border-sf-dark-700 bg-sf-dark-800 hover:bg-sf-dark-700'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex gap-0.5 flex-shrink-0">
-                      <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: theme.preview.bg }} />
-                      <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: theme.preview.surface }} />
-                      <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: theme.preview.accent }} />
-                      <div className="w-4 h-4 rounded-sm border border-white/10" style={{ backgroundColor: theme.preview.text }} />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-sm text-sf-text-primary font-medium">{theme.label}</span>
-                        {isActive && (
-                          <span className="text-[10px] text-sf-accent font-medium">Active</span>
-                        )}
+          <div>
+            <label className="block text-xs text-sf-text-muted">Theme</label>
+            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {THEMES.map((theme) => {
+                const isActive = theme.id === activeThemeId
+                return (
+                  <button
+                    key={theme.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveThemeId(theme.id)
+                      applyTheme(theme.id)
+                    }}
+                    className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                      isActive
+                        ? 'border-sf-accent bg-sf-accent/10'
+                        : 'border-sf-dark-700 bg-sf-dark-800 hover:bg-sf-dark-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex gap-0.5 flex-shrink-0">
+                        <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: theme.preview.bg }} />
+                        <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: theme.preview.surface }} />
+                        <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: theme.preview.accent }} />
+                        <div className="w-4 h-4 rounded-sm border border-white/10" style={{ backgroundColor: theme.preview.text }} />
                       </div>
-                      <p className="text-[10px] text-sf-text-muted truncate">{theme.description}</p>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm text-sf-text-primary font-medium">{theme.label}</span>
+                          {isActive && (
+                            <span className="text-[10px] text-sf-accent font-medium">Active</span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-sf-text-muted truncate">{theme.description}</p>
+                      </div>
                     </div>
-                  </div>
-                </button>
-              )
-            })}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
+            <div>
+              <label className="text-sm text-sf-text-primary">Timeline clip thumbnails</label>
+              <p className="text-[10px] text-sf-text-muted">Turn off for heavy edits so clips draw as lightweight colored blocks.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowTimelineClipThumbnails(!showTimelineClipThumbnails)}
+              className={`w-10 h-5 rounded-full transition-colors ${showTimelineClipThumbnails ? 'bg-sf-accent' : 'bg-sf-dark-600'}`}
+            >
+              <div className={`w-4 h-4 bg-white rounded-full transition-transform ${showTimelineClipThumbnails ? 'translate-x-5' : 'translate-x-0.5'}`} />
+            </button>
           </div>
         </div>
       )

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { FolderOpen, Plus, Film, AlertCircle, Loader2, Trash2, KeyRound, CheckCircle2, Compass, LayoutGrid, List, Minus, Square, Copy, X } from 'lucide-react'
 import useProjectStore from '../stores/projectStore'
+import useAssetsStore from '../stores/assetsStore'
 import NewProjectDialog from './NewProjectDialog'
 import ComfyLauncherChip from './ComfyLauncherChip'
 import CreditsChip from './CreditsChip'
@@ -188,11 +189,18 @@ function WelcomeScreen() {
     projectListViewMode,
     setProjectListViewMode,
   } = useProjectStore()
+  const mediaPreparation = useAssetsStore((state) => state.mediaPreparation)
   
   const isBrowserSupported = checkBrowserSupport()
   const canOpenLatestAutosave = Boolean(
     lastFailedProjectHandle && error?.includes('Project file is empty or invalid')
   )
+  const mediaPreparationTotal = Math.max(0, Number(mediaPreparation?.total) || 0)
+  const mediaPreparationCompleted = Math.max(0, Math.min(mediaPreparationTotal, Number(mediaPreparation?.completed) || 0))
+  const mediaPreparationPercent = mediaPreparationTotal > 0
+    ? Math.round((mediaPreparationCompleted / mediaPreparationTotal) * 100)
+    : 0
+  const showMediaPreparation = Boolean(isLoading && mediaPreparation?.active && mediaPreparationTotal > 0)
   const welcomeHeroVideoSrc = getWelcomeAssetPath('welcome-hero.mp4')
   const welcomeHeroPosterSrc = getWelcomeAssetPath('hero-v1.webp')
   
@@ -420,6 +428,27 @@ function WelcomeScreen() {
       </div>
     </div>
   )
+  const mediaPreparationBanner = showMediaPreparation ? (
+    <div className="pointer-events-none fixed left-1/2 top-1/2 z-50 w-[min(420px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-sf-dark-600 bg-sf-dark-900/95 px-3 py-2 shadow-2xl shadow-black/40">
+      <div className="mb-1.5 flex items-center gap-2 text-xs">
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-sf-accent" />
+        <span className="font-medium text-sf-text-primary">Opening project media</span>
+        <span className="ml-auto font-mono text-[10px] text-sf-text-muted">
+          {mediaPreparationCompleted}/{mediaPreparationTotal}
+        </span>
+      </div>
+      <div className="mb-1 h-1.5 overflow-hidden rounded-full bg-sf-dark-700">
+        <div
+          className="h-full rounded-full bg-sf-accent transition-[width] duration-200"
+          style={{ width: `${mediaPreparationPercent}%` }}
+        />
+      </div>
+      <div className="flex items-center justify-between gap-3 text-[10px] text-sf-text-muted">
+        <span>{mediaPreparation?.label || 'Preparing media...'}</span>
+        <span>{mediaPreparationPercent}%</span>
+      </div>
+    </div>
+  ) : null
 
   // First-run setup screen
   if (isFirstRun || !defaultProjectsHandle) {
@@ -581,6 +610,8 @@ function WelcomeScreen() {
       <div className="flex-shrink-0 flex items-center justify-between px-8 py-4 bg-sf-dark-950 border-t border-b border-sf-dark-800/60">
         {headerContent}
       </div>
+
+      {mediaPreparationBanner}
 
       {showHeroBackground ? (
         /* Hero band: full-bleed dark outer, centered cinematic inner.

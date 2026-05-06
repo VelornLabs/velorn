@@ -326,6 +326,9 @@ const getNextClipCounter = (clips = [], fallback = 1) => {
 }
 
 const isAdjustmentClipType = (clip) => clip?.type === 'adjustment'
+const isInfinitelyExtendableClipType = (clip) => (
+  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text'
+)
 const supportsClipAdjustments = (clip) => (
   clip?.type === 'video'
   || clip?.type === 'image'
@@ -442,6 +445,8 @@ export const useTimelineStore = create(
   // always uses asset.path. Hydrated from localStorage on boot in PreviewPanel.
   useProxyPlaybackForAssets: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-use-playback-proxies') === 'true'),
   glslPreviewQuality: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-glsl-preview-quality')) || 'full',
+  previewCompositorMode: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-preview-compositor-mode')) || 'canvas',
+  showTimelineClipThumbnails: (typeof localStorage === 'undefined' || localStorage.getItem('comfystudio-show-timeline-clip-thumbnails') !== 'false'),
   
   // Snapping settings
   snappingEnabled: true,
@@ -783,6 +788,10 @@ export const useTimelineStore = create(
     const overrideTrimEnd = options?.trimEnd
     const linkGroupId = getNormalizedLinkGroupId(options?.linkGroupId)
     const selectAfterAdd = options?.selectAfterAdd !== false
+    const shouldResolveOverlaps = options?.resolveOverlaps !== false
+    const clipMetadata = options?.metadata && typeof options.metadata === 'object'
+      ? JSON.parse(JSON.stringify(options.metadata))
+      : null
     const rawDuration = overrideDuration != null ? overrideDuration : defaultDuration
     const finalDuration = roundDurationToFrame(rawDuration, fps)
     const finalTrimStart = overrideTrimStart != null ? overrideTrimStart : 0
@@ -816,6 +825,7 @@ export const useTimelineStore = create(
       enabled: options?.enabled !== false,
       url: asset.url,
       thumbnail: asset.url, // For video clips
+      ...(clipMetadata ? { metadata: clipMetadata } : {}),
       ...(linkGroupId ? { linkGroupId } : {}),
       // 2D Transform properties (NLE-style)
       transform: {
@@ -827,14 +837,16 @@ export const useTimelineStore = create(
     
     // Resolve overlaps with existing clips on the same track (NLE overwrite behavior)
     // Use finalDuration so split second-half doesn't push following clips (when options.duration set)
-    const { clips: updatedClips, addedCount } = get().resolveOverlaps(
-      trackId, 
-      newClip.id, 
-      calculatedStartTime, 
-      finalDuration,
-      undefined,
-      safeClipCounter + 1
-    )
+    const { clips: updatedClips, addedCount } = shouldResolveOverlaps
+      ? get().resolveOverlaps(
+        trackId,
+        newClip.id,
+        calculatedStartTime,
+        finalDuration,
+        undefined,
+        safeClipCounter + 1
+      )
+      : { clips: state.clips, addedCount: 0 }
     
     set((state) => ({
       clips: [...updatedClips, newClip],
@@ -1861,7 +1873,8 @@ export const useTimelineStore = create(
               const timeScale = getClipTimeScale(clip)
               const parsedSourceDuration = parseClipSourceDuration(clip.sourceDuration)
               const computedTrimEnd = (clip.trimStart || 0) + timelineToSourceTime(clip, nextDuration)
-              const isInfiniteSource = parsedSourceDuration === Infinity || (parsedSourceDuration === null && clip.type === 'image')
+              const isInfiniteSource = isInfinitelyExtendableClipType(clip)
+                || parsedSourceDuration === Infinity
               const nextTrimEnd = isInfiniteSource
                 ? computedTrimEnd
                 : (Number.isFinite(parsedSourceDuration) ? Math.min(computedTrimEnd, parsedSourceDuration) : computedTrimEnd)
@@ -1974,10 +1987,10 @@ export const useTimelineStore = create(
                 : Math.max(0, Number(clip.trimStart) || 0)
 
               let sourceDuration = parseClipSourceDuration(next.sourceDuration)
-              if (sourceDuration === null) {
-                sourceDuration = next.type === 'image'
-                  ? Infinity
-                  : (parseClipSourceDuration(next.trimEnd) ?? Infinity)
+              if (isInfinitelyExtendableClipType(next)) {
+                sourceDuration = Infinity
+              } else if (sourceDuration === null) {
+                sourceDuration = parseClipSourceDuration(next.trimEnd) ?? Infinity
               }
               if (Number.isFinite(sourceDuration)) {
                 const maxTrimStart = Math.max(0, sourceDuration - minSourceSpan)
@@ -2779,8 +2792,12 @@ export const useTimelineStore = create(
         if (clip.id !== clipId) return clip
         
         const effects = clip.effects || []
+        const infiniteTiming = isInfinitelyExtendableClipType(clip)
+          ? { sourceDuration: Infinity }
+          : {}
         return {
           ...clip,
+          ...infiniteTiming,
           effects: [...effects, newEffect],
           // Invalidate cache when effects change
           cacheStatus: clip.cacheStatus === 'cached' ? 'invalid' : clip.cacheStatus,
@@ -3049,6 +3066,20 @@ export const useTimelineStore = create(
       localStorage.setItem('comfystudio-glsl-preview-quality', normalized)
     }
   },
+  setPreviewCompositorMode: (mode) => {
+    const normalized = ['canvas', 'dom'].includes(mode) ? mode : 'canvas'
+    set({ previewCompositorMode: normalized })
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('comfystudio-preview-compositor-mode', normalized)
+    }
+  },
+  setShowTimelineClipThumbnails: (enabled) => {
+    const next = Boolean(enabled)
+    set({ showTimelineClipThumbnails: next })
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('comfystudio-show-timeline-clip-thumbnails', next ? 'true' : 'false')
+    }
+  },
   setPreviewProxyInvalid: () => {
     set({
       previewProxyStatus: 'none',
@@ -3131,7 +3162,8 @@ export const useTimelineStore = create(
         // For video/audio, cap at source duration
         const timeScale = getClipTimeScale(clip)
         const parsedSourceDuration = parseClipSourceDuration(clip.sourceDuration)
-        const maxDuration = parsedSourceDuration === Infinity || (parsedSourceDuration === null && (clip.type === 'image' || clip.type === 'adjustment'))
+        const maxDuration = isInfinitelyExtendableClipType(clip)
+          || parsedSourceDuration === Infinity
           ? Infinity
           : (Number.isFinite(parsedSourceDuration) ? parsedSourceDuration : getClipTrimEnd(clip))
         const minSourceDuration = 0.5 * timeScale
@@ -3163,9 +3195,9 @@ export const useTimelineStore = create(
     
     const headHandle = sourceToTimelineTime(clip, clip.trimStart || 0)
     const parsedSourceDuration = parseClipSourceDuration(clip.sourceDuration)
-    const sourceDuration = parsedSourceDuration === null
-      ? ((clip.type === 'image' || clip.type === 'adjustment') ? Infinity : getClipTrimEnd(clip))
-      : parsedSourceDuration
+    const sourceDuration = isInfinitelyExtendableClipType(clip)
+      ? Infinity
+      : (parsedSourceDuration === null ? getClipTrimEnd(clip) : parsedSourceDuration)
     const trimEnd = getClipTrimEnd(clip)
     const tailHandle = sourceToTimelineTime(clip, sourceDuration - trimEnd)
     
@@ -4281,10 +4313,10 @@ export const useTimelineStore = create(
       const duration = roundDurationToFrame(clip.duration || 0.5, fps)
       const timeScale = getClipTimeScale(clip)
       let sourceDuration = parseClipSourceDuration(clip.sourceDuration)
-      if (sourceDuration === null) {
-        sourceDuration = (clip.type === 'image' || clip.type === 'adjustment')
-          ? Infinity
-          : (parseClipSourceDuration(clip.trimEnd) ?? Infinity)
+      if (isInfinitelyExtendableClipType(clip)) {
+        sourceDuration = Infinity
+      } else if (sourceDuration === null) {
+        sourceDuration = parseClipSourceDuration(clip.trimEnd) ?? Infinity
       }
       const trimStart = clip.trimStart ?? 0
       let trimEnd = trimStart + timelineToSourceTime(clip, duration)

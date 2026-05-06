@@ -9,6 +9,8 @@ import ImageAnnotationModal from './ImageAnnotationModal'
 import ConfirmDialog from './ConfirmDialog'
 import ApiKeyDialog from './ApiKeyDialog'
 import AdEasyMode from './generate/AdEasyMode'
+import MusicVideoEasyMode from './generate/MusicVideoEasyMode'
+import ShortFilmEasyMode from './generate/ShortFilmEasyMode'
 import WorkflowBrowser from './generate/WorkflowBrowser'
 import WorkflowDetail from './generate/WorkflowDetail'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
@@ -68,6 +70,7 @@ import {
   YOLO_AD_REFERENCE_CONSISTENCY_OPTIONS,
   YOLO_AD_TALENT_MODE_OPTIONS,
   YOLO_CAMERA_PRESET_OPTIONS,
+  YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS,
   YOLO_MUSIC_PROFILES,
   YOLO_QUEUE_CONFIRM_THRESHOLD,
   formatWorkflowHardwareRuntime,
@@ -189,6 +192,16 @@ const IMAGE_RESOLUTION_PRESET_GROUPS = Object.freeze({
     { id: 'portrait_1080', label: '1080p Portrait', width: 1080, height: 1920 },
     { id: 'square_1k', label: 'Square 1K', width: 1024, height: 1024 },
     { id: 'square_2k', label: 'Square 2K', width: 2048, height: 2048 },
+  ]),
+  gptImage2: Object.freeze([
+    { id: 'landscape_4k', label: '4K Landscape', width: 3840, height: 2160 },
+    { id: 'landscape_2k', label: '2K Landscape', width: 2048, height: 1152 },
+    { id: 'landscape_3x2', label: '3:2 Landscape', width: 1536, height: 1024 },
+    { id: 'square_1k', label: 'Square 1K', width: 1024, height: 1024 },
+    { id: 'square_2k', label: 'Square 2K', width: 2048, height: 2048 },
+    { id: 'portrait_2x3', label: '2:3 Portrait', width: 1024, height: 1536 },
+    { id: 'portrait_2k', label: '2K Portrait', width: 1152, height: 2048 },
+    { id: 'portrait_4k', label: '4K Portrait', width: 2160, height: 3840 },
   ]),
 })
 
@@ -917,7 +930,6 @@ function composeMusicShotVideoPrompt({
   const conceptLine = String(concept || '').trim()
   const styleLine = String(styleNotes || '').trim()
   const shotSuffix = String(shotTypeOption?.promptSuffix || '').trim()
-  const isBRoll = shotTypeOption?.id === 'b_roll'
 
   const parts = [
     motion,
@@ -925,45 +937,12 @@ function composeMusicShotVideoPrompt({
     lyricCue ? `Lyric moment: "${lyricCue}".` : '',
     conceptLine ? `Concept: ${conceptLine}.` : '',
     styleLine ? `Style: ${styleLine}.` : '',
-    isBRoll
-      ? 'Critical video rule: hold the Nano Banana keyframe subject and composition. Do not dissolve, crossfade, morph, or transition into another scene. Do not introduce people, performers, faces, or bodies unless this exact shot explicitly describes them.'
-      : 'Maintain the starting keyframe composition, subject identity, and lighting. No dissolve, no crossfade, no scene transition unless the script explicitly calls for it.',
   ].filter(Boolean)
   return parts.join(' ')
 }
 
 function buildMusicVideoNegativePrompt(baseNegativePrompt = '', shotType = '') {
-  const isBRoll = shotType === 'b_roll'
-  const guard = [
-    'dissolve',
-    'crossfade',
-    'fade transition',
-    'scene transition',
-    'scene change',
-    'morphing into a different scene',
-    'changing subject',
-    'new subject entering frame',
-    'different location',
-    'different composition',
-    'unstable composition',
-    'identity drift',
-    'style drift',
-    'camera cut',
-    'jump cut',
-    'montage',
-    'collage',
-    'split screen',
-    isBRoll
-      ? 'people, person, human figure, humans, crowd, performer, singer, actor, face, close-up face, body, walking person'
-      : '',
-  ]
-    .filter(Boolean)
-    .join(', ')
-
-  return [baseNegativePrompt, guard]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-    .join(', ')
+  return String(baseNegativePrompt || '').trim()
 }
 
 /**
@@ -1108,6 +1087,9 @@ function buildMusicVideoPlanFromScript(options = {}) {
       const shotTypeId = resolveMusicVideoShotTypeFromText(scriptShot.shotType) || 'performance'
       const shotTypeOption = getMusicVideoShotTypeOption(shotTypeId)
       const { length: clampedLength } = clampMusicVideoShotLength(scriptShot.durationSeconds)
+      const coverageType = String(scriptShot.coverageType || scene?.coverageType || '').trim()
+      const coverageLabel = String(scriptShot.coverageLabel || scene?.coverageLabel || '').trim()
+      const coverageKey = coverageLabel || coverageType || 'primary'
 
       const lyricMomentHint = String(scriptShot.lyricMoment || '').trim()
       const startAtRaw = String(scriptShot.startAtRaw || '').trim()
@@ -1241,6 +1223,10 @@ function buildMusicVideoPlanFromScript(options = {}) {
         id: sceneIdStr,
         index: flatShotIndex,
         label: scriptShot.label || scene?.label || '',
+        coverageType,
+        coverageLabel,
+        coverageSectionIndex: Number(scene?.coverageSectionIndex || scriptShot?.coverageSectionIndex) || null,
+        coverageSectionLabel: String(scene?.coverageSectionLabel || scriptShot?.coverageSectionLabel || '').trim(),
         shots: [{
           id: shotIdStr,
           index: 1,
@@ -1257,6 +1243,10 @@ function buildMusicVideoPlanFromScript(options = {}) {
           cameraPresetId: 'auto',
           // Music-video-specific payload consumed by modifyMusicVideoShotWorkflow.
           musicShotType: shotTypeId,
+          coverageType,
+          coverageLabel,
+          coverageSectionIndex: Number(scriptShot?.coverageSectionIndex || scene?.coverageSectionIndex) || null,
+          coverageSectionLabel: String(scriptShot?.coverageSectionLabel || scene?.coverageSectionLabel || '').trim(),
           audioStart: Number(Number(audioStart).toFixed(2)),
           length: Number(clampedLength.toFixed(2)),
           shotPrompt: videoPrompt,
@@ -1289,6 +1279,9 @@ function buildMusicVideoPlanFromScript(options = {}) {
         source: audioStartSource,
         lyricMoment: lyricMomentHint,
         srtMatch: timedMatch || null,
+        coverageKey,
+        coverageType,
+        coverageLabel,
       })
 
       // Advance the cumulative cursor from wherever this shot actually lands
@@ -1308,7 +1301,54 @@ function buildMusicVideoPlanFromScript(options = {}) {
   // what the user wants.
 
   // 1) Coverage / gap summary — only meaningful once we know the song length.
-  if (safeSongDuration > 0 && coverageRanges.length > 0) {
+  const coverageGroups = new Map()
+  for (const range of coverageRanges) {
+    const key = String(range.coverageKey || 'primary')
+    if (!coverageGroups.has(key)) {
+      coverageGroups.set(key, {
+        key,
+        label: String(range.coverageLabel || range.coverageType || '').trim(),
+        ranges: [],
+      })
+    }
+    coverageGroups.get(key).ranges.push(range)
+  }
+
+  if (safeSongDuration > 0 && coverageGroups.size > 1) {
+    for (const group of coverageGroups.values()) {
+      const gaps = computeCoverageGaps(
+        group.ranges.map((r) => ({ start: r.start, end: r.end })),
+        safeSongDuration,
+        0.75
+      )
+      const coveredSeconds = group.ranges.reduce(
+        (acc, r) => acc + Math.max(0, Math.min(r.end, safeSongDuration) - Math.max(0, r.start)),
+        0
+      )
+      const coveragePct = Math.round((coveredSeconds / safeSongDuration) * 100)
+      const labelPrefix = group.label ? `${group.label}: ` : ''
+      warnings.push({
+        shotIndex: 0,
+        shotLabel: group.label,
+        kind: 'coverage-summary',
+        raw: '',
+        message: `${labelPrefix}Plan covers ${formatSecondsAsMMSS(coveredSeconds)} of your ${formatSecondsAsMMSS(safeSongDuration)} song (${coveragePct}%).${
+          gaps.length > 0
+            ? ` Gaps: ${gaps.map((g) => `${formatSecondsAsMMSS(g.start)}-${formatSecondsAsMMSS(g.end)}`).join(', ')}.`
+            : ' No gaps.'
+        }`,
+        severity: gaps.length === 0 ? 'info' : coveragePct >= 90 ? 'info' : 'warning',
+        gaps,
+        coveredSeconds,
+        songDuration: safeSongDuration,
+        coveragePct,
+        coverageKey: group.key,
+        coverageLabel: group.label,
+      })
+    }
+  }
+
+  if (safeSongDuration > 0 && coverageRanges.length > 0 && coverageGroups.size <= 1) {
     const gaps = computeCoverageGaps(
       coverageRanges.map((r) => ({ start: r.start, end: r.end })),
       safeSongDuration,
@@ -1361,20 +1401,25 @@ function buildMusicVideoPlanFromScript(options = {}) {
   //    intersect. Adjacent ranges that only touch (a.end === b.start) are
   //    fine. We compare every pair so the warning list stays informative
   //    even when three+ shots stack up.
-  const sortedRanges = [...coverageRanges].sort((a, b) => a.start - b.start)
-  for (let i = 0; i < sortedRanges.length - 1; i += 1) {
-    const a = sortedRanges[i]
-    const b = sortedRanges[i + 1]
-    if (b.start < a.end - 0.01) {
-      const overlap = Math.min(a.end, b.end) - b.start
-      warnings.push({
-        shotIndex: b.shotIndex,
-        shotLabel: b.label,
-        kind: 'shot-overlap',
-        raw: '',
-        message: `Shot ${b.shotIndex} (${formatSecondsAsMMSS(b.start)}) overlaps Shot ${a.shotIndex} (ends ${formatSecondsAsMMSS(a.end)}) by ${overlap.toFixed(1)}s.`,
-        severity: 'warning',
-      })
+  for (const group of coverageGroups.values()) {
+    const sortedRanges = [...group.ranges].sort((a, b) => a.start - b.start)
+    for (let i = 0; i < sortedRanges.length - 1; i += 1) {
+      const a = sortedRanges[i]
+      const b = sortedRanges[i + 1]
+      if (b.start < a.end - 0.01) {
+        const overlap = Math.min(a.end, b.end) - b.start
+        const labelPrefix = group.label ? `${group.label}: ` : ''
+        warnings.push({
+          shotIndex: b.shotIndex,
+          shotLabel: b.label,
+          kind: 'shot-overlap',
+          raw: '',
+          message: `${labelPrefix}Shot ${b.shotIndex} (${formatSecondsAsMMSS(b.start)}) overlaps Shot ${a.shotIndex} (ends ${formatSecondsAsMMSS(a.end)}) by ${overlap.toFixed(1)}s.`,
+          severity: 'warning',
+          coverageKey: group.key,
+          coverageLabel: group.label,
+        })
+      }
     }
   }
 
@@ -1404,6 +1449,92 @@ function getMusicVideoPassDisplayName(passType) {
     case 'detail_broll':        return 'Detail B-roll'
     default:                    return 'Alt Pass'
   }
+}
+
+const MUSIC_VIDEO_TIMELINE_ASSEMBLY_MODE = 'music-video-easy-mode'
+const AD_TIMELINE_ASSEMBLY_MODE = 'ad-easy-mode'
+
+function getAdVideoVariantWorkflowKey(variantKey, workflowId) {
+  const key = String(variantKey || '').trim()
+  const workflow = String(workflowId || '').trim()
+  return key && workflow ? `${key}::${workflow}` : ''
+}
+
+function buildGeneratedEditTimelineName(prefix, detail = '') {
+  const safePrefix = String(prefix || 'Generated Edit').replace(/\s+/g, ' ').trim()
+  const safeDetail = String(detail || '')
+    .replace(/\.[a-z0-9]{2,5}$/i, '')
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const name = safeDetail ? `${safePrefix} - ${safeDetail}` : safePrefix
+  return name.slice(0, 80)
+}
+
+async function ensureGeneratedEditTimeline({ name, width, height, fps, color = null } = {}) {
+  const projectState = useProjectStore.getState()
+  if (!projectState.currentProject) {
+    return { ok: false, message: 'Open or create a project before assembling an edit timeline.' }
+  }
+
+  const timelineName = buildGeneratedEditTimelineName(name || 'Generated Edit')
+  const timelines = projectState.currentProject.timelines || []
+  let timeline = timelines.find((candidate) => candidate?.name === timelineName) || null
+  if (!timeline) {
+    timeline = projectState.createTimeline({
+      name: timelineName,
+      width: Number(width) || null,
+      height: Number(height) || null,
+      fps: Number(fps) || null,
+      color,
+    })
+  }
+  if (!timeline?.id) {
+    return { ok: false, message: `Could not create timeline "${timelineName}".` }
+  }
+
+  const freshProjectState = useProjectStore.getState()
+  if (freshProjectState.currentTimelineId !== timeline.id) {
+    const switched = await freshProjectState.switchTimeline(timeline.id)
+    if (!switched) {
+      return { ok: false, message: `Could not switch to timeline "${timelineName}".` }
+    }
+  }
+
+  return { ok: true, timeline, timelineName }
+}
+
+function normalizeMusicVideoCoverageTrackKey(value = '') {
+  const text = String(value || '').trim().toLowerCase()
+  return text
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'main-sequence'
+}
+
+function getMusicVideoTimelineCoverageLabel(coverage = {}, fallback = '') {
+  const explicitLabel = String(coverage?.label || '').trim()
+  if (explicitLabel) return explicitLabel
+  const type = String(coverage?.type || fallback || '').trim()
+  switch (type) {
+    case 'main_sequence': return 'Main sequence'
+    case 'performance_pass': return 'Performance pass'
+    case 'story_broll': return 'Story b-roll'
+    case 'environmental_broll': return 'Environmental b-roll'
+    case 'detail_broll': return 'Detail inserts'
+    default:
+      return String(fallback || type || 'Main sequence')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase())
+  }
+}
+
+function getMusicVideoTimelineTrackName(coverage = {}, fallback = '') {
+  return `MV - ${getMusicVideoTimelineCoverageLabel(coverage, fallback)}`
+}
+
+function hasMusicVideoCoverageSectionHeaders(script = '') {
+  return /(?:^|\n)\s*(?:coverage|pass)\s+\d+\s*[:\-]/i.test(String(script || ''))
 }
 
 /**
@@ -1473,6 +1604,56 @@ const MUSIC_VIDEO_PROMPT_PASSES = Object.freeze([
   'detail_broll',
 ])
 
+function normalizeMusicVideoCoveragePlan(coveragePlan) {
+  if (!coveragePlan || typeof coveragePlan !== 'object') return null
+  const rawSections = Array.isArray(coveragePlan.sections) ? coveragePlan.sections : []
+  const sections = rawSections
+    .map((section, index) => {
+      const type = String(section?.type || '').trim() || 'main_sequence'
+      const label = String(section?.label || '').trim() || `Coverage ${index + 1}`
+      const intent = String(section?.intent || '').trim()
+      return { type, label, intent }
+    })
+    .filter((section) => section.label)
+  if (sections.length <= 1) return null
+  return {
+    sections,
+    performancePassCount: Math.max(0, Number(coveragePlan.performancePassCount) || 0),
+    includeStoryBroll: Boolean(coveragePlan.includeStoryBroll),
+    includeDetailBroll: Boolean(coveragePlan.includeDetailBroll),
+  }
+}
+
+function buildMusicVideoCoveragePlanPrompt(coveragePlan) {
+  const plan = normalizeMusicVideoCoveragePlan(coveragePlan)
+  if (!plan) return ''
+  const lines = [
+    'Coverage plan:',
+    'Return ONE combined script containing these coverage sections in this exact order. Do not return separate files.',
+    'Each coverage section contains normal Shot blocks. Every shot still needs Start at, Shot type, Keyframe prompt, Motion prompt, Camera, and Length.',
+    'Do not write one long take for any pass. Break every pass into 2-8 second clips aligned to the song timing.',
+    'Use the exact Coverage type and Coverage label fields shown below so ComfyStudio can group the shots later.',
+  ]
+  plan.sections.forEach((section, index) => {
+    lines.push(`  Coverage ${index + 1}: ${section.label}`)
+    lines.push(`    Coverage type: ${section.type}`)
+    lines.push(`    Coverage label: ${section.label}`)
+    if (section.intent) lines.push(`    Purpose: ${section.intent}`)
+    if (section.type === 'performance_pass') {
+      lines.push('    Shot rule: use only performance or performance_wide shots for lyric/vocal moments. Keep Artist and Lyric moment fields on every shot. Use exact SRT lyric starts. It is OK and expected for this pass to have gaps during instrumental or non-vocal sections.')
+    } else if (section.type === 'story_broll') {
+      lines.push('    Shot rule: use b_roll shots for story/cutaway coverage across the full song timeline; include Artist only when a cast member is visible but not lip-syncing.')
+    } else if (section.type === 'environmental_broll') {
+      lines.push('    Shot rule: use b_roll shots only across the full song timeline. Show places, atmosphere, empty rooms, exterior locations, weather, signage, vehicles, landscapes, and environmental texture. Do not include lip-sync.')
+    } else if (section.type === 'detail_broll') {
+      lines.push('    Shot rule: use b_roll shots only across the full song timeline; focus on short macro/detail inserts, textures, props, instruments, hands, and atmosphere.')
+    } else {
+      lines.push('    Shot rule: this is the primary sequence and may mix performance, performance_wide, and b_roll based on the song.')
+    }
+  })
+  return lines.join('\n')
+}
+
 /**
  * Build a single clipboard-ready prompt the user can paste into an LLM
  * (Claude, GPT, Gemini, etc.) to produce a timing-correct director script
@@ -1504,9 +1685,13 @@ function buildMusicVideoLLMPrompt(options = {}) {
     pass = 'master',
     variantDescriptor = '',
     masterScript = '',
+    coveragePlan = null,
   } = options
 
   const effectivePass = MUSIC_VIDEO_PROMPT_PASSES.includes(pass) ? pass : 'master'
+  const effectiveCoveragePlan = effectivePass === 'master'
+    ? normalizeMusicVideoCoveragePlan(coveragePlan)
+    : null
 
   // Detect whether the single lyrics blob is plain text or timed (SRT/LRC).
   // This flips the section label so the LLM knows whether the timings are
@@ -1566,17 +1751,24 @@ function buildMusicVideoLLMPrompt(options = {}) {
   }
 
   // Universal format rules — these apply regardless of pass.
+  const coveragePlanPrompt = effectiveCoveragePlan
+    ? buildMusicVideoCoveragePlanPrompt(effectiveCoveragePlan)
+    : ''
+  if (coveragePlanPrompt) sections.push(coveragePlanPrompt)
+
   const rules = [
     'Rules:',
+    '  0. The returned script must be self-contained. Put the story, setting, wardrobe, lighting, color, continuity, and camera language directly inside each shot block.',
     '  1. Every shot MUST include a "Start at:" field with a time like "0:15" or "15.5s". If you pasted SRT/LRC, use the exact start of the matching line.',
     '  2. Every shot MUST include "Length:" in seconds (between 2 and 8 — LTX 2.3 works best here).',
-    '  3. Shots should tile the song with no big gaps. A few ≤1s gaps between shots are fine; gaps over 3s should be filled with a b_roll shot.',
+    '  3. Main sequence and b-roll/detail/environment sections should tile the song with no big gaps. Performance passes may leave gaps during instrumental or non-vocal sections.',
     '  4. "Shot type:" must be one of: performance, performance_wide, b_roll. Use performance/performance_wide when the singer\'s face is visible and lip-syncing; use b_roll for everything else.',
     '  5. For vocal lines, add "Lyric moment:" quoting the specific lyric line. For instrumentals or b_roll, omit Lyric moment.',
     '  6. Use "Artist:" to pick which cast member appears. Omit when the shot is b_roll with no performer visible.',
-    '  7. "Keyframe prompt:" describes the opening still (lighting, wardrobe, location, composition). "Motion prompt:" describes what moves in the clip (head turn, camera push-in, lip-sync, etc.).',
-    '  8. Keep wardrobe, location, and lighting consistent across adjacent shots unless the Concept calls for a hard cut.',
-    '  9. Do NOT invent lyrics. If the song is instrumental at a given moment, omit Lyric moment for that shot.',
+    '  7. "Keyframe prompt:" describes the opening still and must include location, subject, wardrobe/props, lighting, color palette, and composition.',
+    '  8. "Motion prompt:" describes what moves in the clip: lip-sync/performance action, body movement, camera movement, atmosphere, and any story action.',
+    '  9. Keep wardrobe, location, and lighting consistent across adjacent shots unless the script deliberately calls for a hard cut.',
+    '  10. Do NOT invent lyrics. If the song is instrumental at a given moment, omit Lyric moment for that shot.',
   ]
   sections.push(rules.join('\n'))
 
@@ -1592,7 +1784,7 @@ function buildMusicVideoLLMPrompt(options = {}) {
     sections.push(`Master performance script (for timing and lyric reference ONLY — do NOT copy shots or imagery):\n${masterScript.trim()}`)
   }
 
-  sections.push(buildMusicVideoPassFormatSpec(effectivePass))
+  sections.push(buildMusicVideoPassFormatSpec(effectivePass, effectiveCoveragePlan))
 
   return sections.join('\n\n')
 }
@@ -1606,7 +1798,7 @@ function buildMusicVideoPassIntro(pass, variantDescriptor) {
         : 'Alt performance variant: (unspecified — pick a distinct setting/wardrobe/lighting from the master that will cut against it cleanly)'
       return [
         'You are a music video director. I need you to write an ALT PERFORMANCE PASS for the song below.',
-        'This is a SECOND full performance of the same song, designed to intercut with the master performance pass (included at the bottom). Think of it as a separate second-unit shoot — different setting, different camera grammar — but same cast lip-syncing the same lyrics.',
+        'This is a SECOND lip-sync performance coverage pass for the vocal sections of the song, designed to intercut with the master performance pass (included at the bottom). Think of it as a separate second-unit shoot — different setting, different camera grammar — but same cast lip-syncing the same lyrics.',
         variantLine,
       ].join('\n')
     }
@@ -1638,7 +1830,7 @@ function buildMusicVideoPassRules(pass, variantDescriptor) {
         variantLine,
         '  - Shot type MUST be performance or performance_wide. Do NOT generate any b_roll shots in this pass.',
         '  - Keep Artist: and Lyric moment: fields on every shot — this is still a lip-sync pass.',
-        '  - Start at: and Length: do NOT need to match the master script. Generate your own shot rhythm appropriate to the variant setting, but still cover the full song with no gaps >3s.',
+        '  - Start at: should follow the vocal/lyric timings. Generate your own shot rhythm appropriate to the variant setting. It is OK for this pass to have gaps during instrumental or non-vocal sections.',
         '  - Do NOT repeat the master script\'s Keyframe prompt or Motion prompt text. Invent fresh imagery that belongs to the variant setting.',
       ].join('\n')
     }
@@ -1671,8 +1863,15 @@ function buildMusicVideoPassRules(pass, variantDescriptor) {
   }
 }
 
-function buildMusicVideoPassFormatSpec(pass) {
+function buildMusicVideoPassFormatSpec(pass, coveragePlan = null) {
   const isBrollOnly = pass === 'environmental_broll' || pass === 'detail_broll'
+  const plan = normalizeMusicVideoCoveragePlan(coveragePlan)
+  const coverageHeader = plan ? [
+    'Coverage 1: Main scripted sequence',
+    'Coverage type: main_sequence',
+    'Coverage label: Main scripted sequence',
+    '',
+  ] : []
   if (isBrollOnly) {
     const label = pass === 'environmental_broll' ? 'Environmental establishing' : 'Detail insert'
     const keyframeA = pass === 'environmental_broll'
@@ -1690,6 +1889,7 @@ function buildMusicVideoPassFormatSpec(pass) {
     return [
       'Required output format (verbatim — one block per shot):',
       '',
+      ...coverageHeader,
       'Scene 1: Opening',
       '',
       `Shot 1: ${label}`,
@@ -1715,6 +1915,7 @@ function buildMusicVideoPassFormatSpec(pass) {
   return [
     'Required output format (verbatim — one block per shot):',
     '',
+    ...coverageHeader,
     'Scene 1: Opening',
     '',
     'Shot 1: Wide establishing',
@@ -2364,7 +2565,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   // Ad Creation state is completely independent (yoloAd*) — do not cross
   // the streams when editing either side.
   const [yoloMusicAudioAssetId, setYoloMusicAudioAssetId] = useState(persistedState?.yoloMusicAudioAssetId || null)
-  const [yoloMusicAudioKind, setYoloMusicAudioKind] = useState(persistedState?.yoloMusicAudioKind || MUSIC_VIDEO_AUDIO_KIND_OPTIONS[0].id)
+  const [yoloMusicAudioKind, setYoloMusicAudioKind] = useState(persistedState?.yoloMusicAudioKind || 'mixed_track')
   // Lyrics field accepts plain text, SRT, or LRC — auto-detected by
   // detectTimedLyricsFormat. When the paste is SRT/LRC the planner uses real
   // per-line timings (tier 2 of audioStart resolution); when it's plain
@@ -2460,6 +2661,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   })
   const [yoloMusicTargetDuration, setYoloMusicTargetDuration] = useState(persistedState?.yoloMusicTargetDuration || 30)
   const [yoloMusicQualityProfile, setYoloMusicQualityProfile] = useState(persistedState?.yoloMusicQualityProfile || 'balanced')
+  const [yoloMusicVideoWorkflowId, setYoloMusicVideoWorkflowId] = useState(() => {
+    const saved = String(persistedState?.yoloMusicVideoWorkflowId || '').trim()
+    return YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS.some((option) => option.id === saved)
+      ? saved
+      : YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS[0]?.id || MUSIC_VIDEO_SHOT_WORKFLOW_ID
+  })
   const [yoloMusicPlan, setYoloMusicPlan] = useState(() => normalizePersistedYoloPlan(persistedState?.yoloMusicPlan || []))
   const [yoloMusicPlanSignature, setYoloMusicPlanSignature] = useState(persistedState?.yoloMusicPlanSignature || '')
   // Planner warnings surfaced next to the build button: unresolved Artist: /
@@ -2480,6 +2687,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const MIN_JOB_INTERVAL_MS = 2000
   const [formError, setFormError] = useState(null)
   const [creatingStoryboardPdf, setCreatingStoryboardPdf] = useState(false)
+  const [yoloMusicAudioImporting, setYoloMusicAudioImporting] = useState(false)
   const [yoloMusicTranscribingSrt, setYoloMusicTranscribingSrt] = useState(false)
   const [yoloMusicTranscriptionStatus, setYoloMusicTranscriptionStatus] = useState('')
   const [confirmDialog, setConfirmDialog] = useState(null) // { title, message, confirmLabel, cancelLabel, tone }
@@ -2531,6 +2739,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const timelineTracks = useTimelineStore((s) => s.tracks)
   const timelineAddTextClip = useTimelineStore((s) => s.addTextClip)
   const timelineAddTrack = useTimelineStore((s) => s.addTrack)
+  const timelineAddClip = useTimelineStore((s) => s.addClip)
+  const timelineFps = useTimelineStore((s) => s.timelineFps)
   const frameForAI = useFrameForAIStore((s) => s.frame)
   const clearFrameForAI = useFrameForAIStore((s) => s.clearFrame)
 
@@ -2692,6 +2902,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         yoloMusicCast,
         yoloMusicTargetDuration,
         yoloMusicQualityProfile,
+        yoloMusicVideoWorkflowId,
         yoloMusicPlan,
         yoloMusicPlanSignature,
       }
@@ -2767,6 +2978,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     yoloMusicCast,
     yoloMusicTargetDuration,
     yoloMusicQualityProfile,
+    yoloMusicVideoWorkflowId,
     yoloMusicPlan,
     yoloMusicPlanSignature,
   ])
@@ -2942,7 +3154,14 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
     if (manifest.mode === 'create') {
       setGenerationMode('yolo')
-      setYoloCreationType(String(manifest.title || '').toLowerCase().includes('music') ? 'music' : 'ad')
+      const createTitle = String(manifest.title || '').toLowerCase()
+      setYoloCreationType(
+        manifest.id === 'short-film-easy-mode' || createTitle.includes('short')
+          ? 'short-film'
+          : createTitle.includes('music')
+            ? 'music'
+            : 'ad'
+      )
       if (manifest.id === 'product-ad-easy-mode') {
         setYoloAdStoryboardSource('cloud')
         setYoloAdStoryboardTier('quality')
@@ -3164,8 +3383,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const getFrameCount = () => Math.round(duration * fps) + 1
 
   const isYoloMusicMode = generationMode === 'yolo' && yoloCreationType === 'music'
-  const yoloModeKey = isYoloMusicMode ? 'music' : 'ad'
-  const yoloModeLabel = isYoloMusicMode ? 'Music Video' : 'Ad'
+  const isYoloShortFilmMode = generationMode === 'yolo' && yoloCreationType === 'short-film'
+  const yoloModeKey = isYoloMusicMode ? 'music' : isYoloShortFilmMode ? 'short-film' : 'ad'
+  const yoloModeLabel = isYoloMusicMode ? 'Music Video' : isYoloShortFilmMode ? 'Short Film' : 'Ad'
   const isAdEasyMode = generationMode === 'yolo'
     && yoloCreationType === 'ad'
     && selectedWorkflowManifest?.id === 'product-ad-easy-mode'
@@ -3239,9 +3459,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   // Audio asset for the currently-selected song. Used by the planner to
   // bound the coverage report against the real song length (Phase 8) and
   // by the LLM-prompt builder to mention duration in the brief.
+  const yoloMusicAudioAssets = useMemo(
+    () => assets.filter((asset) => asset?.type === 'audio'),
+    [assets]
+  )
   const yoloMusicAudioAsset = useMemo(
-    () => assets.find((asset) => asset?.id === yoloMusicAudioAssetId) || null,
-    [assets, yoloMusicAudioAssetId]
+    () => yoloMusicAudioAssets.find((asset) => asset?.id === yoloMusicAudioAssetId) || null,
+    [yoloMusicAudioAssets, yoloMusicAudioAssetId]
   )
   const yoloMusicSongDurationSeconds = useMemo(() => {
     const d = Number(yoloMusicAudioAsset?.duration)
@@ -3262,6 +3486,73 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     }
     return { format, lines: [], error: null, isTimed: false }
   }, [yoloMusicLyrics])
+  const handleImportYoloMusicAudio = useCallback(async () => {
+    if (yoloMusicAudioImporting) return
+    if (!currentProjectHandle) {
+      setFormError('Open or create a project first so ComfyStudio can import the song file.')
+      addComfyLog('error', 'Song audio import requires an open project folder.')
+      return
+    }
+
+    let selectedFile = null
+    try {
+      if (isElectron() && window.electronAPI?.selectFile) {
+        selectedFile = await window.electronAPI.selectFile({
+          title: 'Select song audio',
+          filters: [
+            { name: 'Audio Files', extensions: ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus'] },
+            { name: 'All Files', extensions: ['*'] },
+          ],
+        })
+      } else {
+        selectedFile = await new Promise((resolve) => {
+          const input = document.createElement('input')
+          input.type = 'file'
+          input.accept = 'audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus'
+          input.onchange = () => resolve(input.files?.[0] || null)
+          input.click()
+        })
+      }
+    } catch (error) {
+      const message = error?.message || 'Unknown file picker error'
+      setFormError(`Could not open song audio picker: ${message}`)
+      addComfyLog('error', `Could not open song audio picker: ${message}`)
+      return
+    }
+    if (!selectedFile) return
+
+    setFormError(null)
+    setYoloMusicAudioImporting(true)
+
+    try {
+      const assetInfo = await importAsset(currentProjectHandle, selectedFile, 'audio')
+      const sessionUrl = typeof selectedFile !== 'string' ? URL.createObjectURL(selectedFile) : null
+      const newAsset = addAsset({
+        ...assetInfo,
+        type: 'audio',
+        url: sessionUrl || assetInfo.url,
+        settings: {
+          ...(assetInfo.settings || {}),
+          duration: assetInfo.duration,
+        },
+      })
+      setYoloMusicAudioAssetId(newAsset.id)
+      await saveProject?.()
+      addComfyLog('status', `Imported song audio: ${newAsset.name || 'audio file'}`)
+    } catch (error) {
+      const message = error?.message || 'Unknown import error'
+      setFormError(`Could not import song audio: ${message}`)
+      addComfyLog('error', `Could not import song audio: ${message}`)
+    } finally {
+      setYoloMusicAudioImporting(false)
+    }
+  }, [
+    addAsset,
+    addComfyLog,
+    currentProjectHandle,
+    saveProject,
+    yoloMusicAudioImporting,
+  ])
   const handleYoloMusicTranscribeSrt = useCallback(async () => {
     if (!yoloMusicAudioAsset) {
       setFormError('Select the song audio asset first')
@@ -3560,7 +3851,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
    * affect the generated plan-shape downstream (keyframe refs, variant
    * fan-out), so we want a rebuild prompt when those change.
    */
-  const makeMusicPlanSignature = useCallback(({ script, styleNotes } = {}) => createYoloPlanSignature({
+  const makeMusicPlanSignature = useCallback(({ script, concept, styleNotes } = {}) => createYoloPlanSignature({
     mode: 'music',
     audioAssetId: yoloMusicAudioAssetId || '',
     audioKind: yoloMusicAudioKind,
@@ -3574,7 +3865,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       .join('|'),
     lyrics: yoloMusicLyrics,
     script: String(script ?? yoloMusicScript),
-    concept: yoloMusicConcept,
+    concept: String(concept ?? yoloMusicConcept),
     styleNotes: String(styleNotes ?? yoloMusicStyleNotes),
     targetDuration: yoloMusicTargetDuration,
     qualityProfile: yoloMusicQualityProfile,
@@ -3806,6 +4097,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     () => YOLO_AD_LOCAL_VIDEO_WORKFLOW_OPTIONS.find((option) => option.id === yoloAdLocalVideoWorkflowId) || YOLO_AD_LOCAL_VIDEO_WORKFLOW_OPTIONS[0],
     [yoloAdLocalVideoWorkflowId]
   )
+  const yoloMusicSelectedVideoWorkflow = useMemo(() => {
+    const saved = YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS.find((option) => option.id === yoloMusicVideoWorkflowId)
+    if (saved) return saved
+    const profileDefault = YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS.find((option) => option.id === yoloMusicProfile?.videoWorkflowId)
+    return profileDefault || YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS[0]
+  }, [yoloMusicProfile?.videoWorkflowId, yoloMusicVideoWorkflowId])
   const yoloStoryboardWorkflowId = String(
     isYoloMusicMode
       ? yoloMusicProfile?.storyboardWorkflowId
@@ -3813,7 +4110,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   ).trim()
   const yoloDefaultVideoWorkflowId = String(
     isYoloMusicMode
-      ? yoloMusicProfile?.videoWorkflowId
+      ? yoloMusicSelectedVideoWorkflow?.id
       : yoloVideoProfileRuntime === 'local'
         ? yoloAdSelectedLocalVideoWorkflow?.id
         : yoloAdVideoProfile?.videoWorkflowId
@@ -3828,11 +4125,14 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const imageResolutionOptions = useMemo(() => {
     switch (String(workflowId || '').trim()) {
       case 'z-image-turbo':
-        return IMAGE_RESOLUTION_PRESET_GROUPS.standard
+        return IMAGE_RESOLUTION_PRESET_GROUPS.enhanced
       case 'nano-banana-2':
       case 'nano-banana-pro':
       case 'grok-text-to-image':
         return IMAGE_RESOLUTION_PRESET_GROUPS.enhanced
+      case 'gpt-image-2-t2i':
+      case 'gpt-image-2-edit':
+        return IMAGE_RESOLUTION_PRESET_GROUPS.gptImage2
       default:
         return []
     }
@@ -3861,11 +4161,14 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const imageResolutionHelperText = useMemo(() => {
     switch (String(workflowId || '').trim()) {
       case 'z-image-turbo':
-        return 'Local render sizes. 1080p uses more VRAM than square 1K.'
+        return 'Local render sizes. Square 2K (2048x2048) uses significantly more VRAM.'
       case 'nano-banana-2':
       case 'nano-banana-pro':
       case 'grok-text-to-image':
         return 'These map to provider aspect ratio plus a 1K or 2K render tier.'
+      case 'gpt-image-2-t2i':
+      case 'gpt-image-2-edit':
+        return 'GPT Image 2 only supports a strict size list; unsupported sizes are auto-mapped.'
       default:
         return ''
     }
@@ -3874,7 +4177,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     // Local workflows that honor a user-supplied FPS in their
     // modify*Workflow() helpers. Cloud partner-node workflows ignore
     // it (the provider returns its own FPS) so they stay excluded.
-    const customFpsWorkflowIds = new Set(['wan22-i2v', 'ltx23-i2v'])
+    const customFpsWorkflowIds = new Set(['wan22-i2v', 'ltx23-i2v', MUSIC_VIDEO_SHOT_WORKFLOW_ID])
     return yoloSelectedVideoWorkflowIds.some((id) => customFpsWorkflowIds.has(String(id || '').trim()))
   }, [yoloSelectedVideoWorkflowIds])
   const yoloSelectedVideoWorkflowLabel = useMemo(
@@ -4952,11 +5255,17 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     if (effectiveStyleNotes !== yoloMusicStyleNotes) {
       setYoloMusicStyleNotes(effectiveStyleNotes)
     }
+    const effectiveConcept = Object.prototype.hasOwnProperty.call(options, 'conceptOverride')
+      ? String(options.conceptOverride || '').trim()
+      : String(yoloMusicConcept || '').trim()
+    if (effectiveConcept !== yoloMusicConcept) {
+      setYoloMusicConcept(effectiveConcept)
+    }
 
     const { scenes: nextPlan, warnings: planWarnings } = buildMusicVideoPlanFromScript({
       script: scriptContent,
       lyrics: yoloMusicLyrics,
-      concept: yoloMusicConcept,
+      concept: effectiveConcept,
       styleNotes: effectiveStyleNotes,
       targetDuration: yoloMusicTargetDuration,
       songDurationSeconds: yoloMusicSongDurationSeconds,
@@ -4986,7 +5295,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       ...scene,
       pass: passMeta,
     }))
-    const signature = makeMusicPlanSignature({ script: scriptContent, styleNotes: effectiveStyleNotes })
+    const signature = makeMusicPlanSignature({ script: scriptContent, concept: effectiveConcept, styleNotes: effectiveStyleNotes })
     const rawWarnings = Array.isArray(planWarnings) ? planWarnings : []
     // Alt builds pass cast:[] to the planner on purpose (alt passes either
     // have no performers, as for b-roll, or inherit cast via the LLM prompt
@@ -5075,7 +5384,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   }, [updateYoloShot])
 
   const handleYoloShotVideoBeatChange = useCallback((sceneId, shotId, value) => {
-    updateYoloShot(sceneId, shotId, (shot) => ({ ...shot, videoBeat: value, beat: value }))
+    updateYoloShot(sceneId, shotId, (shot) => ({
+      ...shot,
+      videoBeat: value,
+      beat: value,
+      shotPrompt: value,
+    }))
   }, [updateYoloShot])
 
   const handleYoloShotCameraDirectionChange = useCallback((sceneId, shotId, value) => {
@@ -5198,6 +5512,27 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     yoloMusicLyrics,
     yoloMusicResolvedCast,
     yoloMusicScript,
+  ])
+
+  const handleCopyMusicVideoLlmPrompt = useCallback(async (options = {}) => {
+    const llmPrompt = buildMusicVideoLLMPrompt({
+      songName: yoloMusicAudioAsset?.name || '',
+      songDurationSeconds: yoloMusicSongDurationSeconds,
+      targetDuration: yoloMusicTargetDuration,
+      lyrics: yoloMusicLyrics,
+      cast: yoloMusicResolvedCast,
+      coveragePlan: options.coveragePlan || null,
+    })
+    await copyTextToClipboard(llmPrompt)
+    setFormError(null)
+    addComfyLog('status', 'Music video LLM brief copied.')
+  }, [
+    addComfyLog,
+    yoloMusicAudioAsset?.name,
+    yoloMusicSongDurationSeconds,
+    yoloMusicTargetDuration,
+    yoloMusicLyrics,
+    yoloMusicResolvedCast,
   ])
 
   /**
@@ -5344,6 +5679,534 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     setFormError(null)
     addComfyLog('status', `Inserted ${yoloAdNativeTextEntries.length} editor-native ad text clip${yoloAdNativeTextEntries.length === 1 ? '' : 's'}`)
   }, [addComfyLog, timelineAddTextClip, timelineAddTrack, timelineTracks, yoloAdNativeTextEntries])
+
+  const handleAssembleAdTimeline = useCallback(async (options = {}) => {
+    if (isYoloMusicMode) {
+      return { ok: false, message: 'Switch to Ad Creation first.' }
+    }
+    if (yoloActivePlanIsStale) {
+      return { ok: false, message: 'Rebuild the current ad plan before assembling the timeline.' }
+    }
+    if (!Array.isArray(yoloActivePlan) || yoloActivePlan.length === 0) {
+      return { ok: false, message: 'Build the ad plan before assembling the timeline.' }
+    }
+    if (!timelineAddClip || !timelineAddTrack) {
+      return { ok: false, message: 'Timeline tools are not ready yet.' }
+    }
+
+    const workflowId = String(options?.workflowId || yoloAdLocalVideoWorkflowId || yoloDefaultVideoWorkflowId || '').trim()
+    const workflowLabel = String(options?.workflowLabel || getWorkflowDisplayLabel(workflowId) || 'Video pass').trim()
+    const timelineResolution = {
+      width: Number(options?.resolution?.width || resolution.width) || null,
+      height: Number(options?.resolution?.height || resolution.height) || null,
+    }
+    const timelineResolutionLabel = timelineResolution.width && timelineResolution.height
+      ? `${timelineResolution.width}x${timelineResolution.height}`
+      : ''
+    const adTimelineDetail = [
+      [yoloAdBrandName, yoloAdProductName].map((value) => String(value || '').trim()).filter(Boolean).join(' '),
+      timelineResolutionLabel,
+    ].filter(Boolean).join(' - ') || 'Ad Creation'
+    const timelineResult = await ensureGeneratedEditTimeline({
+      name: buildGeneratedEditTimelineName('Ad Edit', adTimelineDetail),
+      width: timelineResolution.width,
+      height: timelineResolution.height,
+      fps: Number(yoloVideoFps) || null,
+      color: '#22c55e',
+    })
+    if (!timelineResult.ok) {
+      setFormError(timelineResult.message)
+      return timelineResult
+    }
+
+    const trackName = `Ad - ${workflowLabel || 'Video pass'}`
+    const variantByShotKey = new Map()
+    for (const variant of yoloQueueVariants || []) {
+      const key = `${variant?.sceneId || ''}|${variant?.shotId || ''}`
+      if (key !== '|' && !variantByShotKey.has(key)) variantByShotKey.set(key, variant)
+    }
+
+    const latestVideoAssetByKey = new Map()
+    for (const asset of assets || []) {
+      if (asset?.type !== 'video') continue
+      if (asset?.yolo?.mode === 'music' || asset?.yolo?.stage !== 'video') continue
+      const assetWorkflowId = String(asset?.yolo?.workflowId || '').trim()
+      const variantKey = String(asset?.yolo?.variantKey || '').trim()
+      const keys = [
+        asset?.yolo?.key,
+        variantKey && assetWorkflowId ? getAdVideoVariantWorkflowKey(variantKey, assetWorkflowId) : '',
+        variantKey && !assetWorkflowId ? variantKey : '',
+      ].filter(Boolean)
+      if (keys.length === 0) continue
+      const assetTime = new Date(asset.createdAt || 0).getTime()
+      for (const key of keys) {
+        const existing = latestVideoAssetByKey.get(key)
+        const existingTime = existing ? new Date(existing.createdAt || 0).getTime() : -1
+        if (!existing || assetTime >= existingTime) latestVideoAssetByKey.set(key, asset)
+      }
+    }
+
+    const fps = Number(useTimelineStore.getState().timelineFps) || Number(timelineFps) || Number(yoloVideoFps) || 24
+    const minClipDuration = 1 / Math.max(1, fps)
+    const rows = []
+    const missingRows = []
+    let cursor = 0
+    for (const scene of yoloActivePlan || []) {
+      for (const shot of scene?.shots || []) {
+        const variant = variantByShotKey.get(`${scene?.id || ''}|${shot?.id || ''}`) || null
+        const requestedDuration = Math.max(0.5, Number(shot?.durationSeconds ?? variant?.durationSeconds ?? 0) || 3)
+        const workflowScopedKey = variant?.key ? getAdVideoVariantWorkflowKey(variant.key, workflowId) : ''
+        const videoAsset = workflowScopedKey
+          ? latestVideoAssetByKey.get(workflowScopedKey) || null
+          : null
+        const fallbackAsset = variant?.key ? latestVideoAssetByKey.get(variant.key) || null : null
+        const selectedAsset = videoAsset || fallbackAsset
+        if (!variant || !selectedAsset) {
+          missingRows.push({ scene, shot, variant })
+          cursor += requestedDuration
+          continue
+        }
+
+        const sourceDuration = Number(selectedAsset?.settings?.duration ?? selectedAsset?.duration ?? requestedDuration)
+        const safeDuration = Math.max(
+          minClipDuration,
+          Number.isFinite(sourceDuration) && sourceDuration > 0
+            ? Math.min(requestedDuration || sourceDuration, sourceDuration)
+            : requestedDuration
+        )
+        rows.push({
+          scene,
+          shot,
+          variant,
+          asset: selectedAsset,
+          startTime: cursor,
+          duration: safeDuration,
+        })
+        cursor += requestedDuration
+      }
+    }
+
+    if (rows.length === 0) {
+      const message = missingRows.length > 0
+        ? `No ready ${workflowLabel} ad videos found yet. Generate videos first, then assemble the timeline.`
+        : 'No ad shots found to assemble.'
+      setFormError(message)
+      return { ok: false, message }
+    }
+
+    const timelineState = useTimelineStore.getState()
+    const previousAssemblyClipIds = (timelineState.clips || [])
+      .filter((clip) => {
+        const meta = clip?.metadata?.adTimelineAssembly
+        if (meta?.mode !== AD_TIMELINE_ASSEMBLY_MODE) return false
+        if (meta.kind === 'voiceover-audio') return true
+        return String(meta.workflowId || '') === workflowId
+      })
+      .map((clip) => clip.id)
+    const previousAssemblyClipIdSet = new Set(previousAssemblyClipIds)
+    timelineState.saveToHistory?.()
+    if (previousAssemblyClipIds.length > 0) {
+      useTimelineStore.setState((state) => {
+        const nextTransitions = (state.transitions || []).filter((transition) => (
+          !previousAssemblyClipIdSet.has(transition.clipId)
+          && !previousAssemblyClipIdSet.has(transition.clipAId)
+          && !previousAssemblyClipIdSet.has(transition.clipBId)
+        ))
+        const selectedTransitionStillExists = nextTransitions.some((transition) => transition.id === state.selectedTransitionId)
+        return {
+          clips: state.clips.filter((clip) => !previousAssemblyClipIdSet.has(clip.id)),
+          transitions: nextTransitions,
+          selectedClipIds: state.selectedClipIds.filter((clipId) => !previousAssemblyClipIdSet.has(clipId)),
+          selectedTransitionId: selectedTransitionStillExists ? state.selectedTransitionId : null,
+        }
+      })
+    }
+
+    const assembledAt = new Date().toISOString()
+    const createdTrackIds = new Set()
+    const getOrCreateTrack = (type, name, trackOptions = {}) => {
+      let track = useTimelineStore.getState().tracks.find((candidate) => (
+        candidate?.type === type && candidate?.name === name
+      ))
+      if (!track) {
+        track = timelineAddTrack(type, { ...trackOptions, name })
+        if (track?.id) createdTrackIds.add(track.id)
+      }
+      return track
+    }
+
+    let insertedVideoClips = 0
+    const videoTrack = getOrCreateTrack('video', trackName)
+    if (!videoTrack) {
+      const message = 'Could not create an ad video track on the timeline.'
+      setFormError(message)
+      return { ok: false, message }
+    }
+    for (const row of rows) {
+      const clip = timelineAddClip(videoTrack.id, row.asset, row.startTime, fps, {
+        duration: row.duration,
+        saveHistory: false,
+        selectAfterAdd: false,
+        resolveOverlaps: false,
+        metadata: {
+          adTimelineAssembly: {
+            mode: AD_TIMELINE_ASSEMBLY_MODE,
+            kind: 'video',
+            assembledAt,
+            workflowId,
+            workflowLabel,
+            sceneId: row.scene?.id || '',
+            shotId: row.shot?.id || '',
+            variantKey: row.variant?.key || '',
+            assetId: row.asset?.id || '',
+            startTime: row.startTime,
+            length: row.duration,
+          },
+        },
+      })
+      if (clip) insertedVideoClips += 1
+    }
+
+    let insertedAudioClips = 0
+    if (yoloAdVoiceoverAsset) {
+      const audioTrack = getOrCreateTrack('audio', 'Ad - Voiceover', { channels: 'stereo' })
+      const audioDuration = Number(yoloAdVoiceoverAsset?.settings?.duration || yoloAdVoiceoverAsset?.duration || cursor || 0) || undefined
+      if (audioTrack) {
+        const clip = timelineAddClip(audioTrack.id, yoloAdVoiceoverAsset, 0, fps, {
+          duration: audioDuration,
+          saveHistory: false,
+          selectAfterAdd: false,
+          resolveOverlaps: false,
+          metadata: {
+            adTimelineAssembly: {
+              mode: AD_TIMELINE_ASSEMBLY_MODE,
+              kind: 'voiceover-audio',
+              assembledAt,
+              assetId: yoloAdVoiceoverAsset.id,
+              startTime: 0,
+              length: audioDuration || null,
+            },
+          },
+        })
+        if (clip) insertedAudioClips += 1
+      }
+    }
+
+    const message = [
+      `Assembled ${insertedVideoClips} ${workflowLabel} ad video clip${insertedVideoClips === 1 ? '' : 's'}`,
+      insertedAudioClips > 0 ? 'voiceover audio' : '',
+      `in "${timelineResult.timelineName}"`,
+      `on ${trackName}`,
+      missingRows.length > 0 ? `${missingRows.length} missing/failed shot${missingRows.length === 1 ? '' : 's'} skipped` : '',
+    ].filter(Boolean).join(' · ')
+
+    setFormError(null)
+    addComfyLog('status', `${message}.`)
+    if (createdTrackIds.size > 0) {
+      addComfyLog('status', `Created ${createdTrackIds.size} ad timeline track${createdTrackIds.size === 1 ? '' : 's'}.`)
+    }
+    return {
+      ok: true,
+      message,
+      insertedVideoClips,
+      insertedAudioClips,
+      missingCount: missingRows.length,
+      replacedCount: previousAssemblyClipIds.length,
+      timelineName: timelineResult.timelineName,
+      trackName,
+    }
+  }, [
+    addComfyLog,
+    assets,
+    buildYoloMusicPlan,
+    isYoloMusicMode,
+    resolution.height,
+    resolution.width,
+    setFormError,
+    timelineAddClip,
+    timelineAddTrack,
+    timelineFps,
+    yoloActivePlan,
+    yoloActivePlanIsStale,
+    yoloAdBrandName,
+    yoloAdLocalVideoWorkflowId,
+    yoloAdProductName,
+    yoloAdVoiceoverAsset,
+    yoloDefaultVideoWorkflowId,
+    yoloQueueVariants,
+    yoloVideoFps,
+  ])
+
+  const handleAssembleMusicVideoTimeline = useCallback(async () => {
+    if (!isYoloMusicMode) {
+      return { ok: false, message: 'Switch to Music Video Creation first.' }
+    }
+    if (yoloActivePlanIsStale) {
+      return { ok: false, message: 'Parse the current director script again before assembling the timeline.' }
+    }
+    if (!Array.isArray(yoloActivePlan) || yoloActivePlan.length === 0) {
+      return { ok: false, message: 'Parse the director script before assembling the timeline.' }
+    }
+    if (!timelineAddClip || !timelineAddTrack) {
+      return { ok: false, message: 'Timeline tools are not ready yet.' }
+    }
+
+    let planForAssembly = yoloActivePlan
+    let variantsForAssembly = yoloQueueVariants
+    const activeScriptContent = yoloMusicActiveAltScript
+      ? yoloMusicActiveAltScript.script
+      : yoloMusicScript
+    if (hasMusicVideoCoverageSectionHeaders(activeScriptContent)) {
+      const rebuiltPlan = buildYoloMusicPlan({ target: yoloMusicActiveScriptId || 'master' })
+      if (Array.isArray(rebuiltPlan) && rebuiltPlan.length > 0) {
+        planForAssembly = rebuiltPlan
+        variantsForAssembly = flattenYoloPlanVariants(rebuiltPlan)
+        addComfyLog('status', 'Re-read music-video coverage sections before assembling the timeline.')
+      }
+    }
+
+    const timelineResolution = {
+      width: Number(resolution.width) || null,
+      height: Number(resolution.height) || null,
+    }
+    const timelineResolutionLabel = timelineResolution.width && timelineResolution.height
+      ? `${timelineResolution.width}x${timelineResolution.height}`
+      : ''
+    const songName = String(yoloMusicAudioAsset?.name || 'Music Video').replace(/\.[a-z0-9]{2,5}$/i, '').trim()
+    const timelineResult = await ensureGeneratedEditTimeline({
+      name: buildGeneratedEditTimelineName('Music Video', [songName || 'Music Video', timelineResolutionLabel].filter(Boolean).join(' - ')),
+      width: timelineResolution.width,
+      height: timelineResolution.height,
+      fps: Number(yoloVideoFps) || null,
+      color: '#3b82f6',
+    })
+    if (!timelineResult.ok) {
+      setFormError(timelineResult.message)
+      return timelineResult
+    }
+
+    const variantByShotKey = new Map()
+    for (const variant of variantsForAssembly || []) {
+      const key = `${variant?.sceneId || ''}|${variant?.shotId || ''}`
+      if (key !== '|' && !variantByShotKey.has(key)) variantByShotKey.set(key, variant)
+    }
+
+    const latestVideoAssetByKey = new Map()
+    for (const asset of assets || []) {
+      if (asset?.type !== 'video') continue
+      if (asset?.yolo?.mode !== 'music' || asset?.yolo?.stage !== 'video') continue
+      const keys = [asset?.yolo?.key, asset?.yolo?.variantKey].filter(Boolean)
+      if (keys.length === 0) continue
+      const assetTime = new Date(asset.createdAt || 0).getTime()
+      for (const key of keys) {
+        const existing = latestVideoAssetByKey.get(key)
+        const existingTime = existing ? new Date(existing.createdAt || 0).getTime() : -1
+        if (!existing || assetTime >= existingTime) latestVideoAssetByKey.set(key, asset)
+      }
+    }
+
+    const fps = Number(useTimelineStore.getState().timelineFps) || Number(timelineFps) || Number(yoloVideoFps) || 24
+    const minClipDuration = 1 / Math.max(1, fps)
+    const groups = new Map()
+    const missingRows = []
+    let scannedShots = 0
+
+    for (const scene of planForAssembly) {
+      for (const shot of scene?.shots || []) {
+        scannedShots += 1
+        const variant = variantByShotKey.get(`${scene?.id || ''}|${shot?.id || ''}`) || null
+        const videoAsset = variant?.key ? latestVideoAssetByKey.get(variant.key) || null : null
+        if (!variant || !videoAsset) {
+          missingRows.push({ scene, shot, variant })
+          continue
+        }
+
+        const coverage = variant.coverage && typeof variant.coverage === 'object'
+          ? variant.coverage
+          : {
+            type: String(shot?.coverageType || scene?.coverageType || '').trim(),
+            label: String(shot?.coverageLabel || scene?.coverageLabel || '').trim(),
+          }
+        const coverageLabel = getMusicVideoTimelineCoverageLabel(coverage, scene?.label || shot?.scriptShotLabel || '')
+        const coverageKey = normalizeMusicVideoCoverageTrackKey(`${coverage.type || ''}-${coverageLabel}`)
+        const trackName = getMusicVideoTimelineTrackName({ ...coverage, label: coverageLabel })
+        const startTime = Math.max(0, Number(shot?.audioStart ?? 0) || 0)
+        const requestedDuration = Number(shot?.length ?? shot?.durationSeconds ?? variant?.durationSeconds ?? 0) || 0
+        const sourceDuration = Number(videoAsset?.settings?.duration ?? videoAsset?.duration ?? requestedDuration)
+        const safeDuration = Math.max(
+          minClipDuration,
+          Number.isFinite(sourceDuration) && sourceDuration > 0
+            ? Math.min(requestedDuration || sourceDuration, sourceDuration)
+            : (requestedDuration || 5)
+        )
+
+        if (!groups.has(coverageKey)) {
+          groups.set(coverageKey, {
+            key: coverageKey,
+            coverage,
+            label: coverageLabel,
+            trackName,
+            rows: [],
+          })
+        }
+        groups.get(coverageKey).rows.push({
+          scene,
+          shot,
+          variant,
+          asset: videoAsset,
+          startTime,
+          duration: safeDuration,
+          coverage,
+          coverageLabel,
+        })
+      }
+    }
+
+    const readyClipCount = Array.from(groups.values()).reduce((sum, group) => sum + group.rows.length, 0)
+    if (readyClipCount === 0) {
+      return {
+        ok: false,
+        message: scannedShots > 0
+          ? 'No ready music-video clips found yet. Generate at least one video first.'
+          : 'No parsed music-video shots found yet.',
+        missingCount: missingRows.length,
+      }
+    }
+
+    const timelineState = useTimelineStore.getState()
+    const previousAssemblyClipIds = (timelineState.clips || [])
+      .filter((clip) => clip?.metadata?.musicVideoAssembly?.mode === MUSIC_VIDEO_TIMELINE_ASSEMBLY_MODE)
+      .map((clip) => clip.id)
+    const previousAssemblyClipIdSet = new Set(previousAssemblyClipIds)
+    timelineState.saveToHistory?.()
+    if (previousAssemblyClipIds.length > 0) {
+      useTimelineStore.setState((state) => {
+        const nextTransitions = (state.transitions || []).filter((transition) => (
+          !previousAssemblyClipIdSet.has(transition.clipId)
+          && !previousAssemblyClipIdSet.has(transition.clipAId)
+          && !previousAssemblyClipIdSet.has(transition.clipBId)
+        ))
+        const selectedTransitionStillExists = nextTransitions.some((transition) => transition.id === state.selectedTransitionId)
+        return {
+          clips: state.clips.filter((clip) => !previousAssemblyClipIdSet.has(clip.id)),
+          transitions: nextTransitions,
+          selectedClipIds: state.selectedClipIds.filter((clipId) => !previousAssemblyClipIdSet.has(clipId)),
+          selectedTransitionId: selectedTransitionStillExists ? state.selectedTransitionId : null,
+        }
+      })
+    }
+
+    const assembledAt = new Date().toISOString()
+    const createdTrackIds = new Set()
+    const getOrCreateTrack = (type, name, options = {}) => {
+      let track = useTimelineStore.getState().tracks.find((candidate) => (
+        candidate?.type === type && candidate?.name === name
+      ))
+      if (!track) {
+        track = timelineAddTrack(type, { ...options, name })
+        if (track?.id) createdTrackIds.add(track.id)
+      }
+      return track
+    }
+
+    let insertedVideoClips = 0
+    for (const group of groups.values()) {
+      const track = getOrCreateTrack('video', group.trackName)
+      if (!track) continue
+      for (const row of group.rows) {
+        const clip = timelineAddClip(track.id, row.asset, row.startTime, fps, {
+          duration: row.duration,
+          saveHistory: false,
+          selectAfterAdd: false,
+          resolveOverlaps: false,
+          metadata: {
+            musicVideoAssembly: {
+              mode: MUSIC_VIDEO_TIMELINE_ASSEMBLY_MODE,
+              kind: 'video',
+              assembledAt,
+              coverageType: String(row.coverage?.type || ''),
+              coverageLabel: row.coverageLabel,
+              sceneId: row.scene?.id || '',
+              shotId: row.shot?.id || '',
+              variantKey: row.variant?.key || '',
+              assetId: row.asset?.id || '',
+              audioStart: row.startTime,
+              length: row.duration,
+            },
+          },
+        })
+        if (clip) insertedVideoClips += 1
+      }
+    }
+
+    let insertedAudioClips = 0
+    if (yoloMusicAudioAsset) {
+      const audioTrack = getOrCreateTrack('audio', 'MV - Song', { channels: 'stereo' })
+      const audioDuration = Number(yoloMusicSongDurationSeconds || yoloMusicAudioAsset?.settings?.duration || yoloMusicAudioAsset?.duration || 0) || undefined
+      if (audioTrack) {
+        const clip = timelineAddClip(audioTrack.id, yoloMusicAudioAsset, 0, fps, {
+          duration: audioDuration,
+          saveHistory: false,
+          selectAfterAdd: false,
+          resolveOverlaps: false,
+          metadata: {
+            musicVideoAssembly: {
+              mode: MUSIC_VIDEO_TIMELINE_ASSEMBLY_MODE,
+              kind: 'song-audio',
+              assembledAt,
+              assetId: yoloMusicAudioAsset.id,
+              audioStart: 0,
+              length: audioDuration || null,
+            },
+          },
+        })
+        if (clip) insertedAudioClips += 1
+      }
+    }
+
+    const message = [
+      `Assembled ${insertedVideoClips} video clip${insertedVideoClips === 1 ? '' : 's'}`,
+      insertedAudioClips > 0 ? 'song audio' : '',
+      `in "${timelineResult.timelineName}"`,
+      `on ${groups.size} coverage track${groups.size === 1 ? '' : 's'}`,
+      missingRows.length > 0 ? `${missingRows.length} missing/failed shot${missingRows.length === 1 ? '' : 's'} skipped` : '',
+    ].filter(Boolean).join(' · ')
+
+    setFormError(null)
+    addComfyLog('status', `${message}.`)
+    if (createdTrackIds.size > 0) {
+      addComfyLog('status', `Created ${createdTrackIds.size} music-video timeline track${createdTrackIds.size === 1 ? '' : 's'}.`)
+    }
+    return {
+      ok: true,
+      message,
+      insertedVideoClips,
+      insertedAudioClips,
+      missingCount: missingRows.length,
+      replacedCount: previousAssemblyClipIds.length,
+      timelineName: timelineResult.timelineName,
+      trackCount: groups.size,
+    }
+  }, [
+    addComfyLog,
+    assets,
+    isYoloMusicMode,
+    resolution.height,
+    resolution.width,
+    setFormError,
+    timelineAddClip,
+    timelineAddTrack,
+    timelineFps,
+    yoloActivePlan,
+    yoloActivePlanIsStale,
+    yoloMusicActiveAltScript,
+    yoloMusicActiveScriptId,
+    yoloMusicAudioAsset,
+    yoloMusicScript,
+    yoloMusicSongDurationSeconds,
+    yoloQueueVariants,
+    yoloVideoFps,
+  ])
 
   const handleMusicStyleCardApply = useCallback((notes) => {
     const snippet = String(notes || '').trim()
@@ -5503,6 +6366,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           // through from the scene; the importer writes it onto the asset so
           // the UI can show a pass badge and future filters can group by pass.
           pass: (isYoloMusicMode && variant?.pass && typeof variant.pass === 'object') ? variant.pass : null,
+          coverage: (isYoloMusicMode && variant?.coverage && typeof variant.coverage === 'object') ? variant.coverage : null,
         },
       })
     })
@@ -5847,6 +6711,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           // Origin pass, mirrored from the keyframe stage so videos
           // inherit the same badge/filename token as their keyframe.
           pass: (isYoloMusicMode && variant?.pass && typeof variant.pass === 'object') ? variant.pass : null,
+          coverage: (isYoloMusicMode && variant?.coverage && typeof variant.coverage === 'object') ? variant.coverage : null,
         },
       }))
     }
@@ -6508,6 +7373,14 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
         // ── IMAGE detection: scan ALL nodes, ALL keys ──
         const images = []
+        const imageSignatures = new Set()
+        const pushUniqueImage = (info) => {
+          if (!info || !info.filename) return
+          const signature = `${info.filename}|${info.subfolder || ''}|${info.outputType || 'output'}`
+          if (imageSignatures.has(signature)) return
+          imageSignatures.add(signature)
+          images.push({ type: 'image', ...info })
+        }
         for (const nodeId of Object.keys(outputs)) {
           const nodeOut = outputs[nodeId]
           if (!nodeOut || typeof nodeOut !== 'object') continue
@@ -6522,7 +7395,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                 matchesExpectedPrefix(info.filename) &&
                 !isInputOutputType(info)
               ) {
-                images.push({ type: 'image', ...info })
+                pushUniqueImage(info)
               }
             }
           }
@@ -6535,7 +7408,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
               for (const item of val) {
                 const info = extractFromItem(item)
                 if (info && isImageFilename(info.filename) && matchesExpectedPrefix(info.filename) && !isInputOutputType(info)) {
-                  images.push({ type: 'image', ...info })
+                  pushUniqueImage(info)
                 }
               }
             }
@@ -6802,7 +7675,25 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     } else if (result.type === 'images') {
       let generatedImageFolderId = null
       const generatedImageFolderPath = generatedFolderPath('image')
-      const imageItems = Array.isArray(result.items) ? result.items : []
+      const rawImageItems = Array.isArray(result.items) ? result.items : []
+      const uniqueImageMap = new Map()
+      for (const item of rawImageItems) {
+        if (!item?.filename) continue
+        const filenameOnly = String(item.filename).split(/[\\/]/).pop() || String(item.filename)
+        const dedupeKey = filenameOnly.toLowerCase()
+        const existing = uniqueImageMap.get(dedupeKey)
+        if (!existing) {
+          uniqueImageMap.set(dedupeKey, item)
+          continue
+        }
+        const existingIsOutput = String(existing.outputType || '').toLowerCase() === 'output'
+        const nextIsOutput = String(item.outputType || '').toLowerCase() === 'output'
+        if (!existingIsOutput && nextIsOutput) uniqueImageMap.set(dedupeKey, item)
+      }
+      let imageItems = Array.from(uniqueImageMap.values())
+      if (job?.workflowId === 'multi-angles' || job?.workflowId === 'multi-angles-scene') {
+        imageItems = imageItems.slice(0, 8)
+      }
       for (let imageIndex = 0; imageIndex < imageItems.length; imageIndex += 1) {
         const img = imageItems[imageIndex]
         if (markImportedSignature('image', img.filename, img.subfolder, img.outputType)) continue
@@ -6902,6 +7793,81 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       updatedAt: Date.now(),
     })
   }, [])
+
+  const handleCreateAngleSheetForJob = useCallback(async (job) => {
+    if (!job || !Array.isArray(job.resultAssetIds) || job.resultAssetIds.length === 0) return
+    const targetProjectHandle = job?.originProject?.handle || currentProjectHandle
+    if (!targetProjectHandle) {
+      addComfyLog('error', 'Open or create a project before creating an angle sheet.')
+      return
+    }
+    const imageAssets = job.resultAssetIds
+      .map((id) => assets.find((asset) => asset?.id === id) || null)
+      .filter((asset) => asset?.type === 'image')
+    if (imageAssets.length === 0) {
+      addComfyLog('error', 'No generated image angles found for this job.')
+      return
+    }
+    updateJob(job.id, { isCombiningAngles: true, combineError: null })
+    try {
+      const resolveAssetUrl = async (asset) => {
+        if (asset?.path) {
+          try { return await getProjectFileUrl(targetProjectHandle, asset.path) } catch (_) {}
+        }
+        return asset?.url || null
+      }
+      const loadImage = (src) => new Promise((resolve, reject) => {
+        const img = new Image()
+        img.onload = () => resolve(img)
+        img.onerror = () => reject(new Error(`Failed to load image: ${src}`))
+        img.src = src
+      })
+      const urls = (await Promise.all(imageAssets.map(resolveAssetUrl))).filter(Boolean)
+      if (urls.length === 0) throw new Error('Could not resolve generated image files')
+      const images = await Promise.all(urls.map(loadImage))
+      const cols = Math.min(4, Math.max(1, images.length))
+      const rows = Math.ceil(images.length / cols)
+      const cellWidth = 1024
+      const cellHeight = 576
+      const canvas = document.createElement('canvas')
+      canvas.width = cols * cellWidth
+      canvas.height = rows * cellHeight
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Canvas initialization failed')
+      ctx.fillStyle = '#0b0e14'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      images.forEach((img, index) => {
+        const col = index % cols
+        const row = Math.floor(index / cols)
+        const scale = Math.min(cellWidth / Math.max(1, img.width), cellHeight / Math.max(1, img.height))
+        const drawW = Math.max(1, Math.floor(img.width * scale))
+        const drawH = Math.max(1, Math.floor(img.height * scale))
+        const x = col * cellWidth + Math.floor((cellWidth - drawW) / 2)
+        const y = row * cellHeight + Math.floor((cellHeight - drawH) / 2)
+        ctx.drawImage(img, x, y, drawW, drawH)
+      })
+      const sheetBlob = await new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Failed to export angle sheet'))), 'image/png')
+      })
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const file = new File([sheetBlob], `angle_sheet_${stamp}.png`, { type: 'image/png' })
+      const assetInfo = await importAsset(targetProjectHandle, file, 'images')
+      const newAsset = addAsset({
+        name: assetInfo.fileName,
+        type: 'image',
+        path: assetInfo.path,
+        url: areProjectHandlesSame(targetProjectHandle, currentProjectHandle) ? URL.createObjectURL(file) : null,
+      })
+      if (!newAsset) throw new Error('Failed to register angle sheet in assets')
+      await saveProject?.()
+      updateJob(job.id, { angleSheetAssetId: newAsset.id, isCombiningAngles: false, combineError: null })
+      addComfyLog('ok', `Angle sheet created: ${assetInfo.fileName}`)
+    } catch (error) {
+      const message = error?.message || 'Failed to create angle sheet'
+      updateJob(job.id, { isCombiningAngles: false, combineError: message })
+      addComfyLog('error', message)
+    }
+  }, [addAsset, addComfyLog, assets, currentProjectHandle, saveProject, updateJob])
 
   const runJob = useCallback(async (job) => {
     updateJob(job.id, { status: 'uploading', progress: 5, error: null })
@@ -7026,7 +7992,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             throw new Error('Generation returned a stale/duplicate output; job was not imported. Queue paused for safety.')
           }
           rememberLatestWorkflowPreview(job, importedAssets)
-          updateJob(job.id, { status: 'done', progress: 100, restoredFromLedger: false })
+          updateJob(job.id, {
+            status: 'done',
+            progress: 100,
+            restoredFromLedger: false,
+            resultAssetIds: importedAssets.map((asset) => asset?.id).filter(Boolean),
+          })
         } else {
           const msg = 'Generation finished but the output could not be detected'
           addComfyLog('error', msg)
@@ -7479,7 +8450,11 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           throw new Error('Generation returned a stale/duplicate output; job was not imported. Queue paused for safety.')
         }
         rememberLatestWorkflowPreview(job, importedAssets)
-        updateJob(job.id, { status: 'done', progress: 100 })
+        updateJob(job.id, {
+          status: 'done',
+          progress: 100,
+          resultAssetIds: importedAssets.map((asset) => asset?.id).filter(Boolean),
+        })
       } else {
         const msg = 'Generation finished but the output could not be detected'
         addComfyLog('error', msg)
@@ -8278,6 +9253,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                       >
                         Music Video Creation
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setYoloCreationType('short-film')}
+                        className={`flex-1 px-3 py-1.5 rounded text-xs transition-colors ${yoloCreationType === 'short-film' ? 'bg-sf-accent text-white' : 'text-sf-text-muted hover:text-sf-text-primary hover:bg-sf-dark-700'}`}
+                      >
+                        Short Film Creation
+                      </button>
                     </div>
 
                 {isAdEasyMode ? (
@@ -8288,6 +9270,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     yoloQueueVariants={yoloQueueVariants}
                     yoloStoryboardAssetMap={yoloStoryboardAssetMap}
                     yoloStoryboardReadyCount={yoloStoryboardReadyCount}
+                    yoloActivePlanIsStale={yoloActivePlanIsStale}
                     yoloDependencyCheckInProgress={yoloDependencyCheckInProgress}
                     yoloScript={yoloScript}
                     setYoloScript={setYoloScript}
@@ -8322,6 +9305,62 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     handleYoloShotImageBeatChange={handleYoloShotImageBeatChange}
                     handleYoloShotVideoBeatChange={handleYoloShotVideoBeatChange}
                     handleYoloShotTakesChange={handleYoloShotTakesChange}
+                    handleAssembleAdTimeline={handleAssembleAdTimeline}
+                  />
+                ) : isYoloMusicMode ? (
+                  <MusicVideoEasyMode
+                    assets={assets}
+                    yoloMusicAudioAssets={yoloMusicAudioAssets}
+                    yoloMusicAudioAssetId={yoloMusicAudioAssetId}
+                    setYoloMusicAudioAssetId={setYoloMusicAudioAssetId}
+                    yoloMusicAudioKind={yoloMusicAudioKind}
+                    setYoloMusicAudioKind={setYoloMusicAudioKind}
+                    yoloMusicAudioAsset={yoloMusicAudioAsset}
+                    yoloMusicTranscribingSrt={yoloMusicTranscribingSrt}
+                    yoloMusicTranscriptionStatus={yoloMusicTranscriptionStatus}
+                    handleYoloMusicTranscribeSrt={handleYoloMusicTranscribeSrt}
+                    yoloMusicLyrics={yoloMusicLyrics}
+                    setYoloMusicLyrics={setYoloMusicLyrics}
+                    yoloMusicParsedLyrics={yoloMusicParsedLyrics}
+                    yoloMusicScript={yoloMusicScript}
+                    setYoloMusicScript={setYoloMusicScript}
+                    yoloMusicCast={yoloMusicCast}
+                    yoloMusicResolvedCast={yoloMusicResolvedCast}
+                    yoloMusicVideoWorkflowId={yoloDefaultVideoWorkflowId}
+                    setYoloMusicVideoWorkflowId={setYoloMusicVideoWorkflowId}
+                    yoloMusicVideoWorkflowOptions={YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS}
+                    handleYoloMusicCastAdd={handleYoloMusicCastAdd}
+                    handleYoloMusicCastRemove={handleYoloMusicCastRemove}
+                    handleYoloMusicCastAssetChange={handleYoloMusicCastAssetChange}
+                    handleYoloMusicCastSlugChange={handleYoloMusicCastSlugChange}
+                    handleYoloMusicCastLabelChange={handleYoloMusicCastLabelChange}
+                    handleYoloMusicCastRoleChange={handleYoloMusicCastRoleChange}
+                    generationQueue={generationQueue}
+                    yoloActivePlan={yoloActivePlan}
+                    yoloQueueVariants={yoloQueueVariants}
+                    yoloStoryboardAssetMap={yoloStoryboardAssetMap}
+                    yoloStoryboardReadyCount={yoloStoryboardReadyCount}
+                    yoloActivePlanIsStale={yoloActivePlanIsStale}
+                    yoloDependencyCheckInProgress={yoloDependencyCheckInProgress}
+                    handleBuildActiveYoloPlan={handleBuildActiveYoloPlan}
+                    handleQueueYoloStoryboards={handleQueueYoloStoryboards}
+                    handleQueueYoloShotStoryboard={handleQueueYoloShotStoryboard}
+                    handleQueueYoloVideos={handleQueueYoloVideos}
+                    handleQueueYoloShotVideo={handleQueueYoloShotVideo}
+                    handleYoloShotImageBeatChange={handleYoloShotImageBeatChange}
+                    handleYoloShotVideoBeatChange={handleYoloShotVideoBeatChange}
+                    handleCopyMusicVideoLlmPrompt={handleCopyMusicVideoLlmPrompt}
+                    handleAssembleMusicVideoTimeline={handleAssembleMusicVideoTimeline}
+                    setYoloVideoFps={setYoloVideoFps}
+                    setResolution={setResolution}
+                    setImageResolution={setImageResolution}
+                  />
+                ) : isYoloShortFilmMode ? (
+                  <ShortFilmEasyMode
+                    assets={assets}
+                    setYoloVideoFps={setYoloVideoFps}
+                    setResolution={setResolution}
+                    setImageResolution={setImageResolution}
                   />
                 ) : (
                   <>
@@ -8383,23 +9422,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                           pass, not the video pass.
                         */}
                         <div>
-                          <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">Song Audio</label>
-                          <select
-                            value={yoloMusicAudioAssetId || ''}
-                            onChange={e => setYoloMusicAudioAssetId(e.target.value || null)}
-                            className="mt-1 w-full bg-sf-dark-800 border border-sf-dark-600 rounded-lg px-3 py-2 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
-                          >
-                            <option value="">Pick an audio asset…</option>
-                            {assets.filter((asset) => asset?.type === 'audio').map((asset) => (
-                              <option key={asset.id} value={asset.id}>{asset.name}</option>
-                            ))}
-                          </select>
-                          {assets.filter((a) => a?.type === 'audio').length === 0 && (
-                            <div className="mt-1 text-[10px] text-yellow-400">
-                              No audio assets in this project yet. Import the song file in the Assets panel first.
-                            </div>
-                          )}
-                          <div className="mt-2 grid grid-cols-3 gap-1">
+                          <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">Audio Type</label>
+                          <div className="mt-1 grid grid-cols-3 gap-1">
                             {MUSIC_VIDEO_AUDIO_KIND_OPTIONS.map((option) => {
                               const isSelected = yoloMusicAudioKind === option.id
                               return (
@@ -8421,6 +9445,41 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                           </div>
                           <div className="mt-1 text-[10px] text-sf-text-muted">
                             {getMusicVideoAudioKindOption(yoloMusicAudioKind)?.description || ''}
+                          </div>
+
+                          <div className="mt-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">Song Audio</label>
+                              <button
+                                type="button"
+                                onClick={handleImportYoloMusicAudio}
+                                disabled={yoloMusicAudioImporting || !currentProjectHandle}
+                                title={currentProjectHandle ? 'Import a song audio file into this project.' : 'Open or create a project first.'}
+                                className="inline-flex items-center gap-1.5 rounded border border-sf-accent/40 bg-sf-accent/10 px-2 py-1 text-[10px] font-medium text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {yoloMusicAudioImporting ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Upload className="h-3 w-3" />
+                                )}
+                                {yoloMusicAudioImporting ? 'Importing' : 'Import song'}
+                              </button>
+                            </div>
+                            <select
+                              value={yoloMusicAudioAssetId || ''}
+                              onChange={e => setYoloMusicAudioAssetId(e.target.value || null)}
+                              className="mt-1 w-full bg-sf-dark-800 border border-sf-dark-600 rounded-lg px-3 py-2 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                            >
+                              <option value="">Pick an audio asset…</option>
+                              {yoloMusicAudioAssets.map((asset) => (
+                                <option key={asset.id} value={asset.id}>{asset.name}</option>
+                              ))}
+                            </select>
+                            {yoloMusicAudioAssets.length === 0 && (
+                              <div className="mt-1 text-[10px] text-yellow-400">
+                                No song audio in this project yet.
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -10635,6 +11694,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                 const isStaleOutputError = typeof job.error === 'string'
                   && /stale\/duplicate output|stale output|duplicate output/i.test(job.error)
                 const title = `${job.workflowLabel || job.workflowId}${job.prompt ? ` — ${job.prompt}` : ''}`
+                const canCreateAngleSheet = (
+                  job.status === 'done'
+                  && (job.workflowId === 'multi-angles' || job.workflowId === 'multi-angles-scene')
+                  && Array.isArray(job.resultAssetIds)
+                  && job.resultAssetIds.length > 1
+                )
                 return (
                   <div key={job.id} className="bg-sf-dark-800 rounded-lg p-3 border border-sf-dark-700">
                     <div className="flex items-center justify-between text-[10px] text-sf-text-muted mb-1">
@@ -10680,6 +11745,21 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                           </span>
                         )}
                         <div className="text-[9px] text-sf-error">{job.error}</div>
+                      </div>
+                    )}
+                    {canCreateAngleSheet && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleCreateAngleSheetForJob(job)}
+                          disabled={Boolean(job.isCombiningAngles)}
+                          className="px-2 py-1 rounded border border-sf-dark-600 bg-sf-dark-700 hover:bg-sf-dark-600 text-[10px] text-sf-text-primary disabled:opacity-60"
+                        >
+                          {job.isCombiningAngles ? 'Creating Sheet...' : 'Create Angle Sheet'}
+                        </button>
+                        {job.combineError && (
+                          <span className="text-[9px] text-sf-error">{job.combineError}</span>
+                        )}
                       </div>
                     )}
                   </div>

@@ -1,5 +1,13 @@
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
+import useProjectStore from '../stores/projectStore'
+import { getAnimatedTransform } from './keyframes'
+import {
+  applyClipCrop,
+  applyClipTransform,
+  drawText,
+  getBaseDrawRect,
+} from '../services/exporter'
 
 /**
  * Get the topmost video or image clip at the given time (for capture).
@@ -53,70 +61,123 @@ export function getSourceTimeForClip(clip, timelineTime) {
   return Math.max(0, Math.min(rawSourceTime, maxSourceTime - 0.001))
 }
 
-/**
- * Capture the frame from the topmost video or image clip at the given timeline time.
- * Returns Promise<{ blobUrl, file }> or Promise<null> if no clip or error.
- */
-export function captureTimelineFrameAt(time) {
-  try {
-    const assetsState = useAssetsStore.getState()
-    if (!assetsState || typeof assetsState.getAssetById !== 'function') return Promise.resolve(null)
-    const top = getTopmostVideoOrImageClipAtTime(time)
-    if (!top) return Promise.resolve(null)
-    const { clip } = top
-    const asset = assetsState.getAssetById(clip.assetId)
-    if (!asset?.url) return Promise.resolve(null)
-
-  if (clip.type === 'image') {
-    return fetch(asset.url)
-      .then((r) => r.blob())
-      .then((blob) => {
-        const file = new File([blob], `timeline_frame_${Date.now()}.png`, { type: 'image/png' })
-        const blobUrl = URL.createObjectURL(blob)
-        return { blobUrl, file }
-      })
-      .catch(() => null)
+async function renderTimelineCompositeStill(time, canvas, width, height) {
+  const timelineState = useTimelineStore.getState()
+  const assetsState = useAssetsStore.getState()
+  if (!timelineState || !assetsState || typeof timelineState.getActiveClipsAtTime !== 'function') {
+    return false
   }
 
-  if (clip.type === 'video') {
-    const sourceTime = getSourceTimeForClip(clip, time)
-    return new Promise((resolve) => {
-      const video = document.createElement('video')
-      video.crossOrigin = 'anonymous'
-      video.muted = true
-      video.preload = 'auto'
-      video.src = asset.url
+  const activeClips = timelineState.getActiveClipsAtTime(time)
+  if (!Array.isArray(activeClips) || activeClips.length === 0) return false
 
-      video.onloadedmetadata = () => {
-        video.currentTime = Math.min(sourceTime, Math.max(0, (video.duration || 0) - 0.01))
-      }
-
-      video.onseeked = () => {
-        const canvas = document.createElement('canvas')
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
-        canvas.getContext('2d').drawImage(video, 0, 0)
-        canvas.toBlob(
-          (blob) => {
-            if (blob) {
-              const file = new File([blob], `timeline_frame_${Date.now()}.png`, { type: 'image/png' })
-              const blobUrl = URL.createObjectURL(blob)
-              resolve({ blobUrl, file })
-            } else {
-              resolve(null)
-            }
-          },
-          'image/png'
-        )
-      }
-
-      video.onerror = () => resolve(null)
+  const tracks = timelineState.tracks || []
+  const visualClips = activeClips
+    .filter(({ track }) => track && track.type === 'video')
+    .sort((a, b) => {
+      const indexA = tracks.findIndex((track) => track && track.id === a.track.id)
+      const indexB = tracks.findIndex((track) => track && track.id === b.track.id)
+      return indexB - indexA
     })
+
+  if (visualClips.length === 0) return false
+
+  const ctx = canvas.getContext('2d', { alpha: false })
+  if (!ctx) return false
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.globalAlpha = 1
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.filter = 'none'
+  ctx.fillStyle = '#000000'
+  ctx.fillRect(0, 0, width, height)
+
+  let drewSomething = false
+  const cleanups = []
+
+  try {
+    for (const { clip } of visualClips) {
+      if (!clip) continue
+
+      const clipTime = time - (clip.startTime || 0)
+      const clipTransform = getAnimatedTransform(clip, clipTime) || clip.transform || {}
+      const opacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
+      const blendMode = clipTransform.blendMode || 'normal'
+
+      if (clip.type === 'text') {
+        const rect = getBaseDrawRect(width, height, width, height)
+        ctx.save()
+        ctx.globalAlpha = opacity
+        ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
+        ctx.filter = clipTransform.blur > 0 ? `blur(${clipTransform.blur}px)` : 'none'
+        applyClipTransform(ctx, rect, clipTransform, null)
+        applyClipCrop(ctx, rect, clipTransform)
+        drawText(ctx, rect, clip, 1)
+        ctx.restore()
+        drewSomething = true
+        continue
+      }
+
+      if (clip.type !== 'video' && clip.type !== 'image') continue
+      const asset = assetsState.getAssetById(clip.assetId)
+      if (!asset?.url) continue
+
+      const loaded = await loadClipSourceAtTime(clip, asset, time)
+      if (!loaded?.element) continue
+      cleanups.push(loaded.cleanup)
+
+      const sourceWidth = loaded.width || width
+      const sourceHeight = loaded.height || height
+      const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
+
+      ctx.save()
+      ctx.globalAlpha = opacity
+      ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
+      ctx.filter = clipTransform.blur > 0 ? `blur(${clipTransform.blur}px)` : 'none'
+      applyClipTransform(ctx, rect, clipTransform, null)
+      applyClipCrop(ctx, rect, clipTransform)
+      ctx.drawImage(loaded.element, 0, 0, rect.width, rect.height)
+      ctx.restore()
+      drewSomething = true
+    }
+  } finally {
+    for (const cleanup of cleanups) {
+      try { cleanup?.() } catch (_) { /* ignore cleanup failures */ }
+    }
   }
 
-  return Promise.resolve(null)
-  } catch (_) {
-    return Promise.resolve(null)
+  return drewSomething
+}
+
+/**
+ * Capture the composed timeline frame at the given timeline time.
+ * Returns Promise<{ blobUrl, file }> or Promise<null> if no visual clip or error.
+ */
+export async function captureTimelineFrameAt(time) {
+  try {
+    const projectState = useProjectStore.getState?.()
+    const settings = projectState?.getCurrentTimelineSettings?.()
+      || projectState?.currentProject?.settings
+      || {}
+    const width = Math.max(16, Math.min(7680, Number(settings.width) || 1920))
+    const height = Math.max(16, Math.min(4320, Number(settings.height) || 1080))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+
+    const rendered = await renderTimelineCompositeStill(time, canvas, width, height)
+    if (!rendered) return null
+
+    const blob = await new Promise((resolve) => canvas.toBlob((nextBlob) => resolve(nextBlob), 'image/png'))
+    if (!blob) return null
+
+    const file = new File([blob], `timeline_frame_${Date.now()}.png`, { type: 'image/png' })
+    const blobUrl = URL.createObjectURL(blob)
+    return { blobUrl, file }
+  } catch (err) {
+    console.warn('[captureTimelineFrame] failed to capture timeline composite:', err?.message || err)
+    return null
   }
 }
 

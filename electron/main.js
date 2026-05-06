@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, screen } = require('electron')
 const crypto = require('crypto')
 const path = require('path')
 const fs = require('fs').promises
@@ -28,11 +28,14 @@ const COMFYUI_CHECK_MS = 2500        // Max wait for ComfyUI
 const STEP_DELAY_MS = 400            // Delay between status messages
 const COMFY_CONNECTION_SETTING_KEY = 'comfyConnection'
 const DEFAULT_LOCAL_COMFY_PORT = 8188
+const MAIN_WINDOW_STATE_SETTING_KEY = 'mainWindowState'
+const DEFAULT_MAIN_WINDOW_BOUNDS = Object.freeze({ width: 1600, height: 1000 })
 
 let mainWindow = null
 let splashWindow = null
 let exportWorkerWindow = null
 let restoreFullscreenAfterMinimize = false
+let mainWindowStateSaveTimer = null
 const settingsPath = path.join(app.getPath('userData'), 'settings.json')
 
 function resolvePackagedBinaryPath(binaryPath) {
@@ -104,6 +107,129 @@ function getWindowState() {
 function sendWindowState() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.webContents.send('window:stateChanged', getWindowState())
+}
+
+function sanitizeWindowBounds(bounds) {
+  if (!bounds || typeof bounds !== 'object') return null
+  const x = Number(bounds.x)
+  const y = Number(bounds.y)
+  const width = Number(bounds.width)
+  const height = Number(bounds.height)
+  if (![x, y, width, height].every(Number.isFinite)) return null
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.max(1200, Math.round(width)),
+    height: Math.max(800, Math.round(height)),
+  }
+}
+
+function getBoundsIntersectionArea(bounds, area) {
+  if (!bounds || !area) return 0
+  const left = Math.max(bounds.x, area.x)
+  const top = Math.max(bounds.y, area.y)
+  const right = Math.min(bounds.x + bounds.width, area.x + area.width)
+  const bottom = Math.min(bounds.y + bounds.height, area.y + area.height)
+  return Math.max(0, right - left) * Math.max(0, bottom - top)
+}
+
+function getDisplayForSavedWindowState(savedState, bounds) {
+  const displays = screen.getAllDisplays()
+  if (!displays.length) return null
+
+  const savedDisplayId = savedState?.displayId
+  if (savedDisplayId != null) {
+    const display = displays.find((candidate) => String(candidate.id) === String(savedDisplayId))
+    if (display) return display
+  }
+
+  let bestDisplay = null
+  let bestArea = 0
+  for (const display of displays) {
+    const area = getBoundsIntersectionArea(bounds, display.workArea)
+    if (area > bestArea) {
+      bestArea = area
+      bestDisplay = display
+    }
+  }
+
+  return bestDisplay || screen.getPrimaryDisplay()
+}
+
+function clampWindowBoundsToDisplay(bounds, display) {
+  const workArea = display?.workArea || screen.getPrimaryDisplay().workArea
+  const width = Math.min(Math.max(1200, bounds?.width || DEFAULT_MAIN_WINDOW_BOUNDS.width), workArea.width)
+  const height = Math.min(Math.max(800, bounds?.height || DEFAULT_MAIN_WINDOW_BOUNDS.height), workArea.height)
+  const requestedX = Number(bounds?.x)
+  const requestedY = Number(bounds?.y)
+  const centeredX = workArea.x + Math.round((workArea.width - width) / 2)
+  const centeredY = workArea.y + Math.round((workArea.height - height) / 2)
+  const x = Math.min(
+    Math.max(workArea.x, Number.isFinite(requestedX) ? requestedX : centeredX),
+    workArea.x + Math.max(0, workArea.width - width)
+  )
+  const y = Math.min(
+    Math.max(workArea.y, Number.isFinite(requestedY) ? requestedY : centeredY),
+    workArea.y + Math.max(0, workArea.height - height)
+  )
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  }
+}
+
+async function getRestoredMainWindowState() {
+  const settings = await readSettingsRaw()
+  const savedState = settings?.[MAIN_WINDOW_STATE_SETTING_KEY] || {}
+  const savedBounds = sanitizeWindowBounds(savedState.bounds)
+  const primaryDisplay = screen.getPrimaryDisplay()
+
+  if (!savedBounds) {
+    return {
+      bounds: clampWindowBoundsToDisplay(DEFAULT_MAIN_WINDOW_BOUNDS, primaryDisplay),
+      isMaximized: true,
+    }
+  }
+
+  const display = getDisplayForSavedWindowState(savedState, savedBounds) || primaryDisplay
+  return {
+    bounds: clampWindowBoundsToDisplay(savedBounds, display),
+    isMaximized: savedState.isMaximized !== false,
+  }
+}
+
+async function saveMainWindowStateNow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) return
+
+  try {
+    const currentBounds = mainWindow.getBounds()
+    const normalBounds = sanitizeWindowBounds(mainWindow.getNormalBounds?.() || currentBounds)
+    const display = screen.getDisplayMatching(currentBounds)
+    await writeSettingsRaw((settings) => ({
+      ...settings,
+      [MAIN_WINDOW_STATE_SETTING_KEY]: {
+        bounds: normalBounds || sanitizeWindowBounds(currentBounds),
+        displayId: display?.id ?? null,
+        isMaximized: mainWindow.isMaximized(),
+        updatedAt: new Date().toISOString(),
+      },
+    }))
+  } catch (error) {
+    console.warn('[mainWindowState] save failed:', error?.message || error)
+  }
+}
+
+function scheduleSaveMainWindowState() {
+  if (mainWindowStateSaveTimer) {
+    clearTimeout(mainWindowStateSaveTimer)
+  }
+  mainWindowStateSaveTimer = setTimeout(() => {
+    mainWindowStateSaveTimer = null
+    saveMainWindowStateNow()
+  }, 350)
 }
 
 function setSplashStatus(text) {
@@ -1090,9 +1216,9 @@ function createSplashWindow() {
 }
 
 async function createWindow() {
+  const restoredWindowState = await getRestoredMainWindowState()
   mainWindow = new BrowserWindow({
-    width: 1600,
-    height: 1000,
+    ...restoredWindowState.bounds,
     minWidth: 1200,
     minHeight: 800,
     icon: iconPath,
@@ -1117,7 +1243,9 @@ async function createWindow() {
   // too intrusive for a window they're not actively playing back from.
   // Users who want edge-to-edge can still toggle fullscreen via the
   // title-bar control or the window:toggleFullScreen IPC.
-  mainWindow.maximize()
+  if (restoredWindowState.isMaximized) {
+    mainWindow.maximize()
+  }
 
   // Route every external link to the user's default browser instead of
   // letting Electron spawn an in-app BrowserWindow. This covers:
@@ -1266,6 +1394,10 @@ async function createWindow() {
   })
 
   mainWindow.on('closed', () => {
+    if (mainWindowStateSaveTimer) {
+      clearTimeout(mainWindowStateSaveTimer)
+      mainWindowStateSaveTimer = null
+    }
     mainWindow = null
   })
 
@@ -1278,10 +1410,25 @@ async function createWindow() {
     }, 0)
   })
 
-  mainWindow.on('maximize', sendWindowState)
-  mainWindow.on('unmaximize', sendWindowState)
+  mainWindow.on('move', scheduleSaveMainWindowState)
+  mainWindow.on('resize', scheduleSaveMainWindowState)
+  mainWindow.on('maximize', () => {
+    sendWindowState()
+    scheduleSaveMainWindowState()
+  })
+  mainWindow.on('unmaximize', () => {
+    sendWindowState()
+    scheduleSaveMainWindowState()
+  })
   mainWindow.on('enter-full-screen', sendWindowState)
   mainWindow.on('leave-full-screen', sendWindowState)
+  mainWindow.on('close', () => {
+    if (mainWindowStateSaveTimer) {
+      clearTimeout(mainWindowStateSaveTimer)
+      mainWindowStateSaveTimer = null
+    }
+    saveMainWindowStateNow()
+  })
   
   // Register keyboard shortcut for DevTools (F12 or Ctrl+Shift+I)
   mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -3126,16 +3273,16 @@ app.whenReady().then(() => {
   const splash = createSplashWindow()
   splash.webContents.once('did-finish-load', () => {
     runStartupChecks()
-      .then(() => {
-        createWindow()
+      .then(async () => {
+        await createWindow()
         if (splashWindow && !splashWindow.isDestroyed()) {
           splashWindow.close()
           splashWindow = null
         }
       })
-      .catch((err) => {
+      .catch(async (err) => {
         console.error('Startup checks failed:', err)
-        createWindow()
+        await createWindow()
         if (splashWindow && !splashWindow.isDestroyed()) {
           splashWindow.close()
           splashWindow = null
@@ -3145,7 +3292,9 @@ app.whenReady().then(() => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
+      createWindow().catch((error) => {
+        console.error('Failed to create window:', error)
+      })
     }
   })
 })

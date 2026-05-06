@@ -15,6 +15,13 @@ const IMAGE_RESOLUTION_OPTIONS = [
   { label: 'Portrait', value: '1080x1920' },
 ]
 
+const Z_IMAGE_TURBO_IMAGE_RESOLUTION_OPTIONS = [
+  { label: '1080p', value: '1920x1080' },
+  { label: 'Square 1K', value: '1024x1024' },
+  { label: 'Square 2K', value: '2048x2048' },
+  { label: 'Portrait', value: '1080x1920' },
+]
+
 function Segmented({ options, value, onChange }) {
   return (
     <div className="flex flex-wrap gap-1 rounded-lg border border-sf-dark-700 bg-sf-dark-800 p-1">
@@ -222,12 +229,15 @@ export default function WorkflowFieldRenderer({ field, workflow, values, actions
   }
 
   if (field.type === 'imageResolution') {
+    const imageResolutionOptions = String(workflow?.workflowId || '').trim() === 'z-image-turbo'
+      ? Z_IMAGE_TURBO_IMAGE_RESOLUTION_OPTIONS
+      : IMAGE_RESOLUTION_OPTIONS
     const value = `${values.imageResolution?.width || 1024}x${values.imageResolution?.height || 1024}`
     return (
       <div className="space-y-1.5">
         {commonLabel}
         <Segmented
-          options={IMAGE_RESOLUTION_OPTIONS}
+          options={imageResolutionOptions}
           value={value}
           onChange={(next) => {
             const [width, height] = String(next).split('x').map(Number)

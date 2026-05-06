@@ -37,7 +37,8 @@ function TransportControls() {
     togglePlay: assetTogglePlay,
     seekTo: assetSeekTo,
     setVolume,
-    previewMode
+    previewMode,
+    mediaPreparation,
   } = useAssetsStore()
   
   // Timeline store (for timeline playback)
@@ -80,6 +81,7 @@ function TransportControls() {
   const currentTime = timelineMode ? playheadPosition : assetCurrentTime
   const duration = timelineMode ? (endTime || 60) : assetDuration
   const hasContent = timelineMode ? clips.length > 0 : currentPreview !== null
+  const playDisabled = !hasContent || Boolean(mediaPreparation?.critical)
 
   const selectedLoopRange = useMemo(() => {
     if (!timelineMode) return null
@@ -128,6 +130,7 @@ function TransportControls() {
   
   // Unified controls
   const togglePlay = () => {
+    if (playDisabled) return
     if (timelineMode) {
       timelineTogglePlay()
     } else {
@@ -180,6 +183,10 @@ function TransportControls() {
   // JKL Shuttle keyboard handlers
   useEffect(() => {
     const handleKeyDown = (e) => {
+      const active = document.activeElement
+      const target = e.target
+      if (isTextEditingElement(active) || isTextEditingElement(target)) return
+
       // Reserve timeline frame-step on Left/Right globally so inspector controls
       // don't trap arrow keys when the user expects timeline navigation.
       if (e.key === 'ArrowLeft') {
@@ -193,11 +200,6 @@ function TransportControls() {
         return
       }
 
-      // For other shortcuts, don't trigger while typing text. Range sliders and
-      // buttons should not trap playback shortcuts after the user adjusts them.
-      const active = document.activeElement
-      if (isTextEditingElement(active)) return
-      
       // JKL Controls
       if (e.key === 'j' || e.key === 'J') {
         e.preventDefault()
@@ -246,7 +248,7 @@ function TransportControls() {
       if (e.key === 'Enter' && !e.repeat) {
         const target = e.target
         if (isTextEditingElement(target)) return
-        if (hasContent) {
+        if (!playDisabled) {
           e.preventDefault()
           togglePlay()
         }
@@ -255,7 +257,7 @@ function TransportControls() {
       // Space = Play/Pause toggle on keyup.
       // We defer to keyup so Space+drag (pan/zoom in timeline/preview) doesn't toggle playback.
       if (e.code === 'Space' && !e.repeat) {
-        if (!hasContent) return
+        if (playDisabled) return
         pendingSpaceToggleRef.current = true
         spaceUsedAsModifierRef.current = false
         e.preventDefault()
@@ -272,7 +274,7 @@ function TransportControls() {
         const shouldToggle = pendingSpaceToggleRef.current && !spaceUsedAsModifierRef.current
         pendingSpaceToggleRef.current = false
         spaceUsedAsModifierRef.current = false
-        if (shouldToggle && hasContent) {
+        if (shouldToggle && !playDisabled) {
           e.preventDefault()
           togglePlay()
         }
@@ -294,7 +296,7 @@ function TransportControls() {
       window.removeEventListener('keyup', handleKeyUp)
       window.removeEventListener('mousedown', handleMouseDown)
     }
-  }, [isKHeld, hasContent, isPlaying, togglePlay, shuttleReverse, shuttlePause, shuttleForward, shuttleSlow, setInPoint, setOutPoint, clearInOutPoints, frameBack, frameForward])
+  }, [isKHeld, playDisabled, isPlaying, togglePlay, shuttleReverse, shuttlePause, shuttleForward, shuttleSlow, setInPoint, setOutPoint, clearInOutPoints, frameBack, frameForward])
 
   // Format playback rate display
   const getPlaybackRateDisplay = () => {
@@ -448,12 +450,14 @@ function TransportControls() {
             onClick={togglePlay}
             onContextMenu={handlePlayContextMenu}
             className={`p-2 mx-1 rounded-full transition-colors relative ${
-              hasContent 
+              !playDisabled 
                 ? 'bg-sf-blue hover:bg-sf-blue-hover' 
                 : 'bg-sf-dark-600 cursor-not-allowed'
             }`}
-            disabled={!hasContent}
-            title={`${isPlaying ? 'Pause' : 'Play'} • Space/Enter = Play/Pause • Right-click for playback mode`}
+            disabled={playDisabled}
+            title={mediaPreparation?.critical
+              ? 'Project media is still loading'
+              : `${isPlaying ? 'Pause' : 'Play'} • Space/Enter = Play/Pause • Right-click for playback mode`}
           >
             {isPlaying ? (
               <Pause className="w-4 h-4 text-white" />
