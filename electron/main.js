@@ -34,6 +34,7 @@ const DEFAULT_MAIN_WINDOW_BOUNDS = Object.freeze({ width: 1600, height: 1000 })
 let mainWindow = null
 let splashWindow = null
 let exportWorkerWindow = null
+const activeFramePipeExports = new Map()
 let restoreFullscreenAfterMinimize = false
 let mainWindowStateSaveTimer = null
 const settingsPath = path.join(app.getPath('userData'), 'settings.json')
@@ -2619,6 +2620,9 @@ ipcMain.handle('export:runInWorker', async (event, payload) => {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
+      // Export renders inside a hidden window. Keep timers/rAF/video callbacks
+      // unthrottled so frame export speed is not limited by background mode.
+      backgroundThrottling: false,
       // Allow loading file:// URLs for video/image elements during export (otherwise "Media load rejected by URL safety check")
       webSecurity: false,
     },
@@ -2938,16 +2942,10 @@ ipcMain.handle('export:mixAudio', async (event, options = {}) => {
   })
 })
 
-ipcMain.handle('export:encodeVideo', async (event, options = {}) => {
+function appendExportVideoEncoderArgs(args, options = {}) {
   const {
-    framePattern,
-    fps = 24,
-    outputPath,
-    audioPath = null,
     format = 'mp4',
-    duration = null,
     videoCodec = 'h264',
-    audioCodec = 'aac',
     proresProfile = '3',
     useHardwareEncoder = false,
     nvencPreset = 'p5',
@@ -2956,26 +2954,9 @@ ipcMain.handle('export:encodeVideo', async (event, options = {}) => {
     crf = 18,
     bitrateKbps = 8000,
     keyframeInterval = null,
-    audioBitrateKbps = 192,
-    audioSampleRate = 44100
   } = options
 
-  if (!ffmpegPath) {
-    return { success: false, error: 'FFmpeg binary not available.' }
-  }
-  if (!framePattern || !outputPath) {
-    return { success: false, error: 'Missing export inputs.' }
-  }
-
   let encoderUsed = null
-  const args = ['-y', '-framerate', String(fps), '-i', framePattern]
-  if (audioPath) {
-    args.push('-i', audioPath)
-  }
-  if (duration) {
-    args.push('-t', String(duration))
-  }
-
   const isProRes = videoCodec === 'prores' || (format === 'mov' && options.proresProfile != null)
   const normalizedCodec = isProRes
     ? 'prores'
@@ -3081,11 +3062,60 @@ ipcMain.handle('export:encodeVideo', async (event, options = {}) => {
     args.push('-movflags', '+faststart')
   }
 
+  return encoderUsed
+}
+
+function appendExportAudioEncoderArgs(args, options = {}) {
+  const {
+    format = 'mp4',
+    audioCodec = 'aac',
+    audioBitrateKbps = 192,
+    audioSampleRate = 44100,
+  } = options
+
+  const useOpus = format === 'webm' || audioCodec === 'opus'
+  args.push('-c:a', useOpus ? 'libopus' : 'aac')
+  args.push('-b:a', `${audioBitrateKbps}k`)
+  args.push('-ar', String(audioSampleRate))
+}
+
+const appendLimitedStderr = (current, data) => {
+  const next = `${current}${data.toString()}`
+  return next.length > 24000 ? next.slice(-24000) : next
+}
+
+ipcMain.handle('export:encodeVideo', async (event, options = {}) => {
+  const {
+    framePattern,
+    fps = 24,
+    outputPath,
+    audioPath = null,
+    format = 'mp4',
+    duration = null,
+    audioCodec = 'aac',
+    audioBitrateKbps = 192,
+    audioSampleRate = 44100
+  } = options
+
+  if (!ffmpegPath) {
+    return { success: false, error: 'FFmpeg binary not available.' }
+  }
+  if (!framePattern || !outputPath) {
+    return { success: false, error: 'Missing export inputs.' }
+  }
+
+  const args = ['-y', '-framerate', String(fps), '-i', framePattern]
   if (audioPath) {
-    const useOpus = format === 'webm' || audioCodec === 'opus'
-    args.push('-c:a', useOpus ? 'libopus' : 'aac')
-    args.push('-b:a', `${audioBitrateKbps}k`)
-    args.push('-ar', String(audioSampleRate))
+    args.push('-i', audioPath)
+  }
+  if (duration) {
+    args.push('-t', String(duration))
+  }
+
+  const encoderUsed = appendExportVideoEncoderArgs(args, options)
+
+  if (audioPath) {
+    appendExportAudioEncoderArgs(args, { format, audioCodec, audioBitrateKbps, audioSampleRate })
   }
 
   args.push(outputPath)
@@ -3096,7 +3126,7 @@ ipcMain.handle('export:encodeVideo', async (event, options = {}) => {
     let stderr = ''
 
     ffmpeg.stderr.on('data', (data) => {
-      stderr += data.toString()
+      stderr = appendLimitedStderr(stderr, data)
     })
 
     ffmpeg.on('error', (err) => {
@@ -3108,6 +3138,219 @@ ipcMain.handle('export:encodeVideo', async (event, options = {}) => {
         resolve({ success: true, encoderUsed })
       } else {
         resolve({ success: false, error: stderr || `FFmpeg exited with code ${code}`, encoderUsed })
+      }
+    })
+  })
+})
+
+ipcMain.handle('export:startFramePipe', async (event, options = {}) => {
+  const {
+    width,
+    height,
+    fps = 24,
+    outputPath,
+    format = 'mp4',
+    duration = null,
+  } = options
+
+  if (!ffmpegPath) {
+    return { success: false, error: 'FFmpeg binary not available.' }
+  }
+  if (!width || !height || !outputPath) {
+    return { success: false, error: 'Missing frame pipe inputs.' }
+  }
+
+  const args = [
+    '-y',
+    '-f', 'rawvideo',
+    '-pix_fmt', 'rgba',
+    '-video_size', `${Math.round(Number(width))}x${Math.round(Number(height))}`,
+    '-framerate', String(fps),
+    '-i', 'pipe:0',
+  ]
+  if (duration) {
+    args.push('-t', String(duration))
+  }
+
+  const encoderUsed = appendExportVideoEncoderArgs(args, options)
+  args.push(outputPath)
+
+  const sessionId = crypto.randomUUID()
+  const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] })
+  let stderr = ''
+  let closed = false
+  let closeCode = null
+  let spawnError = null
+
+  const closePromise = new Promise((resolve) => {
+    ffmpeg.stderr.on('data', (data) => {
+      stderr = appendLimitedStderr(stderr, data)
+    })
+    ffmpeg.on('error', (err) => {
+      spawnError = err
+    })
+    ffmpeg.on('close', (code) => {
+      closed = true
+      closeCode = code
+      resolve({ code })
+    })
+  })
+
+  activeFramePipeExports.set(sessionId, {
+    ffmpeg,
+    closePromise,
+    encoderUsed,
+    getClosed: () => closed,
+    getCloseCode: () => closeCode,
+    getError: () => spawnError,
+    getStderr: () => stderr,
+  })
+
+  console.log(`[Export] Frame pipe started with ${encoderUsed} (${options.useHardwareEncoder ? 'NVENC' : 'software'})`)
+  return { success: true, sessionId, encoderUsed }
+})
+
+ipcMain.handle('export:writeFrameToPipe', async (event, sessionId, frameBuffer) => {
+  const session = activeFramePipeExports.get(sessionId)
+  if (!session) {
+    return { success: false, error: 'Frame pipe session not found.' }
+  }
+  if (session.getClosed()) {
+    return {
+      success: false,
+      error: session.getStderr() || `Frame pipe closed with code ${session.getCloseCode()}`,
+    }
+  }
+  if (!frameBuffer) {
+    return { success: false, error: 'Missing frame buffer.' }
+  }
+
+  try {
+    const buffer = Buffer.from(frameBuffer)
+    const stream = session.ffmpeg.stdin
+    const canContinue = stream.write(buffer)
+    if (!canContinue) {
+      await new Promise((resolve, reject) => {
+        const cleanup = () => {
+          stream.removeListener('drain', onDrain)
+          stream.removeListener('error', onError)
+        }
+        const onDrain = () => {
+          cleanup()
+          resolve()
+        }
+        const onError = (err) => {
+          cleanup()
+          reject(err)
+        }
+        stream.once('drain', onDrain)
+        stream.once('error', onError)
+      })
+    }
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message || String(err) }
+  }
+})
+
+ipcMain.handle('export:finishFramePipe', async (event, sessionId) => {
+  const session = activeFramePipeExports.get(sessionId)
+  if (!session) {
+    return { success: false, error: 'Frame pipe session not found.' }
+  }
+
+  try {
+    if (!session.getClosed()) {
+      session.ffmpeg.stdin.end()
+    }
+    await session.closePromise
+    activeFramePipeExports.delete(sessionId)
+    if (session.getError()) {
+      return { success: false, error: session.getError().message || String(session.getError()), encoderUsed: session.encoderUsed }
+    }
+    if (session.getCloseCode() !== 0) {
+      return {
+        success: false,
+        error: session.getStderr() || `FFmpeg exited with code ${session.getCloseCode()}`,
+        encoderUsed: session.encoderUsed,
+      }
+    }
+    return { success: true, encoderUsed: session.encoderUsed }
+  } catch (err) {
+    activeFramePipeExports.delete(sessionId)
+    return { success: false, error: err.message || String(err), encoderUsed: session.encoderUsed }
+  }
+})
+
+ipcMain.handle('export:abortFramePipe', async (event, sessionId) => {
+  const session = activeFramePipeExports.get(sessionId)
+  if (!session) return { success: true }
+  activeFramePipeExports.delete(sessionId)
+  try {
+    if (!session.ffmpeg.killed) {
+      session.ffmpeg.kill('SIGKILL')
+    }
+  } catch {
+    // ignore abort errors
+  }
+  return { success: true }
+})
+
+ipcMain.handle('export:muxAudioVideo', async (event, options = {}) => {
+  const {
+    videoPath,
+    audioPath,
+    outputPath,
+    format = 'mp4',
+    duration = null,
+    audioCodec = 'aac',
+    audioBitrateKbps = 192,
+    audioSampleRate = 44100,
+  } = options
+
+  if (!ffmpegPath) {
+    return { success: false, error: 'FFmpeg binary not available.' }
+  }
+  if (!videoPath || !outputPath) {
+    return { success: false, error: 'Missing mux inputs.' }
+  }
+
+  const args = ['-y', '-i', videoPath]
+  if (audioPath) {
+    args.push('-i', audioPath)
+  }
+  if (duration) {
+    args.push('-t', String(duration))
+  }
+  args.push('-map', '0:v:0')
+  if (audioPath) {
+    args.push('-map', '1:a:0', '-c:v', 'copy')
+    appendExportAudioEncoderArgs(args, { format, audioCodec, audioBitrateKbps, audioSampleRate })
+  } else {
+    args.push('-c:v', 'copy')
+  }
+  if (format === 'mp4') {
+    args.push('-movflags', '+faststart')
+  }
+  args.push(outputPath)
+
+  return await new Promise((resolve) => {
+    const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true })
+    let stderr = ''
+
+    ffmpeg.stderr.on('data', (data) => {
+      stderr = appendLimitedStderr(stderr, data)
+    })
+
+    ffmpeg.on('error', (err) => {
+      resolve({ success: false, error: err.message })
+    })
+
+    ffmpeg.on('close', (code) => {
+      if (code === 0) {
+        resolve({ success: true })
+      } else {
+        resolve({ success: false, error: stderr || `FFmpeg exited with code ${code}` })
       }
     })
   })

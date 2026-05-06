@@ -142,6 +142,7 @@ function ExportPanel() {
     useCachedRenders: false,
     useProxyMedia: false,
     fastSeek: false,
+    useDirectFramePipe: true,
   })
   const [queue, setQueue] = useState([])
   const [isExporting, setIsExporting] = useState(false)
@@ -544,6 +545,11 @@ function ExportPanel() {
     if (settings.format === 'webm' || settings.videoCodec === 'vp9') {
       hints.push('VP9/WebM encodes slower than H.264/H.265.')
     }
+    if (settings.useDirectFramePipe) {
+      hints.push('Fast FFmpeg pipe skips writing PNG frames before encoding.')
+    } else {
+      hints.push('Enable Fast FFmpeg pipe to avoid PNG frame files.')
+    }
     
     const maskClips = clips.filter(clip => (clip.effects || []).some(effect => effect.type === 'mask' && effect.enabled))
     const cachedMaskClips = maskClips.filter(clip => clip.cacheStatus === 'cached')
@@ -624,6 +630,7 @@ function ExportPanel() {
       useCachedRenders: jobSettings.useCachedRenders,
       useProxyMedia: jobSettings.useProxyMedia,
       fastSeek: jobSettings.fastSeek,
+      useDirectFramePipe: jobSettings.useDirectFramePipe,
     }
 
     if (window.electronAPI?.runExportInWorker && typeof currentProjectHandle === 'string') {
@@ -859,6 +866,22 @@ function ExportPanel() {
                       Expected encoder: {nvencExpectedEncoder}
                     </div>
                   )}
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      onClick={() => handleSettingChange('useDirectFramePipe', !settings.useDirectFramePipe)}
+                      className={`px-2 py-1 text-xs rounded border transition-colors ${
+                        settings.useDirectFramePipe
+                          ? 'bg-sf-accent text-white border-sf-accent'
+                          : 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600'
+                      }`}
+                      title="Stream rendered frames directly into FFmpeg instead of writing PNG frames first"
+                    >
+                      Fast FFmpeg pipe
+                    </button>
+                    <span className="text-[10px] text-sf-text-muted">
+                      Skips PNG frame files during export
+                    </span>
+                  </div>
                 </div>
                 
                 <div>

@@ -99,6 +99,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<{success: boolean, error?: string}>}
    */
   encodeVideo: (options) => ipcRenderer.invoke('export:encodeVideo', options),
+  startFramePipe: (options) => ipcRenderer.invoke('export:startFramePipe', options),
+  writeFrameToPipe: (sessionId, frameBuffer) => ipcRenderer.invoke('export:writeFrameToPipe', sessionId, frameBuffer),
+  finishFramePipe: (sessionId) => ipcRenderer.invoke('export:finishFramePipe', sessionId),
+  abortFramePipe: (sessionId) => ipcRenderer.invoke('export:abortFramePipe', sessionId),
+  muxAudioVideo: (options) => ipcRenderer.invoke('export:muxAudioVideo', options),
 
   /**
    * Mix timeline audio clips into a WAV file using FFmpeg

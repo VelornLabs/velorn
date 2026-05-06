@@ -98,7 +98,14 @@ const getMediaErrorMessage = (err) => {
 }
 
 /** Yield to the event loop so the UI can repaint and avoid the window going black during export */
-const yieldToMain = () => new Promise(resolve => requestAnimationFrame(resolve))
+const yieldToMain = () => new Promise(resolve => {
+  const hiddenDocument = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  if (hiddenDocument || typeof requestAnimationFrame !== 'function') {
+    setTimeout(resolve, 0)
+    return
+  }
+  requestAnimationFrame(resolve)
+})
 
 /** Stronger yield: give the event loop a full time slice (helps prevent renderer crash under heavy export) */
 const yieldToEventLoop = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -769,6 +776,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     useCachedRenders = true,
     useProxyMedia = false,
     fastSeek = true,
+    useDirectFramePipe = true,
   } = options
   
   const totalDuration = Math.max(0, rangeEnd - rangeStart)
@@ -818,6 +826,18 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   }
   const framePattern = await window.electronAPI.pathJoin(framesFolder, 'frame_%06d.png')
   const audioPath = await window.electronAPI.pathJoin(tempFolder, 'audio.wav')
+  const canUseDirectFramePipe = Boolean(
+    useDirectFramePipe
+    && window.electronAPI?.startFramePipe
+    && window.electronAPI?.writeFrameToPipe
+    && window.electronAPI?.finishFramePipe
+    && window.electronAPI?.abortFramePipe
+  )
+  const pipedVideoPath = canUseDirectFramePipe && includeAudio
+    ? await window.electronAPI.pathJoin(tempFolder, `video_only.${outputExtension}`)
+    : outputPath
+  let framePipeSessionId = null
+  let framePipeEncoderUsed = null
   
   onProgress({ status: EXPORT_STATUS.preparing, progress: 2 })
   
@@ -939,12 +959,42 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       maskElements.set(mask.id, images)
     }
   }
+
+  if (canUseDirectFramePipe) {
+    onProgress({ status: 'Starting fast FFmpeg pipe...', progress: 4 })
+    const pipeStart = await window.electronAPI.startFramePipe({
+      width,
+      height,
+      fps,
+      outputPath: pipedVideoPath,
+      format: outputExtension,
+      duration: totalDuration,
+      videoCodec,
+      proresProfile: format === 'prores' ? proresProfile : undefined,
+      useHardwareEncoder,
+      nvencPreset,
+      preset,
+      qualityMode,
+      crf,
+      bitrateKbps,
+      keyframeInterval,
+    })
+    if (pipeStart?.success && pipeStart.sessionId) {
+      framePipeSessionId = pipeStart.sessionId
+      framePipeEncoderUsed = pipeStart.encoderUsed || null
+      console.log(`Export frame pipe started with: ${framePipeEncoderUsed || 'unknown encoder'}`)
+    } else {
+      console.warn('[Export] Fast FFmpeg pipe unavailable; falling back to PNG frame sequence:', pipeStart?.error)
+      onProgress({ status: 'Fast pipe unavailable - using PNG frame sequence...', progress: 4 })
+    }
+  }
   
   onProgress({ status: EXPORT_STATUS.rendering, progress: 5 })
   
   const frameDuration = fps > 0 ? 1 / fps : 0
   const halfFrame = frameDuration / 2
 
+  try {
   for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
     await yieldToMain()
     const targetTime = rangeStart + frameIndex * frameDuration + halfFrame
@@ -1517,10 +1567,22 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       ctx.restore()
     }
     
-    const frameBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
-    const frameBuffer = await frameBlob.arrayBuffer()
-    const framePath = await window.electronAPI.pathJoin(framesFolder, `frame_${formatFrameNumber(frameIndex + 1)}.png`)
-    await window.electronAPI.writeFileFromArrayBuffer(framePath, frameBuffer)
+    if (framePipeSessionId) {
+      const frameData = ctx.getImageData(0, 0, width, height)
+      const pixelData = frameData.data
+      const frameBuffer = pixelData.byteOffset === 0 && pixelData.byteLength === pixelData.buffer.byteLength
+        ? pixelData.buffer
+        : pixelData.buffer.slice(pixelData.byteOffset, pixelData.byteOffset + pixelData.byteLength)
+      const writeResult = await window.electronAPI.writeFrameToPipe(framePipeSessionId, frameBuffer)
+      if (!writeResult?.success) {
+        throw new Error(writeResult?.error || 'Failed to write frame to FFmpeg pipe.')
+      }
+    } else {
+      const frameBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+      const frameBuffer = await frameBlob.arrayBuffer()
+      const framePath = await window.electronAPI.pathJoin(framesFolder, `frame_${formatFrameNumber(frameIndex + 1)}.png`)
+      await window.electronAPI.writeFileFromArrayBuffer(framePath, frameBuffer)
+    }
     
     if (frameIndex % 5 === 0) {
       const progress = 5 + Math.floor((frameIndex / totalFrames) * 70)
@@ -1534,6 +1596,27 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     if (frameIndex > 0 && frameIndex % 10 === 0) {
       await yieldToEventLoop()
     }
+  }
+  } catch (err) {
+    if (framePipeSessionId) {
+      try {
+        await window.electronAPI.abortFramePipe(framePipeSessionId)
+      } catch {
+        // ignore abort errors
+      }
+      framePipeSessionId = null
+    }
+    throw err
+  }
+
+  if (framePipeSessionId) {
+    onProgress({ status: 'Finalizing fast FFmpeg pipe...', progress: 78 })
+    const pipeFinish = await window.electronAPI.finishFramePipe(framePipeSessionId)
+    framePipeSessionId = null
+    if (!pipeFinish?.success) {
+      throw new Error(pipeFinish?.error || 'Failed to finish FFmpeg frame pipe.')
+    }
+    framePipeEncoderUsed = pipeFinish.encoderUsed || framePipeEncoderUsed
   }
   
   let audioFilePath = null
@@ -1772,26 +1855,52 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   onProgress({ status: EXPORT_STATUS.encoding, progress: 90 })
   await yieldToMain()
 
-  const encodeResult = await window.electronAPI.encodeVideo({
-    framePattern,
-    fps,
-    outputPath,
-    audioPath: audioFilePath,
-    format: outputExtension,
-    duration: totalDuration,
-    videoCodec,
-    audioCodec,
-    proresProfile: format === 'prores' ? proresProfile : undefined,
-    useHardwareEncoder,
-    nvencPreset,
-    preset,
-    qualityMode,
-    crf,
-    bitrateKbps,
-    keyframeInterval,
-    audioBitrateKbps,
-    audioSampleRate,
-  })
+  let encodeResult = null
+  if (framePipeEncoderUsed) {
+    if (audioFilePath && pipedVideoPath !== outputPath) {
+      onProgress({ status: 'Muxing fast-pipe video with audio...', progress: 92 })
+      const muxResult = await window.electronAPI.muxAudioVideo({
+        videoPath: pipedVideoPath,
+        audioPath: audioFilePath,
+        outputPath,
+        format: outputExtension,
+        duration: totalDuration,
+        audioCodec,
+        audioBitrateKbps,
+        audioSampleRate,
+      })
+      if (!muxResult?.success) {
+        throw new Error(muxResult?.error || 'Failed to mux audio onto fast-pipe export.')
+      }
+    } else if (pipedVideoPath !== outputPath) {
+      const copyResult = await window.electronAPI.copyFile(pipedVideoPath, outputPath)
+      if (!copyResult?.success) {
+        throw new Error(copyResult?.error || 'Failed to copy fast-pipe export to output path.')
+      }
+    }
+    encodeResult = { success: true, encoderUsed: framePipeEncoderUsed }
+  } else {
+    encodeResult = await window.electronAPI.encodeVideo({
+      framePattern,
+      fps,
+      outputPath,
+      audioPath: audioFilePath,
+      format: outputExtension,
+      duration: totalDuration,
+      videoCodec,
+      audioCodec,
+      proresProfile: format === 'prores' ? proresProfile : undefined,
+      useHardwareEncoder,
+      nvencPreset,
+      preset,
+      qualityMode,
+      crf,
+      bitrateKbps,
+      keyframeInterval,
+      audioBitrateKbps,
+      audioSampleRate,
+    })
+  }
   
   if (!encodeResult?.success) {
     throw new Error(encodeResult?.error || 'Failed to encode export.')
