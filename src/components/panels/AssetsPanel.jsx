@@ -43,6 +43,14 @@ const getTransparentAssetDragImage = () => {
   return transparentAssetDragImage
 }
 
+const normalizeSearchText = (value) => String(value ?? '').toLowerCase()
+
+const assetMatchesSearch = (asset, normalizedQuery) => {
+  if (!normalizedQuery) return true
+  return normalizeSearchText(asset?.name).includes(normalizedQuery)
+    || normalizeSearchText(asset?.prompt).includes(normalizedQuery)
+}
+
 function AssetsPanel() {
   const [viewMode, setViewMode] = useState('grid')
   const [thumbnailSize, setThumbnailSize] = useState('medium')
@@ -419,42 +427,39 @@ function AssetsPanel() {
   const currentFolder = currentFolderId ? folders?.find(f => f.id === currentFolderId) : null
   const subFolders = (folders || []).filter(f => f.parentId === currentFolderId)
   const projectTimelines = currentProject?.timelines || []
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase()
   
   // Filter assets by current folder and search query
   const filteredAssets = assets.filter(asset => {
     const matchesFolder = (asset.folderId || null) === currentFolderId
-    const matchesSearch = searchQuery === '' || 
-      asset.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      asset.prompt?.toLowerCase().includes(searchQuery.toLowerCase())
-    return matchesFolder && matchesSearch
+    return matchesFolder && assetMatchesSearch(asset, normalizedSearchQuery)
   })
 
   const filteredTimelines = useMemo(() => {
-    const normalizedQuery = searchQuery.trim().toLowerCase()
     return projectTimelines.filter((timeline) => {
       const timelineFolderId = timeline?.folderId || null
       const matchesFolder = timelineFolderId === currentFolderId
       if (!matchesFolder) return false
-      if (!normalizedQuery) return true
-      return timeline?.name?.toLowerCase().includes(normalizedQuery)
+      if (!normalizedSearchQuery) return true
+      return normalizeSearchText(timeline?.name).includes(normalizedSearchQuery)
     })
-  }, [currentFolderId, projectTimelines, searchQuery])
+  }, [currentFolderId, normalizedSearchQuery, projectTimelines])
   
   // Get subfolders by parent (for list view expand)
   const getSubfoldersOf = (parentId) => (folders || []).filter(f => f.parentId === parentId)
   // Get assets in folder, optionally filtered by search
   const getAssetsInFolder = (folderId, search = '') => {
+    const normalizedQuery = String(search || '').trim().toLowerCase()
     return assets.filter(a => {
       const inFolder = (a.folderId || null) === folderId
-      const matchesSearch = !search || a.name.toLowerCase().includes(search.toLowerCase()) || a.prompt?.toLowerCase().includes(search.toLowerCase())
-      return inFolder && matchesSearch
+      return inFolder && assetMatchesSearch(a, normalizedQuery)
     })
   }
   const getTimelinesInFolder = (folderId, search = '') => {
+    const normalizedQuery = String(search || '').trim().toLowerCase()
     return projectTimelines.filter((timeline) => {
       const inFolder = (timeline?.folderId || null) === folderId
-      const matchesSearch = !search || timeline?.name?.toLowerCase().includes(search.toLowerCase())
-      return inFolder && matchesSearch
+      return inFolder && (!normalizedQuery || normalizeSearchText(timeline?.name).includes(normalizedQuery))
     })
   }
 

@@ -38,6 +38,7 @@ const ASPECT_RATIO_OPTIONS = [
 const RESOLUTION_OPTIONS = [
   { id: '720p', label: '720p' },
   { id: '1080p', label: '1080p' },
+  { id: '2k', label: '2K' },
 ]
 
 const FPS_OPTIONS = [24, 25, 30]
@@ -175,6 +176,15 @@ function getShotTypeId(shot) {
 }
 
 function resolveOutputResolution(aspectRatio, resolutionPreset) {
+  if (resolutionPreset === '2k') {
+    if (aspectRatio === 'vertical_9x16') {
+      return { width: 1152, height: 2048 }
+    }
+    if (aspectRatio === 'square_1x1') {
+      return { width: 2048, height: 2048 }
+    }
+    return { width: 2048, height: 1152 }
+  }
   const is1080 = resolutionPreset === '1080p'
   if (aspectRatio === 'vertical_9x16') {
     return is1080 ? { width: 1080, height: 1920 } : { width: 720, height: 1280 }
@@ -183,6 +193,15 @@ function resolveOutputResolution(aspectRatio, resolutionPreset) {
     return is1080 ? { width: 1080, height: 1080 } : { width: 720, height: 720 }
   }
   return is1080 ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
+}
+
+function workflowSupports2kResolution(workflowId) {
+  return String(workflowId || '').trim() === MUSIC_VIDEO_SHOT_WORKFLOW_ID
+}
+
+function getResolutionFallbackForWorkflow(workflowId, resolutionPreset) {
+  if (workflowSupports2kResolution(workflowId)) return resolutionPreset
+  return resolutionPreset === '720p' ? resolutionPreset : '720p'
 }
 
 function formatResolutionLabel(resolution) {
@@ -427,6 +446,7 @@ export default function MusicVideoEasyMode({
   const selectedVideoWorkflowId = String(selectedVideoWorkflow?.id || '').trim()
   const selectedVideoWorkflowLabel = selectedVideoWorkflow?.label || selectedVideoWorkflowId || 'Video model'
   const defaultVideoWorkflowId = videoWorkflowOptions[0]?.id || MUSIC_VIDEO_SHOT_WORKFLOW_ID
+  const selectedVideoWorkflowSupports2k = workflowSupports2kResolution(selectedVideoWorkflowId)
   const storyboardJobMap = useMemo(() => {
     const map = new Map()
     for (const job of generationQueue || []) {
@@ -513,6 +533,13 @@ export default function MusicVideoEasyMode({
   }, [flatShots.length, selectedShotIndex])
 
   useEffect(() => {
+    const nextPreset = getResolutionFallbackForWorkflow(selectedVideoWorkflowId, resolutionPreset)
+    if (nextPreset !== resolutionPreset) {
+      setResolutionPreset(nextPreset)
+    }
+  }, [resolutionPreset, selectedVideoWorkflowId])
+
+  useEffect(() => {
     setResolution(outputResolution)
     setImageResolution(outputResolution)
     setYoloVideoFps(Number(videoFps) || 24)
@@ -572,12 +599,14 @@ export default function MusicVideoEasyMode({
 
   const handleVideoWorkflowChange = (workflowId) => {
     if (!workflowId || workflowId === selectedVideoWorkflowId) return
+    setResolutionPreset(getResolutionFallbackForWorkflow(workflowId, resolutionPreset))
     setYoloMusicVideoWorkflowId?.(workflowId)
     setVideoStatus('')
   }
 
   const handleResolutionPresetChange = (presetId) => {
     if (!RESOLUTION_OPTIONS.some((option) => option.id === presetId)) return
+    if (getResolutionFallbackForWorkflow(selectedVideoWorkflowId, presetId) !== presetId) return
     if (presetId === resolutionPreset) return
     setResolutionPreset(presetId)
     setVideoStatus('')
@@ -1395,6 +1424,114 @@ export default function MusicVideoEasyMode({
     </div>
   )
 
+  const renderAdvancedVideoSettings = () => (
+    <details className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
+      <summary className="cursor-pointer list-none">
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">Advanced rerender settings</div>
+            <div className="mt-1 text-sm font-semibold text-sf-text-primary">
+              {selectedVideoWorkflowLabel} / {outputResolutionLabel} / {videoFps} fps
+            </div>
+            <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
+              Change these only when you want future renders or rerenders to use a different video model or size.
+            </p>
+          </div>
+          <span className="rounded-full border border-sf-dark-600 px-2 py-1 text-[10px] text-sf-text-muted">
+            Open settings
+          </span>
+        </div>
+      </summary>
+      <div className="mt-4 space-y-3">
+        <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/50 p-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.14em] text-sf-text-muted">Video model pass</div>
+              <div className="mt-1 text-sm font-semibold text-sf-text-primary">Viewing {selectedVideoWorkflowLabel}</div>
+              <p className="mt-1 max-w-3xl text-xs leading-5 text-sf-text-secondary">
+                Use the same keyframes to create or rerun this music-video pass with a different animation model.
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {videoWorkflowOptions.map((option) => (
+              <button
+                key={`music-video-model-${option.id}`}
+                type="button"
+                onClick={() => handleVideoWorkflowChange(option.id)}
+                title={option.description}
+                className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${buttonClass(selectedVideoWorkflowId === option.id)}`}
+              >
+                <div className="font-semibold">{option.label}</div>
+                {option.description && (
+                  <div className="mt-1 text-[10px] leading-4 text-sf-text-muted">{option.description}</div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/50 p-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.14em] text-sf-text-muted">New rerenders use</div>
+              <div className="mt-1 text-sm font-semibold text-sf-text-primary">{outputResolutionLabel}</div>
+              <p className="mt-1 max-w-3xl text-xs leading-5 text-sf-text-secondary">
+                {selectedVideoWorkflowSupports2k
+                  ? 'This affects future video renders only. For the cleanest high-res shot, regenerate that shot keyframe at the same size first, then rerun the video.'
+                  : 'WAN 2.2 rerenders are limited to 720p here, so higher resolutions are disabled for this model.'}
+              </p>
+            </div>
+            <div className="grid min-w-[240px] grid-cols-3 gap-2">
+              {RESOLUTION_OPTIONS.map((option) => {
+                const disabled = getResolutionFallbackForWorkflow(selectedVideoWorkflowId, option.id) !== option.id
+                return (
+                  <button
+                    key={`music-video-resolution-${option.id}`}
+                    type="button"
+                    onClick={() => handleResolutionPresetChange(option.id)}
+                    disabled={disabled}
+                    title={disabled ? 'WAN 2.2 rerenders are limited to 720p.' : ''}
+                    className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
+                      disabled
+                        ? 'cursor-not-allowed border-sf-dark-700 bg-sf-dark-950/50 text-sf-text-muted/40'
+                        : buttonClass(resolutionPreset === option.id)
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+        {selectedVideoWorkflowId !== defaultVideoWorkflowId && (
+          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs leading-5 text-yellow-100">
+            {selectedVideoWorkflowLabel} uses the generated keyframes and motion prompts, but it will not use the song audio for lip-sync. Keep the LTX 2.3 Music pass for vocal-sync coverage.
+          </div>
+        )}
+        <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/50 p-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.14em] text-sf-text-muted">Batch rerender</div>
+              <div className="mt-1 text-sm font-semibold text-sf-text-primary">Regenerate every planned video shot</div>
+              <p className="mt-1 max-w-3xl text-xs leading-5 text-sf-text-secondary">
+                Use this when you intentionally want to replace or create a full new pass with the current model and rerender size.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleRegenerateAllVideos}
+              disabled={!canQueueVideos || isQueuingVideos || yoloDependencyCheckInProgress}
+              className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Regenerate All With {selectedVideoWorkflowLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    </details>
+  )
+
   const renderVideosStep = () => (
     <div className="space-y-4">
       {renderStepHeader(
@@ -1407,64 +1544,6 @@ export default function MusicVideoEasyMode({
         <Stat label="Ready videos" value={videoReadyCount} />
       </div>
       <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">Video model pass</div>
-            <div className="mt-1 text-sm font-semibold text-sf-text-primary">Viewing {selectedVideoWorkflowLabel}</div>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-sf-text-secondary">
-              Use the same keyframes to create or rerun this music-video pass with a different animation model.
-            </p>
-          </div>
-          <span className="rounded-full border border-sf-dark-600 px-2 py-1 text-[10px] text-sf-text-muted">
-            {outputResolutionLabel} / {videoFps} fps
-          </span>
-        </div>
-        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {videoWorkflowOptions.map((option) => (
-            <button
-              key={`music-video-model-${option.id}`}
-              type="button"
-              onClick={() => handleVideoWorkflowChange(option.id)}
-              title={option.description}
-              className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${buttonClass(selectedVideoWorkflowId === option.id)}`}
-            >
-              <div className="font-semibold">{option.label}</div>
-              {option.description && (
-                <div className="mt-1 text-[10px] leading-4 text-sf-text-muted">{option.description}</div>
-              )}
-            </button>
-          ))}
-        </div>
-        <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/50 p-3">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.14em] text-sf-text-muted">Rerun resolution</div>
-              <div className="mt-1 text-sm font-semibold text-sf-text-primary">{outputResolutionLabel}</div>
-              <p className="mt-1 max-w-3xl text-xs leading-5 text-sf-text-secondary">
-                New video reruns use this size. For the cleanest 1080p shot, regenerate that shot keyframe at 1080p first, then rerun the video.
-              </p>
-            </div>
-            <div className="grid min-w-[180px] grid-cols-2 gap-2">
-              {RESOLUTION_OPTIONS.map((option) => (
-                <button
-                  key={`music-video-resolution-${option.id}`}
-                  type="button"
-                  onClick={() => handleResolutionPresetChange(option.id)}
-                  className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${buttonClass(resolutionPreset === option.id)}`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-        {selectedVideoWorkflowId !== defaultVideoWorkflowId && (
-          <div className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs leading-5 text-yellow-100">
-            {selectedVideoWorkflowLabel} uses the generated keyframes and motion prompts, but it will not use the song audio for lip-sync. Keep the LTX 2.3 Music pass for vocal-sync coverage.
-          </div>
-        )}
-      </div>
-      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
@@ -1474,15 +1553,20 @@ export default function MusicVideoEasyMode({
             <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
               The script decides whether each row is lip-sync performance, wide performance coverage, or b-roll.
             </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-sf-text-muted">
+              <span className="rounded-full border border-sf-dark-600 px-2 py-1">Current pass: {selectedVideoWorkflowLabel}</span>
+              <span className="rounded-full border border-sf-dark-600 px-2 py-1">{outputResolutionLabel} / {videoFps} fps</span>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={handleRegenerateAllVideos}
+              onClick={handleQueueVideos}
               disabled={!canQueueVideos || isQueuingVideos || yoloDependencyCheckInProgress}
-              className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Regenerate All With {selectedVideoWorkflowLabel}
+              {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Generate Videos With {selectedVideoWorkflowLabel}
             </button>
             <button
               type="button"
@@ -1493,15 +1577,6 @@ export default function MusicVideoEasyMode({
             >
               {isAssemblingTimeline ? <Loader2 className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}
               Assemble Timeline
-            </button>
-            <button
-              type="button"
-              onClick={handleQueueVideos}
-              disabled={!canQueueVideos || isQueuingVideos || yoloDependencyCheckInProgress}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Generate Videos With {selectedVideoWorkflowLabel}
             </button>
           </div>
         </div>
@@ -1598,50 +1673,55 @@ export default function MusicVideoEasyMode({
             })}
           </div>
           {selectedShotRow && (
-            <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3">
-              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-sf-text-primary">
-                    Shot {selectedShotIndex + 1}: {selectedShotRow.shot.scriptShotLabel || selectedShotRow.scene.label || selectedShotRow.shot.id}
-                  </div>
-                  <div className="mt-1 text-[10px] text-sf-text-muted">
-                    {[selectedVideoWorkflowLabel, outputResolutionLabel, `${videoFps} fps`, getCoverageLabel(selectedShotRow.scene, selectedShotRow.shot)].filter(Boolean).join(' / ')}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleRegenerateSelectedVideo}
-                  disabled={isQueuingVideos || yoloDependencyCheckInProgress}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                  Run Selected With {selectedVideoWorkflowLabel}
-                </button>
+            <div className="space-y-3">
+              <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs leading-5 text-yellow-100">
+                Not happy with a shot? Select it here, adjust the motion prompt if needed, then rerun just that shot. Use this area for fixes, alternate takes, or trying a different model or resolution without rebuilding the whole music video.
               </div>
-              <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                <div>
-                  <label className="block text-xs text-sf-text-secondary">
-                    <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Edit shot motion prompt</span>
-                    <textarea
-                      value={selectedShotRow.shot.videoBeat || selectedShotRow.shot.beat || selectedShotRow.shot.shotPrompt || ''}
-                      onChange={(event) => handleYoloShotVideoBeatChange?.(selectedShotRow.scene.id, selectedShotRow.shot.id, event.target.value)}
-                      rows={5}
-                      className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
-                      placeholder="Describe the motion/action for this one video rerun..."
-                    />
-                  </label>
-                  <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-                    This changes the selected shot's video prompt for new renders only. It does not rewrite the original director script.
-                  </p>
+              <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3">
+                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-sf-text-primary">
+                      Shot {selectedShotIndex + 1}: {selectedShotRow.shot.scriptShotLabel || selectedShotRow.scene.label || selectedShotRow.shot.id}
+                    </div>
+                    <div className="mt-1 text-[10px] text-sf-text-muted">
+                      {[selectedVideoWorkflowLabel, outputResolutionLabel, `${videoFps} fps`, getCoverageLabel(selectedShotRow.scene, selectedShotRow.shot)].filter(Boolean).join(' / ')}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRegenerateSelectedVideo}
+                    disabled={isQueuingVideos || yoloDependencyCheckInProgress}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                    Run Selected With {selectedVideoWorkflowLabel}
+                  </button>
                 </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Timing</div>
-                  <div className="mt-1 rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-secondary">
-                    <div>Start: {(Number(selectedShotRow.shot.audioStart) || 0).toFixed(2)}s</div>
-                    <div>Length: {(Number(selectedShotRow.shot.length || selectedShotRow.shot.durationSeconds) || 0).toFixed(1)}s</div>
-                    {selectedShotRow.shot.scriptLyricMoment && (
-                      <div className="mt-1 italic text-sf-text-muted">"{selectedShotRow.shot.scriptLyricMoment}"</div>
-                    )}
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  <div>
+                    <label className="block text-xs text-sf-text-secondary">
+                      <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Edit shot motion prompt</span>
+                      <textarea
+                        value={selectedShotRow.shot.videoBeat || selectedShotRow.shot.beat || selectedShotRow.shot.shotPrompt || ''}
+                        onChange={(event) => handleYoloShotVideoBeatChange?.(selectedShotRow.scene.id, selectedShotRow.shot.id, event.target.value)}
+                        rows={5}
+                        className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
+                        placeholder="Describe the motion/action for this one video rerun..."
+                      />
+                    </label>
+                    <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
+                      This changes the selected shot's video prompt for new renders only. It does not rewrite the original director script.
+                    </p>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Timing</div>
+                    <div className="mt-1 rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-secondary">
+                      <div>Start: {(Number(selectedShotRow.shot.audioStart) || 0).toFixed(2)}s</div>
+                      <div>Length: {(Number(selectedShotRow.shot.length || selectedShotRow.shot.durationSeconds) || 0).toFixed(1)}s</div>
+                      {selectedShotRow.shot.scriptLyricMoment && (
+                        <div className="mt-1 italic text-sf-text-muted">"{selectedShotRow.shot.scriptLyricMoment}"</div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1649,6 +1729,7 @@ export default function MusicVideoEasyMode({
           )}
         </div>
       )}
+      {renderAdvancedVideoSettings()}
     </div>
   )
 

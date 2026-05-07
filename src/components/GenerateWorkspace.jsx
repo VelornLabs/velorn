@@ -9268,30 +9268,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                       Back to create workflows
                     </button>
 
-                    <div className="flex items-center gap-1 p-1 rounded-lg bg-sf-dark-800 border border-sf-dark-700">
-                      <button
-                        type="button"
-                        onClick={() => setYoloCreationType('ad')}
-                        className={`flex-1 px-3 py-1.5 rounded text-xs transition-colors ${yoloCreationType === 'ad' ? 'bg-sf-accent text-white' : 'text-sf-text-muted hover:text-sf-text-primary hover:bg-sf-dark-700'}`}
-                      >
-                        Ad Creation
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setYoloCreationType('music')}
-                        className={`flex-1 px-3 py-1.5 rounded text-xs transition-colors ${yoloCreationType === 'music' ? 'bg-sf-accent text-white' : 'text-sf-text-muted hover:text-sf-text-primary hover:bg-sf-dark-700'}`}
-                      >
-                        Music Video Creation
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setYoloCreationType('short-film')}
-                        className={`flex-1 px-3 py-1.5 rounded text-xs transition-colors ${yoloCreationType === 'short-film' ? 'bg-sf-accent text-white' : 'text-sf-text-muted hover:text-sf-text-primary hover:bg-sf-dark-700'}`}
-                      >
-                        Short Film Creation
-                      </button>
-                    </div>
-
                 {isAdEasyMode ? (
                   <AdEasyMode
                     assets={assets}
