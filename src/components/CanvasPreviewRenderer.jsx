@@ -34,8 +34,16 @@ import {
 
 const PRELOAD_LOOKAHEAD = 2.5
 const PLAYBACK_DIAG_KEY = 'comfystudio-playback-diag'
+const SCRUB_ACTIVE_WINDOW_MS = 220
+const SCRUB_SETTLE_DELAY_MS = SCRUB_ACTIVE_WINDOW_MS + 45
+const SCRUB_SEEK_MIN_INTERVAL_MS = 75
+const SCRUB_READY_TOLERANCE = 0.18
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
+
+function getNowMs() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now()
+}
 
 function isPlaybackDiagEnabled() {
   if (typeof localStorage === 'undefined') return false
@@ -330,6 +338,9 @@ function CanvasPreviewRenderer({
   const drawFrameRef = useRef(null)
   const deferredDrawTimerRef = useRef(0)
   const deferredDrawRafRef = useRef(0)
+  const scrubSettleTimerRef = useRef(0)
+  const scrubPreviewStateRef = useRef({ lastPlayhead: 0, activeUntil: 0 })
+  const scrubSeekThrottleRef = useRef(new Map())
   const hasPaintedFrameRef = useRef(false)
   const lastPreloadTimeRef = useRef(0)
   const [, setAssetRevision] = useState(0)
@@ -547,10 +558,10 @@ function CanvasPreviewRenderer({
         const targetTime = isCachedRender ? clamp(clipTime, 0, Math.max(0, clip.duration - 0.01)) : getClipPlaybackTimeAtTimeline(clip, time)
         const timeDiff = Math.abs((video.currentTime || 0) - targetTime)
         const seekDriven = isSeekDrivenPlayback(state, clip)
-        const seekThreshold = state.isPlaying
-          ? (seekDriven ? 0.12 : 0.16)
-          : 0.025
-        if (video.readyState >= 1 && timeDiff > seekThreshold) {
+        const seekThreshold = state.isScrubbingPreview
+          ? SCRUB_READY_TOLERANCE
+          : (state.isPlaying ? (seekDriven ? 0.12 : 0.16) : 0.025)
+        if (!state.isScrubbingPreview && video.readyState >= 1 && timeDiff > seekThreshold) {
           video.currentTime = targetTime
         }
         if (state.isPlaying && !seekDriven && video.readyState >= 2) {
@@ -736,6 +747,10 @@ function CanvasPreviewRenderer({
     const height = latestRef.current.height || safeHeight
     const fps = latestRef.current.fps || safeFps
     const time = state.playheadPosition || 0
+    const nowMs = getNowMs()
+    const isScrubbingPreview = !state.isPlaying
+      && nowMs < (scrubPreviewStateRef.current.activeUntil || 0)
+    state.isScrubbingPreview = isScrubbingPreview
     const transitionInfo = state.getTransitionAtTime(time)
     const frameIndex = Math.floor(time * fps)
     const visualClips = getVisualLayerClips(state, time)
@@ -769,8 +784,21 @@ function CanvasPreviewRenderer({
           return
         }
 
-        const readyTolerance = seekDriven ? 0.12 : 0.025
+        const readyTolerance = state.isScrubbingPreview
+          ? SCRUB_READY_TOLERANCE
+          : (seekDriven ? 0.12 : 0.025)
         if (Math.abs((video.currentTime || 0) - targetTime) > readyTolerance) {
+          if (state.isScrubbingPreview) {
+            const throttleKey = clip.id || clip.assetId || clipUrl
+            const lastSeekAt = scrubSeekThrottleRef.current.get(throttleKey) || 0
+            if (nowMs - lastSeekAt >= SCRUB_SEEK_MIN_INTERVAL_MS) {
+              video.currentTime = targetTime
+              scrubSeekThrottleRef.current.set(throttleKey, nowMs)
+            }
+            scheduleDeferredDraw('scrub-video-seek')
+            if (video.readyState >= 2 && video.videoWidth && video.videoHeight) continue
+            return
+          }
           video.currentTime = targetTime
           scheduleDeferredDraw(seekDriven ? 'seek-video-seek' : 'paused-video-seek')
           // If we already have a good frame, preserve it while the parked
@@ -826,6 +854,35 @@ function CanvasPreviewRenderer({
   drawFrameRef.current = drawFrame
 
   useEffect(() => {
+    const currentPlayhead = Number(playheadPosition) || 0
+    const scrubState = scrubPreviewStateRef.current
+
+    if (isPlaying) {
+      scrubState.lastPlayhead = currentPlayhead
+      scrubState.activeUntil = 0
+      scrubSeekThrottleRef.current.clear()
+      if (scrubSettleTimerRef.current) {
+        window.clearTimeout(scrubSettleTimerRef.current)
+        scrubSettleTimerRef.current = 0
+      }
+      return
+    }
+
+    const playheadChanged = Math.abs(currentPlayhead - (Number(scrubState.lastPlayhead) || 0)) > 0.0005
+    scrubState.lastPlayhead = currentPlayhead
+    if (!playheadChanged) return
+
+    const nowMs = getNowMs()
+    scrubState.activeUntil = nowMs + SCRUB_ACTIVE_WINDOW_MS
+
+    if (scrubSettleTimerRef.current) window.clearTimeout(scrubSettleTimerRef.current)
+    scrubSettleTimerRef.current = window.setTimeout(() => {
+      scrubSettleTimerRef.current = 0
+      drawFrameRef.current?.()
+    }, SCRUB_SETTLE_DELAY_MS)
+  }, [isPlaying, playheadPosition])
+
+  useEffect(() => {
     let animationFrame = 0
     if (!isPlaying) {
       videoCache.pauseAll()
@@ -851,6 +908,10 @@ function CanvasPreviewRenderer({
     if (deferredDrawRafRef.current) {
       cancelAnimationFrame(deferredDrawRafRef.current)
       deferredDrawRafRef.current = 0
+    }
+    if (scrubSettleTimerRef.current) {
+      window.clearTimeout(scrubSettleTimerRef.current)
+      scrubSettleTimerRef.current = 0
     }
   }, [])
 
