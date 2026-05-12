@@ -2109,7 +2109,6 @@ function tokensMatchForTiming(lyricToken = '', asrToken = '') {
   if (left.length <= 2 || right.length <= 2) return false
   return tokenSimilarity(left, right) >= 0.78
 }
-
 function scoreCueTextMatch(lyricText = '', cueTexts = []) {
   const lyricTokens = tokenizeLyricsForTiming(lyricText)
   if (lyricTokens.length === 0) return 0
@@ -5182,7 +5181,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             : 'Transcribing song audio...'))
         },
       })
-      let timingResult = shouldAlignProvidedLyrics
+      const timingResult = shouldAlignProvidedLyrics
         ? buildSrtFromProvidedLyricsAndAsrTiming(existingLyricsText, result?.cues || [], result?.words || [])
         : {
             cues: result?.cues || [],
