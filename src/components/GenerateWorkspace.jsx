@@ -2067,6 +2067,49 @@ function tokenizeLyricsForTiming(value = '') {
     .filter((token) => token.length > 1)
 }
 
+function levenshteinDistance(a = '', b = '') {
+  const left = String(a || '')
+  const right = String(b || '')
+  if (left === right) return 0
+  if (!left) return right.length
+  if (!right) return left.length
+
+  const prev = Array.from({ length: right.length + 1 }, (_, index) => index)
+  const curr = Array(right.length + 1).fill(0)
+  for (let i = 1; i <= left.length; i += 1) {
+    curr[0] = i
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + cost
+      )
+    }
+    for (let j = 0; j <= right.length; j += 1) prev[j] = curr[j]
+  }
+  return prev[right.length]
+}
+
+function tokenSimilarity(a = '', b = '') {
+  const left = String(a || '')
+  const right = String(b || '')
+  if (!left || !right) return 0
+  if (left === right) return 1
+  const maxLen = Math.max(left.length, right.length)
+  if (maxLen <= 2) return left === right ? 1 : 0
+  return 1 - (levenshteinDistance(left, right) / maxLen)
+}
+
+function tokensMatchForTiming(lyricToken = '', asrToken = '') {
+  const left = String(lyricToken || '')
+  const right = String(asrToken || '')
+  if (!left || !right) return false
+  if (left === right) return true
+  if (left.length <= 2 || right.length <= 2) return false
+  return tokenSimilarity(left, right) >= 0.78
+}
+
 function scoreCueTextMatch(lyricText = '', cueTexts = []) {
   const lyricTokens = tokenizeLyricsForTiming(lyricText)
   if (lyricTokens.length === 0) return 0
@@ -2101,8 +2144,204 @@ function findBestCueSpanForLyric(line = '', cues = [], cursor = 0, expectedPosit
   return best && best.score >= 0.25 ? best : null
 }
 
-function buildSrtFromProvidedLyricsAndAsrTiming(rawLyrics = '', asrCues = []) {
+function normalizeAsrWordsForLyricTiming(asrWords = []) {
+  return (Array.isArray(asrWords) ? asrWords : [])
+    .map((word, index) => {
+      const text = String(word?.text || '').trim()
+      const tokens = tokenizeLyricsForTiming(text)
+      const start = Number(word?.start)
+      const end = Number(word?.end)
+      if (!text || tokens.length === 0 || !Number.isFinite(start) || !Number.isFinite(end)) return null
+      return {
+        index,
+        text,
+        tokens,
+        start,
+        end: end > start ? end : start + 0.08,
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.start - b.start)
+}
+
+function median(values = []) {
+  const nums = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b)
+  if (nums.length === 0) return null
+  const mid = Math.floor(nums.length / 2)
+  return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2
+}
+
+function estimatePrefixStartFromLookbehind(words = [], firstWordIndex = 0, lyricTokens = [], firstTokenIndex = 0, typicalWordDuration = 0.45, cursor = 0) {
+  const firstWord = words[firstWordIndex]
+  if (!firstWord || firstTokenIndex <= 0) return firstWord?.start ?? 0
+
+  const skippedLyricTokens = lyricTokens.slice(0, firstTokenIndex)
+  const prefixDuration = Math.max(0.7, skippedLyricTokens.length * Math.max(0.65, typicalWordDuration))
+  const baselineStart = Math.max(0, firstWord.start - prefixDuration)
+  const joinedSkippedLyrics = skippedLyricTokens.join('')
+  const lookbehindStart = Math.max(cursor, firstWordIndex - Math.max(5, skippedLyricTokens.length + 3))
+  let best = null
+
+  for (let i = lookbehindStart; i < firstWordIndex; i += 1) {
+    const word = words[i]
+    if (!word) continue
+    const gap = firstWord.start - word.end
+    if (gap < -0.05 || gap > 1.6) continue
+
+    const duration = Math.max(0, word.end - word.start)
+    const tokenSimilarityScore = Math.max(
+      0,
+      ...word.tokens.flatMap((asrToken) => (
+        skippedLyricTokens.map((lyricToken) => tokenSimilarity(lyricToken, asrToken))
+      )),
+      ...word.tokens.map((asrToken) => tokenSimilarity(joinedSkippedLyrics, asrToken))
+    )
+    const durationScore = duration >= 0.18
+      ? Math.min(1, duration / Math.max(0.5, prefixDuration))
+      : 0
+    const proximityScore = Math.max(0, 1 - (gap / 1.6))
+    const indexDistancePenalty = (firstWordIndex - i - 1) * 0.05
+    const score = tokenSimilarityScore * 0.55 + durationScore * 0.3 + proximityScore * 0.15 - indexDistancePenalty
+
+    if (!best || score > best.score) {
+      best = { word, duration, gap, tokenSimilarityScore, score }
+    }
+  }
+
+  if (!best || best.score < 0.4) return baselineStart
+
+  // Sung or hummed lead-ins are often collapsed into one long, wrong ASR token.
+  // Use the tail of that token for the missing lyric prefix instead of pulling
+  // the cue all the way back to the start of the vocalisation.
+  const fromPreviousTail = Math.max(best.word.start, best.word.end - prefixDuration)
+  if (best.tokenSimilarityScore >= 0.45 || best.duration >= 1.25) {
+    return Math.min(baselineStart, fromPreviousTail)
+  }
+
+  return baselineStart
+}
+
+function findBestWordSpanForLyric(line = '', asrWords = [], cursor = 0) {
+  const lyricTokens = tokenizeLyricsForTiming(line)
+  const words = normalizeAsrWordsForLyricTiming(asrWords)
+  if (lyricTokens.length === 0 || words.length === 0) return null
+
+  const startLimit = Math.min(words.length, Math.max(0, cursor) + 80)
+  let best = null
+
+  for (let skip = 0; skip <= Math.min(3, lyricTokens.length - 1); skip += 1) {
+    for (let startWordIndex = Math.max(0, cursor); startWordIndex < startLimit; startWordIndex += 1) {
+      let wordIndex = startWordIndex
+      const matches = []
+
+      for (let tokenIndex = skip; tokenIndex < lyricTokens.length; tokenIndex += 1) {
+        let foundIndex = -1
+        const searchLimit = Math.min(words.length, wordIndex + 28)
+        for (let i = wordIndex; i < searchLimit; i += 1) {
+          if (words[i].tokens.some((asrToken) => tokensMatchForTiming(lyricTokens[tokenIndex], asrToken))) {
+            foundIndex = i
+            break
+          }
+        }
+        if (foundIndex < 0) continue
+        matches.push({ tokenIndex, wordIndex: foundIndex })
+        wordIndex = foundIndex + 1
+      }
+
+      if (matches.length === 0) continue
+      const first = matches[0]
+      const last = matches[matches.length - 1]
+      const matchedRatio = matches.length / lyricTokens.length
+      const spanWordCount = Math.max(1, last.wordIndex - first.wordIndex + 1)
+      const density = matches.length / spanWordCount
+      const skippedPrefixPenalty = first.tokenIndex * 0.08
+      const distancePenalty = Math.max(0, first.wordIndex - cursor) * 0.003
+      const score = matchedRatio * 0.75 + density * 0.25 - skippedPrefixPenalty - distancePenalty
+
+      if (!best || score > best.score) {
+        best = { score, first, last, matches, words, lyricTokens }
+      }
+    }
+  }
+
+  if (!best || best.score < 0.38 || (best.matches.length < 2 && best.lyricTokens.length > 2)) return null
+
+  const firstWord = best.words[best.first.wordIndex]
+  const lastWord = best.words[best.last.wordIndex]
+  const matchedDurations = best.matches
+    .map(({ wordIndex }) => best.words[wordIndex].end - best.words[wordIndex].start)
+    .map((duration) => Math.min(0.75, Math.max(0.18, duration)))
+  const typicalWordDuration = median(matchedDurations) || 0.45
+  const missingPrefixTokens = best.first.tokenIndex
+  const missingSuffixTokens = Math.max(0, best.lyricTokens.length - best.last.tokenIndex - 1)
+
+  let start = firstWord.start
+  if (missingPrefixTokens > 0) {
+    start = estimatePrefixStartFromLookbehind(
+      best.words,
+      best.first.wordIndex,
+      best.lyricTokens,
+      best.first.tokenIndex,
+      typicalWordDuration,
+      cursor
+    )
+  }
+
+  let end = lastWord.end
+  if (missingSuffixTokens > 0) {
+    end += missingSuffixTokens * typicalWordDuration
+  }
+  if (end <= start) end = start + 0.4
+
+  return {
+    startIndex: best.first.wordIndex,
+    endIndex: best.last.wordIndex,
+    start,
+    end,
+    score: best.score,
+  }
+}
+
+function buildSrtFromProvidedLyricsAndAsrTiming(rawLyrics = '', asrCues = [], asrWords = []) {
   const lyricLines = getPlainMusicLyricLines(rawLyrics)
+  const normalizedWords = normalizeAsrWordsForLyricTiming(asrWords)
+  if (lyricLines.length > 0 && normalizedWords.length > 0) {
+    let wordCursor = 0
+    const timedCues = lyricLines.map((line, index) => {
+      const matchedSpan = findBestWordSpanForLyric(line, normalizedWords, wordCursor)
+      if (matchedSpan) {
+        wordCursor = Math.min(normalizedWords.length, matchedSpan.endIndex + 1)
+        return {
+          id: `lyrics-timing-${index + 1}`,
+          start: matchedSpan.start,
+          end: matchedSpan.end,
+          text: line,
+          words: [],
+        }
+      }
+      const fallbackStart = wordCursor < normalizedWords.length ? normalizedWords[wordCursor].start : 0
+      return {
+        id: `lyrics-timing-${index + 1}`,
+        start: fallbackStart,
+        end: fallbackStart + 1.5,
+        text: line,
+        words: [],
+      }
+    })
+
+    return {
+      srt: formatCaptionCuesAsSrt(timedCues),
+      cues: timedCues,
+      firstStart: timedCues.length > 0 ? timedCues[0].start : null,
+      lyricLineCount: lyricLines.length,
+      cueCount: normalizedWords.length,
+      timingSource: 'asr-word-alignment',
+    }
+  }
+
   const sortedCues = (Array.isArray(asrCues) ? asrCues : [])
     .map((cue) => ({
       ...cue,
@@ -2149,21 +2388,8 @@ function buildSrtFromProvidedLyricsAndAsrTiming(rawLyrics = '', asrCues = []) {
     firstStart: timedCues.length > 0 ? timedCues[0].start : null,
     lyricLineCount: lyricLines.length,
     cueCount,
+    timingSource: 'asr-cue-alignment',
   }
-}
-
-function shiftCaptionCues(cues = [], offsetSeconds = 0) {
-  const offset = Number(offsetSeconds)
-  if (!Array.isArray(cues) || !Number.isFinite(offset) || Math.abs(offset) < 0.001) return cues
-  return cues.map((cue) => {
-    const start = Math.max(0, (Number(cue?.start) || 0) + offset)
-    const rawEnd = (Number(cue?.end) || 0) + offset
-    return {
-      ...cue,
-      start,
-      end: Math.max(start + 0.4, rawEnd),
-    }
-  })
 }
 
 function buildMusicVideoPassIntro(pass, variantDescriptor) {
@@ -3026,9 +3252,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const [yoloMusicAudioAssetId, setYoloMusicAudioAssetId] = useState(persistedState?.yoloMusicAudioAssetId || null)
   const [yoloMusicAudioKind, setYoloMusicAudioKind] = useState(persistedState?.yoloMusicAudioKind || 'mixed_track')
   const [yoloMusicAsrLanguage, setYoloMusicAsrLanguage] = useState(persistedState?.yoloMusicAsrLanguage || 'English')
-  const [yoloMusicTimingAnchorSeconds, setYoloMusicTimingAnchorSeconds] = useState(
-    persistedState?.yoloMusicTimingAnchorSeconds ?? ''
-  )
   // Lyrics field accepts plain text, SRT, or LRC — auto-detected by
   // detectTimedLyricsFormat. When the paste is SRT/LRC the planner uses real
   // per-line timings (tier 2 of audioStart resolution); when it's plain
@@ -3386,7 +3609,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         yoloMusicAudioAssetId,
         yoloMusicAudioKind,
         yoloMusicAsrLanguage,
-        yoloMusicTimingAnchorSeconds,
         yoloMusicLyrics,
         yoloMusicConcept,
         yoloMusicStyleNotes,
@@ -3475,7 +3697,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     yoloMusicAudioAssetId,
     yoloMusicAudioKind,
     yoloMusicAsrLanguage,
-    yoloMusicTimingAnchorSeconds,
     yoloMusicLyrics,
     yoloMusicConcept,
     yoloMusicStyleNotes,
@@ -4962,24 +5183,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         },
       })
       let timingResult = shouldAlignProvidedLyrics
-        ? buildSrtFromProvidedLyricsAndAsrTiming(existingLyricsText, result?.cues || [])
+        ? buildSrtFromProvidedLyricsAndAsrTiming(existingLyricsText, result?.cues || [], result?.words || [])
         : {
             cues: result?.cues || [],
             firstStart: Array.isArray(result?.cues) && result.cues.length > 0 ? Number(result.cues[0]?.start) || 0 : null,
             srt: formatCaptionCuesAsSrt(result?.cues || []),
             cueCount: result?.cues?.length || 0,
           }
-      const anchorSeconds = Number(yoloMusicTimingAnchorSeconds)
-      if (Number.isFinite(anchorSeconds) && anchorSeconds > 0 && Number.isFinite(Number(timingResult.firstStart))) {
-        const shiftSeconds = anchorSeconds - Number(timingResult.firstStart)
-        const shiftedCues = shiftCaptionCues(timingResult.cues || [], shiftSeconds)
-        timingResult = {
-          ...timingResult,
-          cues: shiftedCues,
-          srt: formatCaptionCuesAsSrt(shiftedCues),
-          timingShiftSeconds: shiftSeconds,
-        }
-      }
       const srt = timingResult.srt
       if (!srt.trim()) {
         throw new Error('The transcription completed, but no SRT cues were produced.')
@@ -4987,16 +5197,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
       setYoloMusicLyrics(srt)
       if (shouldAlignProvidedLyrics) {
-        const shiftNote = Number.isFinite(Number(timingResult.timingShiftSeconds)) && Math.abs(Number(timingResult.timingShiftSeconds)) >= 0.01
-          ? ` Shifted timings by ${Number(timingResult.timingShiftSeconds).toFixed(2)}s to match the first-lyric anchor.`
+        const sourceNote = timingResult.timingSource === 'asr-word-alignment'
+          ? ' using raw ASR word timings'
           : ''
-        setYoloMusicTranscriptionStatus(`Aligned ${timingResult.lyricLineCount} provided lyric line${timingResult.lyricLineCount === 1 ? '' : 's'} to ${timingResult.cueCount} ASR timing cue${timingResult.cueCount === 1 ? '' : 's'}.${shiftNote}`)
+        setYoloMusicTranscriptionStatus(`Aligned ${timingResult.lyricLineCount} provided lyric line${timingResult.lyricLineCount === 1 ? '' : 's'} to ${timingResult.cueCount} ASR timing cue${timingResult.cueCount === 1 ? '' : 's'}${sourceNote}.`)
         addComfyLog('status', `Music video lyric timing generated from ${yoloMusicAudioAsset.name || 'song audio'} without replacing provided lyrics`)
       } else {
-        const shiftNote = Number.isFinite(Number(timingResult.timingShiftSeconds)) && Math.abs(Number(timingResult.timingShiftSeconds)) >= 0.01
-          ? ` Shifted timings by ${Number(timingResult.timingShiftSeconds).toFixed(2)}s to match the first-lyric anchor.`
-          : ''
-        setYoloMusicTranscriptionStatus(`Transcribed ${result.cues.length} timed lyric line${result.cues.length === 1 ? '' : 's'} into SRT.${shiftNote}`)
+        setYoloMusicTranscriptionStatus(`Transcribed ${result.cues.length} timed lyric line${result.cues.length === 1 ? '' : 's'} into SRT.`)
         addComfyLog('status', `Music video SRT generated from ${yoloMusicAudioAsset.name || 'song audio'}`)
       }
     } catch (error) {
@@ -5011,7 +5218,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     yoloMusicAsrLanguage,
     yoloMusicAudioAsset,
     yoloMusicLyrics,
-    yoloMusicTimingAnchorSeconds,
     yoloMusicTranscribingSrt,
   ])
   // Resolved cast: hydrate each entry's assetId to a real image asset so the
@@ -12192,8 +12398,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     setYoloMusicAudioKind={setYoloMusicAudioKind}
                     yoloMusicAsrLanguage={yoloMusicAsrLanguage}
                     setYoloMusicAsrLanguage={setYoloMusicAsrLanguage}
-                    yoloMusicTimingAnchorSeconds={yoloMusicTimingAnchorSeconds}
-                    setYoloMusicTimingAnchorSeconds={setYoloMusicTimingAnchorSeconds}
                     yoloMusicAudioAsset={yoloMusicAudioAsset}
                     yoloMusicTranscribingSrt={yoloMusicTranscribingSrt}
                     yoloMusicTranscriptionStatus={yoloMusicTranscriptionStatus}

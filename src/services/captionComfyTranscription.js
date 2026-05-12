@@ -5,6 +5,8 @@ import { mixTimelineAudioToWav } from './timelineAudioMix'
 
 const CAPTION_WORKFLOW_PATH = getBundledWorkflowPath('caption_qwen_asr_transcription.json')
 const VIDEO_INPUT_NODE_ID = '18'
+const SUBTITLE_TEXT_NODE_ID = '28'
+const RAW_ASR_TIMING_NODE_ID = '9001'
 const POLL_INTERVAL_MS = 3000
 const MAX_POLL_ATTEMPTS = 300
 
@@ -219,7 +221,43 @@ function buildCaptionWorkflow(baseWorkflow, uploadedFilename, options = {}) {
     node.inputs.enable_asr_cache = false
   }
 
+  workflow[RAW_ASR_TIMING_NODE_ID] = {
+    inputs: { text: ['44', 1] },
+    class_type: 'ShowText|pysssss',
+    _meta: { title: 'Show Raw ASR Timing Data' },
+  }
+
   return workflow
+}
+
+function extractOutputTextFromNodeOutput(nodeOutput) {
+  if (!nodeOutput) return null
+
+  for (const key of ['SUBTITLES', 'subtitles', 'TEXT', 'text', 'STRING', 'string', 'srt', 'SRT']) {
+    const value = nodeOutput[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+
+    if (Array.isArray(value)) {
+      const joined = value
+        .map((item) => (typeof item === 'string' ? item : ''))
+        .join('\n')
+        .trim()
+      if (joined) return joined
+    }
+  }
+
+  return null
+}
+
+function extractNodeTextFromHistory(history, promptId, nodeId) {
+  const promptHistory = history?.[promptId]
+  if (!promptHistory) return null
+
+  const outputs = promptHistory.outputs || {}
+  return extractOutputTextFromNodeOutput(outputs?.[nodeId])
 }
 
 function extractSubtitleTextFromHistory(history, promptId) {
@@ -229,24 +267,12 @@ function extractSubtitleTextFromHistory(history, promptId) {
   const outputs = promptHistory.outputs || {}
 
   for (const nodeId of Object.keys(outputs)) {
+    if (String(nodeId) === String(RAW_ASR_TIMING_NODE_ID)) continue
     const nodeOutput = outputs[nodeId]
     if (!nodeOutput) continue
 
-    for (const key of ['SUBTITLES', 'subtitles', 'TEXT', 'text', 'STRING', 'string', 'srt', 'SRT']) {
-      const value = nodeOutput[key]
-
-      if (typeof value === 'string' && value.trim()) {
-        return value.trim()
-      }
-
-      if (Array.isArray(value)) {
-        const joined = value
-          .map((item) => (typeof item === 'string' ? item : ''))
-          .join('\n')
-          .trim()
-        if (joined) return joined
-      }
-    }
+    const directText = extractOutputTextFromNodeOutput(nodeOutput)
+    if (directText) return directText
 
     for (const key of Object.keys(nodeOutput)) {
       const value = nodeOutput[key]
@@ -264,6 +290,42 @@ function extractSubtitleTextFromHistory(history, promptId) {
   }
 
   return null
+}
+
+function parseAsrTimingData(rawText) {
+  const text = String(rawText || '').trim()
+  if (!text) return { words: [], language: '' }
+
+  let data = null
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return { words: [], language: '' }
+  }
+
+  const words = []
+  for (const segment of Array.isArray(data?.segments) ? data.segments : []) {
+    const segmentWords = Array.isArray(segment?.words) && segment.words.length > 0
+      ? segment.words
+      : [segment]
+    for (const word of segmentWords) {
+      const start = Number(word?.start)
+      const end = Number(word?.end)
+      const wordText = String(word?.text || '').trim()
+      if (!wordText || !Number.isFinite(start) || !Number.isFinite(end)) continue
+      words.push({
+        start,
+        end: end > start ? end : start + 0.08,
+        text: wordText,
+      })
+    }
+  }
+
+  words.sort((a, b) => a.start - b.start)
+  return {
+    words,
+    language: String(data?.language || '').trim(),
+  }
 }
 
 async function uploadMediaToComfy(asset) {
@@ -445,7 +507,10 @@ export async function transcribeWithComfyUI(asset, { onProgress, language = 'Aut
   }
 
   const history = await pollForCompletion(promptId, onProgress)
-  const subtitleText = extractSubtitleTextFromHistory(history, promptId)
+  const subtitleText = extractNodeTextFromHistory(history, promptId, SUBTITLE_TEXT_NODE_ID)
+    || extractSubtitleTextFromHistory(history, promptId)
+  const rawAsrTimingText = extractNodeTextFromHistory(history, promptId, RAW_ASR_TIMING_NODE_ID)
+  const asrTimingData = parseAsrTimingData(rawAsrTimingText)
 
   if (!subtitleText) {
     throw new Error(
@@ -469,7 +534,8 @@ export async function transcribeWithComfyUI(asset, { onProgress, language = 'Aut
   return {
     modelId: 'Qwen/Qwen3-ASR-0.6B',
     transcriptText,
-    words: [],
+    words: asrTimingData.words,
+    asrLanguage: asrTimingData.language,
     cues,
     audioDuration,
     source: 'comfyui',
