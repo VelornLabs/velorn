@@ -2022,6 +2022,134 @@ function buildMusicVideoLLMPrompt(options = {}) {
   return sections.join('\n\n')
 }
 
+function getPlainMusicLyricLines(rawLyrics = '') {
+  const format = detectTimedLyricsFormat(rawLyrics)
+  if (format === 'srt' || format === 'lrc' || format === 'empty') return []
+  const taggedLines = parseLyricsWithTags(rawLyrics)
+    .map((entry) => String(entry?.text || '').trim())
+    .filter(Boolean)
+  const lines = taggedLines.length > 0 ? taggedLines : parseLyricLines(rawLyrics)
+  return lines
+    .map((line) => String(line || '').trim())
+    .filter((line) => line && !line.startsWith('#'))
+}
+
+function interpolateCueBoundary(cues = [], position = 0) {
+  if (!Array.isArray(cues) || cues.length === 0) return 0
+  const sorted = cues
+    .map((cue) => ({
+      start: Number(cue?.start) || 0,
+      end: Number(cue?.end) || 0,
+    }))
+    .filter((cue) => cue.end > cue.start)
+    .sort((a, b) => a.start - b.start)
+  if (sorted.length === 0) return 0
+
+  const clamped = Math.max(0, Math.min(sorted.length, Number(position) || 0))
+  const lower = Math.floor(clamped)
+  const fraction = clamped - lower
+  if (lower <= 0) {
+    return sorted[0].start + (sorted[0].end - sorted[0].start) * fraction
+  }
+  if (lower >= sorted.length) return sorted[sorted.length - 1].end
+  const prevEnd = sorted[lower - 1].end
+  const nextStart = sorted[lower].start
+  return prevEnd + (nextStart - prevEnd) * fraction
+}
+
+function tokenizeLyricsForTiming(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 1)
+}
+
+function scoreCueTextMatch(lyricText = '', cueTexts = []) {
+  const lyricTokens = tokenizeLyricsForTiming(lyricText)
+  if (lyricTokens.length === 0) return 0
+  const cueTokenSet = new Set(tokenizeLyricsForTiming(cueTexts.join(' ')))
+  if (cueTokenSet.size === 0) return 0
+  let hits = 0
+  for (const token of lyricTokens) {
+    if (cueTokenSet.has(token)) hits += 1
+  }
+  return hits / lyricTokens.length
+}
+
+function findBestCueSpanForLyric(line = '', cues = [], cursor = 0, expectedPosition = 0, expectedSpan = 1) {
+  const cueCount = Array.isArray(cues) ? cues.length : 0
+  if (cueCount === 0) return null
+  const spanHint = Math.max(1, Math.round(expectedSpan) || 1)
+  const minStart = Math.max(cursor, Math.floor(expectedPosition) - 2)
+  const maxStart = Math.min(cueCount - 1, Math.ceil(expectedPosition) + 4)
+  let best = null
+  for (let start = minStart; start <= maxStart; start += 1) {
+    const minSpan = Math.max(1, spanHint - 1)
+    const maxSpan = Math.max(minSpan, spanHint + 2)
+    for (let span = minSpan; span <= maxSpan; span += 1) {
+      const end = Math.min(cueCount - 1, start + span - 1)
+      const cueTexts = cues.slice(start, end + 1).map((cue) => cue?.text || '')
+      const score = scoreCueTextMatch(line, cueTexts)
+      if (!best || score > best.score) {
+        best = { startIndex: start, endIndex: end, score }
+      }
+    }
+  }
+  return best && best.score >= 0.25 ? best : null
+}
+
+function buildSrtFromProvidedLyricsAndAsrTiming(rawLyrics = '', asrCues = []) {
+  const lyricLines = getPlainMusicLyricLines(rawLyrics)
+  const sortedCues = (Array.isArray(asrCues) ? asrCues : [])
+    .map((cue) => ({
+      ...cue,
+      start: Number(cue?.start) || 0,
+      end: Number(cue?.end) || 0,
+      text: String(cue?.text || '').trim(),
+    }))
+    .filter((cue) => cue.end > cue.start)
+    .sort((a, b) => a.start - b.start)
+  const cueCount = sortedCues.length
+  if (lyricLines.length === 0 || cueCount === 0) {
+    return { srt: '', lyricLineCount: lyricLines.length, cueCount }
+  }
+
+  const wordWeights = lyricLines.map((line) => Math.max(1, line.split(/\s+/).filter(Boolean).length))
+  const totalWeight = wordWeights.reduce((sum, weight) => sum + weight, 0) || lyricLines.length
+  let cumulativeWeight = 0
+  let cueCursor = 0
+  const timedCues = lyricLines.map((line, index) => {
+    const startPosition = (cumulativeWeight / totalWeight) * cueCount
+    cumulativeWeight += wordWeights[index]
+    const endPosition = (cumulativeWeight / totalWeight) * cueCount
+    const matchedSpan = findBestCueSpanForLyric(line, sortedCues, cueCursor, startPosition, endPosition - startPosition)
+    const start = matchedSpan
+      ? sortedCues[matchedSpan.startIndex].start
+      : interpolateCueBoundary(sortedCues, startPosition)
+    const endRaw = matchedSpan
+      ? sortedCues[matchedSpan.endIndex].end
+      : interpolateCueBoundary(sortedCues, endPosition)
+    const end = endRaw > start ? endRaw : start + 0.4
+    if (matchedSpan) cueCursor = Math.min(cueCount, matchedSpan.endIndex + 1)
+    return {
+      id: `lyrics-timing-${index + 1}`,
+      start,
+      end,
+      text: line,
+      words: [],
+    }
+  })
+
+  return {
+    srt: formatCaptionCuesAsSrt(timedCues),
+    lyricLineCount: lyricLines.length,
+    cueCount,
+  }
+}
+
 function buildMusicVideoPassIntro(pass, variantDescriptor) {
   switch (pass) {
     case 'alt_performance': {
@@ -4782,7 +4910,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     }
     if (yoloMusicTranscribingSrt) return
 
-    if (yoloMusicLyrics.trim()) {
+    const existingLyricsText = String(yoloMusicLyrics || '').trim()
+    const existingLyricsFormat = detectTimedLyricsFormat(existingLyricsText)
+    const plainLyricLines = getPlainMusicLyricLines(existingLyricsText)
+    const shouldAlignProvidedLyrics = existingLyricsFormat === 'unknown' && plainLyricLines.length > 0
+
+    if (existingLyricsText && !shouldAlignProvidedLyrics) {
       const shouldReplace = window.confirm(
         'Replace the current Lyrics/SRT text with a fresh transcription from the selected song audio?'
       )
@@ -4791,22 +4924,34 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
     setFormError(null)
     setYoloMusicTranscribingSrt(true)
-    setYoloMusicTranscriptionStatus('Preparing Qwen ASR transcription...')
+    setYoloMusicTranscriptionStatus(shouldAlignProvidedLyrics
+      ? 'Preparing ASR timing pass for provided lyrics...'
+      : 'Preparing Qwen ASR transcription...')
 
     try {
       const result = await transcribeWithComfyUI(yoloMusicAudioAsset, {
         onProgress: (progress) => {
-          setYoloMusicTranscriptionStatus(progress?.message || 'Transcribing song audio...')
+          setYoloMusicTranscriptionStatus(progress?.message || (shouldAlignProvidedLyrics
+            ? 'Detecting vocal timing from song audio...'
+            : 'Transcribing song audio...'))
         },
       })
-      const srt = formatCaptionCuesAsSrt(result?.cues || [])
+      const timingResult = shouldAlignProvidedLyrics
+        ? buildSrtFromProvidedLyricsAndAsrTiming(existingLyricsText, result?.cues || [])
+        : { srt: formatCaptionCuesAsSrt(result?.cues || []), cueCount: result?.cues?.length || 0 }
+      const srt = timingResult.srt
       if (!srt.trim()) {
         throw new Error('The transcription completed, but no SRT cues were produced.')
       }
 
       setYoloMusicLyrics(srt)
-      setYoloMusicTranscriptionStatus(`Transcribed ${result.cues.length} timed lyric line${result.cues.length === 1 ? '' : 's'} into SRT.`)
-      addComfyLog('status', `Music video SRT generated from ${yoloMusicAudioAsset.name || 'song audio'}`)
+      if (shouldAlignProvidedLyrics) {
+        setYoloMusicTranscriptionStatus(`Aligned ${timingResult.lyricLineCount} provided lyric line${timingResult.lyricLineCount === 1 ? '' : 's'} to ${timingResult.cueCount} ASR timing cue${timingResult.cueCount === 1 ? '' : 's'}.`)
+        addComfyLog('status', `Music video lyric timing generated from ${yoloMusicAudioAsset.name || 'song audio'} without replacing provided lyrics`)
+      } else {
+        setYoloMusicTranscriptionStatus(`Transcribed ${result.cues.length} timed lyric line${result.cues.length === 1 ? '' : 's'} into SRT.`)
+        addComfyLog('status', `Music video SRT generated from ${yoloMusicAudioAsset.name || 'song audio'}`)
+      }
     } catch (error) {
       const message = error?.message || 'Unknown transcription error'
       setFormError(`Could not transcribe song audio: ${message}`)
@@ -12209,7 +12354,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                                 onClick={handleYoloMusicTranscribeSrt}
                                 disabled={!yoloMusicAudioAsset || yoloMusicTranscribingSrt}
                                 title={yoloMusicAudioAsset
-                                  ? 'Transcribe the selected song audio with Qwen ASR and fill this box with SRT timings.'
+                                  ? 'If lyrics are pasted, use ASR only to infer timing offsets. If empty, transcribe the song into SRT.'
                                   : 'Select a song audio asset first.'}
                                 className="inline-flex items-center gap-1.5 rounded border border-cyan-400/40 bg-cyan-400/10 px-2 py-1 text-[10px] font-medium text-cyan-200 transition-colors hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-50"
                               >
@@ -12218,7 +12363,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                                 ) : (
                                   <Wand2 className="h-3 w-3" />
                                 )}
-                                Transcribe to SRT
+                                {yoloMusicLyrics.trim() && !yoloMusicParsedLyrics.isTimed ? 'Prepare Timing' : 'Transcribe to SRT'}
                               </button>
                             </div>
                           </div>
