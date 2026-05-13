@@ -2186,9 +2186,9 @@ function AssetsPanel({ isActive = true }) {
                         isActive={isActive}
                         onVisible={(visibleAsset) => {
                           hydrateAssetBrowserMedia(visibleAsset.id, currentProjectHandle).catch((err) => {
-                            console.warn('[AssetsPanel] visible asset hydration failed:', err)
-                          })
-                        }}
+                          console.warn('[AssetsPanel] visible asset hydration failed:', err)
+                        })
+                      }}
                         iconClassName="w-3.5 h-3.5 text-sf-text-muted"
                         imageAlt=""
                       />
