@@ -300,41 +300,9 @@ export const useProjectStore = create(
           if (storedProject) {
             const isValid = await verifyPermission(storedProject)
             if (isValid) {
-              // Load project data
               const projectData = await loadProjectFromFile(storedProject)
               if (projectData) {
-                // Get the current/first timeline
-                const currentTimelineId = projectData.currentTimelineId || projectData.timelines?.[0]?.id
-                const currentTimeline = projectData.timelines?.find(t => t.id === currentTimelineId) || projectData.timelines?.[0]
-                
-                // Load timeline data (normalize clip timebases with asset fps)
-                if (currentTimeline) {
-                  const timelineFps = currentTimeline?.fps || projectData?.settings?.fps || 24
-                  useTimelineStore.getState().loadFromProject(currentTimeline, projectData.assets || [], timelineFps)
-                }
-                
-                // Regenerate asset URLs from project files; restore folder structure
-                if (projectData.assets) {
-                  await useAssetsStore.getState().loadFromProject(
-                    projectData.assets,
-                    storedProject,
-                    projectData.folders,
-                    projectData.folderCounter
-                  )
-                }
-                
-                // Load thumbnail sprites in background (Electron only)
-                if (typeof storedProject === 'string') {
-                  useAssetsStore.getState().loadSpritesFromProject(storedProject).catch(err => {
-                    console.warn('Failed to load sprites:', err)
-                  })
-                }
-                
-                set({
-                  currentProject: projectData,
-                  currentProjectHandle: storedProject,
-                  currentTimelineId: currentTimelineId,
-                })
+                await hydrateOpenedProjectSession(storedProject, projectData, set)
               }
             }
           }
