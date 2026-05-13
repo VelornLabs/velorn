@@ -7,7 +7,7 @@ import AssetsPanel from './panels/AssetsPanel'
 import TextPanel from './panels/TextPanel'
 import EffectsPanel from './panels/EffectsPanel'
 
-function LeftPanel({ isExpanded, onToggleExpanded, activeTab, onTabChange, isFullHeight = false, onToggleFullHeight, onSettingsClick }) {
+function LeftPanel({ isActive = true, isExpanded, onToggleExpanded, activeTab, onTabChange, isFullHeight = false, onToggleFullHeight, onSettingsClick }) {
   const tabs = [
     { id: 'assets', label: 'Assets', icon: FolderOpen },
     { id: 'text', label: 'Text', icon: Type },
@@ -40,9 +40,9 @@ function LeftPanel({ isExpanded, onToggleExpanded, activeTab, onTabChange, isFul
       case 'effects':
         return <EffectsPanel />
       case 'assets':
-        return <AssetsPanel />
+        return <AssetsPanel isActive={isActive} />
       default:
-        return <AssetsPanel />
+        return <AssetsPanel isActive={isActive} />
     }
   }
 
