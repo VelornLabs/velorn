@@ -121,7 +121,6 @@ function VideoAssetThumbnail({
 
     return () => { cancelled = true }
   }, [asset, projectHandle, shouldLoad])
-
   const fallback = Icon ? <Icon className={iconClassName} /> : null
   const poster = asset?.poster
   const sprite = asset?.sprite
@@ -451,7 +450,6 @@ function AssetsPanel({ isActive = true }) {
           }
         }
         
-        // Auto-generate thumbnail sprites for videos in background
         // Thumbnails/sprites are now strictly on-demand.
         // We keep the imported asset metadata only and let the
         // visible timeline/asset card request optimized media when needed.
@@ -1646,7 +1644,6 @@ function AssetsPanel({ isActive = true }) {
                       <VideoAssetThumbnail
                         asset={asset}
                         Icon={Icon}
-                        projectHandle={currentProjectHandle}
                         isActive={isActive}
                         iconClassName="w-3.5 h-3.5 text-sf-text-muted"
                         imageAlt=""
@@ -2025,7 +2022,6 @@ function AssetsPanel({ isActive = true }) {
                       key={asset.poster?.url || asset.sprite?.url || asset.id}
                       asset={asset}
                       Icon={Icon}
-                      projectHandle={currentProjectHandle}
                       isActive={isActive}
                       onVisible={(visibleAsset) => {
                         hydrateAssetBrowserMedia(visibleAsset.id, currentProjectHandle).catch((err) => {
@@ -2275,7 +2271,6 @@ function AssetsPanel({ isActive = true }) {
                   key={dragPreviewAsset.poster?.url || dragPreviewAsset.sprite?.url || dragPreviewAsset.id}
                   asset={dragPreviewAsset}
                   Icon={DragPreviewIcon}
-                  projectHandle={currentProjectHandle}
                   isActive={isActive}
                   onVisible={(visibleAsset) => {
                     hydrateAssetBrowserMedia(visibleAsset.id, currentProjectHandle).catch((err) => {
