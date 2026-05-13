@@ -98,7 +98,7 @@ export async function generateThumbnailSprite(videoUrl, duration, options = {}) 
   const video = document.createElement('video')
   video.crossOrigin = 'anonymous'
   video.muted = true
-  video.preload = 'metadata'
+  video.preload = 'auto'
   
   return new Promise((resolve, reject) => {
     video.onloadedmetadata = async () => {
@@ -166,17 +166,17 @@ export async function generateThumbnailSprite(videoUrl, duration, options = {}) 
           frames,
         }
         
-        releaseVideoElement(video)
+        // Clean up video element
+        video.src = ''
+        video.load()
         
         resolve({ spriteUrl, spriteData, blob })
       } catch (err) {
-        releaseVideoElement(video)
         reject(err)
       }
     }
     
     video.onerror = () => {
-      releaseVideoElement(video)
       reject(new Error('Failed to load video for sprite generation'))
     }
     
