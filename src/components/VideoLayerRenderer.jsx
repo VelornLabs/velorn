@@ -2514,59 +2514,61 @@ function VideoLayerRenderer({
   // keyed to `resolvePlaybackUrl`. Included in dep arrays below.
   const useProxyPlaybackForAssets = useTimelineStore(state => state.useProxyPlaybackForAssets)
 
-  // Keep videoCache's LRU cap in sync with the timeline's layer count.
-  // At the old hardcoded cap (12), a 4-layer timeline would constantly
-  // evict recently-preloaded elements to make room for the next preload,
-  // causing black frames at cuts whose downstream <video> had already
-  // been dropped from the pool. The formula gives each video track a
-  // generous slot budget (active clip + ~2s preload window + LRU grace),
-  // with a floor of 32 so single-layer timelines also benefit.
+  // Keep videoCache's LRU cap close to the number of visible video layers.
+  // The timeline now loads only clips visible at the playhead; broad lookahead
+  // preloading is too memory-heavy for long music-video timelines.
   const videoTrackCount = useMemo(
     () => tracks.filter(t => t.type === 'video').length,
     [tracks]
   )
   useEffect(() => {
-    const target = Math.max(32, videoTrackCount * 12)
+    const target = Math.max(4, videoTrackCount * 2)
     videoCache.setMaxCacheSize(target)
   }, [videoTrackCount])
   
   /**
    * Get clips that should be preloaded based on current position
    */
-  const getClipsToPreload = useCallback((currentTime) => {
+  const getClipsToPreload = useCallback((currentTime, includeNext = false) => {
+    const videoTrackIds = new Set(
+      tracks
+        .filter((track) => track.type === 'video' && track.enabled !== false)
+        .map((track) => track.id)
+    )
+    const activeClips = clips.filter((clip) => {
+      if (!videoTrackIds.has(clip.trackId) || clip.type !== 'video' || clip.enabled === false) return false
+      const clipStart = Number(clip.startTime) || 0
+      const clipEnd = clipStart + (Number(clip.duration) || 0)
+      return currentTime >= clipStart && currentTime < clipEnd
+    })
+    if (!includeNext) return activeClips
+
+    const nextByTrack = new Map()
     const isForward = playbackRate >= 0
     const lookaheadEnd = currentTime + (isForward ? PRELOAD_LOOKAHEAD : -PRELOAD_LOOKAHEAD)
-    
-    // Find video clips that:
-    // 1. Are currently active
-    // 2. Will become active within lookahead window
-    const videoTracks = tracks.filter(t => t.type === 'video')
-    const videoTrackIds = new Set(videoTracks.map(t => t.id))
-    
-    const relevantClips = clips.filter(clip => {
-      if (!videoTrackIds.has(clip.trackId) || clip.type !== 'video' || clip.enabled === false) return false
-      
-      const clipEnd = clip.startTime + clip.duration
-      
-      // Currently active
-      if (currentTime >= clip.startTime && currentTime < clipEnd) {
-        return true
+    for (const clip of clips) {
+      if (!videoTrackIds.has(clip.trackId) || clip.type !== 'video' || clip.enabled === false) continue
+      const clipStart = Number(clip.startTime) || 0
+      const clipEnd = clipStart + (Number(clip.duration) || 0)
+      const isCandidate = isForward
+        ? clipStart > currentTime && clipStart <= lookaheadEnd
+        : clipEnd < currentTime && clipEnd >= lookaheadEnd
+      if (!isCandidate) continue
+      const current = nextByTrack.get(clip.trackId)
+      if (!current) {
+        nextByTrack.set(clip.trackId, clip)
+        continue
       }
-      
-      // Will become active soon (forward)
-      if (isForward && clip.startTime > currentTime && clip.startTime <= lookaheadEnd) {
-        return true
+      const currentStart = Number(current.startTime) || 0
+      const currentEnd = currentStart + (Number(current.duration) || 0)
+      if (isForward ? clipStart < currentStart : clipEnd > currentEnd) {
+        nextByTrack.set(clip.trackId, clip)
       }
-      
-      // Will become active soon (reverse)
-      if (!isForward && clipEnd < currentTime && clipEnd >= lookaheadEnd) {
-        return true
-      }
-      
-      return false
-    })
-    
-    return relevantClips
+    }
+
+    return [...new Map(
+      [...activeClips, ...nextByTrack.values()].map((clip) => [clip.id, clip])
+    ).values()]
   }, [clips, tracks, playbackRate])
 
   const getTransitionClipsToPreload = useCallback((currentTime) => {
@@ -2703,17 +2705,17 @@ function VideoLayerRenderer({
         if (Math.abs((cachedVideo.currentTime || 0) - prerollTargetTime) > 0.03) {
           cachedVideo.currentTime = prerollTargetTime
         }
-        scheduleCutFrameCapture(clip, resolvedUrl, cachedVideo, targetTime)
       }
       preloadedClips.current.set(clip.id, preloadKey)
     })
     
     lastPreloadPosition.current = playheadPosition
   }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
+  }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
 
   // Auto-render cache for clips with mask effects (smooth playback)
   useEffect(() => {
-    const candidates = getClipsToPreload(playheadPosition)
+    const candidates = getClipsToPreload(playheadPosition, false)
     candidates.forEach(clip => {
       void autoCacheClip(clip)
     })

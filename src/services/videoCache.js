@@ -9,18 +9,13 @@
  * - Memory management (LRU eviction)
  */
 
-// Default maximum number of video elements to keep in cache.
-// Starting floor: 32. At 12 (the old value) a 4-layer timeline was
-// constantly self-evicting — active + preloaded elements across 4 tracks
-// can easily exceed 12, causing black frames at cuts as recently-used
-// elements get dropped to make room for the next preload.
-// Callers can raise this via videoCache.setMaxCacheSize(n) — see
-// VideoLayerRenderer, which scales it with the number of video tracks.
-const DEFAULT_MAX_CACHE_SIZE = 32
-const MIN_MAX_CACHE_SIZE = 12
-const HARD_CAP_MAX_CACHE_SIZE = 128
+// Keep the media cache intentionally small. Loading only visible clips keeps
+// long timelines from opening dozens of hidden Chromium video decoders.
+const DEFAULT_MAX_CACHE_SIZE = 8
+const MIN_MAX_CACHE_SIZE = 4
+const HARD_CAP_MAX_CACHE_SIZE = 24
 
-// How far ahead to preload (in seconds)
+// Preload only the immediate next clip while playback is active.
 const PRELOAD_LOOKAHEAD = 2.0
 
 // Minimum time before clip start to trigger preload
@@ -41,6 +36,14 @@ class VideoCache {
     
     // Event listeners
     this.listeners = new Map()
+  }
+
+  _releaseVideoElement(videoElement) {
+    if (!videoElement) return
+    try { videoElement.pause() } catch (_) { /* ignore */ }
+    try { videoElement.removeAttribute('src') } catch (_) { /* ignore */ }
+    try { videoElement.srcObject = null } catch (_) { /* ignore */ }
+    try { videoElement.load() } catch (_) { /* ignore */ }
   }
 
   /**
@@ -177,42 +180,60 @@ class VideoCache {
    * @param {number} currentTime - Current playhead position
    * @param {number} playbackRate - Current playback rate (for direction)
    */
-  preloadUpcoming(clips, currentTime, playbackRate = 1) {
+  preloadUpcoming(clips, currentTime, playbackRate = 1, options = {}) {
     if (!clips || clips.length === 0) return
 
+    const includeNext = Boolean(options.includeNext)
+    const enabledTrackIds = options.enabledTrackIds instanceof Set ? options.enabledTrackIds : null
     const isForward = playbackRate >= 0
-    const lookaheadTime = currentTime + (isForward ? PRELOAD_LOOKAHEAD : -PRELOAD_LOOKAHEAD)
-    
-    // Find clips that start within the lookahead window
-    const upcomingClips = clips.filter(clip => {
-      if (clip.type !== 'video') return false
-      if (isForward) {
-        // Forward playback: preload clips that start soon
-        return clip.startTime > currentTime && 
-               clip.startTime <= lookaheadTime + clip.duration
-      } else {
-        // Reverse playback: preload clips we're approaching
-        const clipEnd = clip.startTime + clip.duration
-        return clipEnd < currentTime && 
-               clipEnd >= lookaheadTime
-      }
+    const lookaheadEnd = currentTime + (isForward ? PRELOAD_LOOKAHEAD : -PRELOAD_LOOKAHEAD)
+
+    const activeClips = clips.filter((clip) => {
+      if (clip.type !== 'video' || clip.enabled === false) return false
+      if (enabledTrackIds && !enabledTrackIds.has(clip.trackId)) return false
+      const clipStart = Number(clip.startTime) || 0
+      const clipEnd = clipStart + (Number(clip.duration) || 0)
+      return currentTime >= clipStart && currentTime < clipEnd
     })
 
-    // Also include currently active clips (ensure they're loaded)
-    const activeClips = clips.filter(clip =>
-      clip.type === 'video' &&
-      currentTime >= clip.startTime &&
-      currentTime < clip.startTime + clip.duration
-    )
+    const nextByTrack = new Map()
+    if (includeNext) {
+      for (const clip of clips) {
+        if (clip.type !== 'video' || clip.enabled === false) continue
+        if (enabledTrackIds && !enabledTrackIds.has(clip.trackId)) continue
+        const clipStart = Number(clip.startTime) || 0
+        const clipEnd = clipStart + (Number(clip.duration) || 0)
+        const isCandidate = isForward
+          ? clipStart > currentTime && clipStart <= lookaheadEnd
+          : clipEnd < currentTime && clipEnd >= lookaheadEnd
+        if (!isCandidate) continue
+        const current = nextByTrack.get(clip.trackId)
+        if (!current) {
+          nextByTrack.set(clip.trackId, clip)
+          continue
+        }
+        const currentStart = Number(current.startTime) || 0
+        const currentEnd = currentStart + (Number(current.duration) || 0)
+        if (isForward ? clipStart < currentStart : clipEnd > currentEnd) {
+          nextByTrack.set(clip.trackId, clip)
+        }
+      }
+    }
 
-    // Combine and dedupe
-    const clipsToPreload = [...new Map(
-      [...activeClips, ...upcomingClips].map(c => [c.id, c])
+    const keepClips = [...new Map(
+      [...activeClips, ...nextByTrack.values()].map((clip) => [clip.id, clip])
     ).values()]
 
-    // Preload each clip
-    for (const clip of clipsToPreload) {
+    for (const clip of keepClips) {
       this.getVideoElement(clip, true)
+    }
+
+    const keepIds = new Set(keepClips.map((clip) => clip.id))
+    for (const [key, entry] of [...this.cache.entries()]) {
+      if (keepIds.has(entry.baseClipId)) continue
+      this._releaseVideoElement(entry.videoElement)
+      this.cache.delete(key)
+      this.activeElements.delete(entry.baseClipId)
     }
   }
 
@@ -340,10 +361,8 @@ class VideoCache {
     for (let i = 0; i < toEvict && i < entries.length; i++) {
       const [key, entry] = entries[i]
       
-      // Clean up video element
-      entry.videoElement.pause()
-      entry.videoElement.src = ''
-      entry.videoElement.load()
+      // Clean up video element and force Chromium to release media buffers.
+      this._releaseVideoElement(entry.videoElement)
       
       this.cache.delete(key)
     }
@@ -354,11 +373,11 @@ class VideoCache {
    */
   clear() {
     for (const [, entry] of this.cache) {
-      entry.videoElement.pause()
-      entry.videoElement.src = ''
+      this._releaseVideoElement(entry.videoElement)
     }
     this.cache.clear()
     this.activeElements.clear()
+    this.preloadQueue = []
   }
 
   /**
@@ -374,13 +393,7 @@ class VideoCache {
       if (entry.baseClipId !== clipId) continue
       if (sourceUrl && entry.url !== sourceUrl) continue
 
-      try {
-        entry.videoElement.pause()
-        entry.videoElement.src = ''
-        entry.videoElement.load()
-      } catch (_) {
-        // Best effort cleanup; ignore media element cleanup failures.
-      }
+      this._releaseVideoElement(entry.videoElement)
 
       this.cache.delete(key)
     }

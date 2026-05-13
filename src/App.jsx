@@ -498,47 +498,48 @@ function App() {
       
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden min-h-0">
-        {/* ComfyUI tab – kept mounted when visible so iframe does not reload */}
-        <div
-          className="flex-1 flex flex-col min-h-0 bg-sf-dark-950"
-          style={{ display: mainTab === 'comfyui' ? 'flex' : 'none' }}
-        >
-          {/* Thin toolbar: the embedded ComfyUI iframe has no browser chrome,
-              so when it gets into a stuck state (blank/black canvas from a
-              failed WS handshake, a crashed extension, or ComfyUI restarting
-              under it) the user has no way to recover from inside the app.
-              Reload remounts the iframe; Open-external pops it in the system
-              browser as a fallback diagnostic. */}
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-sf-dark-700 bg-sf-dark-900 text-xs text-sf-text-muted flex-shrink-0">
-            <span className="font-mono truncate">{comfyIframeUrl || '—'}</span>
-            <div className="flex-1" />
-            <button
-              type="button"
-              onClick={reloadComfyIframe}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-sf-dark-700 hover:text-sf-text-primary transition-colors"
-              title="Reload the ComfyUI iframe (useful if it's stuck on a black screen)"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Reload
-            </button>
-            <button
-              type="button"
-              onClick={openComfyExternal}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-sf-dark-700 hover:text-sf-text-primary transition-colors"
-              title="Open ComfyUI in your default browser"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              Open in browser
-            </button>
+        {/* ComfyUI tab: mount only while active so hidden ComfyUI media previews
+            cannot keep Chromium video decoders/shared-memory buffers alive in
+            Generate or Editor. Queue/progress uses the API/websocket, not this iframe. */}
+        {mainTab === 'comfyui' && (
+          <div className="flex-1 flex flex-col min-h-0 bg-sf-dark-950">
+            {/* Thin toolbar: the embedded ComfyUI iframe has no browser chrome,
+                so when it gets into a stuck state (blank/black canvas from a
+                failed WS handshake, a crashed extension, or ComfyUI restarting
+                under it) the user has no way to recover from inside the app.
+                Reload remounts the iframe; Open-external pops it in the system
+                browser as a fallback diagnostic. */}
+            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-sf-dark-700 bg-sf-dark-900 text-xs text-sf-text-muted flex-shrink-0">
+              <span className="font-mono truncate">{comfyIframeUrl || '—'}</span>
+              <div className="flex-1" />
+              <button
+                type="button"
+                onClick={reloadComfyIframe}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-sf-dark-700 hover:text-sf-text-primary transition-colors"
+                title="Reload the ComfyUI iframe (useful if it's stuck on a black screen)"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Reload
+              </button>
+              <button
+                type="button"
+                onClick={openComfyExternal}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-sf-dark-700 hover:text-sf-text-primary transition-colors"
+                title="Open ComfyUI in your default browser"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Open in browser
+              </button>
+            </div>
+            <iframe
+              key={`comfy-iframe-${comfyIframeUrl}-${comfyIframeNonce}`}
+              src={comfyIframeUrl}
+              title="ComfyUI"
+              className="flex-1 w-full min-h-0 border-0"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            />
           </div>
-          <iframe
-            key={`comfy-iframe-${comfyIframeUrl}-${comfyIframeNonce}`}
-            src={comfyIframeUrl}
-            title="ComfyUI"
-            className="flex-1 w-full min-h-0 border-0"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
-          />
-        </div>
+        )}
         {/* Generate tab – keep mounted so queue/progress survives tab switches */}
         <div
           className="flex-1 flex flex-col min-h-0 overflow-hidden bg-sf-dark-950"
