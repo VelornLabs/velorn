@@ -476,6 +476,10 @@ export async function renderPreviewProxy(onProgress = () => {}, options = {}) {
   const signature = computePreviewSignature(currentTimelineId, timelineState)
   const relativePath = getPreviewProxyRelativePath(currentTimelineId, signature)
   const force = Boolean(options?.force)
+  const signal = options?.signal || null
+  if (signal?.aborted) {
+    return { error: 'Preview render cancelled.' }
+  }
   if (!relativePath) {
     return { error: 'Could not compute preview signature.' }
   }
@@ -515,6 +519,7 @@ export async function renderPreviewProxy(onProgress = () => {}, options = {}) {
         crf: 23,
         useCachedRenders: true,
         fastSeek: true,
+        signal,
       },
       onProgress
     )

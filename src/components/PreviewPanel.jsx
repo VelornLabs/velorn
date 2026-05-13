@@ -470,15 +470,15 @@ function PreviewPanel() {
     }
   })
   const [autoSmoothPreviewEnabled, setAutoSmoothPreviewEnabled] = useState(() => {
-    // Default OFF now that per-asset proxies cover the common case. Users
-    // who previously opted in (true) keep their setting; fresh/cleared
-    // installs no longer trigger full-timeline re-renders on every edit,
-    // which was the main friction for music-video workflows.
+    // Full-timeline smooth preview renders can retain large canvas/video/encoder
+    // buffers while they run. Keep this opt-in per session and reset older
+    // persisted opt-ins so opening a project never starts background export work.
     try {
-      return localStorage.getItem(AUTO_SMOOTH_PREVIEW_KEY) === 'true'
+      localStorage.setItem(AUTO_SMOOTH_PREVIEW_KEY, 'false')
     } catch {
-      return false
+      // Ignore localStorage errors.
     }
+    return false
   })
   
   // Persist info overlay preference
@@ -615,6 +615,7 @@ function PreviewPanel() {
   const lastAutoProxySignatureRef = useRef(null)
   const forceAutoProxyRefreshRef = useRef(false)
   const [proxyVideoUrl, setProxyVideoUrl] = useState(null)
+  const smoothPreviewAbortRef = useRef(null)
   const proxyVideoRef = useRef(null)
   const chunkVideoRef = useRef(null)
   const chunkCacheAbortRef = useRef(null)
@@ -629,7 +630,15 @@ function PreviewPanel() {
     totalCount: 0,
     currentRangeLabel: '',
   })
+  const stopSmoothPreviewRender = useCallback(() => {
+    smoothPreviewAbortRef.current?.abort()
+    smoothPreviewAbortRef.current = null
+  }, [])
+
   const runSmoothPreviewRender = useCallback(async ({ force = true, reason = 'manual' } = {}) => {
+    if (!isActive) {
+      return { skipped: true }
+    }
     if (!currentProjectHandle || !currentTimelineId || !window.electronAPI) {
       return { error: 'Preview cache is unavailable.' }
     }
@@ -639,10 +648,23 @@ function PreviewPanel() {
       return { skipped: true }
     }
 
+    const abortController = new AbortController()
+    smoothPreviewAbortRef.current = abortController
     setPreviewProxyGenerating()
     const result = await renderPreviewProxy(({ progress }) => {
-      useTimelineStore.getState().setPreviewProxyProgress(progress)
-    }, { force })
+      if (!abortController.signal.aborted) {
+        useTimelineStore.getState().setPreviewProxyProgress(progress)
+      }
+    }, { force, signal: abortController.signal })
+
+    if (smoothPreviewAbortRef.current === abortController) {
+      smoothPreviewAbortRef.current = null
+    }
+
+    if (abortController.signal.aborted || /cancel/i.test(result?.error || '')) {
+      useTimelineStore.getState().setPreviewProxyInvalid()
+      return { ...result, cancelled: true }
+    }
 
     if (result?.path && result?.url) {
       // Avoid enabling a stale proxy when timeline changed while rendering.
@@ -662,7 +684,7 @@ function PreviewPanel() {
       console.warn(`[PreviewCache:${reason}]`, result.error)
     }
     return result
-  }, [currentProjectHandle, currentTimelineId, setPreviewProxyGenerating, setPreviewProxyReady])
+  }, [currentProjectHandle, currentTimelineId, isActive, setPreviewProxyGenerating, setPreviewProxyReady])
 
   useEffect(() => {
     previewChunksRef.current = previewChunks
@@ -890,7 +912,14 @@ function PreviewPanel() {
 
   useEffect(() => () => {
     chunkCacheAbortRef.current?.abort()
-  }, [])
+    stopSmoothPreviewRender()
+  }, [stopSmoothPreviewRender])
+
+  useEffect(() => {
+    if (!isActive || !autoSmoothPreviewEnabled) {
+      stopSmoothPreviewRender()
+    }
+  }, [autoSmoothPreviewEnabled, isActive, stopSmoothPreviewRender])
 
   // If timeline changed, mark proxy state invalid so status stays accurate.
   useEffect(() => {
@@ -907,7 +936,7 @@ function PreviewPanel() {
 
   // Auto-generate smooth preview when timeline is heavy and idle.
   useEffect(() => {
-    if (!autoSmoothPreviewEnabled) return
+    if (!isActive || !autoSmoothPreviewEnabled) return
     if (!window.electronAPI || !currentProjectHandle || !currentTimelineId) return
     if (previewMode !== 'timeline') return
     if (timelineIsPlaying) return
@@ -930,6 +959,7 @@ function PreviewPanel() {
     return () => clearTimeout(timer)
   }, [
     autoSmoothPreviewEnabled,
+    isActive,
     currentProjectHandle,
     currentTimelineId,
     previewMode,
@@ -2385,8 +2415,16 @@ function PreviewPanel() {
                     <div className="flex items-center gap-2 pointer-events-auto">
                       {previewProxyStatus === 'generating' && (
                         <div className="px-2 py-1 bg-sf-dark-800 rounded text-xs text-sf-text-muted flex items-center gap-2">
-                          <span>Generating smooth preview…</span>
+                          <span>Generating smooth preview...</span>
                           <span>{Math.round(previewProxyProgress)}%</span>
+                          <button
+                            type="button"
+                            onClick={stopSmoothPreviewRender}
+                            className="ml-1 rounded bg-sf-dark-700 px-1.5 py-0.5 text-[10px] text-sf-text-secondary hover:bg-sf-dark-600"
+                            title="Stop smooth preview generation"
+                          >
+                            Stop
+                          </button>
                         </div>
                       )}
                       {chunkCacheState.busy && (

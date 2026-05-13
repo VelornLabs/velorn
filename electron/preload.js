@@ -323,6 +323,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<string>}
    */
   getFileUrlDirect: (filePath) => ipcRenderer.invoke('media:getFileUrlDirect', filePath),
+  createImageThumbnail: (options) => ipcRenderer.invoke('media:createImageThumbnail', options),
 
   // ============================================
   // App Settings (persistent storage in userData)

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, screen, nativeImage } = require('electron')
 const crypto = require('crypto')
 const path = require('path')
 const os = require('os')
@@ -2233,6 +2233,40 @@ ipcMain.handle('media:getFileUrlDirect', (event, filePath) => {
     normalizedPath = '/' + normalizedPath
   }
   return `file://${normalizedPath}`
+})
+
+ipcMain.handle('media:createImageThumbnail', async (event, { sourcePath, outputPath, width = 360, height = 204, quality = 78 } = {}) => {
+  try {
+    if (!sourcePath || !outputPath) {
+      return { success: false, error: 'Missing source or output path.' }
+    }
+    await fs.mkdir(path.dirname(outputPath), { recursive: true })
+    const sourceImage = nativeImage.createFromPath(sourcePath)
+    if (sourceImage.isEmpty()) {
+      return { success: false, error: 'Could not load source image.' }
+    }
+    const sourceSize = sourceImage.getSize()
+    const maxWidth = Math.max(1, Math.round(Number(width) || 360))
+    const maxHeight = Math.max(1, Math.round(Number(height) || 204))
+    const scale = Math.min(1, maxWidth / Math.max(1, sourceSize.width), maxHeight / Math.max(1, sourceSize.height))
+    const targetWidth = Math.max(1, Math.round(sourceSize.width * scale))
+    const targetHeight = Math.max(1, Math.round(sourceSize.height * scale))
+    const resized = scale < 1
+      ? sourceImage.resize({ width: targetWidth, height: targetHeight, quality: 'good' })
+      : sourceImage
+    const jpeg = resized.toJPEG(Math.max(1, Math.min(100, Math.round(Number(quality) || 78))))
+    await writeFileAtomic(outputPath, jpeg)
+    return {
+      success: true,
+      path: outputPath,
+      width: targetWidth,
+      height: targetHeight,
+      sourceWidth: sourceSize.width,
+      sourceHeight: sourceSize.height,
+    }
+  } catch (err) {
+    return { success: false, error: err?.message || String(err) }
+  }
 })
 
 ipcMain.handle('media:getVideoFps', async (event, filePath) => {
