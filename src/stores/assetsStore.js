@@ -38,7 +38,6 @@ const queueProjectPosterSave = (projectPath, delayMs = 1200) => {
     }
   }, delayMs)
 }
-
 /**
  * Store for managing generated and imported assets
  * Persisted to localStorage for data survival across refreshes
