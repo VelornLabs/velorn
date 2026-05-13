@@ -1,6 +1,24 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
+const SPRITE_GENERATION_CONCURRENCY = 2
+let activeSpriteGenerationCount = 0
+const pendingSpriteGenerationQueue = []
+
+const runWithSpriteGenerationSlot = async (task) => {
+  if (activeSpriteGenerationCount >= SPRITE_GENERATION_CONCURRENCY) {
+    await new Promise((resolve) => pendingSpriteGenerationQueue.push(resolve))
+  }
+  activeSpriteGenerationCount += 1
+  try {
+    return await task()
+  } finally {
+    activeSpriteGenerationCount = Math.max(0, activeSpriteGenerationCount - 1)
+    const next = pendingSpriteGenerationQueue.shift()
+    if (next) next()
+  }
+}
+
 /**
  * Store for managing generated and imported assets
  * Persisted to localStorage for data survival across refreshes
@@ -661,8 +679,9 @@ export const useAssetsStore = create(
     try {
       const { generateThumbnailSprite, saveSpriteToProject } = await import('../services/thumbnailSprites')
       
-      // Generate sprite
-      const result = await generateThumbnailSprite(asset.url, asset.duration || 5)
+      // Generate sprite. This uses a hidden video element and canvas seeks,
+      // so keep generation bounded across imports/manual actions.
+      const result = await runWithSpriteGenerationSlot(() => generateThumbnailSprite(asset.url, asset.duration || 5))
       if (!result) {
         throw new Error('Failed to generate sprite')
       }
@@ -706,55 +725,80 @@ export const useAssetsStore = create(
   },
 
   /**
-   * Load sprites for all video assets from project
+   * Load saved thumbnail sprites for video assets without flooding the renderer.
+   * Startup intentionally does not call this; use it for explicit/on-demand
+   * warming where bounded background work is acceptable.
    * @param {string} projectPath - Project directory path
+   * @param {object} options - { concurrency?: number, limit?: number, assetIds?: string[] }
    */
-  loadSpritesFromProject: async (projectPath) => {
+  loadSpritesFromProject: async (projectPath, options = {}) => {
     if (!projectPath) return
 
-    const { loadSpriteFromProject } = await import('../services/thumbnailSprites')
+    const { loadSpriteFromProject, loadSpriteIndex } = await import('../services/thumbnailSprites')
+    const spriteIndex = await loadSpriteIndex(projectPath)
     const state = get()
-    
-    const videoAssets = state.assets.filter(a => a.type === 'video')
+    const targetIds = Array.isArray(options.assetIds) && options.assetIds.length > 0
+      ? new Set(options.assetIds)
+      : null
+    const limit = Number.isFinite(Number(options.limit)) && Number(options.limit) > 0
+      ? Math.floor(Number(options.limit))
+      : null
+    const concurrency = Math.max(1, Math.min(4, Math.floor(Number(options.concurrency) || 2)))
+    const videoAssets = state.assets
+      .filter((asset) => asset?.type === 'video' && (!targetIds || targetIds.has(asset.id)))
+      .slice(0, limit || undefined)
+
     if (videoAssets.length === 0) {
       get().clearMediaPreparation()
       return
     }
 
-    set({
-      mediaPreparation: {
-        active: true,
-        phase: 'sprites',
-        label: 'Loading video thumbnails...',
-        completed: 0,
-        total: videoAssets.length,
-        critical: false,
-      },
-    })
-    
-    for (const [index, asset] of videoAssets.entries()) {
+    let completed = 0
+    const updateProgress = () => {
+      set({
+        mediaPreparation: {
+          active: true,
+          phase: 'sprites',
+          label: `Loading video thumbnails (${concurrency} at a time)...`,
+          completed,
+          total: videoAssets.length,
+          critical: false,
+        },
+      })
+    }
+    updateProgress()
+
+    let cursor = 0
+    const loadOne = async (asset) => {
       try {
-        const sprite = await loadSpriteFromProject(projectPath, asset.id)
+        const sprite = await loadSpriteFromProject(projectPath, asset.id, spriteIndex)
         if (sprite) {
           get().updateAssetSprite(asset.id, sprite.spriteData)
           console.log(`Loaded sprite for ${asset.name}`)
         }
       } catch (err) {
-        // Sprite might not exist yet, that's OK
+        // Sprite might not exist yet, that's OK.
       } finally {
-        set({
-          mediaPreparation: {
-            active: true,
-            phase: 'sprites',
-            label: 'Loading video thumbnails...',
-            completed: index + 1,
-            total: videoAssets.length,
-            critical: false,
-          },
-        })
+        completed += 1
+        updateProgress()
       }
     }
-    get().clearMediaPreparation()
+
+    const worker = async () => {
+      while (cursor < videoAssets.length) {
+        const asset = videoAssets[cursor]
+        cursor += 1
+        await loadOne(asset)
+        // Yield between items so tab switches and paint are not starved.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+    }
+
+    try {
+      await Promise.all(Array.from({ length: Math.min(concurrency, videoAssets.length) }, () => worker()))
+    } finally {
+      get().clearMediaPreparation()
+    }
   },
 
   /**
