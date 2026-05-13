@@ -6674,27 +6674,38 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     }
 
     const timelineState = useTimelineStore.getState()
-    const previousAssemblyClipIds = (timelineState.clips || [])
-      .filter((clip) => clip?.metadata?.musicVideoAssembly?.mode === MUSIC_VIDEO_TIMELINE_ASSEMBLY_MODE)
-      .map((clip) => clip.id)
-    const previousAssemblyClipIdSet = new Set(previousAssemblyClipIds)
-    timelineState.saveToHistory?.()
-    if (previousAssemblyClipIds.length > 0) {
-      useTimelineStore.setState((state) => {
-        const nextTransitions = (state.transitions || []).filter((transition) => (
-          !previousAssemblyClipIdSet.has(transition.clipId)
-          && !previousAssemblyClipIdSet.has(transition.clipAId)
-          && !previousAssemblyClipIdSet.has(transition.clipBId)
-        ))
-        const selectedTransitionStillExists = nextTransitions.some((transition) => transition.id === state.selectedTransitionId)
-        return {
-          clips: state.clips.filter((clip) => !previousAssemblyClipIdSet.has(clip.id)),
-          transitions: nextTransitions,
-          selectedClipIds: state.selectedClipIds.filter((clipId) => !previousAssemblyClipIdSet.has(clipId)),
-          selectedTransitionId: selectedTransitionStillExists ? state.selectedTransitionId : null,
-        }
-      })
+    const projectAssetById = new Map((assets || []).filter((asset) => asset?.id).map((asset) => [asset.id, asset]))
+    const getMusicVideoClipAssemblyKey = (clip) => {
+      const assembly = clip?.metadata?.musicVideoAssembly || null
+      const asset = clip?.assetId ? projectAssetById.get(clip.assetId) : null
+      const yolo = asset?.yolo || asset?.settings?.yolo || null
+      const variantKey = assembly?.variantKey || yolo?.variantKey || yolo?.key || ''
+      if (variantKey) return 'variant:' + variantKey
+      const sceneId = assembly?.sceneId || yolo?.sceneId || ''
+      const shotId = assembly?.shotId || yolo?.shotId || ''
+      if (sceneId || shotId) return 'shot:' + sceneId + '|' + shotId
+      const assetId = assembly?.assetId || clip?.assetId || ''
+      return assetId ? 'asset:' + assetId : ''
     }
+    const existingVideoAssemblyKeys = new Set(
+      (timelineState.clips || [])
+        .filter((clip) => {
+          if (clip?.type !== 'video') return false
+          const assembly = clip?.metadata?.musicVideoAssembly || null
+          if (assembly?.mode === MUSIC_VIDEO_TIMELINE_ASSEMBLY_MODE && assembly?.kind === 'video') return true
+          const asset = clip?.assetId ? projectAssetById.get(clip.assetId) : null
+          const yolo = asset?.yolo || asset?.settings?.yolo || null
+          return yolo?.mode === 'music' && yolo?.stage === 'video'
+        })
+        .map(getMusicVideoClipAssemblyKey)
+        .filter(Boolean)
+    )
+    const initialExistingVideoAssemblyCount = existingVideoAssemblyKeys.size
+    const existingSongAudio = (timelineState.clips || []).some((clip) => (
+      clip?.metadata?.musicVideoAssembly?.mode === MUSIC_VIDEO_TIMELINE_ASSEMBLY_MODE
+      && clip?.metadata?.musicVideoAssembly?.kind === 'song-audio'
+    ))
+    timelineState.saveToHistory?.()
 
     const assembledAt = new Date().toISOString()
     const createdTrackIds = new Set()
@@ -6714,6 +6725,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       const track = getOrCreateTrack('video', group.trackName)
       if (!track) continue
       for (const row of group.rows) {
+        const rowAssemblyKey = row.variant?.key
+          ? 'variant:' + row.variant.key
+          : (row.scene?.id || row.shot?.id
+            ? 'shot:' + (row.scene?.id || '') + '|' + (row.shot?.id || '')
+            : (row.asset?.id ? 'asset:' + row.asset.id : ''))
+        if (rowAssemblyKey && existingVideoAssemblyKeys.has(rowAssemblyKey)) continue
         const shotType = row.shot?.musicShotType || row.variant?.musicShotType || row.asset?.yolo?.shotType || ''
         const shotTypeOption = getMusicVideoShotTypeOption(shotType)
         const syncLock = shotTypeOption?.needsVocalAlignment ? {
@@ -6750,12 +6767,15 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             },
           },
         })
-        if (clip) insertedVideoClips += 1
+        if (clip) {
+          insertedVideoClips += 1
+          if (rowAssemblyKey) existingVideoAssemblyKeys.add(rowAssemblyKey)
+        }
       }
     }
 
     let insertedAudioClips = 0
-    if (yoloMusicAudioAsset) {
+    if (yoloMusicAudioAsset && !existingSongAudio) {
       const audioTrack = getOrCreateTrack('audio', 'MV - Song', { channels: 'stereo' })
       const audioDuration = Number(yoloMusicSongDurationSeconds || yoloMusicAudioAsset?.settings?.duration || yoloMusicAudioAsset?.duration || 0) || undefined
       if (audioTrack) {
@@ -6784,6 +6804,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       insertedAudioClips > 0 ? 'song audio' : '',
       `in "${timelineResult.timelineName}"`,
       `on ${groups.size} coverage track${groups.size === 1 ? '' : 's'}`,
+      initialExistingVideoAssemblyCount > 0 ? `${initialExistingVideoAssemblyCount} existing clip${initialExistingVideoAssemblyCount === 1 ? '' : 's'} kept` : '',
       missingRows.length > 0 ? `${missingRows.length} missing/failed shot${missingRows.length === 1 ? '' : 's'} skipped` : '',
     ].filter(Boolean).join(' · ')
 
@@ -6798,7 +6819,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       insertedVideoClips,
       insertedAudioClips,
       missingCount: missingRows.length,
-      replacedCount: previousAssemblyClipIds.length,
+      replacedCount: 0,
+      keptExistingClipCount: initialExistingVideoAssemblyCount,
       timelineName: timelineResult.timelineName,
       trackCount: groups.size,
     }

@@ -178,6 +178,25 @@ const applySyncLockToClip = (clip, fps = FRAME_RATE) => {
   }
 }
 
+const buildAssetByIdMap = (assets = []) => new Map(
+  (Array.isArray(assets) ? assets : [])
+    .filter((asset) => asset?.id)
+    .map((asset) => [asset.id, asset])
+)
+
+const applyInferredSyncLockToClip = (clip, assetsById, fps = FRAME_RATE) => {
+  if (!clip) return clip
+  if (isSyncLockedClip(clip)) return applySyncLockToClip(clip, fps)
+  const asset = assetsById?.get?.(clip.assetId) || null
+  const syncLock = resolveClipSyncLock({
+    asset,
+    startTime: clip.startTime,
+    duration: clip.duration,
+    fps,
+  })
+  return syncLock ? applySyncLockToClip({ ...clip, lockMode: 'sync', syncLock }, fps) : clip
+}
+
 const dedupeClipIds = (clipIds = []) => [...new Set((clipIds || []).filter(Boolean))]
 const RIPPLE_TIME_EPSILON = 1e-6
 
@@ -4470,6 +4489,7 @@ export const useTimelineStore = create(
   loadFromProject: (timelineData, assets = [], timelineFps = null) => {
     if (!timelineData) return
     const fps = Number(timelineFps) || 24
+    const assetsById = buildAssetByIdMap(assets)
     const normalizedClips = normalizeClipTimebases(timelineData.clips || [], assets, fps)
     // Align all clip start times and durations to frame boundaries (no sub-frame)
     const frameAlignedClips = normalizedClips.map((clip) => {
@@ -4489,7 +4509,7 @@ export const useTimelineStore = create(
       const normalizedAdjustments = supportsClipAdjustments(clip)
         ? normalizeAdjustmentSettings(clip.adjustments || {})
         : clip.adjustments
-      return clampFiniteMediaClipToSource({
+      const normalizedClip = clampFiniteMediaClipToSource({
         ...clip,
         startTime,
         duration,
@@ -4500,6 +4520,7 @@ export const useTimelineStore = create(
           ? { compositeLowerLayers: normalizeClipCompositeMode(clip.compositeLowerLayers) }
           : {}),
       }, fps)
+      return applyInferredSyncLockToClip(normalizedClip, assetsById, fps)
     })
     const restoredClipCounter = Number(timelineData.clipCounter) || 1
     const nextClipCounter = Math.max(restoredClipCounter, getNextClipCounter(frameAlignedClips, 1))
