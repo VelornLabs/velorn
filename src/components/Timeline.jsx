@@ -1282,7 +1282,6 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         </div>
       )
     }
-
     return (
       <div className="absolute inset-0 top-[3px] flex items-center overflow-hidden bg-[#162226]">
         <div className="flex h-full w-full items-center gap-2 px-2 text-[9px] uppercase tracking-[0.16em] text-white/35">
