@@ -99,6 +99,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<{success: boolean, error?: string}>}
    */
   encodeVideo: (options) => ipcRenderer.invoke('export:encodeVideo', options),
+  renderTimelineVideo: (options) => ipcRenderer.invoke('export:renderTimelineVideo', options),
+  concatVideoSegments: (options) => ipcRenderer.invoke('export:concatVideoSegments', options),
   startFramePipe: (options) => ipcRenderer.invoke('export:startFramePipe', options),
   writeFrameToPipe: (sessionId, frameBuffer) => ipcRenderer.invoke('export:writeFrameToPipe', sessionId, frameBuffer),
   finishFramePipe: (sessionId) => ipcRenderer.invoke('export:finishFramePipe', sessionId),
@@ -114,14 +116,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Export worker (run export in separate window so main UI stays responsive)
   runExportInWorker: (payload) => ipcRenderer.invoke('export:runInWorker', payload),
+  cancelExportWorker: () => ipcRenderer.invoke('export:cancelWorker'),
   onExportProgress: (cb) => {
-    ipcRenderer.on('export:progress', (_, data) => cb(data))
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('export:progress', listener)
+    return () => ipcRenderer.removeListener('export:progress', listener)
   },
   onExportComplete: (cb) => {
-    ipcRenderer.on('export:complete', (_, data) => cb(data))
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('export:complete', listener)
+    return () => ipcRenderer.removeListener('export:complete', listener)
   },
   onExportError: (cb) => {
-    ipcRenderer.on('export:error', (_, err) => cb(err))
+    const listener = (_, err) => cb(err)
+    ipcRenderer.on('export:error', listener)
+    return () => ipcRenderer.removeListener('export:error', listener)
   },
   onExportJob: (cb) => {
     ipcRenderer.once('export:job', (_, job) => cb(job))
@@ -301,6 +310,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<string>}
    */
   getFileUrlDirect: (filePath) => ipcRenderer.invoke('media:getFileUrlDirect', filePath),
+  createImageThumbnail: (options) => ipcRenderer.invoke('media:createImageThumbnail', options),
 
   // ============================================
   // App Settings (persistent storage in userData)
@@ -335,6 +345,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadComfyUiWorkflowGraph: (payload = {}) => ipcRenderer.invoke('comfyui:loadWorkflowGraph', payload),
   validateWorkflowSetupRoot: (rootPath) => ipcRenderer.invoke('workflowSetup:validateRoot', rootPath),
   checkWorkflowSetupFiles: (payload = {}) => ipcRenderer.invoke('workflowSetup:checkFiles', payload),
+  checkWorkflowSetupPythonModules: (payload = {}) => ipcRenderer.invoke('workflowSetup:checkPythonModules', payload),
   openExternalUrl: (url) => ipcRenderer.invoke('shell:openExternal', url),
   installWorkflowSetup: (payload = {}) => ipcRenderer.invoke('workflowSetup:install', payload),
   onWorkflowSetupProgress: (cb) => {
