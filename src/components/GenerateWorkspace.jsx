@@ -31,6 +31,7 @@ import {
   saveProject as saveProjectFile,
 } from '../services/fileSystem'
 import { enqueuePlaybackTranscode } from '../services/playbackCache'
+import { getSpriteFramePosition } from '../services/thumbnailSprites'
 import { enqueueProxyTranscode, isProxyPlaybackEnabled } from '../services/proxyCache'
 import { formatCaptionCuesAsSrt, transcribeWithComfyUI } from '../services/captionComfyTranscription'
 import {
@@ -2204,6 +2205,50 @@ function CinematographyTags({ onAddTag, selectedTags, onRemoveTag }) {
   )
 }
 
+
+function StaticAssetPreview({ asset, className = 'w-full h-full object-cover', iconClassName = 'w-4 h-4 text-sf-text-muted' }) {
+  if (!asset) return null
+
+  if (asset.type === 'image' && asset.url) {
+    return <img src={asset.url} className={className} alt="" loading="lazy" decoding="async" />
+  }
+
+  if (asset.type === 'video') {
+    const sprite = asset.sprite
+    const frame = sprite?.url && Array.isArray(sprite.frames) && sprite.frames.length > 0
+      ? (getSpriteFramePosition(sprite, 0) || sprite.frames[0])
+      : null
+
+    if (frame) {
+      const containerClass = className.includes('object-contain')
+        ? 'w-full h-full bg-sf-dark-950 bg-center bg-no-repeat'
+        : 'w-full h-full bg-sf-dark-950 bg-center bg-cover bg-no-repeat'
+      return (
+        <div
+          className={containerClass}
+          style={{
+            backgroundImage: `url(${sprite.url})`,
+            backgroundSize: `${sprite.width}px ${sprite.height}px`,
+            backgroundPosition: `${-(frame.x || 0)}px ${-(frame.y || 0)}px`,
+          }}
+        />
+      )
+    }
+
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-sf-dark-800">
+        <Film className={iconClassName} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-sf-dark-800">
+      <Music className={iconClassName} />
+    </div>
+  )
+}
+
 // ============================================
 // Asset Input Browser (left column)
 // ============================================
@@ -2479,13 +2524,11 @@ function AssetInputBrowser({
             })()
           ) : (
             <div className="aspect-video bg-sf-dark-800 rounded overflow-hidden">
-              {selectedAssetForActiveSlot.type === 'video' ? (
-                <video src={selectedAssetForActiveSlot.url} className="w-full h-full object-contain" muted />
-              ) : selectedAssetForActiveSlot.type === 'image' ? (
-                <img src={selectedAssetForActiveSlot.url} className="w-full h-full object-contain" alt={selectedAssetForActiveSlot.name} />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center"><Music className="w-8 h-8 text-sf-text-muted" /></div>
-              )}
+              <StaticAssetPreview
+                asset={selectedAssetForActiveSlot}
+                className="w-full h-full object-contain"
+                iconClassName="w-8 h-8 text-sf-text-muted"
+              />
             </div>
           )}
           <button onClick={() => handleSelectAssetForActiveSlot(null)} className="mt-1 text-[9px] text-sf-text-muted hover:text-sf-error">Clear selection</button>
@@ -2550,13 +2593,7 @@ function AssetInputBrowser({
                   className={`bg-sf-dark-800 border rounded overflow-hidden text-left transition-all ${isSelected ? 'border-sf-accent ring-1 ring-sf-accent' : 'border-sf-dark-600 hover:border-sf-dark-500'}`}
                 >
                   <div className="aspect-video bg-sf-dark-700 flex items-center justify-center relative overflow-hidden">
-                    {asset.type === 'video' && asset.url ? (
-                      <video src={asset.url} className="w-full h-full object-cover" muted preload="metadata" />
-                    ) : asset.type === 'image' && asset.url ? (
-                      <img src={asset.url} className="w-full h-full object-cover" alt="" />
-                    ) : (
-                      <Music className="w-4 h-4 text-sf-text-muted" />
-                    )}
+                    <StaticAssetPreview asset={asset} />
                     <div className={`absolute top-0.5 left-0.5 px-1 py-0.5 rounded text-[7px] text-white ${asset.type === 'video' ? 'bg-blue-600/80' : asset.type === 'image' ? 'bg-green-600/80' : 'bg-purple-600/80'}`}>
                       {asset.type === 'video' ? 'VID' : asset.type === 'image' ? 'IMG' : 'AUD'}
                     </div>
@@ -2585,9 +2622,18 @@ function AssetInputBrowser({
 async function extractFrameAsFile(videoUrl, time, filename = 'frame.png') {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video')
+    const release = () => {
+      try { video.pause() } catch (_) {}
+      video.onloadedmetadata = null
+      video.onseeked = null
+      video.onerror = null
+      try { video.removeAttribute('src') } catch (_) {}
+      try { video.srcObject = null } catch (_) {}
+      try { video.load() } catch (_) {}
+    }
     video.crossOrigin = 'anonymous'
     video.muted = true
-    video.preload = 'auto'
+    video.preload = 'metadata'
     video.src = videoUrl
 
     video.onloadedmetadata = () => {
@@ -2600,6 +2646,7 @@ async function extractFrameAsFile(videoUrl, time, filename = 'frame.png') {
       canvas.height = video.videoHeight
       canvas.getContext('2d').drawImage(video, 0, 0)
       canvas.toBlob((blob) => {
+        release()
         if (blob) {
           resolve(new File([blob], filename, { type: 'image/png' }))
         } else {
@@ -2608,7 +2655,10 @@ async function extractFrameAsFile(videoUrl, time, filename = 'frame.png') {
       }, 'image/png')
     }
 
-    video.onerror = () => reject(new Error('Failed to load video for frame extraction'))
+    video.onerror = () => {
+      release()
+      reject(new Error('Failed to load video for frame extraction'))
+    }
   })
 }
 

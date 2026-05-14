@@ -229,7 +229,7 @@ function formatPreviewChunkRange(range) {
   return `${formatPreviewChunkTime(range?.rangeStart)}-${formatPreviewChunkTime(range?.rangeEnd)}`
 }
 
-function PreviewPanel() {
+function PreviewPanel({ isActive = true }) {
   const videoRefA = useRef(null) // Used for asset preview mode
   const containerRef = useRef(null)
   const viewportRef = useRef(null)
@@ -1513,6 +1513,8 @@ function PreviewPanel() {
   
   // Handle keyboard events for spacebar and ctrl
   useEffect(() => {
+    if (!isActive) return undefined
+
     const handleKeyDown = (e) => {
       // Don't capture when typing in inputs (use activeElement so prompt/search work)
       const active = document.activeElement
@@ -1546,7 +1548,7 @@ function PreviewPanel() {
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('keyup', handleKeyUp)
     }
-  }, [])
+  }, [isActive])
   
   // Handle mouse events for panning and zooming
   const handleMouseDown = useCallback((e) => {

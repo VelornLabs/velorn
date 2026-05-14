@@ -341,6 +341,42 @@ function CachedTimelineImage({ asset, src, projectHandle, alt, className, style,
   )
 }
 
+function CachedTimelineImage({ asset, src, projectHandle, alt, className, style, draggable = false, suspend = false }) {
+  const sourceUrl = src || asset?.url || asset?.thumbnailUrl || ''
+  const [thumbnailUrl, setThumbnailUrl] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!sourceUrl) {
+      setThumbnailUrl(null)
+      return () => { cancelled = true }
+    }
+    if (suspend) return () => { cancelled = true }
+
+    getExistingImageThumbnail(projectHandle, asset || { url: sourceUrl }, { width: 360, height: 204, quality: 78 })
+      .then((url) => {
+        if (!cancelled && url) setThumbnailUrl(url)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [asset, projectHandle, sourceUrl, suspend])
+
+  if (!sourceUrl || !thumbnailUrl) return null
+
+  return (
+    <img
+      src={thumbnailUrl}
+      alt={alt || ''}
+      className={className}
+      style={style}
+      draggable={draggable}
+      loading="lazy"
+      decoding="async"
+      onContextMenu={(e) => e.preventDefault()}
+    />
+  )
+}
+
 function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
   const [waveform, setWaveform] = useState(null)
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
@@ -1321,7 +1357,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         </div>
       )
     }
-     return (
+    return (
       <div className="absolute inset-0 top-[3px] flex items-center overflow-hidden bg-[#162226]">
         <div className="flex h-full w-full items-center gap-2 px-2 text-[9px] uppercase tracking-[0.16em] text-white/35">
           <Video className="h-3 w-3 flex-shrink-0" />

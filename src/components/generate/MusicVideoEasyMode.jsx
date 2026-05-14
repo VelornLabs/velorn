@@ -350,6 +350,7 @@ function LazyShotPreview({ children, placeholderLabel = 'Preview', enabled = tru
     observer.observe(el)
     return () => observer.disconnect()
   }, [enabled, shouldLoad])
+  }, [enabled, shouldLoad])
 
   return (
     <div ref={ref} className="h-full w-full">
@@ -360,16 +361,16 @@ function LazyShotPreview({ children, placeholderLabel = 'Preview', enabled = tru
   )
 }
 
-function CachedShotImage({ asset, className, alt = '' }) {
+function CachedShotImage({ asset, fallbackUrl, className, alt = '' }) {
   const currentProjectHandle = useProjectStore((state) => state.currentProjectHandle)
-  const sourceUrl = getAssetUrl(asset)
+  const sourceUrl = getAssetUrl(asset) || fallbackUrl || ''
   const [thumbnailUrl, setThumbnailUrl] = useState(null)
 
   useEffect(() => {
     let cancelled = false
     setThumbnailUrl(null)
     if (!sourceUrl) return () => { cancelled = true }
-    getOrCreateImageThumbnail(currentProjectHandle, asset, { width: 360, height: 204, quality: 78 })
+    getOrCreateImageThumbnail(currentProjectHandle, asset || { url: sourceUrl }, { width: 360, height: 204, quality: 78 })
       .then((url) => {
         if (!cancelled) setThumbnailUrl(url || sourceUrl)
       })
@@ -387,10 +388,11 @@ function CachedShotImage({ asset, className, alt = '' }) {
 }
 
 function ShotVideoPreview({ hasVideo, keyframeAsset, placeholderLabel = "Needs keyframe", loadPreview = true }) {
-  if (getAssetUrl(keyframeAsset)) {
+  const resolvedKeyframeUrl = getAssetUrl(keyframeAsset)
+  if (resolvedKeyframeUrl) {
     return (
       <LazyShotPreview placeholderLabel="Keyframe preview" enabled={loadPreview}>
-        <CachedShotImage asset={keyframeAsset} className="h-full w-full object-cover opacity-70" />
+        <CachedShotImage asset={keyframeAsset} fallbackUrl={resolvedKeyframeUrl} className="h-full w-full object-cover opacity-70" />
       </LazyShotPreview>
     )
   }
@@ -2904,6 +2906,7 @@ export default function MusicVideoEasyMode({
                         ? 'bg-red-950/30'
                         : 'bg-sf-dark-800'
                   }`}>
+                    <ShotVideoPreview hasVideo={Boolean(videoUrl)} keyframeAsset={keyframeAsset} loadPreview={shouldLoadShotGridPreview(index)} />
                     <ShotVideoPreview hasVideo={Boolean(videoUrl)} keyframeAsset={keyframeAsset} loadPreview={shouldLoadShotGridPreview(index)} />
                     {cardState.state === 'generating' && (
                       <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/10 to-transparent" />

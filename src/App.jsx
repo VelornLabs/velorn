@@ -650,7 +650,7 @@ function App() {
                 
                 {/* Center - Preview */}
                 <div className="flex-1 min-w-0">
-                  <PreviewPanel />
+                  <PreviewPanel isActive={mainTab === 'editor'} />
                 </div>
                 
                 {/* Resize Handle - Inspector (only when expanded) */}
@@ -734,6 +734,7 @@ function App() {
                 <div className="flex-1 min-h-0">
                   {bottomEditorView === 'timeline' ? (
                     <Timeline
+                      isActive={mainTab === 'editor'}
                       onOpenAudioGenerate={openAudioModal}
                       onActiveToolChange={handleActiveTimelineToolChange}
                     />

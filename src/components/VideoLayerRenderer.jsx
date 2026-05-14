@@ -2712,6 +2712,7 @@ function VideoLayerRenderer({
     lastPreloadPosition.current = playheadPosition
   }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
   }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
+  }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
 
   // Auto-render cache for clips with mask effects (smooth playback)
   useEffect(() => {

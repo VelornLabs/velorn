@@ -31,6 +31,9 @@ const DEFAULT_SAMPLE_RATE = 44100
 const AUDIO_FETCH_TIMEOUT_MS = 15000
 const AUDIO_DECODE_TIMEOUT_MS = 30000
 const AUDIO_MIX_TIMEOUT_MS = 120000
+const EXPORT_VIDEO_CACHE_LIMIT = 4
+const EXPORT_IMAGE_CACHE_LIMIT = 12
+const EXPORT_SEEK_TIMEOUT_MS = 5000
 
 const EXPORT_STATUS = {
   preparing: 'Preparing export...',
@@ -158,7 +161,7 @@ const loadVideo = async (url) => {
   video.src = url
   video.muted = true
   video.playsInline = true
-  video.preload = 'auto'
+  video.preload = 'metadata'
   
   // Add timeout to prevent infinite hang if video never loads
   const loadPromise = waitForEvent(video, 'loadedmetadata')
@@ -263,7 +266,12 @@ const presentFreshFrame = async (video, { maxPlayMs = 600, expectedTime = null }
   try {
     video.muted = true
     const playPromise = video.play()
-    if (playPromise) await playPromise.catch(() => {})
+    if (playPromise) {
+      await Promise.race([
+        playPromise.catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, maxPlayMs)),
+      ])
+    }
   } catch {
     // If play() outright throws, we still await the timer to give the
     // decoder a chance. Better than returning immediately.
@@ -295,7 +303,7 @@ const presentFreshFrame = async (video, { maxPlayMs = 600, expectedTime = null }
 const lastSeekTimeByVideo = new WeakMap()
 const LARGE_SEEK_THRESHOLD_SEC = 0.3
 
-const seekVideo = async (video, time, fastSeek = true) => {
+const seekVideoImpl = async (video, time, fastSeek = true) => {
   const targetTime = clamp(time, 0, video.duration || time)
   const prevTime = lastSeekTimeByVideo.get(video)
   // First seek on this element OR a jump larger than threshold (= cut
@@ -356,6 +364,12 @@ const seekVideo = async (video, time, fastSeek = true) => {
     seekDebug('large-seek confirmed', { targetTime, prevTime, currentTime: video.currentTime })
   }
 }
+
+const seekVideo = async (video, time, fastSeek = true) => withTimeout(
+  seekVideoImpl(video, time, fastSeek),
+  EXPORT_SEEK_TIMEOUT_MS,
+  'Video seek'
+)
 
 const getTransitionCanvasStyle = (transitionInfo, isVideoA) => {
   if (!transitionInfo) {
@@ -745,6 +759,37 @@ export const audioBufferToWav = (buffer) => {
 
 const formatFrameNumber = (index) => String(index).padStart(6, '0')
 
+
+const releaseVideoElement = (video) => {
+  if (!video) return
+  try { video.pause() } catch { /* ignore */ }
+  try { video.removeAttribute('src') } catch { /* ignore */ }
+  try { video.load() } catch { /* ignore */ }
+}
+
+const touchCacheEntry = (cache, key, value) => {
+  if (cache.has(key)) cache.delete(key)
+  cache.set(key, value)
+  return value
+}
+
+const trimVideoCache = (cache, limit) => {
+  while (cache.size > limit) {
+    const [oldestKey, oldestVideo] = cache.entries().next().value || []
+    if (!oldestKey) break
+    cache.delete(oldestKey)
+    releaseVideoElement(oldestVideo)
+  }
+}
+
+const trimImageCache = (cache, limit) => {
+  while (cache.size > limit) {
+    const [oldestKey] = cache.entries().next().value || []
+    if (!oldestKey) break
+    cache.delete(oldestKey)
+  }
+}
+
 export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   const timelineState = useTimelineStore.getState()
   const assetsState = useAssetsStore.getState()
@@ -892,8 +937,20 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     return processedCanvas
   }
   
-  const videoClips = timelineState.clips.filter(c => c.type === 'video')
-  const imageClips = timelineState.clips.filter(c => c.type === 'image')
+  const visibleVideoTrackIds = new Set(
+    (timelineState.tracks || [])
+      .filter((track) => track?.type === 'video' && track.visible !== false && !track.muted)
+      .map((track) => track.id)
+  )
+  const isOnVisibleVideoTrack = (clip) => visibleVideoTrackIds.has(clip?.trackId)
+  const videoClips = timelineState.clips.filter(c => c.type === 'video' && isOnVisibleVideoTrack(c))
+  const imageClips = timelineState.clips.filter(c => c.type === 'image' && isOnVisibleVideoTrack(c))
+  const isVisibleTransition = (transitionInfo) => {
+    if (!transitionInfo) return false
+    const data = transitionInfo
+    const trackIds = [data.clip?.trackId, data.clipA?.trackId, data.clipB?.trackId].filter(Boolean)
+    return trackIds.length === 0 || trackIds.some((trackId) => visibleVideoTrackIds.has(trackId))
+  }
 
   if (useCachedRenders) {
     for (const clip of videoClips) {
@@ -931,22 +988,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       const overrideUrl = cachedVideoSources.get(clip.id)
       const sourceUrl = overrideUrl || resolvedUrl
       if (!sourceUrl) continue
-      if (!videoElements.has(sourceUrl) && !failedVideoSources.has(sourceUrl)) {
-        try {
-          const video = await loadVideo(sourceUrl)
-          if (!video.videoWidth || !video.videoHeight) {
-            throw new Error('Source has no decodable video stream')
-          }
-          videoElements.set(sourceUrl, video)
-        } catch (err) {
-          failedVideoSources.add(sourceUrl)
-          console.warn('[Export] Skipping undecodable video source:', sourceUrl, getMediaErrorMessage(err))
-        }
-      }
-    } else if (clip.type === 'image') {
-      if (!imageElements.has(resolvedUrl)) {
-        imageElements.set(resolvedUrl, await loadImage(resolvedUrl))
-      }
+      resolvedAssetUrls.set(`video:${clip.id}`, sourceUrl)
     }
   }
   
@@ -966,6 +1008,35 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       }
       maskElements.set(mask.id, images)
     }
+  }
+
+  const getVideoElement = async (sourceUrl) => {
+    if (!sourceUrl || failedVideoSources.has(sourceUrl)) return null
+    const existing = videoElements.get(sourceUrl)
+    if (existing) return touchCacheEntry(videoElements, sourceUrl, existing)
+    try {
+      const video = await loadVideo(sourceUrl)
+      if (!video.videoWidth || !video.videoHeight) {
+        throw new Error('Source has no decodable video stream')
+      }
+      touchCacheEntry(videoElements, sourceUrl, video)
+      trimVideoCache(videoElements, EXPORT_VIDEO_CACHE_LIMIT)
+      return video
+    } catch (err) {
+      failedVideoSources.add(sourceUrl)
+      console.warn('[Export] Skipping undecodable video source:', sourceUrl, getMediaErrorMessage(err))
+      return null
+    }
+  }
+
+  const getImageElement = async (imageUrl) => {
+    if (!imageUrl) return null
+    const existing = imageElements.get(imageUrl)
+    if (existing) return touchCacheEntry(imageElements, imageUrl, existing)
+    const image = await loadImage(imageUrl)
+    touchCacheEntry(imageElements, imageUrl, image)
+    trimImageCache(imageElements, EXPORT_IMAGE_CACHE_LIMIT)
+    return image
   }
 
   if (canUseDirectFramePipe) {
@@ -1010,7 +1081,8 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     const targetTime = rangeStart + frameIndex * frameDuration + halfFrame
     const safeEnd = Math.max(rangeStart, rangeEnd - halfFrame)
     const time = Math.min(targetTime, safeEnd)
-    const transitionInfo = timelineState.getTransitionAtTime(time)
+    const rawTransitionInfo = timelineState.getTransitionAtTime(time)
+    const transitionInfo = isVisibleTransition(rawTransitionInfo) ? rawTransitionInfo : null
     
     ctx.fillStyle = '#000000'
     ctx.fillRect(0, 0, width, height)
@@ -1235,7 +1307,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         if (sourceUrl && failedVideoSources.has(sourceUrl)) {
           continue
         }
-        const video = sourceUrl ? videoElements.get(sourceUrl) : null
+        const video = sourceUrl ? await getVideoElement(sourceUrl) : null
         if (!video) continue
         
         // Calculate source time matching preview logic
@@ -1280,7 +1352,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         drawSource = video
       } else if (clip.type === 'image') {
         const imageUrl = resolvedAssetUrls.get(clip.assetId) || asset?.url
-        const image = imageUrl ? imageElements.get(imageUrl) : null
+        const image = imageUrl ? await getImageElement(imageUrl) : null
         if (!image) continue
         sourceWidth = image.naturalWidth || sourceWidth
         sourceHeight = image.naturalHeight || sourceHeight
@@ -1623,6 +1695,11 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       }
       framePipeSessionId = null
     }
+    for (const video of videoElements.values()) releaseVideoElement(video)
+    videoElements.clear()
+    imageElements.clear()
+    maskElements.clear()
+    maskRenderBuffers.clear()
     throw err
   }
 
@@ -1934,6 +2011,12 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   if (encodeResult.encoderUsed) {
     console.log(`Export encoded with: ${encodeResult.encoderUsed}`)
   }
+
+  for (const video of videoElements.values()) releaseVideoElement(video)
+  videoElements.clear()
+  imageElements.clear()
+  maskElements.clear()
+  maskRenderBuffers.clear()
 
   // Cleanup temp render files
   if (getLocalStorageFlag('exportKeepFrames')) {

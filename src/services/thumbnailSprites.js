@@ -28,6 +28,16 @@ const SPRITE_CONFIG = {
 
 const SPRITE_INDEX_FILE = 'sprite_index.json'
 
+function releaseVideoElement(video) {
+  if (!video) return
+  try { video.pause() } catch (_) {}
+  video.onloadedmetadata = null
+  video.onseeked = null
+  video.onerror = null
+  try { video.removeAttribute('src') } catch (_) {}
+  try { video.srcObject = null } catch (_) {}
+  try { video.load() } catch (_) {}
+}
 async function getThumbnailDirectory(projectPath) {
   const api = window.electronAPI
   return await api.pathJoin(projectPath, 'thumbnails')
@@ -88,7 +98,7 @@ export async function generateThumbnailSprite(videoUrl, duration, options = {}) 
   const video = document.createElement('video')
   video.crossOrigin = 'anonymous'
   video.muted = true
-  video.preload = 'auto'
+  video.preload = 'metadata'
   
   return new Promise((resolve, reject) => {
     video.onloadedmetadata = async () => {
@@ -156,17 +166,17 @@ export async function generateThumbnailSprite(videoUrl, duration, options = {}) 
           frames,
         }
         
-        // Clean up video element
-        video.src = ''
-        video.load()
+        releaseVideoElement(video)
         
         resolve({ spriteUrl, spriteData, blob })
       } catch (err) {
+        releaseVideoElement(video)
         reject(err)
       }
     }
     
     video.onerror = () => {
+      releaseVideoElement(video)
       reject(new Error('Failed to load video for sprite generation'))
     }
     
