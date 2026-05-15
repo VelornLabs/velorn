@@ -5,6 +5,7 @@
 import { ALL_WORKFLOWS, getBundledWorkflowPath } from './workflowRegistry'
 import { TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID } from './topazVideoUpscaleConfig'
 import { MUSIC_VIDEO_SHOT_WORKFLOW_ID, VOCAL_EXTRACT_WORKFLOW_ID } from './musicVideoShotConfig'
+import { ELEVENLABS_TTS_WORKFLOW_ID } from './shortFilmConfig'
 
 function coverPath(filename) {
   return getBundledWorkflowPath(`setup-covers/${filename}`)
@@ -14,11 +15,18 @@ const CLOUD_WORKFLOW_IDS = new Set([
   'kling-o3-i2v',
   'grok-video-i2v',
   'vidu-q2-i2v',
+  'seedance2-t2v',
+  'seedance2-flf2v',
+  'seedance2-r2v',
   TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID,
   'nano-banana-2',
+  'gpt-image-2-t2i',
+  'gpt-image-2-edit',
   'grok-text-to-image',
   'seedream-5-lite-image-edit',
   'google-gemini-flash-lite',
+  'sonilo-v2m',
+  ELEVENLABS_TTS_WORKFLOW_ID,
 ])
 
 /** @type {Record<string, { gradient: string, icon: string, thumbnailSrc?: string, extraBadges?: string[] }>} */
@@ -106,7 +114,7 @@ const VISUAL_BY_WORKFLOW_ID = {
   'nano-banana-2': {
     gradient: 'from-yellow-500/20 via-amber-900/25 to-sf-dark-950',
     icon: 'cloud',
-    extraBadges: ['T2I'],
+    extraBadges: ['Image edit', 'Reference', 'Keyframes'],
     thumbnailSrc: coverPath('nano-banana-2.webp'),
   },
   'grok-text-to-image': {
@@ -160,7 +168,7 @@ const LONG_DESCRIPTIONS = {
   'image-edit': 'Local image editing with Qwen Image Edit 2509. Paint a mask (or describe the change) and apply targeted text-prompted edits to a still image while keeping the rest intact.',
   'image-edit-model-product': 'Specialised Qwen Image Edit graph for putting a product onto a model, or swapping a model/product while keeping the other element anchored. Great for e-commerce mockups.',
   'z-image-turbo': 'Local text-to-image using Z Image Turbo. Extremely fast single-image generation — a good default for quick ideation and for producing reference frames to feed into the image-to-video workflows.',
-  'nano-banana-2': 'Cloud text-to-image using Google Nano Banana 2 via the Comfy Partner API. Premium quality, great at typography and layout-heavy prompts. Requires an API key and credits.',
+  'nano-banana-2': 'Cloud image generation and reference editing using Google Nano Banana 2 via the Comfy Partner API. Music Video uses it for cloud keyframes when you want stronger reference-image and identity consistency. Requires an API key and credits.',
   'grok-text-to-image': 'Cloud text-to-image using xAI Grok Imagine (Beta). Strong stylistic range and text rendering. Requires a Grok / Comfy Partner API key.',
   'seedream-5-lite-image-edit': 'Cloud image edit using ByteDance Seedream 5.0 Lite. Lower cost per generation and a good fit for batch edits. Requires a Comfy Partner API key.',
   'music-gen': 'Local music generation with ACE-Step. Feed it a short tag list and optional lyrics and it produces a short musical clip you can drop straight into a timeline.',
@@ -170,32 +178,25 @@ const LONG_DESCRIPTIONS = {
 
 export const WORKFLOW_SETUP_STARTER_KITS = Object.freeze([
   Object.freeze({
-    id: 'low-vram-local-video',
-    label: 'Low VRAM Local Video',
-    tagline: 'Fast local image and video experiments for consumer GPUs.',
-    description: 'Start with lighter local workflows before moving to heavier 14B/22B video graphs.',
-    workflowIds: Object.freeze(['z-image-turbo', 'ltx23-i2v', 'image-edit']),
+    id: 'local-workflows',
+    label: 'Local Workflows',
+    tagline: 'Workflows that run on the user\'s own ComfyUI install and local hardware.',
+    description: 'Show only local ComfyUI workflows and their local model/custom-node setup.',
+    workflowIds: Object.freeze(ALL_WORKFLOWS.filter((workflow) => !CLOUD_WORKFLOW_IDS.has(workflow.id)).map((workflow) => workflow.id)),
   }),
   Object.freeze({
-    id: 'best-local-quality',
-    label: 'Best Local Quality',
-    tagline: 'High-VRAM local workflows for stronger images, references, and motion.',
-    description: 'Prepare the bigger local model stack when the machine has room for heavier downloads.',
-    workflowIds: Object.freeze(['wan22-i2v', 'ltx23-i2v', 'image-edit', 'multi-angles', 'multi-angles-scene']),
-  }),
-  Object.freeze({
-    id: 'cloud-quality',
-    label: 'Cloud Quality',
-    tagline: 'Premium video, image, and upscale workflows without relying on local VRAM.',
-    description: 'Uses Comfy partner nodes and credits, but keeps the generated assets inside ComfyStudio.',
-    workflowIds: Object.freeze(['kling-o3-i2v', 'vidu-q2-i2v', 'grok-video-i2v', 'nano-banana-2', 'grok-text-to-image', 'seedream-5-lite-image-edit', TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID]),
+    id: 'cloud-workflows',
+    label: 'Cloud Workflows',
+    tagline: 'Workflows that use partner/API nodes and credits instead of local model downloads.',
+    description: 'Show only cloud workflows that need partner/API nodes, keys, or credits.',
+    workflowIds: Object.freeze(ALL_WORKFLOWS.filter((workflow) => CLOUD_WORKFLOW_IDS.has(workflow.id)).map((workflow) => workflow.id)),
   }),
   Object.freeze({
     id: 'music-video-kit',
     label: 'Music Video Kit',
     tagline: 'Timed lyrics, vocal prep, and LTX audio-conditioned shot generation.',
     description: 'The fastest setup path for Director Mode music videos and lip-sync-oriented shot passes.',
-    workflowIds: Object.freeze(['caption-qwen-asr', VOCAL_EXTRACT_WORKFLOW_ID, MUSIC_VIDEO_SHOT_WORKFLOW_ID, 'image-edit']),
+    workflowIds: Object.freeze(['nano-banana-2', 'image-edit', 'caption-qwen-asr', VOCAL_EXTRACT_WORKFLOW_ID, MUSIC_VIDEO_SHOT_WORKFLOW_ID]),
   }),
 ])
 

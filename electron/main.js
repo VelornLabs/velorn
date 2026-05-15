@@ -1,12 +1,14 @@
 const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, screen } = require('electron')
 const crypto = require('crypto')
 const path = require('path')
+const os = require('os')
 const fs = require('fs').promises
 const fsSync = require('fs')
 const http = require('http')
 const { spawn } = require('child_process')
 const { Readable } = require('stream')
 const { fileURLToPath } = require('url')
+const yaml = require('js-yaml')
 const ffmpegStaticPath = require('ffmpeg-static')
 const ffprobeStatic = require('ffprobe-static')
 const ffprobeStaticPath = ffprobeStatic?.path || ffprobeStatic
@@ -30,6 +32,22 @@ const COMFY_CONNECTION_SETTING_KEY = 'comfyConnection'
 const DEFAULT_LOCAL_COMFY_PORT = 8188
 const MAIN_WINDOW_STATE_SETTING_KEY = 'mainWindowState'
 const DEFAULT_MAIN_WINDOW_BOUNDS = Object.freeze({ width: 1600, height: 1000 })
+const EXTRA_MODEL_PATH_CONFIG_NAMES = Object.freeze(['extra_model_paths.yaml', 'extra_model_paths.yml'])
+const COMMON_MODEL_SEARCH_KEYS = Object.freeze([
+  'checkpoints',
+  'text_encoders',
+  'loras',
+  'upscale_models',
+  'vae',
+  'diffusion_models',
+  'clip',
+])
+const MODEL_SEARCH_KEY_ALIASES = Object.freeze({
+  text_encoders: Object.freeze(['text_encoders', 'clip']),
+  diffusion_models: Object.freeze(['diffusion_models', 'unet']),
+  latent_upscale_models: Object.freeze(['latent_upscale_models', 'upscale_models']),
+  audio_checkpoints: Object.freeze(['audio_checkpoints', 'audio_encoders']),
+})
 
 let mainWindow = null
 let splashWindow = null
@@ -38,6 +56,7 @@ const activeFramePipeExports = new Map()
 let restoreFullscreenAfterMinimize = false
 let mainWindowStateSaveTimer = null
 const settingsPath = path.join(app.getPath('userData'), 'settings.json')
+let settingsWriteQueue = Promise.resolve()
 
 function resolvePackagedBinaryPath(binaryPath) {
   if (!binaryPath || typeof binaryPath !== 'string') return binaryPath
@@ -337,6 +356,143 @@ async function isDirectoryPath(targetPath) {
   }
 }
 
+function normalizeModelSearchKey(value = '') {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase()
+}
+
+function expandPathVariables(value = '') {
+  let expanded = String(value || '').trim()
+  if (!expanded) return ''
+
+  if (expanded === '~' || expanded.startsWith(`~${path.sep}`) || expanded.startsWith('~/') || expanded.startsWith('~\\')) {
+    expanded = path.join(os.homedir(), expanded.slice(1))
+  }
+
+  expanded = expanded.replace(/%([^%]+)%/g, (match, name) => process.env[name] ?? match)
+  expanded = expanded.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, braced, plain) => {
+    const name = braced || plain
+    return process.env[name] ?? match
+  })
+
+  return expanded
+}
+
+function splitExtraModelPathValue(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => splitExtraModelPathValue(entry))
+  }
+  if (typeof value !== 'string') return []
+  return value
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function addExtraModelSearchPath(pathsByKey, key, folderPath) {
+  const normalizedKey = normalizeModelSearchKey(key)
+  const normalizedPath = path.normalize(String(folderPath || '').trim())
+  if (!normalizedKey || !normalizedPath) return
+  if (!pathsByKey.has(normalizedKey)) pathsByKey.set(normalizedKey, [])
+  const entries = pathsByKey.get(normalizedKey)
+  if (!entries.some((entry) => entry.toLowerCase() === normalizedPath.toLowerCase())) {
+    entries.push(normalizedPath)
+  }
+}
+
+async function loadExtraModelPathConfigForComfyRoot(rootPath) {
+  const normalizedRoot = String(rootPath || '').trim()
+  const empty = {
+    configPath: '',
+    pathsByKey: new Map(),
+    pathCount: 0,
+    warnings: [],
+  }
+  if (!normalizedRoot) return empty
+
+  let configPath = ''
+  for (const filename of EXTRA_MODEL_PATH_CONFIG_NAMES) {
+    const candidate = path.join(normalizedRoot, filename)
+    if (await pathExists(candidate)) {
+      configPath = candidate
+      break
+    }
+  }
+  if (!configPath) return empty
+
+  const pathsByKey = new Map()
+  const warnings = []
+
+  try {
+    const raw = await fs.readFile(configPath, 'utf8')
+    const config = yaml.load(raw) || {}
+    const yamlDir = path.dirname(configPath)
+
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      return {
+        configPath,
+        pathsByKey,
+        pathCount: 0,
+        warnings: ['extra_model_paths.yaml did not contain a valid mapping of model paths.'],
+      }
+    }
+
+    for (const sectionName of Object.keys(config)) {
+      const section = config[sectionName]
+      if (!section || typeof section !== 'object' || Array.isArray(section)) continue
+
+      let basePath = ''
+      if (typeof section.base_path === 'string' && section.base_path.trim()) {
+        basePath = expandPathVariables(section.base_path)
+        if (basePath && !path.isAbsolute(basePath)) {
+          basePath = path.resolve(yamlDir, basePath)
+        }
+      }
+
+      for (const key of Object.keys(section)) {
+        if (key === 'base_path' || key === 'is_default') continue
+
+        for (const configuredPath of splitExtraModelPathValue(section[key])) {
+          let resolvedPath = expandPathVariables(configuredPath)
+          if (!resolvedPath) continue
+          if (basePath) {
+            resolvedPath = path.join(basePath, resolvedPath)
+          } else if (!path.isAbsolute(resolvedPath)) {
+            resolvedPath = path.resolve(yamlDir, resolvedPath)
+          }
+          addExtraModelSearchPath(pathsByKey, key, resolvedPath)
+        }
+      }
+    }
+  } catch (error) {
+    warnings.push(`Could not read extra_model_paths.yaml: ${error?.message || String(error)}`)
+  }
+
+  const pathCount = Array.from(pathsByKey.values()).reduce((total, entries) => total + entries.length, 0)
+  return {
+    configPath,
+    pathsByKey,
+    pathCount,
+    warnings,
+  }
+}
+
+function getModelSearchKeys(targetSubdir = '') {
+  const keys = new Set()
+  const normalizedTarget = normalizeModelSearchKey(targetSubdir)
+  if (normalizedTarget) keys.add(normalizedTarget)
+  for (const key of COMMON_MODEL_SEARCH_KEYS) keys.add(key)
+
+  const expanded = new Set()
+  for (const key of keys) {
+    expanded.add(key)
+    const aliases = MODEL_SEARCH_KEY_ALIASES[key]
+    if (Array.isArray(aliases)) {
+      for (const alias of aliases) expanded.add(normalizeModelSearchKey(alias))
+    }
+  }
+  return Array.from(expanded).filter(Boolean)
+}
+
 function normalizePythonCommand(pythonInfo = null) {
   if (!pythonInfo?.command) return ''
   return [pythonInfo.command, ...(Array.isArray(pythonInfo.baseArgs) ? pythonInfo.baseArgs : [])].join(' ').trim()
@@ -473,6 +629,8 @@ async function validateWorkflowSetupRootInternal(rootPath) {
   if (!python.command) {
     warnings.push('Could not detect a dedicated Python interpreter for this ComfyUI install. Model downloads can still work, but custom-node dependency installs may fail.')
   }
+  const extraModelPaths = await loadExtraModelPathConfigForComfyRoot(normalizedPath)
+  warnings.push(...extraModelPaths.warnings)
 
   return {
     success: true,
@@ -484,6 +642,8 @@ async function validateWorkflowSetupRootInternal(rootPath) {
     modelsPath,
     pythonCommand: normalizePythonCommand(python),
     python,
+    extraModelConfigPath: extraModelPaths.configPath,
+    extraModelPathCount: extraModelPaths.pathCount,
   }
 }
 
@@ -1011,10 +1171,25 @@ async function readSettingsRaw() {
 }
 
 async function writeSettingsRaw(mutator) {
-  const current = await readSettingsRaw()
-  const next = mutator(current)
-  await writeFileAtomic(settingsPath, JSON.stringify(next, null, 2), 'utf8')
-  return next
+  const writeOperation = settingsWriteQueue
+    .catch(() => {})
+    .then(async () => {
+      const current = await readSettingsRaw()
+      const mutated = typeof mutator === 'function' ? mutator(current) : current
+      const next = mutated && typeof mutated === 'object' && !Array.isArray(mutated) ? mutated : {}
+      await writeFileAtomic(settingsPath, JSON.stringify(next, null, 2), 'utf8')
+      return next
+    })
+  settingsWriteQueue = writeOperation.then(() => {}, () => {})
+  return writeOperation
+}
+
+async function refreshSettingsDependentCaches() {
+  try {
+    await refreshLauncherConfigCache()
+  } catch (error) {
+    console.warn('[settings] failed to refresh dependent caches:', error?.message || error)
+  }
 }
 
 async function refreshLauncherConfigCache() {
@@ -2176,8 +2351,7 @@ ipcMain.handle('captions:mixTimelineAudio', async (event, options = {}) => {
 
 ipcMain.handle('settings:get', async (event, key) => {
   try {
-    const data = await fs.readFile(settingsPath, 'utf8')
-    const settings = JSON.parse(data)
+    const settings = await readSettingsRaw()
     return key ? settings[key] : settings
   } catch {
     return key ? null : {}
@@ -2186,16 +2360,15 @@ ipcMain.handle('settings:get', async (event, key) => {
 
 ipcMain.handle('settings:set', async (event, key, value) => {
   try {
-    let settings = {}
-    try {
-      const data = await fs.readFile(settingsPath, 'utf8')
-      settings = JSON.parse(data)
-    } catch {
-      // File doesn't exist yet
+    if (!key || typeof key !== 'string') {
+      return { success: false, error: 'Missing setting key.' }
     }
-    
-    settings[key] = value
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2))
+
+    await writeSettingsRaw((settings) => ({
+      ...settings,
+      [key]: value,
+    }))
+    await refreshSettingsDependentCaches()
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }
@@ -2204,10 +2377,16 @@ ipcMain.handle('settings:set', async (event, key, value) => {
 
 ipcMain.handle('settings:delete', async (event, key) => {
   try {
-    const data = await fs.readFile(settingsPath, 'utf8')
-    const settings = JSON.parse(data)
-    delete settings[key]
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2))
+    if (!key || typeof key !== 'string') {
+      return { success: false, error: 'Missing setting key.' }
+    }
+
+    await writeSettingsRaw((settings) => {
+      const next = { ...settings }
+      delete next[key]
+      return next
+    })
+    await refreshSettingsDependentCaches()
     return { success: true }
   } catch (err) {
     return { success: false, error: err.message }
@@ -2413,6 +2592,7 @@ ipcMain.handle('workflowSetup:checkFiles', async (_event, payload = {}) => {
 
     const modelsPath = validation.modelsPath
     const files = Array.isArray(payload?.files) ? payload.files : []
+    const extraModelPaths = await loadExtraModelPathConfigForComfyRoot(validation.normalizedPath)
 
     // Cache per-subdir directory listings so we can do case-insensitive matching
     // on filesystems where casing differs from the declared filename.
@@ -2438,25 +2618,32 @@ ipcMain.handle('workflowSetup:checkFiles', async (_event, payload = {}) => {
         continue
       }
 
-      const candidateSubdirs = new Set()
-      if (targetSubdir) candidateSubdirs.add(targetSubdir)
+      const candidateSearchKeys = getModelSearchKeys(targetSubdir)
+      const candidateDirs = []
+      const seenCandidateDirs = new Set()
+      const addCandidateDir = (candidateDir) => {
+        const normalizedDir = path.normalize(String(candidateDir || '').trim())
+        if (!normalizedDir) return
+        const key = normalizedDir.toLowerCase()
+        if (seenCandidateDirs.has(key)) return
+        seenCandidateDirs.add(key)
+        candidateDirs.push(normalizedDir)
+      }
+
       // Some loaders (e.g. LTX AV text encoder) accept either a text_encoders or
-      // checkpoints path. Also try a couple of common siblings so existing but
+      // checkpoints path. Also try common sibling folders so existing but
       // relocated files still resolve without forcing a redundant download.
-      candidateSubdirs.add('checkpoints')
-      candidateSubdirs.add('text_encoders')
-      candidateSubdirs.add('loras')
-      candidateSubdirs.add('upscale_models')
-      candidateSubdirs.add('vae')
-      candidateSubdirs.add('diffusion_models')
-      candidateSubdirs.add('clip')
+      for (const searchKey of candidateSearchKeys) {
+        addCandidateDir(searchKey ? path.join(modelsPath, searchKey) : modelsPath)
+        const extraDirs = extraModelPaths.pathsByKey.get(normalizeModelSearchKey(searchKey)) || []
+        for (const extraDir of extraDirs) addCandidateDir(extraDir)
+      }
 
       let exists = false
       let resolvedPath = ''
       const lowerTarget = filename.toLowerCase()
 
-      for (const subdir of candidateSubdirs) {
-        const absoluteDir = subdir ? path.join(modelsPath, subdir) : modelsPath
+      for (const absoluteDir of candidateDirs) {
         const listing = await getDirListing(absoluteDir)
         if (listing.has(lowerTarget)) {
           exists = true
@@ -2473,7 +2660,13 @@ ipcMain.handle('workflowSetup:checkFiles', async (_event, payload = {}) => {
       })
     }
 
-    return { success: true, results, modelsPath }
+    return {
+      success: true,
+      results,
+      modelsPath,
+      extraModelConfigPath: extraModelPaths.configPath,
+      extraModelPathCount: extraModelPaths.pathCount,
+    }
   } catch (error) {
     return {
       success: false,

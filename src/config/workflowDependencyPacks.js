@@ -462,7 +462,7 @@ export const WORKFLOW_DEPENDENCY_PACKS = Object.freeze({
 
   [MUSIC_VIDEO_SHOT_WORKFLOW_ID]: Object.freeze({
     id: MUSIC_VIDEO_SHOT_WORKFLOW_ID,
-    displayName: 'Music Video Shot (LTX 2.3 + Audio)',
+    displayName: 'LTX 2.3 Music Video (Image + Audio)',
     requiredNodes: Object.freeze([
       // LTX 2.3 audio-conditioned graph
       { classType: 'UNETLoader' },
@@ -605,7 +605,7 @@ export const WORKFLOW_DEPENDENCY_PACKS = Object.freeze({
 
   'nano-banana-2': Object.freeze({
     id: 'nano-banana-2',
-    displayName: 'Nano Banana 2',
+    displayName: 'Nano Banana 2 Image Edit (Cloud)',
     requiredNodes: Object.freeze([
       { classType: 'GeminiNanoBanana2' },
       { classType: 'SaveImage' },

@@ -3,6 +3,7 @@ import {
   Sparkles, Video, Image as ImageIcon, Music, RefreshCw, Loader2,
   ChevronLeft, ChevronRight, Play, Pause, Upload, X, Film, Search,
   FolderOpen, Wand2, Volume2, Mic, Clock, Settings, Terminal, ChevronDown, ChevronUp, PenLine, KeyRound,
+  Copy,
 } from 'lucide-react'
 import { jsPDF } from 'jspdf'
 import ImageAnnotationModal from './ImageAnnotationModal'
@@ -267,6 +268,60 @@ async function copyTextToClipboard(text) {
   textarea.select()
   document.execCommand('copy')
   document.body.removeChild(textarea)
+}
+
+function buildGenerationErrorTroubleshootingHints(errorText = '') {
+  const text = String(errorText || '')
+  const lower = text.toLowerCase()
+  const hints = []
+
+  const looksLikeQwenAsr = (
+    lower.includes('unifiedasrtranscribenode')
+    || lower.includes('qwen3asr')
+    || lower.includes('tts-audio-suite')
+    || lower.includes('caption transcription')
+  )
+
+  if (looksLikeQwenAsr) {
+    hints.push('This reached the Caption Transcription (Qwen ASR) workflow and failed inside ComfyUI, not inside the Music Video planner.')
+    hints.push('Open the bundled caption_qwen_asr_transcription.json workflow in ComfyUI and run it there to debug the local Python/node/model environment.')
+  }
+
+  if (lower.includes('check_model_inputs') && lower.includes('missing 1 required positional argument')) {
+    hints.push('The check_model_inputs error points to a Qwen3-ASR / transformers compatibility problem in the ComfyUI Python environment.')
+  }
+
+  if (lower.includes('node') && lower.includes('not found')) {
+    hints.push('If this happened after installing nodes, restart ComfyUI and re-check Workflow Setup so ComfyUI reloads the new node classes.')
+  }
+
+  return hints
+}
+
+function buildGenerationErrorClipboardText({
+  errorText = '',
+  hints = [],
+  workflow = null,
+  generationMode = '',
+} = {}) {
+  const lines = [
+    'ComfyStudio error report',
+    `Timestamp: ${new Date().toISOString()}`,
+  ]
+
+  if (workflow?.id || workflow?.label) {
+    lines.push(`Workflow: ${workflow?.label || workflow?.id} (${workflow?.id || 'unknown'})`)
+  }
+  if (generationMode) lines.push(`Mode: ${generationMode}`)
+
+  lines.push('', 'Error:', String(errorText || '').trim() || '(empty)')
+
+  if (Array.isArray(hints) && hints.length > 0) {
+    lines.push('', 'Troubleshooting hints:')
+    for (const hint of hints) lines.push(`- ${hint}`)
+  }
+
+  return lines.join('\n')
 }
 
 function formatCountLabel(count, singular, plural = `${singular}s`) {
@@ -953,7 +1008,8 @@ function normalizePersistedYoloPlan(rawPlan = []) {
  * Compose the motion/video prompt that gets written into the LTX 2.3
  * audio-conditioned workflow (node 1624). Built from the script's Motion
  * prompt + shot-type suffix + concept/style continuity lines + an optional
- * lyric cue (so the encoder has the line the singer is mouthing).
+ * lyric cue for vocal-aligned shots (so the encoder has the line the singer
+ * is mouthing without making b-roll look like lip-sync coverage).
  */
 function composeMusicShotVideoPrompt({
   motionPromptRaw = '',
@@ -962,11 +1018,12 @@ function composeMusicShotVideoPrompt({
   concept = '',
   styleNotes = '',
 }) {
-  const lyricCue = String(lyricMoment || '')
+  const shouldUseLyricCue = Boolean(shotTypeOption?.needsVocalAlignment)
+  const lyricCue = shouldUseLyricCue ? String(lyricMoment || '')
     .replace(/["'\u2018\u2019\u201C\u201D]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 240)
+    .slice(0, 240) : ''
   const motion = String(motionPromptRaw || '').trim()
   const conceptLine = String(concept || '').trim()
   const styleLine = String(styleNotes || '').trim()
@@ -975,7 +1032,7 @@ function composeMusicShotVideoPrompt({
   const parts = [
     motion,
     shotSuffix,
-    lyricCue ? `Lyric moment: "${lyricCue}".` : '',
+    lyricCue ? `The artist visibly sings this exact lyric phrase: "${lyricCue}".` : '',
     conceptLine ? `Concept: ${conceptLine}.` : '',
     styleLine ? `Style: ${styleLine}.` : '',
   ].filter(Boolean)
@@ -1134,6 +1191,19 @@ function buildMusicVideoPlanFromScript(options = {}) {
 
       const lyricMomentHint = String(scriptShot.lyricMoment || '').trim()
       const startAtRaw = String(scriptShot.startAtRaw || '').trim()
+      const isVocalAlignedShot = Boolean(shotTypeOption?.needsVocalAlignment)
+      const isEnvironmentOrDetailCoverage = coverageType === 'environmental_broll' || coverageType === 'detail_broll'
+      const effectiveLyricMomentHint = isVocalAlignedShot ? lyricMomentHint : ''
+      if (lyricMomentHint && !isVocalAlignedShot) {
+        warnings.push({
+          shotIndex: flatShotIndex,
+          shotLabel: scriptShot.label || `Shot ${flatShotIndex}`,
+          kind: 'broll-lyric-moment-ignored',
+          raw: lyricMomentHint,
+          message: `Shot ${flatShotIndex}${scriptShot.label ? ` (${scriptShot.label})` : ''}: Lyric moment was ignored because b-roll/cutaway shots must not lip-sync.`,
+          severity: 'info',
+        })
+      }
 
       // Tier 1 — explicit `Start at:` from the script (Phase 8).
       const explicitStart = startAtRaw ? parseTimeSpecToSeconds(startAtRaw) : null
@@ -1148,13 +1218,13 @@ function buildMusicVideoPlanFromScript(options = {}) {
       }
 
       // Tier 2 — fuzzy-match the Lyric moment against parsed SRT/LRC.
-      const timedMatch = lyricMomentHint && hasTimedLyrics
-        ? findTimedLyricLineByText(lyricMomentHint, timedLyricLines)
+      const timedMatch = effectiveLyricMomentHint && hasTimedLyrics
+        ? findTimedLyricLineByText(effectiveLyricMomentHint, timedLyricLines)
         : null
 
       // Tier 3 — legacy linear estimate based on plain lyric line index.
-      const lineIdx = lyricMomentHint && effectiveLyricLines.length > 0
-        ? findLyricLineIndex(lyricMomentHint, effectiveLyricLines)
+      const lineIdx = effectiveLyricMomentHint && effectiveLyricLines.length > 0
+        ? findLyricLineIndex(effectiveLyricMomentHint, effectiveLyricLines)
         : -1
 
       let audioStart
@@ -1184,7 +1254,16 @@ function buildMusicVideoPlanFromScript(options = {}) {
       let resolvedMembers = []
       let resolvedSource = ''
       const artistOverrideRaw = String(scriptShot.artistRaw || '').trim()
-      if (artistOverrideRaw) {
+      if (artistOverrideRaw && isEnvironmentOrDetailCoverage) {
+        warnings.push({
+          shotIndex: flatShotIndex,
+          shotLabel: scriptShot.label || `Shot ${flatShotIndex}`,
+          kind: 'artist-ignored-for-non-character-broll',
+          raw: artistOverrideRaw,
+          message: `Shot ${flatShotIndex}${scriptShot.label ? ` (${scriptShot.label})` : ''}: Artist was ignored because environmental/detail b-roll should not attach a performer reference.`,
+          severity: 'info',
+        })
+      } else if (artistOverrideRaw) {
         const names = splitCastNameList(artistOverrideRaw)
         const { members, unresolved } = resolveCastMembersFromNameList(names, safeCast)
         if (members.length > 0) {
@@ -1201,7 +1280,7 @@ function buildMusicVideoPlanFromScript(options = {}) {
           })
         }
       }
-      if (resolvedMembers.length === 0 && lineIdx >= 0) {
+      if (resolvedMembers.length === 0 && !isEnvironmentOrDetailCoverage && lineIdx >= 0) {
         const tags = taggedLyricLines[lineIdx]?.tags || []
         if (tags.length > 0) {
           const { members, unresolved } = resolveCastMembersFromNameList(tags, safeCast)
@@ -1220,7 +1299,7 @@ function buildMusicVideoPlanFromScript(options = {}) {
           }
         }
       }
-      if (resolvedMembers.length === 0 && defaultCastMember) {
+      if (resolvedMembers.length === 0 && isVocalAlignedShot && defaultCastMember) {
         resolvedMembers = [defaultCastMember]
         resolvedSource = 'default-cast'
       }
@@ -1243,7 +1322,7 @@ function buildMusicVideoPlanFromScript(options = {}) {
       const videoPrompt = composeMusicShotVideoPrompt({
         motionPromptRaw: scriptShot.motionPromptRaw || scriptShot.videoBeat,
         shotTypeOption,
-        lyricMoment: lyricMomentHint,
+        lyricMoment: effectiveLyricMomentHint,
         concept,
         styleNotes,
       })
@@ -1661,6 +1740,7 @@ function normalizeMusicVideoCoveragePlan(coveragePlan) {
     sections,
     performancePassCount: Math.max(0, Number(coveragePlan.performancePassCount) || 0),
     includeStoryBroll: Boolean(coveragePlan.includeStoryBroll),
+    includeEnvironmentalBroll: Boolean(coveragePlan.includeEnvironmentalBroll),
     includeDetailBroll: Boolean(coveragePlan.includeDetailBroll),
   }
 }
@@ -1672,6 +1752,9 @@ function buildMusicVideoCoveragePlanPrompt(coveragePlan) {
     'Coverage plan:',
     'Return ONE combined script containing these coverage sections in this exact order. Do not return separate files.',
     'Each coverage section contains normal Shot blocks. Every shot still needs Start at, Shot type, Keyframe prompt, Motion prompt, Camera, and Length.',
+    'Every non-performance-only coverage section must cover the full audio duration, not only the span containing lyrics. If the final lyric ends before the music ends, continue with outro/instrumental b-roll until the song ends.',
+    'B-roll, environmental, and detail coverage must tile as adjacent video clips: each shot has a Start at, and its Length should end exactly at the next shot Start at. The final shot must end at the full audio duration.',
+    'B-roll shot starts must NOT be constrained to lyric/SRT offsets. Use lyric timings only as emotional/story landmarks, then create continuous b-roll coverage between and beyond those lyric moments.',
     'Do not write one long take for any pass. Break every pass into 2-8 second clips aligned to the song timing.',
     'Use the exact Coverage type and Coverage label fields shown below so ComfyStudio can group the shots later.',
   ]
@@ -1683,11 +1766,11 @@ function buildMusicVideoCoveragePlanPrompt(coveragePlan) {
     if (section.type === 'performance_pass') {
       lines.push('    Shot rule: use only performance or performance_wide shots for lyric/vocal moments. Keep Artist and Lyric moment fields on every shot. Use exact SRT lyric starts. It is OK and expected for this pass to have gaps during instrumental or non-vocal sections.')
     } else if (section.type === 'story_broll') {
-      lines.push('    Shot rule: use b_roll shots for story/cutaway coverage across the full song timeline; include Artist only when a cast member is visible but not lip-syncing.')
+      lines.push('    Shot rule: use b_roll shots for a coherent start-middle-end story across the full song timeline; include Artist only for visible non-singing cast narrative moments, and omit Artist for places, objects, or atmosphere.')
     } else if (section.type === 'environmental_broll') {
-      lines.push('    Shot rule: use b_roll shots only across the full song timeline. Show places, atmosphere, empty rooms, exterior locations, weather, signage, vehicles, landscapes, and environmental texture. Do not include lip-sync.')
+      lines.push('    Shot rule: use b_roll shots only across the full song timeline. Show places, atmosphere, empty rooms, exterior locations, weather, signage, vehicles, landscapes, and environmental texture. Do not include Artist, visible performers, or lip-sync.')
     } else if (section.type === 'detail_broll') {
-      lines.push('    Shot rule: use b_roll shots only across the full song timeline; focus on short macro/detail inserts, textures, props, instruments, hands, and atmosphere.')
+      lines.push('    Shot rule: use b_roll shots only across the full song timeline; focus on short macro/detail inserts, textures, props, instruments, hands, and atmosphere. Do not include Artist unless the shot is explicitly a story_broll cast moment.')
     } else {
       lines.push('    Shot rule: this is the primary sequence and may mix performance, performance_wide, and b_roll based on the song.')
     }
@@ -1797,17 +1880,30 @@ function buildMusicVideoLLMPrompt(options = {}) {
     : ''
   if (coveragePlanPrompt) sections.push(coveragePlanPrompt)
 
+  const fullTimelineDuration = Math.max(Number(songDurationSeconds) || 0, Number(targetDuration) || 0)
+  const timelineRules = fullTimelineDuration > 0 ? [
+    `  - The script timeline MUST cover the full audio duration through approximately ${formatSecondsAsMMSS(fullTimelineDuration)} (${fullTimelineDuration.toFixed(1)}s).`,
+    '  - Lyrics/SRT lines are timing anchors for vocal moments only; the last lyric is NOT the end of the music video unless it also reaches the full audio duration.',
+    '  - If the song continues after the final lyric, fill the outro/instrumental tail with b_roll or non-singing performance_wide shots. Omit Lyric moment during those sections.',
+    '  - For b-roll/environment/detail coverage, treat each Start at as a clip boundary: Length must equal the time until the next shot starts, so clips butt together cleanly in the timeline with no manual moving.',
+    '  - The final shot should end at, or slightly after, the full song duration. Do not stop the plan at the final lyric line.',
+  ].join('\n') : ''
+  if (timelineRules) sections.push(timelineRules)
+
   const rules = [
     'Rules:',
     '  0. The returned script must be self-contained. Put the story, setting, wardrobe, lighting, color, continuity, and camera language directly inside each shot block.',
     '  1. Every shot MUST include a "Start at:" field with a time like "0:15" or "15.5s". If you pasted SRT/LRC, use the exact start of the matching line.',
     '  2. Every shot MUST include "Length:" in seconds (between 2 and 8 — LTX 2.3 works best here).',
-    '  3. Main sequence and b-roll/detail/environment sections should tile the song with no big gaps. Performance passes may leave gaps during instrumental or non-vocal sections.',
+    '  3. Main sequence and b-roll/detail/environment sections MUST tile the full song/audio duration with no gaps, including intro, instrumental breaks, and any outro after the final lyric. Performance-only passes may leave gaps during instrumental or non-vocal sections.',
+    '  3a. For b-roll/detail/environment sections, every shot Length MUST be calculated from the next shot boundary: current Length = next Start at - current Start at. For the final shot, Length = full song duration - final Start at. Avoid overlaps and avoid uncovered dark gaps.',
     '  4. "Shot type:" must be one of: performance, performance_wide, b_roll. Use performance/performance_wide when the singer\'s face is visible and lip-syncing; use b_roll for everything else.',
+    '  4a. A b_roll shot may include Artist only as a visual/non-singing reference in story_broll or main_sequence coverage. If a band/performance cast member is singing or mouthing lyrics, the shot type MUST be performance or performance_wide, not b_roll.',
+    '  4b. Environmental_broll and detail_broll shots MUST omit Artist. They should be places, props, textures, hands, silhouettes, or atmosphere, not assigned performer portraits.',
     '  5. For vocal lines, add "Lyric moment:" quoting the specific lyric line. For instrumentals or b_roll, omit Lyric moment.',
-    '  6. Use "Artist:" to pick which cast member appears. Omit when the shot is b_roll with no performer visible.',
-    '  7. "Keyframe prompt:" describes the opening still and must include location, subject, wardrobe/props, lighting, color palette, and composition.',
-    '  8. "Motion prompt:" describes what moves in the clip: lip-sync/performance action, body movement, camera movement, atmosphere, and any story action.',
+    '  6. Use "Artist:" to pick which cast member appears only when that person is visibly present. Omit when the shot is b_roll with no performer visible.',
+    '  7. "Keyframe prompt:" describes the opening still and must include location, subject, wardrobe/props, lighting, color palette, composition, and the subject\'s readable emotional state when a person appears.',
+    '  8. "Motion prompt:" describes what moves in the clip: lip-sync/performance action, character movement, camera movement, atmosphere, and any story action. Include camera motion and character blocking/emotion, not just a static description.',
     '  9. Keep wardrobe, location, and lighting consistent across adjacent shots unless the script deliberately calls for a hard cut.',
     '  10. Do NOT invent lyrics. If the song is instrumental at a given moment, omit Lyric moment for that shot.',
   ]
@@ -1881,8 +1977,11 @@ function buildMusicVideoPassRules(pass, variantDescriptor) {
         '  - Every shot MUST use Shot type: b_roll.',
         '  - Do NOT include Artist: or Lyric moment: fields on any shot — omit them entirely.',
         '  - Do NOT show any performer\'s face or body in frame. The cast is absent from this pass.',
-        '  - Imagery should establish PLACES and ATMOSPHERE: empty rooms, exterior locations, weather, landscapes, signage, vehicles without occupants, environmental textures.',
-        '  - REUSE the Start at: and Length: values from the master script below so this pass lines up frame-accurately in an NLE. If the master has no shot at a given moment, invent one that fills the gap.',
+        '  - Build a clear environmental story with start, middle, and end. Reuse the same locations, symbols, and public pressure as the main/story b-roll idea instead of inventing unrelated places.',
+        '  - Every environmental shot should reveal a story consequence: buildup, escalation, threat, aftermath, escape route, public reaction, or final quiet.',
+        '  - Do NOT reuse only the master performance shot timings. Create a continuous b-roll shot grid from 0:00 to the full song end, filling every instrumental, intro, outro, and non-vocal gap.',
+        '  - Each environmental shot must run until the next environmental shot starts. Calculate Length from the next Start at; the last shot runs until the full song end. This pass should drop into the timeline without moving clips.',
+        '  - Use the master script and SRT only as landmarks for where the emotional/story energy changes. B-roll Start at values may fall between lyric offsets and should not require Lyric moment.',
         '  - Favor medium-to-wide framings. Shot lengths should skew 4–7s. Let shots breathe.',
         '  - INVENT NEW IMAGERY. Do NOT copy the master script\'s Keyframe prompt or Motion prompt text.',
       ].join('\n')
@@ -1892,10 +1991,12 @@ function buildMusicVideoPassRules(pass, variantDescriptor) {
         '  - Every shot MUST use Shot type: b_roll.',
         '  - Do NOT include Artist: or Lyric moment: fields on any shot — omit them entirely.',
         '  - You MAY show hands, fingers, feet, backs of heads, silhouettes, or isolated body parts — but NEVER a recognizable face and NEVER a visible lip-sync.',
-        '  - Imagery should be TIGHT and TEXTURAL: macro shots of gear (frets, strings, picks, pedals, drums, amp grilles, cables, VU meters), small story objects, close-ups of textures, materials, and details.',
-        '  - You do NOT need to match the master script\'s shot boundaries. It is ENCOURAGED to subdivide longer master shots into multiple shorter detail shots.',
+        '  - Build a clear detail story with start, middle, and end using recurring symbols/props/materials from the same b-roll narrative. Details should feel like evidence from the larger story, not random inserts.',
+        '  - Every detail shot should reveal a story clue, emotional pressure point, transformation, damage, warning, decision, or aftermath.',
+        '  - You do NOT need to match the master script\'s shot boundaries or lyric offsets. It is ENCOURAGED to subdivide the full song timeline into multiple shorter detail shots.',
+        '  - Each detail shot must run until the next detail shot starts. Calculate Length from the next Start at; the last shot runs until the full song end. This pass should drop into the timeline without moving clips.',
         '  - Shot lengths should skew SHORTER: 2–4s is ideal, occasionally up to 5s.',
-        '  - Still cover the full song with no gaps >3s.',
+        '  - Still cover the full song with no gaps at all.',
         '  - INVENT NEW IMAGERY. Do NOT copy the master script\'s Keyframe prompt or Motion prompt text.',
       ].join('\n')
     case 'master':
@@ -2737,6 +2838,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const MAX_CONSECUTIVE_RAPID_FAILS = 3
   const MIN_JOB_INTERVAL_MS = 2000
   const [formError, setFormError] = useState(null)
+  const [formErrorCopyStatus, setFormErrorCopyStatus] = useState('')
   const [creatingStoryboardPdf, setCreatingStoryboardPdf] = useState(false)
   const [yoloMusicAudioImporting, setYoloMusicAudioImporting] = useState(false)
   const [yoloMusicTranscribingSrt, setYoloMusicTranscribingSrt] = useState(false)
@@ -3125,6 +3227,30 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     () => currentCategoryWorkflows.find((workflow) => workflow.id === workflowId) || currentCategoryWorkflows[0],
     [currentCategoryWorkflows, workflowId]
   )
+  const formErrorTroubleshootingHints = useMemo(
+    () => buildGenerationErrorTroubleshootingHints(formError),
+    [formError]
+  )
+  useEffect(() => {
+    setFormErrorCopyStatus('')
+  }, [formError])
+  const handleCopyFormError = useCallback(async () => {
+    if (!formError) return
+    const text = buildGenerationErrorClipboardText({
+      errorText: formError,
+      hints: formErrorTroubleshootingHints,
+      workflow: currentWorkflow,
+      generationMode,
+    })
+    try {
+      await copyTextToClipboard(text)
+      setFormErrorCopyStatus('Copied')
+      setTimeout(() => setFormErrorCopyStatus(''), 1600)
+    } catch {
+      setFormErrorCopyStatus('Copy failed')
+      setTimeout(() => setFormErrorCopyStatus(''), 1600)
+    }
+  }, [currentWorkflow, formError, formErrorTroubleshootingHints, generationMode])
   const activeWorkflowBrowserMode = generationMode === 'yolo' ? 'create' : 'generate'
   const visibleWorkflowManifests = useMemo(() => (
     GENERATE_WORKFLOW_CATALOG.filter((workflow) => (
@@ -12313,7 +12439,31 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             )}
 
             {formError && (
-              <div className="mt-2 text-[10px] text-sf-error text-center">{formError}</div>
+              <div className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-left">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 text-[10px] font-semibold text-red-200">
+                    Generation message
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { void handleCopyFormError() }}
+                    className="inline-flex shrink-0 items-center gap-1 rounded border border-red-300/30 bg-sf-dark-950/60 px-1.5 py-0.5 text-[9px] font-medium text-red-100 transition-colors hover:border-red-200/60 hover:text-white"
+                    title="Copy this error and troubleshooting context"
+                  >
+                    <Copy className="h-3 w-3" />
+                    {formErrorCopyStatus || 'Copy error'}
+                  </button>
+                </div>
+                <pre className="mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words font-sans text-[10px] leading-4 text-sf-error">{formError}</pre>
+                {formErrorTroubleshootingHints.length > 0 && (
+                  <div className="mt-2 space-y-1 rounded border border-red-300/20 bg-sf-dark-950/50 p-2 text-[9px] leading-4 text-red-100">
+                    <div className="font-semibold text-red-50">Troubleshooting hints</div>
+                    {formErrorTroubleshootingHints.map((hint) => (
+                      <div key={hint}>{hint}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
 

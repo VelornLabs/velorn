@@ -27,7 +27,7 @@ import {
 } from 'lucide-react'
 import ApiKeyDialog from './ApiKeyDialog'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
-import { getWorkflowSetupGalleryMeta } from '../config/workflowSetupGallery'
+import { WORKFLOW_SETUP_STARTER_KITS, getWorkflowSetupGalleryMeta } from '../config/workflowSetupGallery'
 import { checkLocalComfyConnection, getLocalComfyConnectionSync } from '../services/localComfyConnection'
 import {
   WORKFLOW_SETUP_SECTION_ID,
@@ -437,6 +437,8 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
     customNodesPath: '',
     modelsPath: '',
     pythonCommand: '',
+    extraModelConfigPath: '',
+    extraModelPathCount: 0,
   })
   const [connectionState, setConnectionState] = useState({
     status: 'idle',
@@ -452,6 +454,7 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
   const [installLogs, setInstallLogs] = useState([])
   const [statusMessage, setStatusMessage] = useState('')
   const [setupViewMode, setSetupViewMode] = useState('gallery')
+  const [activeWorkflowFilterId, setActiveWorkflowFilterId] = useState('all')
   const [launcherState, setLauncherState] = useState(() => (
     isComfyLauncherAvailable() ? getComfyLauncherSnapshot() : null
   ))
@@ -492,6 +495,8 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
         customNodesPath: '',
         modelsPath: '',
         pythonCommand: '',
+        extraModelConfigPath: '',
+        extraModelPathCount: 0,
       })
       return
     }
@@ -506,6 +511,8 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
         customNodesPath: '',
         modelsPath: '',
         pythonCommand: '',
+        extraModelConfigPath: '',
+        extraModelPathCount: 0,
       })
       return
     }
@@ -520,6 +527,8 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
       customNodesPath: result?.customNodesPath || '',
       modelsPath: result?.modelsPath || '',
       pythonCommand: result?.pythonCommand || '',
+      extraModelConfigPath: result?.extraModelConfigPath || '',
+      extraModelPathCount: Number(result?.extraModelPathCount || 0) || 0,
     })
   }, [])
 
@@ -596,6 +605,27 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
   const installPlan = useMemo(
     () => buildWorkflowInstallPlan(workflowResults, selectedWorkflowIds),
     [workflowResults, selectedWorkflowIds]
+  )
+
+  const activeWorkflowFilter = useMemo(
+    () => WORKFLOW_SETUP_STARTER_KITS.find((kit) => kit.id === activeWorkflowFilterId) || null,
+    [activeWorkflowFilterId]
+  )
+  const visibleWorkflowResults = useMemo(() => {
+    if (!activeWorkflowFilter) return workflowResults
+    const workflowOrder = new Map(
+      (Array.isArray(activeWorkflowFilter.workflowIds) ? activeWorkflowFilter.workflowIds : [])
+        .map((workflowId, index) => [workflowId, index])
+    )
+    return workflowResults
+      .filter((result) => workflowOrder.has(result.workflowId))
+      .sort((a, b) => (workflowOrder.get(a.workflowId) ?? 999) - (workflowOrder.get(b.workflowId) ?? 999))
+  }, [activeWorkflowFilter, workflowResults])
+  const visibleActionableWorkflowIds = useMemo(
+    () => visibleWorkflowResults
+      .filter((result) => result.hasActionableInstalls)
+      .map((result) => result.workflowId),
+    [visibleWorkflowResults]
   )
 
   useEffect(() => {
@@ -732,6 +762,17 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
 
   const toggleWorkflowExpanded = useCallback((workflowId) => {
     setExpandedWorkflowId((prev) => (prev === workflowId ? null : workflowId))
+  }, [])
+
+  const handleWorkflowFilterChange = useCallback((filterId) => {
+    const nextFilterId = String(filterId || 'all')
+    const nextKit = WORKFLOW_SETUP_STARTER_KITS.find((kit) => kit.id === nextFilterId) || null
+    const nextIds = new Set(Array.isArray(nextKit?.workflowIds) ? nextKit.workflowIds : [])
+    setActiveWorkflowFilterId(nextKit ? nextFilterId : 'all')
+    setExpandedWorkflowId((prev) => {
+      if (!prev || !nextKit) return prev
+      return nextIds.has(prev) ? prev : null
+    })
   }, [])
 
   const handleCopySetupText = useCallback(async (result) => {
@@ -945,6 +986,21 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
       emptyMessage: `${result.workflowLabel} does not have any curated installs available.`,
     })
   }, [runInstallPlan, workflowResults])
+
+  const handleSelectVisibleInstallable = useCallback(() => {
+    if (visibleActionableWorkflowIds.length === 0) {
+      const label = activeWorkflowFilter?.label || 'this view'
+      setStatusMessage(`No curated installs are available for ${label}. Expand the visible rows for manual steps or API-key setup.`)
+      return
+    }
+
+    setSelectedWorkflowIds((prev) => {
+      const next = new Set(prev)
+      for (const workflowId of visibleActionableWorkflowIds) next.add(workflowId)
+      return Array.from(next)
+    })
+    setStatusMessage(`Selected ${visibleActionableWorkflowIds.length} installable workflow${visibleActionableWorkflowIds.length === 1 ? '' : 's'} from ${activeWorkflowFilter?.label || 'the current view'}.`)
+  }, [activeWorkflowFilter?.label, visibleActionableWorkflowIds])
 
   const workflowCount = getWorkflowSetupWorkflows().length
   const actionableWorkflowCount = workflowResults.filter((result) => result.hasActionableInstalls).length
@@ -1291,6 +1347,11 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
           {rootValidation.modelsPath && (
             <div className="text-sf-text-muted">Models: {rootValidation.modelsPath}</div>
           )}
+          {rootValidation.extraModelPathCount > 0 && (
+            <div className="text-sf-text-muted">
+              Extra model paths: {rootValidation.extraModelPathCount} from {rootValidation.extraModelConfigPath || 'extra_model_paths.yaml'}
+            </div>
+          )}
           {rootValidation.customNodesPath && (
             <div className="text-sf-text-muted">Custom nodes: {rootValidation.customNodesPath}</div>
           )}
@@ -1362,12 +1423,68 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
         </div>
       </div>
 
+      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 p-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-sf-accent" />
+              <span className="text-sm font-medium text-sf-text-primary">Workflow filters</span>
+            </div>
+            <p className="mt-1 max-w-3xl text-[11px] text-sf-text-secondary">
+              Narrow the library by runtime, or show the small bundle needed for music video generation.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleSelectVisibleInstallable}
+            disabled={visibleWorkflowResults.length === 0}
+            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded border border-sf-dark-600 px-3 py-2 text-xs font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Wrench className="h-3.5 w-3.5" />
+            Select installable in view
+          </button>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => handleWorkflowFilterChange('all')}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+              activeWorkflowFilterId === 'all'
+                ? 'border-sf-accent bg-sf-accent/15 text-sf-text-primary'
+                : 'border-sf-dark-600 text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary'
+            }`}
+          >
+            All workflows
+          </button>
+          {WORKFLOW_SETUP_STARTER_KITS.map((kit) => (
+            <button
+              key={kit.id}
+              type="button"
+              onClick={() => handleWorkflowFilterChange(kit.id)}
+              title={kit.description}
+              className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                activeWorkflowFilterId === kit.id
+                  ? 'border-sf-accent bg-sf-accent/15 text-sf-text-primary'
+                  : 'border-sf-dark-600 text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary'
+              }`}
+            >
+              {kit.label}
+            </button>
+          ))}
+        </div>
+        {activeWorkflowFilter && (
+          <div className="mt-3 rounded border border-sf-dark-700 bg-sf-dark-950/60 px-3 py-2 text-[11px] text-sf-text-secondary">
+            <span className="font-medium text-sf-text-primary">{activeWorkflowFilter.label}:</span> {activeWorkflowFilter.tagline}
+          </div>
+        )}
+      </div>
+
       <div className="space-y-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="text-sm font-medium text-sf-text-primary">Workflow library</div>
             <p className="mt-0.5 max-w-2xl text-[11px] text-sf-text-secondary">
-              Browse bundled workflows in a visual grid, or switch to list view. Expand a row or card for full dependency details.
+              Browse {activeWorkflowFilter ? `${visibleWorkflowResults.length} filtered` : 'bundled'} workflows in a visual grid, or switch to list view. Expand a row or card for full dependency details.
             </p>
           </div>
           <div className="inline-flex shrink-0 rounded-lg border border-sf-dark-600 p-0.5">
@@ -1400,7 +1517,7 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
 
         {setupViewMode === 'gallery' ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-            {workflowResults.map((result) => {
+            {visibleWorkflowResults.map((result) => {
               const isExpanded = expandedWorkflowId === result.workflowId
               const isSelected = selectedWorkflowIds.includes(result.workflowId)
               const statusMeta = getStatusMeta(result)
@@ -1552,7 +1669,7 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
           </div>
         ) : (
           <div className="space-y-2">
-            {workflowResults.map((result) => {
+            {visibleWorkflowResults.map((result) => {
               const isExpanded = expandedWorkflowId === result.workflowId
               const isSelected = selectedWorkflowIds.includes(result.workflowId)
               const statusMeta = getStatusMeta(result)
