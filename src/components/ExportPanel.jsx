@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Download, Plus, Trash2, Play, Settings, Film, Clock, RotateCcw, Sparkles, Square } from 'lucide-react'
+import { Download, Plus, Trash2, Play, Settings, Film, Clock, RotateCcw, Square } from 'lucide-react'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import exportTimeline from '../services/exporter'
-import { runRtxVideoUpscale } from '../services/rtxVideoUpscale'
-import { resolveRtx4kDimensions } from '../config/rtxVideoUpscaleConfig'
 
 const EXPORT_SETTINGS_STORAGE_PREFIX = 'comfystudio-export-settings-v1'
 
@@ -213,28 +211,6 @@ const EXPORT_PRESETS = [
       audioBitrateKbps: 192,
       useProxyMedia: false,
       useDirectFramePipe: true,
-    },
-  },
-  {
-    id: 'rtx-4k-master',
-    label: 'RTX 4K Master',
-    summary: 'Render timeline, then upscale locally to 4K with RTX VSR.',
-    settings: {
-      format: 'mp4',
-      videoCodec: 'h264',
-      audioCodec: 'aac',
-      useHardwareEncoder: true,
-      nvencPreset: 'p5',
-      preset: 'medium',
-      qualityMode: 'crf',
-      crf: 18,
-      resolution: 'project',
-      fps: 'project',
-      includeAudio: true,
-      audioBitrateKbps: 192,
-      useProxyMedia: false,
-      useDirectFramePipe: true,
-      postProcessUpscale: 'rtx-4k',
     },
   },
   {
@@ -874,12 +850,9 @@ function ExportPanel({ isActive = true }) {
       useProxyMedia: jobSettings.useProxyMedia,
       fastSeek: false,
       useDirectFramePipe: true,
-      postProcessUpscale: jobSettings.postProcessUpscale || 'none',
     }
 
-    const shouldRunRtxUpscale = jobSettings.postProcessUpscale === 'rtx-4k'
-
-    if (!shouldRunRtxUpscale && window.electronAPI?.runExportInWorker && typeof currentProjectHandle === 'string') {
+    if (window.electronAPI?.runExportInWorker && typeof currentProjectHandle === 'string') {
       try {
         const outputExtension = jobSettings.format === 'webm' ? 'webm' : (jobSettings.format === 'prores' ? 'mov' : 'mp4')
         const outputFolder = await window.electronAPI.pathJoin(currentProjectHandle, 'renders')
@@ -952,72 +925,6 @@ function ExportPanel({ isActive = true }) {
         setIsExporting(false)
         throw err
       }
-    }
-
-    if (shouldRunRtxUpscale) {
-      if (!window.electronAPI?.saveFileDialog || !window.electronAPI?.pathJoin || !window.electronAPI?.writeFileFromArrayBuffer) {
-        throw new Error('RTX 4K export requires the desktop app file APIs.')
-      }
-      const outputExtension = 'mp4'
-      const outputFolder = await window.electronAPI.pathJoin(currentProjectHandle, 'renders')
-      await window.electronAPI.createDirectory(outputFolder)
-      const defaultPath = await window.electronAPI.pathJoin(outputFolder, `${options.filename}_rtx4k.${outputExtension}`)
-      const outputPath = await window.electronAPI.saveFileDialog({
-        title: 'Export Timeline with RTX 4K Upscale',
-        defaultPath,
-        filters: [{ name: outputExtension.toUpperCase(), extensions: [outputExtension] }],
-      })
-      if (!outputPath) {
-        setExportStatus('')
-        setIsExporting(false)
-        return null
-      }
-      exportStartRef.current = Date.now()
-      const tempBase = `${options.filename}_rtx_source_${Date.now()}.${outputExtension}`
-      const tempOutputPath = await window.electronAPI.pathJoin(outputFolder, tempBase)
-      setExportStatus('Rendering source export for RTX upscale...')
-      const sourceResult = await exportTimeline({
-        ...options,
-        format: 'mp4',
-        videoCodec: 'h264',
-        audioCodec: 'aac',
-        outputPath: tempOutputPath,
-        signal: abortController?.signal || null,
-      }, (progress) => {
-        setExportStatus(`Source render • ${progress.status || ''}`.trim())
-        if (typeof progress.progress === 'number') {
-          setExportProgress(Math.max(0, Math.min(55, progress.progress * 0.55)))
-        }
-      })
-      const target = resolveRtx4kDimensions(width, height)
-      setExportStatus(`RTX upscaling to ${target.width}x${target.height}...`)
-      const rtxResult = await runRtxVideoUpscale({
-        inputPath: sourceResult?.outputPath || tempOutputPath,
-        outputPath,
-        sourceWidth: width,
-        sourceHeight: height,
-        quality: 'HIGH',
-        onStatus: (status) => {
-          setExportStatus(status?.statusMessage || 'Running RTX 4K upscale...')
-          if (typeof status?.progress === 'number') {
-            setExportProgress(55 + Math.max(0, Math.min(40, status.progress * 0.4)))
-          }
-        },
-      })
-      if (window.electronAPI?.deleteFile) {
-        window.electronAPI.deleteFile(tempOutputPath).catch(() => {})
-      }
-      const finalResult = {
-        ...sourceResult,
-        ...rtxResult,
-        outputPath,
-        encoderUsed: `${sourceResult?.encoderUsed || 'timeline export'} + RTX Video Super Resolution`,
-      }
-      setExportResult(finalResult)
-      setExportStatus('Export complete')
-      setExportProgress(100)
-      setIsExporting(false)
-      return finalResult
     }
 
     const result = await exportTimeline(options, (progress) => {
@@ -1512,25 +1419,7 @@ function ExportPanel({ isActive = true }) {
                   </div>
                 </div>
 
-                <div className="col-span-2">
-                  <button
-                    onClick={() => handleSettingChange('postProcessUpscale', settings.postProcessUpscale === 'rtx-4k' ? 'none' : 'rtx-4k')}
-                    title="Render the timeline first, then upscale the exported video to 4K with local NVIDIA RTX Video Super Resolution"
-                    className={`inline-flex items-center gap-1.5 px-2 py-1 text-xs rounded border transition-colors ${
-                      settings.postProcessUpscale === 'rtx-4k'
-                        ? 'bg-sf-accent/20 text-sf-accent border-sf-accent/40'
-                        : 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600'
-                    }`}
-                  >
-                    <Sparkles className="w-3 h-3" />
-                    RTX 4K upscale
-                  </button>
-                  <div className="mt-1 text-[10px] text-sf-text-muted">
-                    {settings.postProcessUpscale === 'rtx-4k'
-                      ? `Final output: ${resolveRtx4kDimensions(resolveResolution().width, resolveResolution().height).width}x${resolveRtx4kDimensions(resolveResolution().width, resolveResolution().height).height} via local RTX Video Super Resolution.`
-                      : 'Optional post-export upscale through local NVIDIA RTX Video Super Resolution.'}
-                  </div>
-                </div>
+                <div className="col-span-2" />
               </div>
             </div>
             
