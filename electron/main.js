@@ -12,6 +12,7 @@ const yaml = require('js-yaml')
 const ffmpegStaticPath = require('ffmpeg-static')
 const ffprobeStatic = require('ffprobe-static')
 const ffprobeStaticPath = ffprobeStatic?.path || ffprobeStatic
+const { buildRawFramePipeArgs } = require('./exportFfmpegPipe')
 const {
   ComfyLauncher,
   detectLaunchersForComfyRoot,
@@ -3823,36 +3824,17 @@ ipcMain.handle('export:concatVideoSegments', async (event, options = {}) => {
 })
 
 ipcMain.handle('export:startFramePipe', async (event, options = {}) => {
-  const {
-    width,
-    height,
-    fps = 24,
-    outputPath,
-    format = 'mp4',
-    duration = null,
-  } = options
-
   if (!getFfmpegPath()) {
     return { success: false, error: 'FFmpeg binary not available.' }
   }
-  if (!width || !height || !outputPath) {
-    return { success: false, error: 'Missing frame pipe inputs.' }
+  let pipePlan
+  try {
+    pipePlan = buildRawFramePipeArgs(options)
+  } catch (err) {
+    return { success: false, error: err.message || String(err) }
   }
-
-  const args = [
-    '-y',
-    '-f', 'rawvideo',
-    '-pix_fmt', 'rgba',
-    '-video_size', `${Math.round(Number(width))}x${Math.round(Number(height))}`,
-    '-framerate', String(fps),
-    '-i', 'pipe:0',
-  ]
-  if (duration) {
-    args.push('-t', String(duration))
-  }
-
-  const encoderUsed = appendExportVideoEncoderArgs(args, options)
-  args.push(outputPath)
+  const { args, encoderUsed } = pipePlan
+  const { width, height, fps = 24, outputPath, duration = null } = options
 
   const sessionId = crypto.randomUUID()
   const ffmpeg = spawn(getFfmpegPath(), args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] })
@@ -3885,7 +3867,14 @@ ipcMain.handle('export:startFramePipe', async (event, options = {}) => {
     getStderr: () => stderr,
   })
 
-  console.log(`[Export] Frame pipe started with ${encoderUsed} (${options.useHardwareEncoder ? 'NVENC' : 'software'})`)
+  console.log('[Export] Frame pipe started', {
+    encoderUsed,
+    width,
+    height,
+    fps,
+    duration,
+    outputPath,
+  })
   return { success: true, sessionId, encoderUsed }
 })
 
@@ -3909,6 +3898,10 @@ ipcMain.handle('export:writeFrameToPipe', async (event, sessionId, frameBuffer) 
     const stream = session.ffmpeg.stdin
     const canContinue = stream.write(buffer)
     if (!canContinue) {
+      console.log('[Export] Frame pipe backpressure', {
+        sessionId,
+        bufferedLength: stream.writableLength,
+      })
       await new Promise((resolve, reject) => {
         const cleanup = () => {
           stream.removeListener('drain', onDrain)
@@ -3948,15 +3941,27 @@ ipcMain.handle('export:finishFramePipe', async (event, sessionId) => {
       return { success: false, error: session.getError().message || String(session.getError()), encoderUsed: session.encoderUsed }
     }
     if (session.getCloseCode() !== 0) {
+      console.warn('[Export] Frame pipe finished with non-zero exit', {
+        sessionId,
+        code: session.getCloseCode(),
+      })
       return {
         success: false,
         error: session.getStderr() || `FFmpeg exited with code ${session.getCloseCode()}`,
         encoderUsed: session.encoderUsed,
       }
     }
+    console.log('[Export] Frame pipe finished', {
+      sessionId,
+      encoderUsed: session.encoderUsed,
+    })
     return { success: true, encoderUsed: session.encoderUsed }
   } catch (err) {
     activeFramePipeExports.delete(sessionId)
+    console.warn('[Export] Frame pipe finish failed', {
+      sessionId,
+      error: err.message || String(err),
+    })
     return { success: false, error: err.message || String(err), encoderUsed: session.encoderUsed }
   }
 })

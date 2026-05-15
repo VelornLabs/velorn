@@ -17,7 +17,8 @@
     "electron:pack": "npm run build && electron-builder --dir",
     "angles:sheet": "node ./scripts/build-angle-sheet.mjs",
     "starter-pack:build": "node ./scripts/build-workflow-starter-pack.mjs",
-    "starter-pack:package": "npm run starter-pack:build && node ./scripts/package-workflow-starter-pack.mjs"
+    "starter-pack:package": "npm run starter-pack:build && node ./scripts/package-workflow-starter-pack.mjs",
+    "test:export-rawvideo-stage1": "node ./scripts/export-rawvideo-stage1.test.mjs"
   },
   "keywords": [
     "animatic",
@@ -70,7 +71,7 @@
   "build": {
     "appId": "com.comfystudio.app",
     "productName": "ComfyStudio",
-    "copyright": "Copyright © 2024-2026",
+    "copyright": "Copyright \u00a9 2024-2026",
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
       "**/node_modules/ffprobe-static/**"

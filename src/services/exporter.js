@@ -27,6 +27,7 @@ import {
 import { applyGlslEffectsToCanvas, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
 import { analyzeExportCapabilities } from './exportCapabilities'
+import { buildExportFramePlan } from './exportFramePlan.mjs'
 import { buildExportLanePlan } from './exportLanePlanner'
 import { findMissingClipCoverage, validateSegmentsCoverClips } from './exportPlanValidation'
 import renderFfmpegSegment from './exportFfmpegSegments'
@@ -844,8 +845,6 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
     useCachedRenders = true,
     useProxyMedia = false,
     fastSeek = true,
-    useDirectFramePipe = false,
-    exportMode = 'auto',
     glslQualityScale = 1,
     signal = null,
   } = options
@@ -862,16 +861,12 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
         return Math.max(maxEnd, start + duration)
       }, 0)
     : 0
-  const totalDuration = Math.max(0, rangeEnd - rangeStart)
-  const totalFrames = Math.ceil(totalDuration * fps)
+  const framePlan = buildExportFramePlan({ rangeStart, rangeEnd, fps })
+  const { totalDuration, totalFrames, frameDuration, halfFrame } = framePlan
   console.log(`[Export:range] start=${rangeStart} end=${rangeEnd} duration=${totalDuration} frames=${totalFrames} inPoint=${timelineState.inPoint ?? 'null'} outPoint=${timelineState.outPoint ?? 'null'} timelineEnd=${computedTimelineEnd}`)
+  console.log(`[Export:framePlan] frameDuration=${frameDuration} halfFrame=${halfFrame}`)
   const exportCapability = await analyzeExportCapabilities({ timelineState })
-  const lanePlan = await buildExportLanePlan({ timelineState, rangeStart, rangeEnd, exportMode })
-  const selectedLane = exportMode === 'canvas'
-    ? 'canvas'
-    : (exportMode === 'ffmpeg'
-      ? (exportCapability.ffmpegSafe ? 'ffmpeg' : 'canvas')
-      : exportCapability.lane)
+  const lanePlan = await buildExportLanePlan({ timelineState, rangeStart, rangeEnd })
   const transformScaleX = width / Math.max(1, Number(sourceTimelineWidth) || width)
   const transformScaleY = height / Math.max(1, Number(sourceTimelineHeight) || height)
   const textStyleScale = Math.min(transformScaleX, transformScaleY)
@@ -909,8 +904,6 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
   
   const tempFolder = await window.electronAPI.pathJoin(outputFolder, `export_${Date.now()}`)
   await window.electronAPI.createDirectory(tempFolder)
-  const framesFolder = await window.electronAPI.pathJoin(tempFolder, 'frames')
-  await window.electronAPI.createDirectory(framesFolder)
   
   const outputExtension = format === 'webm' ? 'webm' : (format === 'prores' ? 'mov' : 'mp4')
   let outputPath = options.outputPath
@@ -931,21 +924,17 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
     }
     outputPath = saveDialog
   }
-  const framePattern = await window.electronAPI.pathJoin(framesFolder, 'frame_%06d.png')
   const audioPath = await window.electronAPI.pathJoin(tempFolder, 'audio.wav')
-  const canUseDirectFramePipe = Boolean(
-    useDirectFramePipe
-    && window.electronAPI?.startFramePipe
-    && window.electronAPI?.writeFrameToPipe
-    && window.electronAPI?.finishFramePipe
-    && window.electronAPI?.abortFramePipe
-  )
-  const pipedVideoPath = (canUseDirectFramePipe || lanePlan.counts.ffmpeg >= 0) && includeAudio
+  const missingFramePipeApi = ['startFramePipe', 'writeFrameToPipe', 'finishFramePipe', 'abortFramePipe']
+    .filter((method) => typeof window.electronAPI?.[method] !== 'function')
+  if (missingFramePipeApi.length > 0) {
+    throw new Error(`Direct raw FFmpeg frame piping is unavailable in this export environment: ${missingFramePipeApi.join(', ')}`)
+  }
+  const pipedVideoPath = includeAudio
     ? await window.electronAPI.pathJoin(tempFolder, `video_only.${outputExtension}`)
     : outputPath
   let framePipeSessionId = null
   let framePipeEncoderUsed = null
-  let segmentFramesFolder = null
   
   onProgress({ status: EXPORT_STATUS.preparing, progress: 2 })
   
@@ -961,7 +950,7 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
   processedCanvas.width = width
   processedCanvas.height = height
   const processedCtx = processedCanvas.getContext('2d', { willReadFrequently: true })
-  
+
   const videoElements = new Map()
   const failedVideoSources = new Set()
   const imageElements = new Map()
@@ -1208,16 +1197,12 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
   }
   
   onProgress({ status: EXPORT_STATUS.rendering, progress: 5 })
-  
-  const frameDuration = fps > 0 ? 1 / fps : 0
-  const halfFrame = frameDuration / 2
+
   async function renderCanvasFrame(frameIndex) {
         throwIfCancelled()
         await yieldToMain()
         throwIfCancelled()
-        const targetTime = rangeStart + frameIndex * frameDuration + halfFrame
-        const safeEnd = Math.max(rangeStart, rangeEnd - halfFrame)
-        const time = Math.min(targetTime, safeEnd)
+        const time = framePlan.getFrameTime(frameIndex)
         const rawTransitionInfo = timelineState.getTransitionAtTime(time)
         const transitionInfo = isVisibleTransition(rawTransitionInfo) ? rawTransitionInfo : null
     
@@ -1824,16 +1809,8 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
           if (!writeResult?.success) {
             throw new Error(writeResult?.error || 'Failed to write frame to FFmpeg pipe.')
           }
-        } else if (segmentFramesFolder) {
-          const frameBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
-          const frameBuffer = await frameBlob.arrayBuffer()
-          const framePath = await window.electronAPI.pathJoin(segmentFramesFolder, `frame_${formatFrameNumber(frameIndex + 1)}.png`)
-          await window.electronAPI.writeFileFromArrayBuffer(framePath, frameBuffer)
         } else {
-          const frameBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
-          const frameBuffer = await frameBlob.arrayBuffer()
-          const framePath = await window.electronAPI.pathJoin(framesFolder, `frame_${formatFrameNumber(frameIndex + 1)}.png`)
-          await window.electronAPI.writeFileFromArrayBuffer(framePath, frameBuffer)
+          throw new Error('Direct raw FFmpeg frame pipe was not initialized.')
         }
     
         if (frameIndex % 5 === 0) {
@@ -1856,42 +1833,71 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
     const safeSegmentToken = String(segmentIndex).replaceAll('/', '_')
     const segmentDir = await window.electronAPI.pathJoin(tempFolder, `segment_${safeSegmentToken}`)
     await window.electronAPI.createDirectory(segmentDir)
-    const segmentFramesDir = await window.electronAPI.pathJoin(segmentDir, 'frames')
-    await window.electronAPI.createDirectory(segmentFramesDir)
     const segmentOutputPath = await window.electronAPI.pathJoin(segmentDir, `${safeSegmentToken}.mp4`)
     const previousFramePipeSessionId = framePipeSessionId
-    const previousSegmentFramesFolder = segmentFramesFolder
-    segmentFramesFolder = segmentFramesDir
+    framePipeSessionId = null
+
+    onProgress({
+      status: `Starting raw RGBA pipe for segment ${segmentIndex}...`,
+      progress: 10,
+    })
+    const pipeStart = await window.electronAPI.startFramePipe({
+      width,
+      height,
+      fps,
+      outputPath: segmentOutputPath,
+      format: outputExtension,
+      duration: Math.max(0, segment.end - segment.start),
+      videoCodec,
+      proresProfile: format === 'prores' ? proresProfile : undefined,
+      useHardwareEncoder,
+      nvencPreset,
+      preset,
+      qualityMode,
+      crf,
+      bitrateKbps,
+      keyframeInterval,
+    })
+    if (!pipeStart?.success || !pipeStart.sessionId) {
+      throw new Error(pipeStart?.error || `Failed to start raw RGBA pipe for segment ${segmentIndex}.`)
+    }
+    framePipeSessionId = pipeStart.sessionId
+    framePipeEncoderUsed = pipeStart.encoderUsed || framePipeEncoderUsed
+    console.log('[Export] Segment raw pipe started', {
+      segmentIndex,
+      sessionId: framePipeSessionId,
+      encoderUsed: framePipeEncoderUsed,
+      outputPath: segmentOutputPath,
+    })
+
     try {
       for (let frameIndex = startFrame; frameIndex <= endFrame; frameIndex += 1) {
         await renderCanvasFrame(frameIndex)
       }
-      const framePattern = await window.electronAPI.pathJoin(segmentFramesDir, 'frame_%06d.png')
-      const encodeResult = await window.electronAPI.encodeVideo({
-        framePattern,
-        fps,
-        outputPath: segmentOutputPath,
-        format: outputExtension,
-        duration: Math.max(0, segment.end - segment.start),
-        videoCodec,
-        proresProfile: format === 'prores' ? proresProfile : undefined,
-        useHardwareEncoder,
-        nvencPreset,
-        preset,
-        qualityMode,
-        crf,
-        bitrateKbps,
-        keyframeInterval,
-      })
-      if (!encodeResult?.success) {
-        throw new Error(encodeResult?.error || `Failed to encode canvas segment ${segmentIndex}.`)
+      const pipeFinish = await window.electronAPI.finishFramePipe(framePipeSessionId)
+      if (!pipeFinish?.success) {
+        throw new Error(pipeFinish?.error || `Failed to finish raw RGBA pipe for segment ${segmentIndex}.`)
       }
+      framePipeEncoderUsed = pipeFinish.encoderUsed || framePipeEncoderUsed
+      console.log('[Export] Segment raw pipe finished', {
+        segmentIndex,
+        sessionId: framePipeSessionId,
+        encoderUsed: framePipeEncoderUsed,
+        frameCount: Math.max(0, endFrame - startFrame + 1),
+        outputPath: segmentOutputPath,
+      })
       return segmentOutputPath
     } catch (error) {
+      if (framePipeSessionId) {
+        try {
+          await window.electronAPI.abortFramePipe(framePipeSessionId)
+        } catch {
+          // ignore abort errors
+        }
+      }
       throw error
     } finally {
       framePipeSessionId = previousFramePipeSessionId
-      segmentFramesFolder = previousSegmentFramesFolder
     }
   }
 
@@ -1899,35 +1905,17 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
     const safeSegmentLabel = String(segmentLabel).replaceAll('/', '_')
     const segmentFrameCount = Math.max(0, Math.round(((segment.end - segment.start) / Math.max(1e-6, frameDuration))))
     if (segmentFrameCount > 0 && segmentFrameCount < 12) {
-      if (segment.lane === 'ffmpeg') {
-        onProgress({
-          status: `Rendering ffmpeg span ${segmentLabel}...`,
-          progress: 10,
-        })
-        const nativeOutput = await renderSegmentToNativeVideo(segment, safeSegmentLabel)
-        if (!nativeOutput?.success) {
-          if (nativeOutput?.reroute === 'canvas') {
-            return [{ outputPath: await renderCanvasSegmentToVideo(segment, safeSegmentLabel), duration: Math.max(0, segment.end - segment.start) }]
-          }
-          throw new Error(nativeOutput?.error || `Native render failed for segment ${segmentLabel}.`)
-        }
-        if (nativeOutput?.reroute === 'canvas') {
-          return [{ outputPath: await renderCanvasSegmentToVideo(segment, safeSegmentLabel), duration: Math.max(0, segment.end - segment.start) }]
-        }
-        return [{ outputPath: nativeOutput.outputPath, duration: Math.max(0, segment.end - segment.start) }]
-      }
       onProgress({
-        status: `Rendering canvas span ${segmentLabel}...`,
+        status: `Rendering raw-pipe span ${segmentLabel}...`,
         progress: 10,
       })
-      return [await renderCanvasSegmentToVideo(segment, safeSegmentLabel)]
+      return [{ outputPath: await renderCanvasSegmentToVideo(segment, safeSegmentLabel), duration: Math.max(0, segment.end - segment.start) }]
     }
 
     const subPlan = buildExportLanePlan({
       timelineState,
       rangeStart: segment.start,
       rangeEnd: segment.end,
-      exportMode,
     })
     const subSegments = subPlan.segments.length > 0
       ? subPlan.segments
@@ -1937,31 +1925,11 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
     for (let subIndex = 0; subIndex < subSegments.length; subIndex += 1) {
       const subSegment = subSegments[subIndex]
       const subLabel = `${segmentLabel}.${subIndex + 1}/${subSegments.length}`
-      if (subSegment.lane === 'ffmpeg') {
-        onProgress({
-          status: `Rendering ffmpeg span ${subLabel}...`,
-          progress: 10 + Math.floor((subIndex / Math.max(1, subSegments.length)) * 60),
-        })
-        const nativeOutput = await renderSegmentToNativeVideo(subSegment, `${segmentLabel}.${subIndex + 1}`.replaceAll('/', '_'))
-        if (!nativeOutput?.success) {
-          if (nativeOutput?.reroute === 'canvas') {
-            outputs.push({ outputPath: await renderCanvasSegmentToVideo(subSegment, `${segmentLabel}.${subIndex + 1}`.replaceAll('/', '_')), duration: Math.max(0, subSegment.end - subSegment.start) })
-            continue
-          }
-          throw new Error(nativeOutput?.error || `Native render failed for segment ${segmentLabel}.${subIndex + 1}.`)
-        }
-        if (nativeOutput?.reroute === 'canvas') {
-          outputs.push({ outputPath: await renderCanvasSegmentToVideo(subSegment, `${segmentLabel}.${subIndex + 1}`.replaceAll('/', '_')), duration: Math.max(0, subSegment.end - subSegment.start) })
-        } else {
-          outputs.push({ outputPath: nativeOutput.outputPath, duration: Math.max(0, subSegment.end - subSegment.start) })
-        }
-      } else {
-        onProgress({
-          status: `Rendering canvas span ${subLabel}...`,
-          progress: 10 + Math.floor((subIndex / Math.max(1, subSegments.length)) * 60),
-        })
-        outputs.push({ outputPath: await renderCanvasSegmentToVideo(subSegment, `${segmentLabel}.${subIndex + 1}`.replaceAll('/', '_')), duration: Math.max(0, subSegment.end - subSegment.start) })
-      }
+      onProgress({
+        status: `Rendering raw-pipe span ${subLabel}...`,
+        progress: 10 + Math.floor((subIndex / Math.max(1, subSegments.length)) * 60),
+      })
+      outputs.push({ outputPath: await renderCanvasSegmentToVideo(subSegment, `${segmentLabel}.${subIndex + 1}`.replaceAll('/', '_')), duration: Math.max(0, subSegment.end - subSegment.start) })
     }
     return outputs
   }
@@ -1976,7 +1944,6 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
       timelineState,
       rangeStart: segment.start,
       rangeEnd: segment.end,
-      exportMode,
     })
     const subSegments = subPlan.segments.length > 0
       ? subPlan.segments
@@ -2344,7 +2311,8 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
   })
   
   if (!stitchResult?.success) {
-    const stitchError = stitchResult?.encodeResult?.error
+    const stitchError = stitchResult?.error
+      || stitchResult?.encodeResult?.error
       || stitchResult?.muxResult?.error
       || stitchResult?.encodeResult?.errorMessage
       || stitchResult?.muxResult?.errorMessage

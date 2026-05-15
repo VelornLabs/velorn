@@ -12,7 +12,6 @@ const EXPORT_FORMATS = [
   { id: 'webm', label: 'WebM (VP9)' },
   { id: 'prores', label: 'MOV (ProRes)' },
   { id: 'gif', label: 'GIF (Preview - Soon)', disabled: true },
-  { id: 'png-seq', label: 'PNG Sequence - Soon', disabled: true },
 ]
 
 const RANGE_PRESETS = [
@@ -125,7 +124,6 @@ const createDefaultExportSettings = (filename) => ({
   audioSampleRate: 44100,
   audioChannels: 2,
   useProxyMedia: false,
-  useDirectFramePipe: true,
   postProcessUpscale: 'none',
 })
 
@@ -147,8 +145,7 @@ const EXPORT_PRESETS = [
       includeAudio: true,
       audioBitrateKbps: 192,
       useProxyMedia: false,
-      useDirectFramePipe: true,
-    },
+        },
   },
   {
     id: 'fast-nvenc',
@@ -168,8 +165,7 @@ const EXPORT_PRESETS = [
       includeAudio: true,
       audioBitrateKbps: 192,
       useProxyMedia: false,
-      useDirectFramePipe: true,
-    },
+        },
   },
   {
     id: 'proxy-review',
@@ -189,8 +185,7 @@ const EXPORT_PRESETS = [
       includeAudio: true,
       audioBitrateKbps: 160,
       useProxyMedia: true,
-      useDirectFramePipe: true,
-    },
+        },
   },
   {
     id: 'small-h265',
@@ -210,8 +205,7 @@ const EXPORT_PRESETS = [
       includeAudio: true,
       audioBitrateKbps: 192,
       useProxyMedia: false,
-      useDirectFramePipe: true,
-    },
+        },
   },
   {
     id: 'prores-hq',
@@ -228,8 +222,7 @@ const EXPORT_PRESETS = [
       includeAudio: true,
       audioBitrateKbps: 320,
       useProxyMedia: false,
-      useDirectFramePipe: true,
-    },
+        },
   },
 ]
 
@@ -267,8 +260,7 @@ function loadSavedExportSettings(storageKey, defaultSettings) {
       renderMode: 'single',
       useCachedRenders: false,
       fastSeek: false,
-      useDirectFramePipe: true,
-    }
+        }
   } catch (_) {
     return defaultSettings
   }
@@ -773,7 +765,6 @@ function ExportPanel({ isActive = true }) {
     if (settings.format === 'webm' || settings.videoCodec === 'vp9') {
       hints.push('VP9/WebM encodes slower than H.264/H.265.')
     }
-    hints.push('Fast FFmpeg pipe skips writing PNG frames before encoding.')
     
     const textClips = clips.filter(clip => clip.type === 'text')
     if (textClips.length > 0) {
@@ -793,8 +784,8 @@ function ExportPanel({ isActive = true }) {
   }, [clips, transitions, tracks, settings, getCurrentTimelineSettings, nvencStatus, proxyCoverage])
 
   const runExportJob = async (jobSettings, labelOverride = null) => {
-    if (jobSettings.format === 'gif' || jobSettings.format === 'png-seq') {
-      throw new Error('GIF and PNG sequence export are not wired yet.')
+    if (jobSettings.format === 'gif') {
+      throw new Error('GIF export is not wired yet.')
     }
     if (jobSettings.useHardwareEncoder && nvencStatus.checked) {
       const codecSupported = jobSettings.videoCodec === 'h265'
@@ -849,8 +840,7 @@ function ExportPanel({ isActive = true }) {
       useCachedRenders: false,
       useProxyMedia: jobSettings.useProxyMedia,
       fastSeek: false,
-      useDirectFramePipe: true,
-    }
+        }
 
     if (window.electronAPI?.runExportInWorker && typeof currentProjectHandle === 'string') {
       try {
@@ -1193,18 +1183,6 @@ function ExportPanel({ isActive = true }) {
                       Expected encoder: {nvencExpectedEncoder}
                     </div>
                   )}
-                  <div className="mt-3 flex items-center gap-2">
-                    <button
-                      className="px-2 py-1 text-xs rounded border bg-sf-accent text-white border-sf-accent cursor-default opacity-90"
-                      title="Stream rendered frames directly into FFmpeg instead of writing PNG frames first"
-                      disabled
-                    >
-                      Fast FFmpeg pipe
-                    </button>
-                    <span className="text-[10px] text-sf-text-muted">
-                      Skips PNG frame files during export
-                    </span>
-                  </div>
                 </div>
                 
                 <div>
