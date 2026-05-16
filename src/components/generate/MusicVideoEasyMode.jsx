@@ -181,6 +181,28 @@ function plural(count, singular, pluralLabel = `${singular}s`) {
   return `${value} ${value === 1 ? singular : pluralLabel}`
 }
 
+async function copyTextToClipboard(text) {
+  const value = String(text || '')
+  if (!value) return false
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return true
+  }
+  if (typeof document === 'undefined') return false
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
 function flattenPlanShots(plan) {
   const shots = []
   if (!Array.isArray(plan)) return shots
@@ -732,6 +754,38 @@ export default function MusicVideoEasyMode({
       Preview
     </button>
   )
+
+  const handleCopyShotPrompt = async (prompt, successMessage, statusSetter) => {
+    const text = String(prompt || '').trim()
+    if (!text) {
+      statusSetter?.('No prompt found to copy for this shot.')
+      return
+    }
+    try {
+      const copied = await copyTextToClipboard(text)
+      statusSetter?.(copied ? successMessage : 'Could not copy prompt. Select the text and copy it manually.')
+    } catch (_) {
+      statusSetter?.('Could not copy prompt. Select the text and copy it manually.')
+    }
+  }
+
+  const renderCopyPromptButton = (prompt, successMessage, statusSetter) => {
+    if (!String(prompt || '').trim()) return null
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          void handleCopyShotPrompt(prompt, successMessage, statusSetter)
+        }}
+        className="inline-flex shrink-0 items-center gap-1 rounded-md border border-sf-dark-600 bg-sf-dark-900/85 px-2 py-1 text-[10px] font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary focus:outline-none focus:ring-2 focus:ring-sf-accent"
+        title="Copy prompt"
+      >
+        <Clipboard className="h-3 w-3" />
+        Copy
+      </button>
+    )
+  }
 
   const handleCopyBrief = async () => {
     setBriefStatus('')
@@ -1443,6 +1497,7 @@ export default function MusicVideoEasyMode({
               const url = getAssetUrl(asset)
               const cardState = getKeyframeCardState(variant, asset)
               const coverageLabel = getCoverageLabel(scene, shot)
+              const keyframePrompt = String(shot.imageBeat || shot.beat || shot.referenceImagePrompt || '').trim()
               return (
                 <div
                   key={`music-keyframe-${scene.id}-${shot.id}`}
@@ -1482,17 +1537,20 @@ export default function MusicVideoEasyMode({
                       url,
                       title: `Shot ${index + 1}: ${shot.scriptShotLabel || scene.label || shot.id}`,
                       subtitle: [coverageLabel, selectedKeyframeWorkflowLabel, outputResolutionLabel, `${videoFps} fps`].filter(Boolean).join(' / '),
-                      prompt: shot.imageBeat || shot.beat || shot.referenceImagePrompt || '',
+                      prompt: keyframePrompt,
                     }))}
                   </div>
                   <div className="p-2">
-                    <div className="text-xs font-semibold text-sf-text-primary">Shot {index + 1}: {shot.scriptShotLabel || scene.label || shot.id}</div>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 text-xs font-semibold text-sf-text-primary">Shot {index + 1}: {shot.scriptShotLabel || scene.label || shot.id}</div>
+                      {renderCopyPromptButton(keyframePrompt, `Shot ${index + 1} keyframe prompt copied.`, setKeyframeStatus)}
+                    </div>
                     {coverageLabel && (
                       <div className="mt-1 inline-flex rounded-full border border-sf-dark-600 px-2 py-0.5 text-[10px] text-sf-text-muted">
                         {coverageLabel}
                       </div>
                     )}
-                    <div className="mt-1 line-clamp-2 text-[10px] text-sf-text-muted">{shot.imageBeat || shot.beat || shot.referenceImagePrompt}</div>
+                    <div className="mt-1 line-clamp-2 text-[10px] text-sf-text-muted">{keyframePrompt}</div>
                     {cardState.job?.progress > 0 && (
                       <div className="mt-1 h-1 overflow-hidden rounded-full bg-sf-dark-700">
                         <div className="h-full rounded-full bg-sf-accent" style={{ width: `${Math.min(100, Math.max(0, cardState.job.progress || 0))}%` }} />
@@ -1523,15 +1581,22 @@ export default function MusicVideoEasyMode({
                   Regenerate Selected Shot
                 </button>
               </div>
-              <label className="mt-3 block text-xs text-sf-text-secondary">
-                <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Keyframe prompt</span>
+              <div className="mt-3 text-xs text-sf-text-secondary">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Keyframe prompt</span>
+                  {renderCopyPromptButton(
+                    selectedShotRow.shot.imageBeat || selectedShotRow.shot.beat || '',
+                    `Shot ${selectedShotIndex + 1} keyframe prompt copied.`,
+                    setKeyframeStatus
+                  )}
+                </div>
                 <textarea
                   value={selectedShotRow.shot.imageBeat || selectedShotRow.shot.beat || ''}
                   onChange={(event) => handleYoloShotImageBeatChange?.(selectedShotRow.scene.id, selectedShotRow.shot.id, event.target.value)}
                   rows={4}
                   className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
                 />
-              </label>
+              </div>
             </div>
           )}
         </div>

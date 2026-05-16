@@ -7052,10 +7052,37 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     }
     const usesModelProductStoryboardWorkflow = yoloStoryboardWorkflowId === 'image-edit-model-product'
     const usesQwenMusicStoryboardWorkflow = isYoloMusicMode && yoloStoryboardWorkflowId === 'image-edit'
+    const musicImageAssetById = new Map(
+      (assets || [])
+        .filter((asset) => asset?.type === 'image')
+        .map((asset) => [asset.id, asset])
+    )
+    const findExistingMusicImageAssetId = (ids = []) => {
+      for (const assetId of ids) {
+        if (assetId && musicImageAssetById.has(assetId)) return assetId
+      }
+      return null
+    }
+    const defaultMusicReferenceAssetId = findExistingMusicImageAssetId([
+      ...yoloMusicResolvedCast.map((entry) => entry?.assetId),
+      yoloMusicArtistAsset?.id,
+    ])
+    const resolveQwenMusicStoryboardReferences = (variant) => {
+      const resolvedArtistAssetIds = Array.isArray(variant?.resolvedArtistAssetIds)
+        ? variant.resolvedArtistAssetIds.filter(Boolean)
+        : []
+      const primaryAssetId = findExistingMusicImageAssetId([
+        ...resolvedArtistAssetIds,
+        defaultMusicReferenceAssetId,
+      ])
+      const secondaryAssetId = findExistingMusicImageAssetId(
+        resolvedArtistAssetIds.filter((assetId) => assetId !== primaryAssetId)
+      )
+      return { primaryAssetId, secondaryAssetId }
+    }
     if (usesQwenMusicStoryboardWorkflow) {
-      const missingReference = variantsToQueue.some((variant) => !(
-        variant?.resolvedArtistAssetIds?.[0] ||
-        yoloMusicArtistAsset?.id
+      const missingReference = variantsToQueue.some((variant) => (
+        !resolveQwenMusicStoryboardReferences(variant).primaryAssetId
       ))
       if (missingReference) {
         setFormError('Qwen Image Edit keyframes need a cast/reference image. Add at least one person in the Music Video People step, or switch keyframes to Nano Banana 2.')
@@ -7091,14 +7118,25 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             ? mediumSeed
             : softSeed
       )
+      const qwenMusicReferences = usesQwenMusicStoryboardWorkflow
+        ? resolveQwenMusicStoryboardReferences(variant)
+        : { primaryAssetId: null, secondaryAssetId: null }
       const musicReferenceAssetId1 = isYoloMusicMode
-        ? (variant.resolvedArtistAssetIds?.[0] || yoloMusicArtistAsset?.id || null)
+        ? (
+          usesQwenMusicStoryboardWorkflow
+            ? qwenMusicReferences.primaryAssetId
+            : (variant.resolvedArtistAssetIds?.[0] || yoloMusicArtistAsset?.id || null)
+        )
         : null
       const musicReferenceAssetId2 = isYoloMusicMode
-        ? (variant.resolvedArtistAssetIds?.[1] || null)
+        ? (
+          usesQwenMusicStoryboardWorkflow
+            ? qwenMusicReferences.secondaryAssetId
+            : (variant.resolvedArtistAssetIds?.[1] || null)
+        )
         : null
       const qwenMusicInputAsset = usesQwenMusicStoryboardWorkflow && musicReferenceAssetId1
-        ? (assets.find((asset) => asset?.id === musicReferenceAssetId1) || null)
+        ? (musicImageAssetById.get(musicReferenceAssetId1) || null)
         : null
       const storyboardInputAsset = usesModelProductStoryboardWorkflow
         ? adStoryboardInputAsset
@@ -7174,6 +7212,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     effectiveImageResolution.width,
     yoloMusicArtistAsset,
     yoloMusicArtistAsset?.id,
+    yoloMusicResolvedCast,
     yoloMusicQualityProfile,
     yoloNormalizedAdStoryboardTier,
     yoloAdProductAsset,
