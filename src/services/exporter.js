@@ -31,7 +31,9 @@ import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerComp
 import { analyzeExportCapabilities } from './exportCapabilities'
 import { buildExportFramePlan } from './exportFramePlan.mjs'
 import { buildExportLanePlan } from './exportLanePlanner'
-import { findMissingClipCoverage, validateSegmentsCoverClips } from './exportPlanValidation'
+import { findMissingClipCoverage, getClippedClipsForRange, getClipsOverlappingRange, validateSegmentsCoverClips } from './exportPlanValidation'
+import { getSelectionScopedExportClips } from './exportRange.mjs'
+import { createExportTimelineQueries } from './exportTimelineState.mjs'
 import renderFfmpegSegment from './exportFfmpegSegments'
 import stitchHybridExport from './exportHybridStitch'
 
@@ -818,7 +820,7 @@ const trimImageCache = (cache, limit) => {
 }
 
 export async function exportTimeline(options = {}, onProgress = () => {}) {
-  const timelineState = useTimelineStore.getState()
+  const baseTimelineState = useTimelineStore.getState()
   const assetsState = useAssetsStore.getState()
   const projectState = useProjectStore.getState()
   
@@ -827,7 +829,7 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
     width = 1920,
     height = 1080,
     rangeStart = 0,
-    rangeEnd = timelineState.getTimelineEndTime(),
+    rangeEnd = baseTimelineState.getTimelineEndTime(),
     format = 'mp4',
     includeAudio = true,
     filename = 'export',
@@ -851,26 +853,42 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
     fastSeek = true,
     glslQualityScale = 1,
     signal = null,
+    rangeMode = 'full',
   } = options
+  const selectedClipIds = Array.isArray(baseTimelineState.selectedClipIds)
+    ? baseTimelineState.selectedClipIds.filter(Boolean)
+    : []
+  const scopedClips = rangeMode === 'selection'
+    ? getSelectionScopedExportClips({
+        clips: baseTimelineState.clips,
+        selectedClipIds,
+        rangeStart,
+        rangeEnd,
+      })
+    : baseTimelineState.clips
+  const timelineState = rangeMode === 'selection'
+    ? {
+        ...baseTimelineState,
+        clips: scopedClips,
+        selectedClipIds,
+      }
+    : baseTimelineState
+  const exportTimelineState = {
+    ...timelineState,
+    ...createExportTimelineQueries(timelineState),
+  }
   const throwIfCancelled = () => {
     if (signal?.aborted) {
       throw new Error('Export cancelled')
     }
   }
-  const computedTimelineEnd = Array.isArray(timelineState.clips)
-    ? timelineState.clips.reduce((maxEnd, clip) => {
-        if (!clip) return maxEnd
-        const start = Number(clip.startTime) || 0
-        const duration = Math.max(0, Number(clip.duration) || 0)
-        return Math.max(maxEnd, start + duration)
-      }, 0)
-    : 0
+  const computedTimelineEnd = exportTimelineState.getTimelineEndTime()
   const framePlan = buildExportFramePlan({ rangeStart, rangeEnd, fps })
   const { totalDuration, totalFrames, frameDuration, halfFrame } = framePlan
-  console.log(`[Export:range] start=${rangeStart} end=${rangeEnd} duration=${totalDuration} frames=${totalFrames} inPoint=${timelineState.inPoint ?? 'null'} outPoint=${timelineState.outPoint ?? 'null'} timelineEnd=${computedTimelineEnd}`)
+  console.log(`[Export:range] mode=${rangeMode} start=${rangeStart} end=${rangeEnd} duration=${totalDuration} frames=${totalFrames} inPoint=${timelineState.inPoint ?? 'null'} outPoint=${timelineState.outPoint ?? 'null'} selected=${Array.isArray(timelineState.selectedClipIds) ? timelineState.selectedClipIds.length : 'null'} timelineEnd=${computedTimelineEnd}`)
   console.log(`[Export:framePlan] frameDuration=${frameDuration} halfFrame=${halfFrame}`)
-  const exportCapability = await analyzeExportCapabilities({ timelineState })
-  const lanePlan = await buildExportLanePlan({ timelineState, rangeStart, rangeEnd })
+  const exportCapability = await analyzeExportCapabilities({ timelineState: exportTimelineState })
+  const lanePlan = await buildExportLanePlan({ timelineState: exportTimelineState, rangeStart, rangeEnd })
   const transformScaleX = width / Math.max(1, Number(sourceTimelineWidth) || width)
   const transformScaleY = height / Math.max(1, Number(sourceTimelineHeight) || height)
   const textStyleScale = Math.min(transformScaleX, transformScaleY)
@@ -1096,8 +1114,8 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
     const nativeInputs = []
     const rejectionReasons = []
     const mid = segment.start + (segment.end - segment.start) / 2
-    const activeEntries = typeof timelineState.getActiveClipsAtTime === 'function'
-      ? timelineState.getActiveClipsAtTime(mid)
+    const activeEntries = typeof exportTimelineState.getActiveClipsAtTime === 'function'
+      ? exportTimelineState.getActiveClipsAtTime(mid)
       : []
     const winnerEntry = [...activeEntries].reverse().find((entry) => {
       const clip = entry?.clip
@@ -1207,13 +1225,13 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
         await yieldToMain()
         throwIfCancelled()
         const time = framePlan.getFrameTime(frameIndex)
-        const rawTransitionInfo = timelineState.getTransitionAtTime(time)
+        const rawTransitionInfo = exportTimelineState.getTransitionAtTime(time)
         const transitionInfo = isVisibleTransition(rawTransitionInfo) ? rawTransitionInfo : null
     
         ctx.fillStyle = '#000000'
         ctx.fillRect(0, 0, width, height)
     
-        const activeClips = timelineState.getActiveClipsAtTime(time)
+        const activeClips = exportTimelineState.getActiveClipsAtTime(time)
         const rawVisualLayerClips = activeClips
           .filter(({ track }) => track.type === 'video')
           .sort((a, b) => {
@@ -1968,14 +1986,24 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
       if (!visibleVideoTrackIds.has(clip?.trackId)) return false
       return clip?.type === 'video' || clip?.type === 'image'
     })
+    const clipsInExportRange = getClipsOverlappingRange({
+      clips: visibleClips,
+      rangeStart,
+      rangeEnd,
+    })
+    const clippedClips = getClippedClipsForRange({
+      clips: clipsInExportRange,
+      rangeStart,
+      rangeEnd,
+    })
     const { ok, missingClips } = validateSegmentsCoverClips({
       segments,
-      clips: visibleClips,
+      clips: clippedClips,
     })
     const plannedSpanCount = segments.length
-    const clipCount = visibleClips.length
+    const clipCount = clippedClips.length
     console.log(
-      `[Export:validation] clips=${clipCount} plannedSpans=${plannedSpanCount} expectedOutputs=${expectedOutputs} missingClips=${missingClips.length}`
+      `[Export:validation] clips=${clipCount}/${visibleClips.length} plannedSpans=${plannedSpanCount} expectedOutputs=${expectedOutputs} missingClips=${missingClips.length}`
     )
     if (!ok) {
       const firstMissing = missingClips[0]
@@ -1995,11 +2023,16 @@ export async function exportTimeline(options = {}, onProgress = () => {}) {
       const clipEnd = clipStart + Math.max(0, Number(clip.duration) || 0)
       return clipEnd > rangeStartSec && clipStart < rangeEndSec
     })
+    const clippedAudioClips = getClippedClipsForRange({
+      clips: audioClips,
+      rangeStart: rangeStartSec,
+      rangeEnd: rangeEndSec,
+    })
     const missingAudioClips = findMissingClipCoverage({
       segments: [{ start: rangeStartSec, end: rangeEndSec }],
-      clips: audioClips,
+      clips: clippedAudioClips,
     })
-    console.log(`[Export:validationAudio] clips=${audioClips.length} missingClips=${missingAudioClips.length}`)
+    console.log(`[Export:validationAudio] clips=${clippedAudioClips.length}/${audioClips.length} missingClips=${missingAudioClips.length}`)
     if (missingAudioClips.length > 0) {
       const firstMissing = missingAudioClips[0]
       throw new Error(

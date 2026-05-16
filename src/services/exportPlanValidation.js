@@ -1,5 +1,33 @@
 const approxLte = (a, b, epsilon = 1e-6) => a <= b + epsilon
 
+export const getClipsOverlappingRange = ({ clips, rangeStart, rangeEnd }) => {
+  const safeStart = Math.max(0, Number(rangeStart) || 0)
+  const safeEnd = Math.max(safeStart, Number(rangeEnd) || 0)
+  return (Array.isArray(clips) ? clips : []).filter((clip) => {
+    if (!clip) return false
+    const clipStart = Number(clip.startTime) || 0
+    const clipEnd = clipStart + Math.max(0, Number(clip.duration) || 0)
+    return clipEnd > safeStart && clipStart < safeEnd
+  })
+}
+
+export const getClippedClipsForRange = ({ clips, rangeStart, rangeEnd }) => {
+  const safeStart = Math.max(0, Number(rangeStart) || 0)
+  const safeEnd = Math.max(safeStart, Number(rangeEnd) || 0)
+  return getClipsOverlappingRange({ clips, rangeStart: safeStart, rangeEnd: safeEnd }).map((clip) => {
+    const clipStart = Number(clip.startTime) || 0
+    const clipDuration = Math.max(0, Number(clip.duration) || 0)
+    const clipEnd = clipStart + clipDuration
+    const clippedStart = Math.max(safeStart, clipStart)
+    const clippedEnd = Math.min(safeEnd, clipEnd)
+    return {
+      ...clip,
+      startTime: clippedStart,
+      duration: Math.max(0, clippedEnd - clippedStart),
+    }
+  })
+}
+
 export const getClipCoverageSpans = ({ segments, clipStart, clipEnd }) => {
   const overlaps = []
   for (const segment of segments || []) {
@@ -61,4 +89,3 @@ export const validateSegmentsCoverClips = ({ segments, clips }) => {
     missingClips,
   }
 }
-

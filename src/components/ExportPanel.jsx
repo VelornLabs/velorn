@@ -4,6 +4,7 @@ import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/proj
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import exportTimeline from '../services/exporter'
+import { resolveExportRange } from '../services/exportRange.mjs'
 
 const EXPORT_SETTINGS_STORAGE_PREFIX = 'comfystudio-export-settings-v1'
 
@@ -701,16 +702,14 @@ function ExportPanel({ isActive = true }) {
   }
 
   const resolveRange = () => {
-    if (settings.range === 'inout' && inPoint !== null && outPoint !== null) {
-      return { start: Math.min(inPoint, outPoint), end: Math.max(inPoint, outPoint) }
-    }
-    if (settings.range === 'selection' && selectedClipIds.length > 0) {
-      const selected = clips.filter(c => selectedClipIds.includes(c.id))
-      const start = Math.min(...selected.map(c => c.startTime))
-      const end = Math.max(...selected.map(c => c.startTime + c.duration))
-      return { start, end }
-    }
-    return { start: 0, end: getTimelineEndTime() }
+    return resolveExportRange({
+      rangeMode: settings.range,
+      inPoint,
+      outPoint,
+      selectedClipIds,
+      clips,
+      getTimelineEndTime,
+    })
   }
 
   const formatDuration = (seconds) => {
@@ -812,6 +811,14 @@ function ExportPanel({ isActive = true }) {
     const { width, height } = resolveResolution()
     const fps = resolveFps()
     const range = resolveRange()
+    console.log('[ExportPanel] Resolved export range', {
+      rangeMode: settings.range,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      inPoint,
+      outPoint,
+      selectedClipCount: selectedClipIds.length,
+    })
     const timelineSettings = getCurrentTimelineSettings() || { width: 1920, height: 1080, fps: 24 }
     const options = {
       filename: jobSettings.filename?.trim() || defaultFilename,
@@ -833,6 +840,7 @@ function ExportPanel({ isActive = true }) {
       fps,
       rangeStart: range.start,
       rangeEnd: range.end,
+      rangeMode: range.mode,
       includeAudio: jobSettings.includeAudio,
       audioBitrateKbps: Number(jobSettings.audioBitrateKbps),
       audioSampleRate: Number(jobSettings.audioSampleRate),
@@ -881,7 +889,7 @@ function ExportPanel({ isActive = true }) {
         const referencedAssets = assets.filter((asset) => asset?.id && exportAssetIds.has(asset.id))
         console.log('[ExportPanel] Worker payload assets', referencedAssets.length, '/', assets.length, 'clips', exportClips.length, '/', clips.length)
         const state = {
-          timeline: { clips, tracks, transitions },
+          timeline: { clips, tracks, transitions, selectedClipIds },
           assets: referencedAssets.map((a) => ({
             id: a.id,
             path: a.path,

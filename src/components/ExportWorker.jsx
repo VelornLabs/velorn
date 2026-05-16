@@ -43,6 +43,7 @@ export default function ExportWorker() {
           clips: jobState.timeline?.clips ?? prev.clips,
           tracks: jobState.timeline?.tracks ?? prev.tracks,
           transitions: jobState.timeline?.transitions ?? prev.transitions,
+          selectedClipIds: jobState.timeline?.selectedClipIds ?? prev.selectedClipIds,
         }))
         useAssetsStore.setState((prev) => ({
           ...prev,
