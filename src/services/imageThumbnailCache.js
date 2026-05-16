@@ -5,13 +5,6 @@ const DEFAULT_WIDTH = 360
 const DEFAULT_HEIGHT = 204
 const DEFAULT_QUALITY = 78
 const pendingThumbnails = new Map()
-let thumbnailQueue = Promise.resolve()
-
-function enqueueThumbnailJob(job) {
-  const run = thumbnailQueue.then(() => job())
-  thumbnailQueue = run.catch(() => {})
-  return run
-}
 
 function hashString(value) {
   let hash = 5381
@@ -98,7 +91,7 @@ export async function getOrCreateImageThumbnail(projectHandle, asset, options = 
   const pendingKey = `${projectHandle}|${key}`
   if (pendingThumbnails.has(pendingKey)) return pendingThumbnails.get(pendingKey)
 
-  const promise = enqueueThumbnailJob(async () => {
+  const promise = (async () => {
     try {
       const thumbDir = await window.electronAPI.pathJoin(projectHandle, IMAGE_THUMB_DIR)
       await window.electronAPI.createDirectory(thumbDir)
@@ -130,7 +123,7 @@ export async function getOrCreateImageThumbnail(projectHandle, asset, options = 
     } finally {
       pendingThumbnails.delete(pendingKey)
     }
-  })
+  })()
 
   pendingThumbnails.set(pendingKey, promise)
   return promise

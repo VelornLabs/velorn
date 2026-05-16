@@ -307,7 +307,7 @@ function App() {
     : 0
   const showMediaPreparation = Boolean(mediaPreparation?.active && mediaPreparationTotal > 0)
   const visibleDownloadProgressItems = downloadProgressItems.filter(Boolean)
-  
+
   // Initialize project store on mount
   useEffect(() => {
     initialize()
@@ -495,7 +495,7 @@ function App() {
           })}
         </div>
       )}
-      
+
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* ComfyUI tab: mount only while active so hidden ComfyUI media previews

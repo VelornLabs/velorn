@@ -340,6 +340,16 @@ function CachedTimelineImage({ asset, src, projectHandle, alt, className, style,
   )
 }
 
+function getThumbnailStaggerMs(value) {
+  const input = String(value || '')
+  let hash = 0
+  for (let i = 0; i < input.length; i += 1) {
+    hash = ((hash << 5) - hash) + input.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash) % 240
+}
+
 function CachedTimelineImage({ asset, src, projectHandle, alt, className, style, draggable = false, suspend = false }) {
   const sourceUrl = src || asset?.url || asset?.thumbnailUrl || asset?.path || asset?.absolutePath || ''
   const [thumbnailUrl, setThumbnailUrl] = useState(null)
@@ -389,9 +399,11 @@ function LazyTimelineThumbnail({
   className,
   style,
   draggable = false,
+  loadDelayMs = 0,
 }) {
   const containerRef = useRef(null)
   const [shouldLoad, setShouldLoad] = useState(false)
+  const [isReady, setIsReady] = useState(false)
 
   useEffect(() => {
     if (shouldLoad) return undefined
@@ -413,9 +425,27 @@ function LazyTimelineThumbnail({
     return () => observer.disconnect()
   }, [shouldLoad])
 
+  useEffect(() => {
+    let cancelled = false
+    if (!shouldLoad) {
+      setIsReady(false)
+      return () => { cancelled = true }
+    }
+
+    const delay = Math.max(0, Math.round(Number(loadDelayMs) || 0))
+    const timer = window.setTimeout(() => {
+      if (!cancelled) setIsReady(true)
+    }, delay)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [loadDelayMs, shouldLoad])
+
   return (
     <div ref={containerRef} className="w-full h-full">
-      {shouldLoad ? (
+      {isReady ? (
         <CachedTimelineImage
           asset={asset}
           src={src}
@@ -1625,15 +1655,6 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       resizeObserver?.disconnect()
     }
   }, [updateTimelineViewport])
-
-  const timelineThumbnailVisibleRange = useMemo(() => {
-    const viewportSpan = Math.max(0, timelineViewport.end - timelineViewport.start)
-    const buffer = Math.max(24, Math.min(120, viewportSpan * 0.12))
-    return {
-      start: Math.max(0, timelineViewport.start - buffer),
-      end: timelineViewport.end + buffer,
-    }
-  }, [timelineViewport.end, timelineViewport.start])
 
   // Zoom with playhead as pivot so the timeline zooms into/out of the playhead position
   const applyZoomWithPlayheadPivot = useCallback((newZoomValue) => {
@@ -5330,13 +5351,9 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                   const isTextClip = clip.type === 'text'
                   const isAdjustmentClip = clip.type === 'adjustment'
                   const clipAsset = clip.assetId ? assetsById.get(clip.assetId) : null
-                  const clipStart = Math.max(0, Number(clip.startTime) || 0)
-                  const clipEnd = Math.max(clipStart, clipStart + (Number(clip.duration) || 0))
-                  const clipIsNearViewport = clipEnd >= timelineThumbnailVisibleRange.start
-                    && clipStart <= timelineThumbnailVisibleRange.end
-                  const shouldRenderClipThumbnails = showTimelineClipThumbnails !== false && clipIsNearViewport
+                  const shouldRenderClipThumbnails = showTimelineClipThumbnails !== false
                   const suspendTimelineThumbs = timelineIsPlaying || Boolean(clipDragState || trimState || slipState || fadeDragState || transitionDragState || rollEditState || isPanning)
-                  const clipMediaUrl = shouldRenderClipThumbnails && (clip.type === 'image' || clip.type === 'video')
+                  const clipMediaUrl = shouldRenderClipThumbnails && clip.type === 'image'
                     ? getClipUrl(clip)
                     : null
                   
@@ -5539,7 +5556,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                         
                         {/* Single image thumbnail repeated */}
                         {clipMediaUrl && (
-                          <div className="absolute inset-0 top-[3px] flex overflow-hidden">
+                        <div className="absolute inset-0 top-[3px] flex overflow-hidden">
                             <LazyTimelineThumbnail
                               projectHandle={currentProjectHandle}
                               asset={clipAsset}
@@ -5551,6 +5568,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                                 objectFit: 'cover',
                               }}
                               draggable={false}
+                              loadDelayMs={getThumbnailStaggerMs(clip.id)}
                             />
                           </div>
                         )}
