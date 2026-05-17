@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   CheckCircle2,
   Clipboard,
+  Edit3,
   FileText,
   Film,
+  Image as ImageIcon,
   Loader2,
   Maximize2,
   Music,
@@ -19,7 +21,12 @@ import {
   MUSIC_VIDEO_SHOT_WORKFLOW_ID,
   getMusicVideoAudioKindOption,
   getMusicVideoShotTypeOption,
+  normalizeCastSlug,
 } from '../../config/musicVideoShotConfig'
+import {
+  getWorkflowDisplayLabel,
+} from '../../config/generateWorkspaceConfig'
+import { BUILTIN_WORKFLOW_PATHS } from '../../config/workflowRegistry'
 
 const DRAFT_STORAGE_KEY = 'comfystudio-music-video-easy-mode-draft-v1'
 
@@ -40,6 +47,16 @@ const ASPECT_RATIO_OPTIONS = [
 const RESOLUTION_OPTIONS = [
   { id: '720p', label: '720p' },
   { id: '1080p', label: '1080p' },
+]
+
+const PEOPLE_WIZARD_IMAGE_SIZE_OPTIONS = [
+  { id: 'hd', label: 'HD', resolution: { width: 720, height: 1280 }, landscapeResolution: { width: 1280, height: 720 } },
+  { id: 'fhd', label: 'FHD', resolution: { width: 1080, height: 1920 }, landscapeResolution: { width: 1920, height: 1080 } },
+]
+
+const PEOPLE_WIZARD_IMAGE_ORIENTATION_OPTIONS = [
+  { id: 'portrait', label: 'Portrait' },
+  { id: 'landscape', label: 'Landscape' },
 ]
 
 const FPS_OPTIONS = [24, 25, 30]
@@ -229,6 +246,13 @@ function resolveOutputResolution(aspectRatio, resolutionPreset) {
   return is1080 ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
 }
 
+function resolvePeopleWizardImageResolution(sizeId, orientationId) {
+  const size = PEOPLE_WIZARD_IMAGE_SIZE_OPTIONS.find((option) => option.id === String(sizeId || '').trim())
+    || PEOPLE_WIZARD_IMAGE_SIZE_OPTIONS[0]
+  const isLandscape = String(orientationId || '').trim() === 'landscape'
+  return isLandscape ? size.landscapeResolution : size.resolution
+}
+
 function workflowSupports1080Resolution(workflowId) {
   return String(workflowId || '').trim() === MUSIC_VIDEO_SHOT_WORKFLOW_ID
 }
@@ -264,6 +288,18 @@ function ShotVideoPreview({ hasVideo, keyframeUrl, placeholderLabel = "Needs key
   }
 
   return <span className="flex h-full w-full items-center justify-center text-[10px] text-sf-text-muted">{placeholderLabel}</span>
+}
+
+function inferPeopleWizardAssetPrefix(asset, fallbackValue = '') {
+  const metadataPrefix = normalizeCastSlug(asset?.peopleWizard?.assetPrefix || '')
+  if (metadataPrefix) return metadataPrefix
+  const rawName = String(asset?.name || '').trim()
+  if (!rawName) return normalizeCastSlug(fallbackValue || '')
+  const baseName = rawName
+    .replace(/\.[a-z0-9]{1,8}$/i, '')
+    .replace(/_I\d+$/i, '')
+    .replace(/_(image|sheet)$/i, '')
+  return normalizeCastSlug(baseName || fallbackValue || '')
 }
 
 function getVideoWorkflowScopedKey(variantKey, workflowId) {
@@ -382,12 +418,15 @@ export default function MusicVideoEasyMode({
   setYoloMusicScript,
   yoloMusicCast,
   yoloMusicResolvedCast,
+  setYoloMusicCast,
   handleYoloMusicCastAdd,
   handleYoloMusicCastRemove,
   handleYoloMusicCastAssetChange,
   handleYoloMusicCastSlugChange,
   handleYoloMusicCastLabelChange,
   handleYoloMusicCastRoleChange,
+  queuePeopleWizardJob,
+  canUsePeopleWizardGeneration = false,
   yoloMusicKeyframeWorkflowId = 'nano-banana-2',
   setYoloMusicKeyframeWorkflowId,
   yoloMusicKeyframeWorkflowOptions = DEFAULT_KEYFRAME_WORKFLOW_OPTIONS,
@@ -435,6 +474,9 @@ export default function MusicVideoEasyMode({
   const [isQueuingVideos, setIsQueuingVideos] = useState(false)
   const [isAssemblingTimeline, setIsAssemblingTimeline] = useState(false)
   const [mediaPreview, setMediaPreview] = useState(null)
+  const [peopleWizard, setPeopleWizard] = useState(null)
+
+  const peopleWizardGenerationEnabled = Boolean(canUsePeopleWizardGeneration && BUILTIN_WORKFLOW_PATHS['z-image-turbo'] && BUILTIN_WORKFLOW_PATHS['multi-angles'])
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return
@@ -470,6 +512,38 @@ export default function MusicVideoEasyMode({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [mediaPreview])
 
+  const closePeopleWizard = () => setPeopleWizard(null)
+  const handlePeopleWizardBackdropClick = (event) => {
+    if (event.target !== event.currentTarget) return
+    if (!peopleWizard) return
+    const confirmed = window.confirm('Discard this wizard draft and close the people dialog?')
+    if (confirmed) closePeopleWizard()
+  }
+  const openPeopleWizard = (entry = null) => {
+    const sessionId = `people-wizard-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const entryAsset = entry?.assetId ? assets.find((asset) => asset?.id === entry.assetId) || null : null
+    setPeopleWizard({
+      sessionId,
+      mode: entry ? 'edit' : 'create',
+      step: entry?.assetId ? 'existing' : 'basic',
+      entryId: entry?.id || null,
+      name: String(entry?.label || ''),
+      slug: String(entry?.slug || ''),
+      role: String(entry?.role || 'lead'),
+      assetPrefix: normalizeCastSlug(entry?.slug || entry?.label || entry?.assetId || 'person') || 'person',
+      assetId: entry?.assetId || '',
+      imagePrompt: String(entryAsset?.name || entry?.label || 'Portrait of a character').trim() || 'Portrait of a character',
+      imageSize: 'hd',
+      imageOrientation: 'portrait',
+      imageSeed: Math.floor(Math.random() * 1000000000),
+      imageJobId: null,
+      sheetJobId: null,
+      sheetSeed: Math.floor(Math.random() * 1000000000),
+      imageWorkflow: 'z-image-turbo',
+      sheetWorkflow: 'multi-angles',
+    })
+  }
+
   useEffect(() => {
     if (audioDefaultMigratedRef.current) return
     audioDefaultMigratedRef.current = true
@@ -482,6 +556,32 @@ export default function MusicVideoEasyMode({
     () => assets.filter((asset) => asset?.type === 'image'),
     [assets]
   )
+  const peopleWizardSelectedAsset = useMemo(() => {
+    if (!peopleWizard?.assetId) return null
+    return imageAssets.find((asset) => asset?.id === peopleWizard.assetId) || null
+  }, [imageAssets, peopleWizard?.assetId])
+  const peopleWizardGeneratedImageAsset = useMemo(() => {
+    if (!peopleWizard?.sessionId) return null
+    const matches = imageAssets.filter((asset) => asset?.peopleWizard?.wizardId === peopleWizard.sessionId && asset?.peopleWizard?.stage === 'image')
+    return matches[0] || null
+  }, [imageAssets, peopleWizard?.sessionId])
+  const peopleWizardSheetAsset = useMemo(() => {
+    if (!peopleWizard?.sessionId) return null
+    const matches = imageAssets.filter((asset) => asset?.peopleWizard?.wizardId === peopleWizard.sessionId && asset?.peopleWizard?.stage === 'sheet')
+    return matches[0] || null
+  }, [imageAssets, peopleWizard?.sessionId])
+  const peopleWizardActiveJob = useMemo(() => {
+    if (!peopleWizard?.sessionId) return null
+    const busyJobs = generationQueue.filter((job) => (
+      job?.peopleWizard?.wizardId === peopleWizard.sessionId
+      && job.status !== 'done'
+      && job.status !== 'error'
+      && job.status !== 'failed'
+      && job.status !== 'cancelled'
+      && job.status !== 'canceled'
+    ))
+    return busyJobs[busyJobs.length - 1] || null
+  }, [generationQueue, peopleWizard?.sessionId])
   const flatShots = useMemo(() => flattenPlanShots(yoloActivePlan), [yoloActivePlan])
   const variantByShotKey = useMemo(() => {
     const map = new Map()
@@ -946,6 +1046,121 @@ export default function MusicVideoEasyMode({
     }
   }
 
+  const updatePeopleWizard = (updater) => {
+    setPeopleWizard((prev) => {
+      if (!prev) return prev
+      const next = typeof updater === 'function' ? updater(prev) : { ...prev, ...updater }
+      return next
+    })
+  }
+
+  const handleOpenPeopleWizard = (entry = null) => {
+    openPeopleWizard(entry)
+  }
+
+  const handlePeopleWizardFieldChange = (field, value) => {
+    updatePeopleWizard({ [field]: value })
+  }
+
+  const handlePeopleWizardSelectAsset = (assetId) => {
+    updatePeopleWizard({
+      assetId: assetId || '',
+      step: 'existing',
+    })
+  }
+
+  const handlePeopleWizardCreateImage = () => {
+    if (!peopleWizardGenerationEnabled) return
+    if (!queuePeopleWizardJob) return
+    const prompt = String(peopleWizard?.imagePrompt || '').trim() || `${peopleWizard?.name || 'Character'} portrait`
+    const resolution = resolvePeopleWizardImageResolution(peopleWizard?.imageSize, peopleWizard?.imageOrientation)
+    const job = queuePeopleWizardJob({
+      workflowId: 'z-image-turbo',
+      workflowLabel: 'Z Image Turbo',
+      prompt,
+      seed: peopleWizard?.imageSeed,
+      resolution,
+      needsImage: false,
+      peopleWizard: {
+        wizardId: peopleWizard?.sessionId,
+        stage: 'image',
+        entryId: peopleWizard?.entryId || null,
+        mode: peopleWizard?.mode || 'create',
+        assetPrefix: normalizeCastSlug(peopleWizard?.assetPrefix || peopleWizard?.slug || peopleWizard?.name || 'person') || 'person',
+        imageSize: peopleWizard?.imageSize || 'hd',
+        imageOrientation: peopleWizard?.imageOrientation || 'portrait',
+      },
+    })
+    updatePeopleWizard({
+      step: 'image',
+      imageJobId: job.id,
+    })
+  }
+
+  const handlePeopleWizardCreateSheet = () => {
+    if (!peopleWizardGenerationEnabled) return
+    if (!queuePeopleWizardJob) return
+    const baseAsset = peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset || null
+    const baseAssetId = baseAsset?.id || peopleWizard?.assetId || ''
+    if (!baseAssetId) return
+    const prompt = `${peopleWizard?.name || 'Character'} character sheet with front, side, 3/4, expressions, and wardrobe consistency.`
+    const inheritedAssetPrefix = inferPeopleWizardAssetPrefix(
+      baseAsset,
+      peopleWizard?.assetPrefix || peopleWizard?.slug || peopleWizard?.name || 'person'
+    ) || 'person'
+    const job = queuePeopleWizardJob({
+      workflowId: 'multi-angles',
+      workflowLabel: 'Multiple Angles (Characters)',
+      prompt,
+      seed: peopleWizard?.sheetSeed,
+      needsImage: true,
+      inputAssetId: baseAssetId,
+      peopleWizard: {
+        wizardId: peopleWizard?.sessionId,
+        stage: 'sheet',
+        entryId: peopleWizard?.entryId || null,
+        mode: peopleWizard?.mode || 'create',
+        baseAssetId,
+        autoCreateAngleSheet: true,
+        assetPrefix: inheritedAssetPrefix,
+      },
+    })
+    updatePeopleWizard({
+      step: 'sheet',
+      sheetJobId: job.id,
+    })
+  }
+
+  const handlePeopleWizardSave = () => {
+    if (!peopleWizard) return
+    const trimmedName = String(peopleWizard.name || '').trim()
+    const normalizedSlug = normalizeCastSlug(String(peopleWizard.slug || '').trim())
+    const finalAssetId = peopleWizard.step === 'sheet'
+      ? peopleWizardSheetAsset?.id || ''
+      : peopleWizard.step === 'image'
+        ? peopleWizardGeneratedImageAsset?.id || ''
+        : peopleWizardSelectedAsset?.id || peopleWizardSheetAsset?.id || peopleWizardGeneratedImageAsset?.id || ''
+    if (!trimmedName || !normalizedSlug || !finalAssetId) return
+    const nextEntry = {
+      id: peopleWizard.entryId || `cast-${Date.now()}`,
+      label: trimmedName,
+      slug: normalizedSlug,
+      assetId: finalAssetId,
+      role: String(peopleWizard.role || 'lead'),
+    }
+    setYoloMusicCast((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : []
+      const index = list.findIndex((entry) => entry?.id === nextEntry.id)
+      if (index >= 0) {
+        list[index] = nextEntry
+      } else {
+        list.push(nextEntry)
+      }
+      return list
+    })
+    closePeopleWizard()
+  }
+
   const renderStepHeader = (title, helper) => (
     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
       <div>
@@ -1157,6 +1372,439 @@ export default function MusicVideoEasyMode({
     </div>
   )
 
+  const renderPeopleWizardModal = () => {
+    if (!peopleWizard) return null
+
+    const wizardStep = peopleWizard.step || 'basic'
+    const trimmedName = String(peopleWizard.name || '').trim()
+    const normalizedSlug = normalizeCastSlug(String(peopleWizard.slug || '').trim())
+    const selectedPreviewAsset = wizardStep === 'sheet'
+      ? peopleWizardSheetAsset || null
+      : wizardStep === 'image'
+        ? peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset || null
+        : peopleWizardSelectedAsset || null
+    const peopleWizardSaveAssetId = wizardStep === 'sheet'
+      ? peopleWizardSheetAsset?.id || ''
+      : wizardStep === 'image'
+        ? peopleWizardGeneratedImageAsset?.id || ''
+        : peopleWizardSelectedAsset?.id || peopleWizardSheetAsset?.id || peopleWizardGeneratedImageAsset?.id || ''
+    const canSavePeopleWizard = Boolean(trimmedName && normalizedSlug && peopleWizardSaveAssetId && !peopleWizardActiveJob)
+    const previewTitle = selectedPreviewAsset?.name || (
+      wizardStep === 'sheet'
+        ? 'Waiting for character sheet'
+        : peopleWizard.name || 'No preview yet'
+    )
+    const previewEmptyText = wizardStep === 'sheet'
+      ? 'Character sheet preview will appear here after generation.'
+      : 'No preview available yet'
+    const wizardStepLabelMap = {
+      basic: 'Basic info',
+      existing: 'Existing image',
+      image: 'New image',
+      sheet: 'Character sheet',
+    }
+    const currentWizardStepLabel = wizardStepLabelMap[wizardStep] || 'Basic info'
+    const sheetBackStep = peopleWizardGeneratedImageAsset ? 'image' : 'existing'
+    const statusText = peopleWizardActiveJob
+      ? `${getWorkflowDisplayLabel(peopleWizardActiveJob.workflowId)} is ${peopleWizardActiveJob.status || 'running'}…`
+      : ''
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-3">
+        <button
+          type="button"
+          aria-label="Close people wizard overlay"
+          className="absolute inset-0 bg-black/70"
+          onClick={handlePeopleWizardBackdropClick}
+        />
+        <div className="relative z-10 flex max-h-[calc(100vh-6rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-sf-dark-700 bg-sf-dark-950 shadow-2xl">
+          <div className="flex items-center justify-between gap-3 border-b border-sf-dark-700 px-4 py-3">
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">People Wizard</div>
+              <h3 className="text-base font-semibold text-sf-text-primary">
+                {peopleWizard.mode === 'edit' ? 'Edit person' : 'Add person'}
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={closePeopleWizard}
+              className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+            >
+              Close
+            </button>
+          </div>
+
+          <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+            <div className="space-y-4 overflow-y-auto p-4">
+              <div className="inline-flex items-center rounded-full border border-sf-dark-700 bg-sf-dark-900/80 px-3 py-1 text-[10px] uppercase tracking-[0.14em] text-sf-text-secondary">
+                {currentWizardStepLabel}
+              </div>
+
+              <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div>
+                    <FieldLabel>Name *</FieldLabel>
+                    <input
+                      type="text"
+                      value={peopleWizard.name}
+                      required
+                      onChange={(event) => handlePeopleWizardFieldChange('name', event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      placeholder="Ava"
+                    />
+                  </div>
+                  <div>
+                    <FieldLabel>Slug *</FieldLabel>
+                    <input
+                      type="text"
+                      value={peopleWizard.slug}
+                      required
+                      onChange={(event) => handlePeopleWizardFieldChange('slug', event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      placeholder="ava"
+                    />
+                  </div>
+                  <div>
+                    <FieldLabel>Role</FieldLabel>
+                    <select
+                      value={peopleWizard.role}
+                      onChange={(event) => handlePeopleWizardFieldChange('role', event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                    >
+                      {MUSIC_VIDEO_CAST_ROLE_OPTIONS.map((role) => (
+                        <option key={role.id} value={role.id}>{role.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-3 max-w-md">
+                  <FieldLabel>Asset Prefix</FieldLabel>
+                  <input
+                    type="text"
+                    value={peopleWizard.assetPrefix}
+                    onChange={(event) => handlePeopleWizardFieldChange('assetPrefix', normalizeCastSlug(event.target.value) || '')}
+                    className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                    placeholder="ava_headshot"
+                  />
+                  <p className="mt-1 text-[10px] text-sf-text-muted">
+                    Used for the generated image and sheet file names.
+                  </p>
+                </div>
+                <div className="mt-3 text-[11px] text-sf-text-muted">
+                  Name and slug are required before you can save this person.
+                </div>
+                <div className="mt-4 text-xs text-sf-text-secondary">
+                  Pick a path to attach an image to this person.
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => updatePeopleWizard({ step: 'existing' })}
+                    className={`rounded-xl border p-4 text-left transition-colors ${
+                      peopleWizard.step === 'existing'
+                        ? 'border-sf-accent bg-sf-accent/10'
+                        : 'border-sf-dark-600 bg-sf-dark-950 hover:border-sf-dark-500'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
+                      <ImageIcon className="h-4 w-4 text-sf-accent" />
+                      Use existing image
+                    </div>
+                    <p className="mt-1 text-[11px] text-sf-text-muted">
+                      Pick an image already in the project and save immediately, or continue into a sheet.
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!peopleWizardGenerationEnabled) return
+                      updatePeopleWizard({ step: 'image' })
+                    }}
+                    disabled={!peopleWizardGenerationEnabled}
+                    className={`rounded-xl border p-4 text-left transition-colors ${
+                      peopleWizard.step === 'image'
+                        ? 'border-sf-accent bg-sf-accent/10'
+                        : 'border-sf-dark-600 bg-sf-dark-950 hover:border-sf-dark-500'
+                    } ${!peopleWizardGenerationEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
+                      <Wand2 className="h-4 w-4 text-sf-accent" />
+                      Create new image
+                    </div>
+                    <p className="mt-1 text-[11px] text-sf-text-muted">
+                      Generate a new portrait first, then optionally make a sheet from it.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              {wizardStep === 'existing' && (
+                <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-sf-text-primary">Existing image</div>
+                      <p className="mt-1 text-xs text-sf-text-secondary">
+                        Choose a project image and either save now or continue into character-sheet generation.
+                      </p>
+                    </div>
+                    <div className="text-[10px] text-sf-text-muted">
+                      {canUsePeopleWizardGeneration ? 'Sheet path enabled' : 'Sheet path unavailable'}
+                    </div>
+                  </div>
+                  <select
+                    value={peopleWizard.assetId || ''}
+                    onChange={(event) => handlePeopleWizardSelectAsset(event.target.value || '')}
+                    className="w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                  >
+                    <option value="">Select image asset</option>
+                    {imageAssets.map((asset) => (
+                      <option key={asset.id} value={asset.id}>{asset.name || asset.id}</option>
+                    ))}
+                  </select>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!peopleWizardGenerationEnabled || !peopleWizardSelectedAsset) return
+                        updatePeopleWizard({ step: 'sheet' })
+                      }}
+                      disabled={!peopleWizardGenerationEnabled || !peopleWizardSelectedAsset}
+                      className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Create character sheet
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wizardStep === 'image' && (
+                <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4 space-y-3">
+                  <div>
+                    <div className="text-sm font-semibold text-sf-text-primary">New image</div>
+                    <p className="mt-1 text-xs text-sf-text-secondary">
+                      Generate a new character image before moving to the sheet step.
+                    </p>
+                  </div>
+                  <div>
+                    <FieldLabel>Prompt</FieldLabel>
+                    <textarea
+                      value={peopleWizard.imagePrompt}
+                      onChange={(event) => handlePeopleWizardFieldChange('imagePrompt', event.target.value)}
+                      rows={4}
+                      className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      placeholder="Describe the character portrait."
+                    />
+                  </div>
+                  <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                    <div className="flex-1">
+                      <FieldLabel>Image Size</FieldLabel>
+                      <div className="mt-2 inline-flex rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-1">
+                        {PEOPLE_WIZARD_IMAGE_SIZE_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => handlePeopleWizardFieldChange('imageSize', option.id)}
+                            title={`${option.label} image size`}
+                            aria-label={`${option.label} image size`}
+                            className={`inline-flex h-10 min-w-[3.25rem] items-center justify-center rounded-lg border px-3 text-xs font-semibold transition-colors ${buttonClass(peopleWizard.imageSize === option.id)}`}
+                          >
+                            <span>{option.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <FieldLabel>Orientation</FieldLabel>
+                      <div className="mt-2 inline-flex rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-1">
+                        {PEOPLE_WIZARD_IMAGE_ORIENTATION_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => handlePeopleWizardFieldChange('imageOrientation', option.id)}
+                            title={`${option.label} orientation`}
+                            aria-label={`${option.label} orientation`}
+                            className={`inline-flex h-10 min-w-[5.75rem] items-center justify-center rounded-lg border px-3 text-xs font-semibold transition-colors ${buttonClass(peopleWizard.imageOrientation === option.id)}`}
+                          >
+                            <span>{option.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3 text-[11px] text-sf-text-secondary">
+                    <span className="text-sf-text-muted">Canvas:</span> {formatResolutionLabel(resolvePeopleWizardImageResolution(peopleWizard.imageSize, peopleWizard.imageOrientation))}
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                    <div>
+                      <FieldLabel>Seed</FieldLabel>
+                      <input
+                        type="number"
+                        value={peopleWizard.imageSeed}
+                        onChange={(event) => handlePeopleWizardFieldChange('imageSeed', Number(event.target.value))}
+                        className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={() => handlePeopleWizardFieldChange('imageSeed', Math.floor(Math.random() * 1000000000))}
+                        className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+                      >
+                        Randomize
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => updatePeopleWizard({ step: 'basic' })}
+                      className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePeopleWizardCreateImage}
+                      disabled={!peopleWizardGenerationEnabled || Boolean(peopleWizardActiveJob)}
+                      className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {peopleWizardActiveJob ? 'Generating…' : 'Generate'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!peopleWizardGeneratedImageAsset) return
+                        updatePeopleWizard({ step: 'sheet' })
+                      }}
+                      disabled={!peopleWizardGeneratedImageAsset}
+                      className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wizardStep === 'sheet' && (
+                <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4 space-y-3">
+                  <div>
+                    <div className="text-sm font-semibold text-sf-text-primary">Character sheet</div>
+                    <p className="mt-1 text-xs text-sf-text-secondary">
+                      Use the previous image as the reference, then turn it into a multi-angle character sheet.
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3 text-xs text-sf-text-secondary">
+                    <div><span className="text-sf-text-muted">Reference:</span> {peopleWizardGeneratedImageAsset?.name || peopleWizardSelectedAsset?.name || 'No reference selected yet'}</div>
+                    <div><span className="text-sf-text-muted">Sheet workflow:</span> Multiple Angles (Characters)</div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                    <div>
+                      <FieldLabel>Seed</FieldLabel>
+                      <input
+                        type="number"
+                        value={peopleWizard.sheetSeed}
+                        onChange={(event) => handlePeopleWizardFieldChange('sheetSeed', Number(event.target.value))}
+                        className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={() => handlePeopleWizardFieldChange('sheetSeed', Math.floor(Math.random() * 1000000000))}
+                        className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+                      >
+                        Randomize
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => updatePeopleWizard({ step: sheetBackStep })}
+                      className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePeopleWizardCreateSheet}
+                      disabled={!peopleWizardGenerationEnabled || Boolean(peopleWizardActiveJob) || !(peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset || peopleWizard.assetId)}
+                      className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {peopleWizardActiveJob ? 'Generating…' : 'Generate'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-sf-dark-700 bg-sf-dark-900/70 p-4 lg:border-l lg:border-t-0">
+              <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-sf-text-muted">Preview</div>
+                    <div className="text-sm font-semibold text-sf-text-primary">
+                      {previewTitle}
+                    </div>
+                  </div>
+                  {statusText && (
+                    <span className="rounded-full border border-sf-dark-600 bg-sf-dark-900 px-2 py-1 text-[10px] text-sf-text-muted">
+                      {statusText}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-3 aspect-[4/5] overflow-hidden rounded-lg border border-sf-dark-700 bg-sf-dark-950">
+                  {selectedPreviewAsset?.url ? (
+                    <img
+                      src={selectedPreviewAsset.url}
+                      alt={selectedPreviewAsset.name || 'People wizard preview'}
+                      className="h-full w-full object-contain"
+                    />
+                  ) : (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-sf-text-muted">
+                      <ImageIcon className="h-8 w-8 opacity-60" />
+                      <span>{previewEmptyText}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-2 rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-3 text-xs text-sf-text-secondary">
+                <div><span className="text-sf-text-muted">Mode:</span> {peopleWizard.mode === 'edit' ? 'Edit existing person' : 'Create person'}</div>
+                <div><span className="text-sf-text-muted">Name:</span> {peopleWizard.name || 'Untitled'}</div>
+                <div><span className="text-sf-text-muted">Slug:</span> {peopleWizard.slug || 'unset'}</div>
+                <div><span className="text-sf-text-muted">Role:</span> {peopleWizard.role || 'lead'}</div>
+                <div><span className="text-sf-text-muted">Path:</span> {wizardStep}</div>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-sf-dark-700 bg-sf-dark-950 px-4 py-3">
+            <div className="text-[11px] text-sf-text-muted">
+              Save is available when name, slug, and a final image or sheet are ready.
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={closePeopleWizard}
+                className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handlePeopleWizardSave}
+                disabled={!canSavePeopleWizard}
+                className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const renderPeopleStep = () => (
     <div className="space-y-4">
       {renderStepHeader(
@@ -1174,7 +1822,7 @@ export default function MusicVideoEasyMode({
           </div>
           <button
             type="button"
-            onClick={handleYoloMusicCastAdd}
+            onClick={() => handleOpenPeopleWizard(null)}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90"
           >
             <UserPlus className="h-4 w-4" />
@@ -1188,63 +1836,84 @@ export default function MusicVideoEasyMode({
               Add at least one person if the video has lip-sync performance shots.
             </div>
           )}
-          {(yoloMusicCast || []).map((entry, index) => (
-            <div key={entry.id || index} className="grid gap-2 rounded-lg border border-sf-dark-700 bg-sf-dark-950/50 p-3 lg:grid-cols-[1fr_1fr_1fr_auto]">
-              <div>
-                <FieldLabel>Name</FieldLabel>
-                <input
-                  type="text"
-                  value={entry?.label || ''}
-                  onChange={(event) => handleYoloMusicCastLabelChange(entry.id, event.target.value)}
-                  placeholder="Ava"
-                  className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                />
+          {(yoloMusicCast || []).map((entry, index) => {
+            const entryAsset = imageAssets.find((asset) => asset?.id === entry?.assetId) || null
+            const entryAssetUrl = getAssetUrl(entryAsset)
+            return (
+              <div key={entry.id || index} className="grid gap-2 rounded-lg border border-sf-dark-700 bg-sf-dark-950/50 p-3 lg:grid-cols-[1fr_1fr_1fr_auto_auto]">
+                <div>
+                  <FieldLabel>Name</FieldLabel>
+                  <input
+                    type="text"
+                    value={entry?.label || ''}
+                    onChange={(event) => handleYoloMusicCastLabelChange(entry.id, event.target.value)}
+                    placeholder="Ava"
+                    className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                  />
+                </div>
+                <div>
+                  <FieldLabel>Script Slug</FieldLabel>
+                  <input
+                    type="text"
+                    value={entry?.slug || ''}
+                    onChange={(event) => handleYoloMusicCastSlugChange(entry.id, event.target.value)}
+                    placeholder="ava"
+                    className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                  />
+                </div>
+                <div>
+                  <FieldLabel>Reference</FieldLabel>
+                  <div className="mt-1 flex min-h-[44px] items-center gap-3 rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-sf-dark-600 bg-sf-dark-900">
+                      {entryAssetUrl ? (
+                        <img
+                          src={entryAssetUrl}
+                          alt={entryAsset?.name || entry?.label || 'Reference image'}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <ImageIcon className="h-4 w-4 text-sf-text-muted" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1 truncate">
+                      {entryAsset?.name || 'No reference image'}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-end gap-2">
+                  <select
+                    value={entry?.role || 'lead'}
+                    onChange={(event) => handleYoloMusicCastRoleChange(entry.id, event.target.value)}
+                    className="w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                  >
+                    {MUSIC_VIDEO_CAST_ROLE_OPTIONS.map((role) => (
+                      <option key={role.id} value={role.id}>{role.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenPeopleWizard(entry)}
+                    className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-muted transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+                    title="Edit person"
+                  >
+                    <Edit3 className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleYoloMusicCastRemove(entry.id)}
+                    className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-muted transition-colors hover:border-red-400/60 hover:text-red-200"
+                  >
+                    Remove
+                  </button>
+                </div>
               </div>
-              <div>
-                <FieldLabel>Script Slug</FieldLabel>
-                <input
-                  type="text"
-                  value={entry?.slug || ''}
-                  onChange={(event) => handleYoloMusicCastSlugChange(entry.id, event.target.value)}
-                  placeholder="ava"
-                  className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                />
-              </div>
-              <div>
-                <FieldLabel>Reference</FieldLabel>
-                <select
-                  value={entry?.assetId || ''}
-                  onChange={(event) => handleYoloMusicCastAssetChange(entry.id, event.target.value || null)}
-                  className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                >
-                  <option value="">Select image asset</option>
-                  {imageAssets.map((asset) => (
-                    <option key={asset.id} value={asset.id}>{asset.name || asset.id}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-end gap-2">
-                <select
-                  value={entry?.role || 'lead'}
-                  onChange={(event) => handleYoloMusicCastRoleChange(entry.id, event.target.value)}
-                  className="w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                >
-                  {MUSIC_VIDEO_CAST_ROLE_OPTIONS.map((role) => (
-                    <option key={role.id} value={role.id}>{role.label}</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => handleYoloMusicCastRemove(entry.id)}
-                  className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-muted transition-colors hover:border-red-400/60 hover:text-red-200"
-                >
-                  Remove
-                </button>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
+      {renderPeopleWizardModal()}
     </div>
   )
 

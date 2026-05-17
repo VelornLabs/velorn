@@ -190,8 +190,16 @@ export const useAssetsStore = create(
    * Add a new generated asset
    */
   addAsset: (asset) => {
+    const buildUniqueAssetId = () => {
+      const prefix = `asset_${Date.now()}`
+      let candidate = `${prefix}_${Math.random().toString(36).slice(2, 8)}`
+      while (get().assets.some((entry) => entry?.id === candidate)) {
+        candidate = `${prefix}_${Math.random().toString(36).slice(2, 8)}`
+      }
+      return candidate
+    }
     const newAsset = {
-      id: Date.now().toString(),
+      id: buildUniqueAssetId(),
       createdAt: new Date().toISOString(),
       ...asset
     }
