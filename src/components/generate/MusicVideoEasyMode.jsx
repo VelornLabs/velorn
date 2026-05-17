@@ -1838,7 +1838,6 @@ export default function MusicVideoEasyMode({
           )}
           {(yoloMusicCast || []).map((entry, index) => {
             const entryAsset = imageAssets.find((asset) => asset?.id === entry?.assetId) || null
-            const entryAssetUrl = getAssetUrl(entryAsset)
             return (
               <div key={entry.id || index} className="grid gap-2 rounded-lg border border-sf-dark-700 bg-sf-dark-950/50 p-3 lg:grid-cols-[1fr_1fr_1fr_auto_auto]">
                 <div>
@@ -1863,21 +1862,8 @@ export default function MusicVideoEasyMode({
                 </div>
                 <div>
                   <FieldLabel>Reference</FieldLabel>
-                  <div className="mt-1 flex min-h-[44px] items-center gap-3 rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-sf-dark-600 bg-sf-dark-900">
-                      {entryAssetUrl ? (
-                        <img
-                          src={entryAssetUrl}
-                          alt={entryAsset?.name || entry?.label || 'Reference image'}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <ImageIcon className="h-4 w-4 text-sf-text-muted" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1 truncate">
-                      {entryAsset?.name || 'No reference image'}
-                    </div>
+                  <div className="mt-1 rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary">
+                    {entryAsset?.name || 'No reference image'}
                   </div>
                 </div>
                 <div className="flex items-end gap-2">
