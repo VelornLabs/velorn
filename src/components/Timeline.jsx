@@ -775,6 +775,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   const rippleHotkeyLabel = formatEditorHotkey(editorHotkeys[EDITOR_HOTKEY_IDS.TOGGLE_RIPPLE])
   const toggleClipEnabledHotkeyLabel = formatEditorHotkey(editorHotkeys[EDITOR_HOTKEY_IDS.TOGGLE_CLIP_ENABLED])
   const addTextClipHotkeyLabel = formatEditorHotkey(editorHotkeys[EDITOR_HOTKEY_IDS.ADD_TEXT_CLIP])
+  const addTransitionHotkeyLabel = formatEditorHotkey(editorHotkeys[EDITOR_HOTKEY_IDS.ADD_TRANSITION])
   const isMacPlatform = typeof navigator !== 'undefined' && /mac|iphone|ipad/i.test(navigator.platform || '')
   const copyHotkeyLabel = `${isMacPlatform ? 'Cmd' : 'Ctrl'}+C`
   const pasteHotkeyLabel = `${isMacPlatform ? 'Cmd' : 'Ctrl'}+V`
@@ -885,16 +886,26 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       .filter(Boolean),
     [clips, clipContextSelectionIds]
   )
-  const clipContextSelectedOnSameTrack = useMemo(() => {
-    if (!clipContextMenu) return []
-    const contextClip = clips.find((clip) => clip.id === clipContextMenu.clipId)
-    if (!contextClip) return []
-    return clipContextSelectionClips.filter((clip) => clip.trackId === contextClip.trackId)
-  }, [clips, clipContextMenu, clipContextSelectionClips])
+  const selectedTransitionTargetClips = useMemo(() => (
+    clipContextMenu ? clipContextSelectionClips : selectedClipIds
+      .map((clipId) => clips.find((clip) => clip.id === clipId))
+      .filter(Boolean)
+  ), [clips, clipContextMenu, clipContextSelectionClips, selectedClipIds])
+  const selectedTransitionClipsOnSameTrack = useMemo(() => {
+    if (selectedTransitionTargetClips.length < 2) return []
+    const trackId = selectedTransitionTargetClips[0]?.trackId
+    if (!trackId) return []
+    return selectedTransitionTargetClips.filter((clip) => clip.trackId === trackId)
+  }, [selectedTransitionTargetClips])
   const canAddTransitionBetweenClips = useCallback((clipA, clipB) => {
     if (!clipA || !clipB) return false
     if (clipA.trackId !== clipB.trackId) return false
-    if (!doSegmentsOverlap(clipA, clipB)) return false
+    const clipAEnd = Number(clipA.startTime) + Number(clipA.duration)
+    const clipBStart = Number(clipB.startTime)
+    const gap = clipBStart - clipAEnd
+    const frameDuration = 1 / FRAME_RATE
+    const tolerance = Math.min(0.001, frameDuration / 10)
+    if (gap > tolerance) return false
     const maxDuration = useTimelineStore.getState().getMaxTransitionDurationForAlignment(clipA.id, clipB.id, 'center')
     return maxDuration >= 1 / FRAME_RATE
   }, [])
@@ -931,9 +942,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   )
   const clipContextCanUnlink = clipContextLinkedGroupIds.length > 0
   const clipContextCanAddTransition = useMemo(() => {
-    if (clipContextSelectedOnSameTrack.length < 2) return false
+    if (selectedTransitionClipsOnSameTrack.length < 2) return false
 
-    const sorted = [...clipContextSelectedOnSameTrack].sort((a, b) => a.startTime - b.startTime)
+    const sorted = [...selectedTransitionClipsOnSameTrack].sort((a, b) => a.startTime - b.startTime)
     for (let i = 0; i < sorted.length - 1; i += 1) {
       if (canAddTransitionBetweenClips(sorted[i], sorted[i + 1])) {
         return true
@@ -941,7 +952,34 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     }
 
     return false
-  }, [canAddTransitionBetweenClips, clipContextSelectedOnSameTrack])
+  }, [canAddTransitionBetweenClips, selectedTransitionClipsOnSameTrack])
+  const addTransitionFromSelectedClips = useCallback(() => {
+    const selectionByTrack = new Map()
+    for (const clip of selectedTransitionTargetClips) {
+      const trackId = String(clip.trackId || '')
+      if (!selectionByTrack.has(trackId)) selectionByTrack.set(trackId, [])
+      selectionByTrack.get(trackId).push(clip)
+    }
+
+    let addedAny = false
+    for (const clipsOnTrack of selectionByTrack.values()) {
+      const sorted = [...clipsOnTrack].sort((a, b) => a.startTime - b.startTime)
+      for (let i = 0; i < sorted.length - 1; i += 1) {
+        const clipA = sorted[i]
+        const clipB = sorted[i + 1]
+        if (canAddTransitionBetweenClips(clipA, clipB)) {
+          const durationSeconds = Math.max(1 / FRAME_RATE, defaultTransitionFrames / FRAME_RATE)
+          addTransition(clipA.id, clipB.id, 'dissolve', durationSeconds)
+          addedAny = true
+        }
+      }
+    }
+
+    if (addedAny) {
+      setClipContextMenu(null)
+    }
+    return addedAny
+  }, [addTransition, canAddTransitionBetweenClips, defaultTransitionFrames, selectedTransitionTargetClips])
   const clipContextShouldEnable = useMemo(
     () => clipContextSelectionClips.length > 0 && clipContextSelectionClips.every((clip) => !isClipEnabled(clip)),
     [clipContextSelectionClips, isClipEnabled]
@@ -2223,7 +2261,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           setActiveTimelineTool(TIMELINE_TOOLS.SELECT)
           return
         }
-        if (key === 't') {
+        if (key === 't' && !e.shiftKey) {
           e.preventDefault()
           setActiveTimelineTool(TIMELINE_TOOLS.TRIM)
           return
@@ -2275,6 +2313,13 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       if (matchEditorHotkey(e, editorHotkeys[EDITOR_HOTKEY_IDS.ADD_TEXT_CLIP])) {
         const newClip = addTextClipAtPlayhead()
         if (newClip) {
+          e.preventDefault()
+        }
+        return
+      }
+
+      if (matchEditorHotkey(e, editorHotkeys[EDITOR_HOTKEY_IDS.ADD_TRANSITION])) {
+        if (addTransitionFromSelectedClips()) {
           e.preventDefault()
         }
         return
@@ -6366,32 +6411,12 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           </button>
           {clipContextCanAddTransition && (
             <button
-              onClick={() => {
-                const selectionByTrack = new Map()
-                for (const clip of clipContextSelectionClips) {
-                  const trackId = String(clip.trackId || '')
-                  if (!selectionByTrack.has(trackId)) selectionByTrack.set(trackId, [])
-                  selectionByTrack.get(trackId).push(clip)
-                }
-
-                for (const clipsOnTrack of selectionByTrack.values()) {
-                  const sorted = [...clipsOnTrack].sort((a, b) => a.startTime - b.startTime)
-                  for (let i = 0; i < sorted.length - 1; i += 1) {
-                    const clipA = sorted[i]
-                    const clipB = sorted[i + 1]
-                    if (canAddTransitionBetweenClips(clipA, clipB)) {
-                      const durationSeconds = Math.max(1 / FRAME_RATE, defaultTransitionFrames / FRAME_RATE)
-                      addTransition(clipA.id, clipB.id, 'dissolve', durationSeconds)
-                    }
-                  }
-                }
-                setClipContextMenu(null)
-              }}
+              onClick={() => addTransitionFromSelectedClips()}
               className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors"
-              title="Add a default transition between the selected touching clips"
+              title={`Add a default transition between the selected touching clips (${addTransitionHotkeyLabel})`}
             >
               <span>Add transition</span>
-              <span className="ml-auto text-sf-text-muted text-[10px]">{defaultTransitionFrames}f</span>
+              <span className="ml-auto text-sf-text-muted text-[10px]">{addTransitionHotkeyLabel}</span>
             </button>
           )}
           <button
