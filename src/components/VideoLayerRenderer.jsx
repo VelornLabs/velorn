@@ -187,10 +187,10 @@ const AdjustmentSvgFilter = memo(function AdjustmentSvgFilter({ filterId, settin
  */
 function getScaledSpriteStyle(spriteData, time) {
   if (!spriteData || !spriteData.frames || !spriteData.url) return null
-  
+
   const framePos = getSpriteFramePosition(spriteData, time)
   if (!framePos) return null
-  
+
   // Just return the original sprite style - we'll handle scaling differently
   return {
     spriteUrl: spriteData.url,
@@ -348,7 +348,7 @@ function useDiskCacheLoader(clip) {
   const currentProjectHandle = useProjectStore(state => state.currentProjectHandle)
   const setCacheUrl = useTimelineStore(state => state.setCacheUrl)
   const [loadedUrl, setLoadedUrl] = useState(null)
-  
+
   useEffect(() => {
     // Only proceed if:
     // 1. We have a clip with a cachePath (saved to disk)
@@ -357,47 +357,47 @@ function useDiskCacheLoader(clip) {
     // 4. We're not already loading this clip
     if (!clip || !clip.cachePath || !currentProjectHandle) return
     if (loadingCacheFromDisk.has(clip.id)) return
-    
+
     // Check if we already have a valid loaded URL for this clip
     const existingUrl = diskCacheUrls.get(clip.id)
     if (existingUrl) {
       setLoadedUrl(existingUrl)
       return
     }
-    
+
     // Check if the current cacheUrl looks valid (not a stale blob URL)
     // After page refresh, blob URLs become invalid
     if (clip.cacheUrl && !clip.cacheUrl.startsWith('blob:')) {
       // Non-blob URL, probably fine
       return
     }
-    
+
     // If cacheStatus is 'cached' but we don't have a verified URL, we need to reload
     // This happens after page refresh when blob URLs become invalid
     const needsReload = clip.cachePath && (
-      !clip.cacheUrl || 
+      !clip.cacheUrl ||
       (clip.cacheStatus === 'cached' && clip.cacheUrl?.startsWith('blob:') && !diskCacheUrls.has(clip.id))
     )
-    
+
     if (!needsReload) return
-    
+
     // Mark as loading to prevent duplicate loads
     loadingCacheFromDisk.add(clip.id)
-    
+
     // Load from disk
     const loadFromDisk = async () => {
       try {
         console.log(`Loading render cache from disk for clip ${clip.id}: ${clip.cachePath}`)
         const result = await loadRenderCache(currentProjectHandle, clip.cachePath)
-        
+
         if (result && result.url) {
           // Store in our local map for future reference
           diskCacheUrls.set(clip.id, result.url)
-          
+
           // Update the clip's cacheUrl in the store
           setCacheUrl(clip.id, result.url, clip.cachePath)
           setLoadedUrl(result.url)
-          
+
           console.log(`Successfully loaded render cache for clip ${clip.id}`)
         } else {
           console.warn(`Failed to load render cache for clip ${clip.id}: no URL returned`)
@@ -408,10 +408,10 @@ function useDiskCacheLoader(clip) {
         loadingCacheFromDisk.delete(clip.id)
       }
     }
-    
+
     loadFromDisk()
   }, [clip?.id, clip?.cachePath, clip?.cacheUrl, clip?.cacheStatus, currentProjectHandle, setCacheUrl])
-  
+
   return loadedUrl
 }
 
@@ -1010,7 +1010,7 @@ const MaskedVideoCanvas = memo(function MaskedVideoCanvas({
 
 /**
  * VideoLayerRenderer - Renders video layers with preloading for seamless playback
- * 
+ *
  * This component handles:
  * - Preloading upcoming clips before they're needed
  * - Seamless transitions between adjacent clips (no black flicker)
@@ -1082,12 +1082,12 @@ function resolvePlaybackUrl(clip, getAssetById, options = {}) {
 /**
  * Single video layer component - renders one video with transforms
  */
-const VideoLayer = memo(function VideoLayer({ 
-  clip, 
-  track, 
-  layerIndex, 
+const VideoLayer = memo(function VideoLayer({
+  clip,
+  track,
+  layerIndex,
   totalLayers,
-  playheadPosition, 
+  playheadPosition,
   isPlaying,
   buildVideoTransform,
   getClipTransform,
@@ -1111,10 +1111,10 @@ const VideoLayer = memo(function VideoLayer({
   const lastClipUrlRef = useRef(null) // Track src changes for hold frame
   const diagEventTimesRef = useRef({})
   const attemptedPlaybackFallbackRef = useRef(false)
-  
+
   // Get the current valid URL (may be cached render or original)
   const { url: clipUrl, isCached: isCachedRender } = useClipUrl(clip)
-  
+
   // Get sprite data for this clip's asset
   const getAssetSprite = useAssetsStore(state => state.getAssetSprite)
   const getAssetById = useAssetsStore(state => state.getAssetById)
@@ -1125,9 +1125,9 @@ const VideoLayer = memo(function VideoLayer({
   // Feature flag: Enable/disable sprite sheet scrubbing for real-time preview
   // Set to false to disable sprite scrubbing (will use video seeking instead)
   const ENABLE_SPRITE_SCRUBBING = false
-  
+
   const useSpriteScrub = ENABLE_SPRITE_SCRUBBING && !!spriteData?.url && !isCachedRender
-  
+
   // Mask effect selection. Video clips use the canvas compositor (see
   // MaskedVideoCanvas + the big comment on maskFramePreloadCache for why).
   // useMaskEffectStyle returns `{}` for video clips, so the legacy style
@@ -1139,7 +1139,7 @@ const VideoLayer = memo(function VideoLayer({
   // (ENABLE_SPRITE_SCRUBBING = false), so this is also an inert `{}` for
   // video clips. Kept for parity with the existing spread sites.
   const spriteMaskStyles = useMaskEffectStyle(clip, playheadPosition, false)
-  
+
   // Calculate clip-relative time for keyframe evaluation
   const clipTime = playheadPosition - (clip?.startTime || 0)
   const rawTimeScale = clip?.sourceTimeScale || (clip?.timelineFps && clip?.sourceFps
@@ -1154,7 +1154,7 @@ const VideoLayer = memo(function VideoLayer({
   const trimEnd = Number.isFinite(rawTrimEnd) ? rawTrimEnd : trimStart
   const minTime = Math.min(trimStart, trimEnd)
   const maxTime = Math.max(trimStart, trimEnd)
-  
+
   // Calculate source time for sprite frame lookup
   const sourceTime = reverse
     ? trimEnd - clipTime * timeScale
@@ -1227,7 +1227,7 @@ const VideoLayer = memo(function VideoLayer({
     logLayerDiag,
     markPlaybackCacheBroken,
   ])
-  
+
   // Get animated transform (with keyframes applied) and fold in any
   // camera-shake effect offsets so handheld motion survives export/preview
   // parity.
@@ -1236,7 +1236,7 @@ const VideoLayer = memo(function VideoLayer({
     const base = getAnimatedTransform(clip, clipTime)
     return applyEffectsToTransform(base, clip?.effects, clipTime)
   }, [clip, clipTime])
-  
+
   // Get sprite frame info for current time (memoized to prevent recalculations)
   const spriteInfo = useMemo(() => {
     if (!spriteData || !spriteData.url) return null
@@ -1313,7 +1313,7 @@ const VideoLayer = memo(function VideoLayer({
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     return true
   }, [])
-  
+
   // Attach the cache's video element to our container so we show the preloaded element at cuts (no black flash)
   useEffect(() => {
     if (!clipUrl || !clip?.id || !containerRef.current) return
@@ -1569,10 +1569,10 @@ const VideoLayer = memo(function VideoLayer({
       if (showSprite) setShowSprite(false)
       return
     }
-    
+
     const playheadDelta = Math.abs(playheadPosition - lastPlayheadRef.current)
     lastPlayheadRef.current = playheadPosition
-    
+
     // If playhead moved significantly while paused, we're scrubbing
     if (playheadDelta > 0.01) {
       isScrubbing.current = true
@@ -1580,7 +1580,7 @@ const VideoLayer = memo(function VideoLayer({
       if (useSpriteScrub && !showSprite) {
         setShowSprite(true)
       }
-      
+
       // Reset scrubbing flag after user stops for 150ms
       if (seekDebounceRef.current) {
         clearTimeout(seekDebounceRef.current)
@@ -1600,7 +1600,7 @@ const VideoLayer = memo(function VideoLayer({
         }
       }, 150)
     }
-    
+
     return () => {
       if (seekDebounceRef.current) {
         clearTimeout(seekDebounceRef.current)
@@ -1622,10 +1622,10 @@ const VideoLayer = memo(function VideoLayer({
     const sourceTime = reverse
       ? trimEnd - clipTime * timeScale
       : trimStart + clipTime * timeScale
-    
+
     // Clamp sourceTime to valid range
     const clampedTime = Math.max(minTime, Math.min(sourceTime, maxTime - 0.01)) // Stay slightly before end
-    
+
     // Calculate time difference
     const timeDiff = Math.abs(video.currentTime - clampedTime)
     const debugPlayback = (
@@ -1670,7 +1670,7 @@ const VideoLayer = memo(function VideoLayer({
       const boundaryEpsilon = 0.03
       const nearForwardEnd = !reverse && clampedTime >= (maxTime - boundaryEpsilon)
       const nearReverseStart = reverse && clampedTime <= (minTime + boundaryEpsilon)
-      
+
       if (reverse) {
         // Reverse playback: seek-only (no native reverse playback)
         if (timeDiff > 0.02) {
@@ -1710,7 +1710,7 @@ const VideoLayer = memo(function VideoLayer({
           video.currentTime = clampedTime
           lastSyncTime.current = playheadPosition
         }
-        
+
         // Ensure playback rate matches clip time scale
         const playbackSpeed = Math.max(0.01, Math.abs(timeScale))
         if (Number.isFinite(playbackSpeed) && Math.abs(video.playbackRate - playbackSpeed) > 0.001) {
@@ -1763,7 +1763,7 @@ const VideoLayer = memo(function VideoLayer({
           lastSeekTime.current = now
         }
       }
-      
+
       // Ensure video is paused
       if (!video.paused) {
         video.pause()
@@ -1780,7 +1780,7 @@ const VideoLayer = memo(function VideoLayer({
         video.currentTime = clampedTime
         lastSyncTime.current = playheadPosition
       }
-      
+
       // Ensure video is paused
       if (!video.paused) {
         video.pause()
@@ -1973,7 +1973,7 @@ const VideoLayer = memo(function VideoLayer({
           style={getCenteredMediaFitStyle()}
         />
       </div>
-      
+
       {/* Sprite overlay (shown during fast scrubbing) */}
       {showSprite && spriteOverlayStyle && !maskActive && (
         <div
@@ -2000,10 +2000,10 @@ const VideoLayer = memo(function VideoLayer({
 /**
  * Image layer component - renders static image with transforms
  */
-const ImageLayer = memo(function ImageLayer({ 
-  clip, 
-  track, 
-  layerIndex, 
+const ImageLayer = memo(function ImageLayer({
+  clip,
+  track,
+  layerIndex,
   totalLayers,
   playheadPosition,
   buildVideoTransform,
@@ -2014,21 +2014,21 @@ const ImageLayer = memo(function ImageLayer({
   const [glslRendered, setGlslRendered] = useState(false)
   // Get the current valid URL (may be cached render or original)
   const { url: clipUrl, isCached: isCachedRender } = useClipUrl(clip)
-  
+
   // Get mask effect styles if any (skip if using cached render)
   const maskStyles = useMaskEffectStyle(clip, playheadPosition, isCachedRender)
-  
+
   if (!clipUrl) return null
 
   // Calculate clip-relative time for keyframe evaluation
   const clipTime = playheadPosition - (clip?.startTime || 0)
-  
+
   // Get animated transform (with keyframes applied) + camera shake offsets
   const animatedTransform = useMemo(() => {
     const base = getAnimatedTransform(clip, clipTime)
     return applyEffectsToTransform(base, clip?.effects, clipTime)
   }, [clip, clipTime])
-  
+
   const transformStyle = buildVideoTransform(animatedTransform)
   const adjustmentSettings = useMemo(() => (
     normalizeAdjustmentSettings(getAnimatedAdjustmentSettings(clip, clipTime) || clip?.adjustments || {})
@@ -2165,16 +2165,16 @@ const TextLayer = memo(function TextLayer({
   previewScale = 1,
 }) {
   if (!clip || clip.type !== 'text') return null
-  
+
   // Calculate clip-relative time for keyframe evaluation
   const clipTime = playheadPosition - (clip?.startTime || 0)
-  
+
   // Get animated transform (with keyframes applied) + camera shake offsets
   const animatedTransform = useMemo(() => {
     const base = getAnimatedTransform(clip, clipTime)
     return applyEffectsToTransform(base, clip?.effects, clipTime)
   }, [clip, clipTime])
-  
+
   const transformStyle = buildVideoTransform(animatedTransform)
   const adjustmentSettings = useMemo(() => (
     normalizeAdjustmentSettings(getAnimatedAdjustmentSettings(clip, clipTime) || clip?.adjustments || {})
@@ -2224,7 +2224,7 @@ const TextLayer = memo(function TextLayer({
   const scaledShadowOffsetX = (textProps.shadowOffsetX || 2) * safePreviewScale
   const scaledShadowOffsetY = (textProps.shadowOffsetY || 2) * safePreviewScale
   const scaledShadowBlur = (textProps.shadowBlur || 4) * safePreviewScale
-  
+
   // Build text styles from textProperties
   const textStyle = {
     fontFamily: textProps.fontFamily || 'Inter',
@@ -2236,18 +2236,18 @@ const TextLayer = memo(function TextLayer({
     letterSpacing: textProps.letterSpacing ? `${textProps.letterSpacing * safePreviewScale}px` : 'normal',
     lineHeight: textProps.lineHeight || 1.2,
     // Text stroke
-    WebkitTextStroke: textProps.strokeWidth > 0 
+    WebkitTextStroke: textProps.strokeWidth > 0
       ? `${scaledStrokeWidth}px ${textProps.strokeColor || '#000000'}`
       : 'none',
     paintOrder: 'stroke fill',
     // Text shadow
-    textShadow: textProps.shadow 
+    textShadow: textProps.shadow
       ? `${scaledShadowOffsetX}px ${scaledShadowOffsetY}px ${scaledShadowBlur}px ${textProps.shadowColor || 'rgba(0,0,0,0.5)'}`
       : 'none',
   }
-  
+
   // Background style
-  const backgroundStyle = textProps.backgroundOpacity > 0 
+  const backgroundStyle = textProps.backgroundOpacity > 0
     ? {
         backgroundColor: textProps.backgroundColor || '#000000',
         opacity: textProps.backgroundOpacity / 100,
@@ -2255,7 +2255,7 @@ const TextLayer = memo(function TextLayer({
         borderRadius: `${8 * safePreviewScale}px`,
       }
     : {}
-  
+
   // Vertical alignment
   const getVerticalAlign = () => {
     switch (textProps.verticalAlign) {
@@ -2296,11 +2296,11 @@ const TextLayer = memo(function TextLayer({
           filter: combinedFilter,
         }}
       >
-        <div 
+        <div
           className="relative"
           style={backgroundStyle}
         >
-          <span 
+          <span
             style={textStyle}
             className="whitespace-pre-wrap"
           >
@@ -2490,10 +2490,10 @@ function VideoLayerRenderer({
   const lastPreloadPosition = useRef(0)
   const lastTopClipRef = useRef(null)
   const lastActiveSetRef = useRef('')
-  
+
   // Track preloaded clip URL keys per clipId to avoid stale-preload bugs.
   const preloadedClips = useRef(new Map())
-  
+
   const {
     clips,
     tracks,
@@ -2514,62 +2514,99 @@ function VideoLayerRenderer({
   // keyed to `resolvePlaybackUrl`. Included in dep arrays below.
   const useProxyPlaybackForAssets = useTimelineStore(state => state.useProxyPlaybackForAssets)
 
-  // Keep videoCache's LRU cap close to the number of visible video layers.
-  // The timeline now loads only clips visible at the playhead; broad lookahead
-  // preloading is too memory-heavy for long music-video timelines.
+  // Keep videoCache's LRU cap in sync with the timeline's layer count.
+  // At the old hardcoded cap (12), a 4-layer timeline would constantly
+  // evict recently-preloaded elements to make room for the next preload,
+  // causing black frames at cuts whose downstream <video> had already
+  // been dropped from the pool. The formula gives each video track a
+  // generous slot budget (active clip + ~2s preload window + LRU grace),
+  // with a floor of 32 so single-layer timelines also benefit.
   const videoTrackCount = useMemo(
     () => tracks.filter(t => t.type === 'video').length,
     [tracks]
   )
   useEffect(() => {
-    const target = Math.max(4, videoTrackCount * 2)
+    const target = Math.max(32, videoTrackCount * 12)
     videoCache.setMaxCacheSize(target)
   }, [videoTrackCount])
-  
+
   /**
    * Get clips that should be preloaded based on current position
    */
-  const getClipsToPreload = useCallback((currentTime, includeNext = false) => {
-    const videoTrackIds = new Set(
-      tracks
-        .filter((track) => track.type === 'video' && track.enabled !== false)
-        .map((track) => track.id)
-    )
-    const activeClips = clips.filter((clip) => {
-      if (!videoTrackIds.has(clip.trackId) || clip.type !== 'video' || clip.enabled === false) return false
-      const clipStart = Number(clip.startTime) || 0
-      const clipEnd = clipStart + (Number(clip.duration) || 0)
-      return currentTime >= clipStart && currentTime < clipEnd
-    })
-    if (!includeNext) return activeClips
-
-    const nextByTrack = new Map()
+  const getClipsToPreload = useCallback((currentTime) => {
     const isForward = playbackRate >= 0
     const lookaheadEnd = currentTime + (isForward ? PRELOAD_LOOKAHEAD : -PRELOAD_LOOKAHEAD)
-    for (const clip of clips) {
-      if (!videoTrackIds.has(clip.trackId) || clip.type !== 'video' || clip.enabled === false) continue
-      const clipStart = Number(clip.startTime) || 0
-      const clipEnd = clipStart + (Number(clip.duration) || 0)
-      const isCandidate = isForward
-        ? clipStart > currentTime && clipStart <= lookaheadEnd
-        : clipEnd < currentTime && clipEnd >= lookaheadEnd
-      if (!isCandidate) continue
-      const current = nextByTrack.get(clip.trackId)
-      if (!current) {
-        nextByTrack.set(clip.trackId, clip)
-        continue
+
+    // Find video clips that:
+    // 1. Are currently active
+    // 2. Will become active within lookahead window
+    const videoTracks = tracks.filter(t => t.type === 'video')
+    const videoTrackIds = new Set(videoTracks.map(t => t.id))
+
+    const relevantClips = clips.filter(clip => {
+      if (!videoTrackIds.has(clip.trackId) || clip.type !== 'video' || clip.enabled === false) return false
+
+      const clipEnd = clip.startTime + clip.duration
+
+      // Currently active
+      if (currentTime >= clip.startTime && currentTime < clipEnd) {
+        return true
       }
-      const currentStart = Number(current.startTime) || 0
-      const currentEnd = currentStart + (Number(current.duration) || 0)
-      if (isForward ? clipStart < currentStart : clipEnd > currentEnd) {
-        nextByTrack.set(clip.trackId, clip)
+
+      // Will become active soon (forward)
+      if (isForward && clip.startTime > currentTime && clip.startTime <= lookaheadEnd) {
+        return true
+      }
+
+      // Will become active soon (reverse)
+      if (!isForward && clipEnd < currentTime && clipEnd >= lookaheadEnd) {
+        return true
+      }
+
+      return false
+    })
+
+    return relevantClips
+  }, [clips, tracks, playbackRate])
+
+  const getTransitionClipsToPreload = useCallback((currentTime) => {
+    const state = useTimelineStore.getState()
+    const transitionInfo = state.getTransitionAtTime(currentTime)
+    const ids = new Set()
+
+    if (transitionInfo && transitionInfo.transition?.kind === 'between') {
+      for (const id of getTransitionClipIds(transitionInfo)) {
+        ids.add(id)
       }
     }
 
-    return [...new Map(
-      [...activeClips, ...nextByTrack.values()].map((clip) => [clip.id, clip])
-    ).values()]
-  }, [clips, tracks, playbackRate])
+    const nextTransition = state.transitions
+      .filter((transition) => transition?.kind === 'between')
+      .map((transition) => {
+        const clipA = state.clips.find((clip) => clip.id === transition.clipAId)
+        const clipB = state.clips.find((clip) => clip.id === transition.clipBId)
+        if (!clipA || !clipB || clipA.trackId !== clipB.trackId) return null
+        const split = normalizeTransitionSplit(transition?.settings?.split, transition?.settings?.alignment || 'center')
+        const duration = Math.max(0, Number(transition.duration) || 0)
+        const editPoint = Number.isFinite(Number(transition.editPoint))
+          ? Number(transition.editPoint)
+          : (clipA.startTime + clipA.duration)
+        const start = editPoint - (duration * split.clipA)
+        const end = editPoint + (duration * split.clipB)
+        return { transition, clipA, clipB, start, end }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.start - b.start)
+      .find((entry) => entry.start >= currentTime && entry.start - currentTime <= TRANSITION_PREROLL_LOOKAHEAD)
+
+    if (nextTransition) {
+      ids.add(nextTransition.clipA.id)
+      ids.add(nextTransition.clipB.id)
+    }
+
+    if (ids.size === 0) return []
+    return clips.filter((clip) => ids.has(clip.id) && clip.type === 'video' && clip.enabled !== false)
+  }, [clips])
 
   const getTransitionClipsToPreload = useCallback((currentTime) => {
     const state = useTimelineStore.getState()
@@ -2668,7 +2705,7 @@ function VideoLayerRenderer({
       ...getClipsToPreload(playheadPosition, isPlaying),
       ...getTransitionClipsToPreload(playheadPosition),
     ]
-    
+
     clipsToPreload.forEach(clip => {
       const resolvedUrl = resolvePlaybackUrl(clip, getAssetById)
       if (!resolvedUrl) {
@@ -2705,18 +2742,17 @@ function VideoLayerRenderer({
         if (Math.abs((cachedVideo.currentTime || 0) - prerollTargetTime) > 0.03) {
           cachedVideo.currentTime = prerollTargetTime
         }
+        scheduleCutFrameCapture(clip, resolvedUrl, cachedVideo, targetTime)
       }
       preloadedClips.current.set(clip.id, preloadKey)
     })
-    
+
     lastPreloadPosition.current = playheadPosition
-  }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
-  }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
   }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
 
   // Auto-render cache for clips with mask effects (smooth playback)
   useEffect(() => {
-    const candidates = getClipsToPreload(playheadPosition, false)
+    const candidates = getClipsToPreload(playheadPosition)
     candidates.forEach(clip => {
       void autoCacheClip(clip)
     })
@@ -2726,7 +2762,7 @@ function VideoLayerRenderer({
   const activeLayerClips = useMemo(() => {
     const allActiveClips = getActiveClipsAtTime(playheadPosition)
     const videoClips = allActiveClips.filter(({ track }) => track.type === 'video')
-    
+
     // Sort by track index (higher index = lower in stack, first rendered)
     // Video 1 on top of Video 2
     const sortedClips = [...videoClips].sort((a, b) => {
@@ -2781,7 +2817,7 @@ function VideoLayerRenderer({
       preloadTimerRef.current = setInterval(() => {
         preloadUpcoming()
       }, 250)
-      
+
       // Initial preload
       preloadUpcoming()
     } else {
@@ -2793,7 +2829,7 @@ function VideoLayerRenderer({
       // But first ensure current active clips are properly positioned to avoid black frames
       const allActiveClips = getActiveClipsAtTime(playheadPosition)
       const videoClips = allActiveClips.filter(({ track }) => track.type === 'video')
-      
+
       // Pre-seek all active videos before pausing to prevent black frames
       videoClips.forEach(({ clip }) => {
         const resolvedUrl = resolvePlaybackUrl(clip, getAssetById)
@@ -2820,7 +2856,7 @@ function VideoLayerRenderer({
           cachedVideo.currentTime = clampedTime
         }
       })
-      
+
       // Small delay before pausing to ensure seeks complete
       pauseTimerRef.current = setTimeout(() => {
         videoCache.pauseAll()
@@ -2856,7 +2892,7 @@ function VideoLayerRenderer({
         })
       )
     }, 5000)
-    
+
     return () => clearInterval(cleanup)
   }, [clips, playheadPosition])
 
@@ -2866,21 +2902,21 @@ function VideoLayerRenderer({
   const getTransitionStyleForClip = (clip) => {
     if (!transitionInfo || !clip) return null
     if (typeof getTransitionStyles !== 'function') return null
-    
+
     if (transitionInfo.transition?.kind === 'edge') {
       if (transitionInfo.clip?.id !== clip.id) return null
       const isOutgoing = transitionInfo.edge === 'out'
       return getTransitionStyles(transitionInfo, isOutgoing)
     }
-    
+
     if (transitionInfo.clipA?.id === clip.id) {
       return getTransitionStyles(transitionInfo, true)
     }
-    
+
     if (transitionInfo.clipB?.id === clip.id) {
       return getTransitionStyles(transitionInfo, false)
     }
-    
+
     return null
   }
 
@@ -2895,7 +2931,7 @@ function VideoLayerRenderer({
     }
     return styleMap
   }, [allMediaClips, transitionInfo, getTransitionStyles])
-  
+
   // Per-clip lower-layer compositing. Active clips are ordered bottom -> top,
   // so the shared culler scans from the top and drops anything underneath a
   // clip that either fully covers the frame in Auto mode or has compositing

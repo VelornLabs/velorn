@@ -18,7 +18,6 @@ import useViewportClampedPosition from '../hooks/useViewportClampedPosition'
 import { getAllKeyframeTimes } from '../utils/keyframes'
 import { TRANSITION_TYPES, TRANSITION_DURATIONS, FRAME_RATE } from '../constants/transitions'
 import { getAudioClipFadeValues } from '../utils/audioClipFades'
-import { getOrCreateImageThumbnail } from '../services/imageThumbnailCache'
 import { getEffectTypeDefinition } from '../utils/effects'
 import { isTextEditingElement } from '../utils/keyboardFocus'
 import {
@@ -47,8 +46,6 @@ const MARQUEE_AUTO_SCROLL_STEP_PX = 24
 const PLAYHEAD_SCRUB_AUTO_SCROLL_EDGE_PX = 40
 const PLAYHEAD_SCRUB_AUTO_SCROLL_MAX_STEP_PX = 28
 const MIN_INTERACTIVE_CLIP_WIDTH_PX = 24
-const TIMELINE_VIDEO_THUMB_WIDTH_PX = 90
-const MAX_TIMELINE_VIDEO_THUMBNAILS = 12
 
 // Resolve-style audio track/waveform colors
 const AUDIO_TRACK_BG = '#2d4038'
@@ -340,126 +337,6 @@ function CachedTimelineImage({ asset, src, projectHandle, alt, className, style,
   )
 }
 
-function getThumbnailStaggerMs(value) {
-  const input = String(value || '')
-  let hash = 0
-  for (let i = 0; i < input.length; i += 1) {
-    hash = ((hash << 5) - hash) + input.charCodeAt(i)
-    hash |= 0
-  }
-  return Math.abs(hash) % 240
-}
-
-function CachedTimelineImage({ asset, src, projectHandle, alt, className, style, draggable = false, suspend = false }) {
-  const sourceUrl = src || asset?.url || asset?.thumbnailUrl || asset?.path || asset?.absolutePath || ''
-  const [thumbnailUrl, setThumbnailUrl] = useState(null)
-
-  useEffect(() => {
-    let cancelled = false
-    if (!sourceUrl) {
-      setThumbnailUrl(null)
-      return () => { cancelled = true }
-    }
-    if (suspend) return () => { cancelled = true }
-
-    if (!asset || asset.type !== 'image') {
-      setThumbnailUrl(sourceUrl)
-      return () => { cancelled = true }
-    }
-
-    getOrCreateImageThumbnail(projectHandle, asset, { width: 360, height: 204, quality: 78 })
-      .then((url) => {
-        if (!cancelled && url) setThumbnailUrl(url)
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [asset, projectHandle, sourceUrl, suspend])
-
-  if (!sourceUrl || !thumbnailUrl) return null
-
-  return (
-    <img
-      src={thumbnailUrl}
-      alt={alt || ''}
-      className={className}
-      style={style}
-      draggable={draggable}
-      loading="lazy"
-      decoding="async"
-      onContextMenu={(e) => e.preventDefault()}
-    />
-  )
-}
-
-function LazyTimelineThumbnail({
-  asset,
-  src,
-  projectHandle,
-  alt,
-  className,
-  style,
-  draggable = false,
-  loadDelayMs = 0,
-}) {
-  const containerRef = useRef(null)
-  const [shouldLoad, setShouldLoad] = useState(false)
-  const [isReady, setIsReady] = useState(false)
-
-  useEffect(() => {
-    if (shouldLoad) return undefined
-    const element = containerRef.current
-    if (!element) return undefined
-    if (typeof IntersectionObserver === 'undefined') {
-      setShouldLoad(true)
-      return undefined
-    }
-
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
-        setShouldLoad(true)
-        observer.disconnect()
-      }
-    }, { root: null, rootMargin: '120px 0px', threshold: 0.01 })
-
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [shouldLoad])
-
-  useEffect(() => {
-    let cancelled = false
-    if (!shouldLoad) {
-      setIsReady(false)
-      return () => { cancelled = true }
-    }
-
-    const delay = Math.max(0, Math.round(Number(loadDelayMs) || 0))
-    const timer = window.setTimeout(() => {
-      if (!cancelled) setIsReady(true)
-    }, delay)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [loadDelayMs, shouldLoad])
-
-  return (
-    <div ref={containerRef} className="w-full h-full">
-      {isReady ? (
-        <CachedTimelineImage
-          asset={asset}
-          src={src}
-          projectHandle={projectHandle}
-          alt={alt}
-          className={className}
-          style={style}
-          draggable={draggable}
-        />
-      ) : null}
-    </div>
-  )
-}
-
 function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
   const [waveform, setWaveform] = useState(null)
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
@@ -602,7 +479,7 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
   )
 }
 
-function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) {
+function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   const timelineRef = useRef(null)
   const trackHeadersRef = useRef(null)
   const trackContentRef = useRef(null)
@@ -621,7 +498,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     }
     pendingAssetDragOverRef.current = null
   }, [])
-  
+
   // Track headers width (resizable) — default wide enough to read labels; persisted
   const TRACK_HEADERS_MIN = 100
   const TRACK_HEADERS_MAX = 400
@@ -681,7 +558,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     for (let i = 0; i < index; i++) y += getTrackHeight(tracksList[i])
     return y
   }
-  
+
   // Trimming state
   const [trimState, setTrimState] = useState(null) // { clipId, edge: 'left' | 'right', startX, startValue }
   const [slipState, setSlipState] = useState(null) // { clipId, startX, startTrimStart, startTrimEnd, timeScale, minSourceDelta, maxSourceDelta }
@@ -722,18 +599,18 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     const parsed = Number(raw)
     return Number.isFinite(parsed) && parsed > 0 ? parsed : Infinity
   }
-  
+
   // Scrubbing state (for dragging playhead)
   const [isScrubbing, setIsScrubbing] = useState(false)
-  
+
   // Clip dragging state (moving clips within timeline)
   const [clipDragState, setClipDragState] = useState(null) // { clipId, startX, originalStartTime, originalTrackId }
   const clipDragHistorySavedRef = useRef(false)
-  
+
   // Marquee selection state
   const [marqueeState, setMarqueeState] = useState(null) // { startX, startY, currentX, currentY, scrollLeft, scrollTop }
   const [pendingLanePointerState, setPendingLanePointerState] = useState(null) // Click on empty lane; becomes gap selection or marquee after drag threshold
-  
+
   // Transition type menu state
   const [transitionMenu, setTransitionMenu] = useState(null) // { x, y, clipA, clipB }
   const [defaultTransitionFrames, setDefaultTransitionFrames] = useState(() => {
@@ -744,24 +621,24 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     } catch (_) {}
     return TRANSITION_DURATIONS[1]?.frames || 12
   })
-  
+
   // Transition drag/drop state
   const [transitionDropTarget, setTransitionDropTarget] = useState(null) // `${clipAId}-${clipBId}`
-  
+
   // Transition dragging state
   const [transitionDragState, setTransitionDragState] = useState(null) // { transitionId, startX, startDuration }
-  
+
   // Roll edit state (dragging between two adjacent clips)
   const [rollEditState, setRollEditState] = useState(null) // { clipAId, clipBId, startX, originalEditPoint, clipAOriginalDuration, clipBOriginalStart, clipBOriginalDuration, clipAOriginalTrimStart, clipASourceDuration, clipATimeScale, clipBOriginalTrimStart, clipBOriginalTrimEnd, clipBTimeScale }
-  
+
   // Spacebar panning state
   const [isPanning, setIsPanning] = useState(false)
   const [panStart, setPanStart] = useState(null) // { x, y, scrollLeft, scrollTop }
   const [isSpaceHeld, setIsSpaceHeld] = useState(false)
   const spacePanningKeyDownRef = useRef(false)
-  
+
   // Transition types and durations are defined in constants/transitions
-  
+
   // Clip context menu state
   const [clipContextMenu, setClipContextMenu] = useState(null) // { x, y, clipId }
   const [maskSubmenuOpen, setMaskSubmenuOpen] = useState(false)
@@ -777,11 +654,11 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     clipContextMenuAnchor,
     clipContextMenuRef,
   )
-  
+
   // Track rename state
   const [renamingTrackId, setRenamingTrackId] = useState(null)
   const [renameValue, setRenameValue] = useState('')
-  
+
   // Track reorder drag state
   const [trackDragState, setTrackDragState] = useState(null) // { trackId, trackType, startY, originalIndex }
   const [trackDropTarget, setTrackDropTarget] = useState(null) // index within type group
@@ -799,13 +676,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   const [durationDeltaError, setDurationDeltaError] = useState('')
   const durationDeltaInputRef = useRef(null)
   const [editorHotkeys, setEditorHotkeys] = useState(DEFAULT_EDITOR_HOTKEYS)
-  const [timelineViewport, setTimelineViewport] = useState({
-    start: 0,
-    end: 0,
-    scrollLeft: 0,
-    clientWidth: 0,
-  })
-  
+
   // Timeline store
   const {
     duration,
@@ -1280,7 +1151,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       title: 'Drag inside a video/audio clip to slip source timing without moving it.',
     },
   ]), [])
-  
+
   const edgeTransitionsByClipId = useMemo(() => {
     const map = new Map()
     transitions
@@ -1293,7 +1164,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       })
     return map
   }, [transitions])
-  
+
   // Snapping hook
   const { snapClipPosition, snapTrim, pixelsPerSecond: snapPixelsPerSecond } = useSnapping()
 
@@ -1319,7 +1190,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   const availableMasks = useMemo(() => {
     return assets.filter(a => a.type === 'mask')
   }, [assets])
-  
+
   // Helper to get clip URL - uses asset store URL if available (handles refreshed blob URLs)
   const getClipUrl = (clip) => {
     if (!clip) return null
@@ -1417,7 +1288,6 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       </div>
     )
   }
-
   const handleAddAdjustmentLayer = () => {
     const activeVideoTrack = tracks.find(t => t.id === activeTrackId && t.type === 'video' && !t.locked)
     const fallbackVideoTrack = tracks.find(t => t.type === 'video' && !t.locked)
@@ -1531,15 +1401,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
 
     if (clip?.type === 'image') {
       return (
-        <CachedTimelineImage
-          projectHandle={currentProjectHandle}
-          asset={clip?.assetId ? assetsById.get(clip.assetId) : null}
+        <img
           src={url}
           alt={clip?.name || 'Transition preview'}
           className="absolute inset-0 w-full h-full object-cover opacity-80 pointer-events-none"
           style={{ objectPosition }}
           draggable={false}
-          suspend={timelineIsPlaying}
+          onContextMenu={(e) => e.preventDefault()}
         />
       )
     }
@@ -1609,52 +1477,6 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
 
   // Pixels per second based on zoom
   const pixelsPerSecond = zoom / 5
-
-  const updateTimelineViewport = useCallback(() => {
-    const el = timelineRef.current
-    if (!el || !Number.isFinite(Number(pixelsPerSecond)) || pixelsPerSecond <= 0) return
-
-    const scrollLeft = Math.max(0, Number(el.scrollLeft) || 0)
-    const clientWidth = Math.max(0, Number(el.clientWidth) || 0)
-    const start = scrollLeft / pixelsPerSecond
-    const end = (scrollLeft + clientWidth) / pixelsPerSecond
-
-    setTimelineViewport((prev) => (
-      prev.start === start
-      && prev.end === end
-      && prev.scrollLeft === scrollLeft
-      && prev.clientWidth === clientWidth
-        ? prev
-        : {
-            start,
-            end,
-            scrollLeft,
-            clientWidth,
-          }
-    ))
-  }, [pixelsPerSecond])
-
-  useEffect(() => {
-    updateTimelineViewport()
-    const el = timelineRef.current
-    if (!el) return undefined
-
-    const handleUpdate = () => updateTimelineViewport()
-    el.addEventListener('scroll', handleUpdate, { passive: true })
-    window.addEventListener('resize', handleUpdate)
-
-    let resizeObserver = null
-    if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(handleUpdate)
-      resizeObserver.observe(el)
-    }
-
-    return () => {
-      el.removeEventListener('scroll', handleUpdate)
-      window.removeEventListener('resize', handleUpdate)
-      resizeObserver?.disconnect()
-    }
-  }, [updateTimelineViewport])
 
   // Zoom with playhead as pivot so the timeline zooms into/out of the playhead position
   const applyZoomWithPlayheadPivot = useCallback((newZoomValue) => {
@@ -1877,7 +1699,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         scrollTop: trackContentRef.current?.scrollTop || 0,
         addToSelection,
       })
-      
+
       // Clear selection unless Shift is held (to add to selection)
       if (!addToSelection) {
         clearSelection()
@@ -2016,14 +1838,14 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // Handle track headers resize
   useEffect(() => {
     if (!isResizingHeaders) return
-    
+
     const handleMouseMove = (e) => {
       const deltaX = e.clientX - resizeStartX.current
       const newWidth = Math.max(TRACK_HEADERS_MIN, Math.min(TRACK_HEADERS_MAX, resizeStartWidth.current + deltaX))
       lastTrackHeadersWidthRef.current = newWidth
       setTrackHeadersWidth(newWidth)
     }
-    
+
     const handleMouseUp = () => {
       const widthToSave = lastTrackHeadersWidthRef.current
       if (widthToSave != null) {
@@ -2033,13 +1855,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       }
       setIsResizingHeaders(false)
     }
-    
+
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-    
+
     document.body.style.cursor = 'ew-resize'
     document.body.style.userSelect = 'none'
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
@@ -2051,7 +1873,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // Handle marquee selection mouse move and mouse up
   useEffect(() => {
     if (!marqueeState) return
-    
+
     const handleMouseMove = (e) => {
       if (!timelineRef.current) return
       const timelineRect = timelineRef.current.getBoundingClientRect()
@@ -2082,40 +1904,40 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         scrollTop: trackContentRef.current?.scrollTop || 0,
       }))
     }
-    
+
     const handleMouseUp = () => {
       if (!marqueeState || !timelineRef.current) {
         setMarqueeState(null)
         return
       }
-      
+
       // Calculate marquee bounds in timeline coordinates
       const left = Math.min(marqueeState.startX, marqueeState.currentX)
       const right = Math.max(marqueeState.startX, marqueeState.currentX)
       const top = Math.min(marqueeState.startY, marqueeState.currentY)
       const bottom = Math.max(marqueeState.startY, marqueeState.currentY)
-      
+
       // Convert to time range
       const startTime = left / pixelsPerSecond
       const endTime = right / pixelsPerSecond
-      
+
       // Account for ruler height and track positions
       const rulerHeight = 20
       const audioSectionHeight = 20
       const totalVideoTracksHeight = videoTracks.reduce((sum, track) => sum + getTrackHeight(track), 0)
-      
+
       // Find clips that intersect with the marquee
       const clipsToSelect = []
-      
+
       clips.forEach(clip => {
         const clipEnd = clip.startTime + clip.duration
         if (!(clip.startTime >= endTime || clipEnd <= startTime)) {
           const track = tracks.find(t => t.id === clip.trackId)
           if (!track) return
-          
+
           let clipY = rulerHeight
           const trackType = track.type
-          
+
           if (trackType === 'video') {
             const videoTrackIndex = videoTracks.findIndex(t => t.id === clip.trackId)
             clipY += getTrackOffset(videoTracks, videoTrackIndex)
@@ -2131,7 +1953,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           }
         }
       })
-      
+
       // Select the intersecting clips
       if (clipsToSelect.length > 0) {
         if (marqueeState.addToSelection) {
@@ -2141,13 +1963,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           useTimelineStore.getState().selectClips(clipsToSelect)
         }
       }
-      
+
       setMarqueeState(null)
     }
-    
+
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
@@ -2543,8 +2365,6 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
 
   // Keyboard shortcuts
   useEffect(() => {
-    if (!isActive) return undefined
-
     const handleKeyDown = (e) => {
       const key = String(e.key || '').toLowerCase()
 
@@ -2671,14 +2491,14 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         }
         return
       }
-      
+
       // Configurable editor hotkeys
       if (matchEditorHotkey(e, editorHotkeys[EDITOR_HOTKEY_IDS.TOGGLE_SNAPPING])) {
         e.preventDefault()
         toggleSnapping()
         return
       }
-      
+
       if (matchEditorHotkey(e, editorHotkeys[EDITOR_HOTKEY_IDS.TOGGLE_RIPPLE])) {
         e.preventDefault()
         toggleRippleEdit()
@@ -2714,7 +2534,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         jumpPlayheadToMarker(1)
         return
       }
-      
+
       // Delete/Backspace - delete selected clips or gaps, otherwise selected transition/marker
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (canDeleteCurrentSelection) {
@@ -2722,13 +2542,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           handleDeleteCurrentSelection()
         }
       }
-      
+
       // Escape - clear selection
       if (e.key === 'Escape') {
         clearSelection()
         selectMarker(null)
       }
-      
+
       // Ctrl/Cmd + A - select all clips
       if ((e.ctrlKey || e.metaKey) && key === 'a') {
         e.preventDefault()
@@ -2763,7 +2583,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           handlePasteAtPlayhead()
         }
       }
-      
+
       if (matchEditorHotkey(e, editorHotkeys[EDITOR_HOTKEY_IDS.SPLIT_ALL])) {
         e.preventDefault()
         splitAllTracksAtPlayhead()
@@ -2782,13 +2602,10 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [toggleSnapping, toggleRippleEdit, addMarker, selectedClipIds, selectedGap, selectedTransitionId, selectedMarkerId, removeSelectedClips, rippleDeleteSelectedClips, rippleDeleteSelectedGap, removeTransition, removeMarker, clearSelection, selectMarker, clips, handleUndoAction, handleRedoAction, activeTrackId, playheadPosition, saveToHistory, resizeClip, addClip, addTextClip, addTextClipAtPlayhead, addAdjustmentClip, updateClipTrim, assets, timelineFps, copySelectedClips, pasteClipsAtPlayhead, copiedClips, selectClipsFromPlayheadToEnd, selectClipsFromTimelineStartToPlayhead, splitClipAtTime, splitAllTracksAtPlayhead, openMoveOffsetDialog, openDurationDeltaDialog, moveOffsetDialogOpen, durationDeltaDialogOpen, editorHotkeys, linkSelectedClips, unlinkSelectedClips, lockSyncClips, unlockSyncLockedClips, toggleClipSelectionEnabled, applyZoomWithPlayheadPivot, zoom, rippleEditMode, activeTrackClipAtPlayhead, canDeleteCurrentSelection, handleCopySelection, handleDeleteCurrentSelection, handlePasteAtPlayhead, handleSplitActiveTrackAtPlayhead, jumpPlayheadToClipBoundary, jumpPlayheadToMarker, clipContextSyncEligibleClips, clipContextSyncLockByClipId, clipContextAllSyncLocked])
   }, [toggleSnapping, toggleRippleEdit, addMarker, selectedClipIds, selectedGap, selectedTransitionId, selectedMarkerId, removeSelectedClips, rippleDeleteSelectedClips, rippleDeleteSelectedGap, removeTransition, removeMarker, clearSelection, selectMarker, clips, handleUndoAction, handleRedoAction, activeTrackId, playheadPosition, saveToHistory, resizeClip, addClip, addTextClip, addTextClipAtPlayhead, addAdjustmentClip, updateClipTrim, assets, timelineFps, copySelectedClips, pasteClipsAtPlayhead, copiedClips, selectClipsFromPlayheadToEnd, selectClipsFromTimelineStartToPlayhead, splitClipAtTime, splitAllTracksAtPlayhead, openMoveOffsetDialog, openDurationDeltaDialog, moveOffsetDialogOpen, durationDeltaDialogOpen, editorHotkeys, linkSelectedClips, unlinkSelectedClips, lockSyncClips, unlockSyncLockedClips, toggleClipSelectionEnabled, applyZoomWithPlayheadPivot, zoom, rippleEditMode, activeTrackClipAtPlayhead, canDeleteCurrentSelection, handleCopySelection, handleDeleteCurrentSelection, handlePasteAtPlayhead, handleSplitActiveTrackAtPlayhead, jumpPlayheadToClipBoundary, jumpPlayheadToMarker, clipContextSyncEligibleClips, clipContextSyncLockByClipId, clipContextAllSyncLocked, isActive])
 
   // Spacebar panning key state (dedicated listeners so keyup cannot get "stuck")
   useEffect(() => {
-    if (!isActive) return undefined
-
     const resetSpacePanningState = () => {
       spacePanningKeyDownRef.current = false
       setIsSpaceHeld(false)
@@ -2828,33 +2645,33 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       window.removeEventListener('blur', handleWindowBlur)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [isActive])
+  }, [])
 
   // Handle spacebar panning
   useEffect(() => {
     if (!isPanning || !panStart) return
-    
+
     const handleMouseMove = (e) => {
       if (!timelineRef.current || !trackContentRef.current) return
-      
+
       const deltaX = e.clientX - panStart.x
       const deltaY = e.clientY - panStart.y
-      
+
       // Scroll the timeline horizontally
       timelineRef.current.scrollLeft = panStart.scrollLeft - deltaX
-      
+
       // Scroll the track content vertically (synced with headers)
       trackContentRef.current.scrollTop = panStart.scrollTop - deltaY
     }
-    
+
     const handleMouseUp = () => {
       setIsPanning(false)
       setPanStart(null)
     }
-    
+
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
@@ -2915,32 +2732,32 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // cannot perform their own vertical wheel scroll before we remap it.
   const handleWheel = useCallback((e) => {
     if (!timelineRef.current) return
-    
+
     // Ctrl/Cmd + Scroll = Zoom (centered on mouse position)
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault()
-      
+
       // Zoom delta - scroll up = zoom in, scroll down = zoom out
       const zoomDelta = e.deltaY > 0 ? -20 : 20
-      
+
       // Get mouse position relative to timeline for zoom centering
       const rect = timelineRef.current.getBoundingClientRect()
       const mouseX = e.clientX - rect.left
       const scrollLeft = timelineRef.current.scrollLeft
-      
+
       // Calculate time position under mouse before zoom
       const timeAtMouse = (mouseX + scrollLeft) / pixelsPerSecond
-      
+
       // Apply zoom
       const newZoom = Math.max(20, Math.min(2000, zoom + zoomDelta))
       setZoom(newZoom)
-      
+
       // Calculate new pixels per second
       const newPixelsPerSecond = newZoom / 5
-      
+
       // Adjust scroll to keep the time position under the mouse
       const newScrollLeft = (timeAtMouse * newPixelsPerSecond) - mouseX
-      
+
       // Apply scroll adjustment after a tiny delay to let the zoom render
       requestAnimationFrame(() => {
         if (timelineRef.current) {
@@ -3262,7 +3079,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     setDropTarget(null)
     setAssetDropPreview(null)
     clearActiveSnap()
-    
+
     const assetIds = getDraggedAssetIds(e.dataTransfer)
     if (!Array.isArray(assetIds) || assetIds.length === 0) return
 
@@ -3339,24 +3156,24 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // Handle clip selection (supports multi-select with Shift/Ctrl)
   const handleClipClick = (e, clip) => {
     e.stopPropagation()
-    
+
     // Switch to timeline preview mode when clicking on a clip
     // Also pause asset playback if it's playing
     setPreviewMode('timeline')
     if (assetIsPlaying) {
       setAssetIsPlaying(false)
     }
-    
+
     // Multi-select support
     const isShiftHeld = e.shiftKey
     const isCtrlHeld = e.ctrlKey || e.metaKey // metaKey for Mac Cmd
-    
+
     selectClip(clip.id, {
       addToSelection: isShiftHeld,
       toggleSelection: isCtrlHeld
     })
-    
-    // Note: We don't move the playhead when selecting clips - 
+
+    // Note: We don't move the playhead when selecting clips -
     // the playhead stays where it is and the user can scrub independently.
   }
 
@@ -3378,12 +3195,12 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   const handleClipContextMenu = (e, clip) => {
     e.preventDefault()
     e.stopPropagation()
-    
+
     // Select the clip if not already selected
     if (!selectedClipIds.includes(clip.id)) {
       selectClip(clip.id)
     }
-    
+
     setClipContextMenu({
       x: e.clientX,
       y: e.clientY,
@@ -3431,7 +3248,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   const handleContextMenuAction = (action) => {
     const clip = clips.find(c => c.id === clipContextMenu?.clipId)
     if (!clip) return
-    
+
     switch (action) {
       case 'add-mask':
         if (!(clip.type === 'video' || clip.type === 'image')) break
@@ -3530,7 +3347,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         handleSplitClipAtPlayhead(clip)
         break
     }
-    
+
     setMaskSubmenuOpen(false)
     setClipContextMenu(null)
   }
@@ -3562,7 +3379,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   const handleTrimStart = (e, clipId, edge) => {
     e.stopPropagation()
     e.preventDefault()
-    
+
     const clip = clips.find(c => c.id === clipId)
     if (!clip) return
     if (isSyncLockedClip(clip)) {
@@ -3578,10 +3395,10 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     if (slipState) setSlipState(null)
     if (fadeDragState) setFadeDragState(null)
     clearActiveSnap()
-    
+
     // Save to history before trimming starts
     saveToHistory()
-    
+
     const timeScale = getTimeScale(clip)
     const startTrimEnd = clip.trimEnd ?? clip.sourceDuration ?? ((clip.trimStart || 0) + clip.duration * timeScale)
 
@@ -3594,7 +3411,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       startTrimStart: clip.trimStart || 0,
       startTrimEnd: startTrimEnd,
     })
-    
+
     selectClip(clipId)
   }
 
@@ -3657,41 +3474,41 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // Handle trim move (mousemove when trimming)
   useEffect(() => {
     if (!trimState) return
-    
+
     const handleMouseMove = (e) => {
       const deltaX = e.clientX - trimState.startX
       const deltaTime = deltaX / pixelsPerSecond
-      
+
       const clip = clips.find(c => c.id === trimState.clipId)
       if (!clip) return
       const timeScale = getTimeScale(clip)
-      
+
       // Find neighboring clips on the same track to prevent trimming past them
       const trackClips = clips.filter(c => c.trackId === clip.trackId && c.id !== clip.id)
-      
+
       // Find the clip immediately to the left (ends before or at our start)
       const leftNeighbor = trackClips
         .filter(c => c.startTime + c.duration <= clip.startTime + 0.01) // Small tolerance
         .sort((a, b) => (b.startTime + b.duration) - (a.startTime + a.duration))[0]
-      
+
       // Find the clip immediately to the right (starts at or after our end)
       const rightNeighbor = trackClips
         .filter(c => c.startTime >= clip.startTime + clip.duration - 0.01) // Small tolerance
         .sort((a, b) => a.startTime - b.startTime)[0]
-      
+
       if (trimState.edge === 'left') {
         // Trimming from left: adjust startTime, duration, and trimStart
         // When extending the head (dragging left), we're revealing more footage from the start
         // When shortening the head (dragging right), we're hiding footage from the start
-        
+
         let newStartTime = Math.max(0, trimState.startTime + deltaTime)
         const minClipDurationSec = 1 / (timelineFps || 24)
         const maxStartTime = trimState.startTime + trimState.startDuration - minClipDurationSec
         newStartTime = Math.min(newStartTime, maxStartTime)
-        
+
         // Calculate how much we're trying to change the head position
         let timeDelta = newStartTime - trimState.startTime
-        
+
         // Calculate what the new trimStart would be
         // If timeDelta is negative (extending left), trimStart decreases
         // trimStart can't go below 0 (can't reveal footage before the source start)
@@ -3703,7 +3520,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           timeDelta = newStartTime - trimState.startTime
           newTrimStart = 0
         }
-        
+
         // Don't trim past the left neighbor's end
         if (leftNeighbor) {
           const leftNeighborEnd = leftNeighbor.startTime + leftNeighbor.duration
@@ -3713,24 +3530,24 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
             newTrimStart = trimState.startTrimStart + timeDelta * timeScale
           }
         }
-        
+
         // Apply snapping to the new start time
         const snapResult = snapTrim(newStartTime, trimState.clipId)
         if (snapResult.snapped) {
           // Only apply snap if it doesn't violate constraints
           let snappedTime = snapResult.time
-          
+
           // Check source footage constraint
           const snappedTrimStart = trimState.startTrimStart + (snappedTime - trimState.startTime) * timeScale
           if (snappedTrimStart < 0 && !isInfinitelyExtendableClip(clip)) {
             snappedTime = trimState.startTime - (trimState.startTrimStart / timeScale)
           }
-          
+
           // Check neighbor constraint
           if (leftNeighbor) {
             snappedTime = Math.max(snappedTime, leftNeighbor.startTime + leftNeighbor.duration)
           }
-          
+
           if (snappedTime === snapResult.time) {
             newStartTime = snapResult.time
             timeDelta = newStartTime - trimState.startTime
@@ -3742,10 +3559,10 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         } else {
           clearActiveSnap()
         }
-        
+
         // Calculate the new duration
         const newDuration = trimState.startDuration - timeDelta
-        
+
         // Update the clip with all trim-related properties at once
         updateClipTrim(trimState.clipId, {
           startTime: newStartTime,
@@ -3755,12 +3572,12 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       } else {
         // Trimming from right: adjust duration and trimEnd
         let newEndTime = trimState.startTime + trimState.startDuration + deltaTime
-        
+
         // Don't trim past the right neighbor's start
         if (rightNeighbor) {
           newEndTime = Math.min(newEndTime, rightNeighbor.startTime)
         }
-        
+
         // Apply snapping to the new end time
         const snapResult = snapTrim(newEndTime, trimState.clipId)
         if (snapResult.snapped) {
@@ -3778,10 +3595,10 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         } else {
           clearActiveSnap()
         }
-        
+
         const minClipDurationSec = 1 / (timelineFps || 24)
         let newDuration = Math.max(minClipDurationSec, newEndTime - trimState.startTime)
-        
+
         // Don't exceed source duration if we have it
         // The maximum duration is limited by how much source footage is available
         // from the current trimStart to the end of the source
@@ -3801,28 +3618,28 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           const maxPossibleDuration = (sourceDuration - currentTrimStart) / timeScale
           newDuration = Math.max(0.01, Math.min(newDuration, maxPossibleDuration))
         }
-        
+
         // Calculate the new trimEnd (where in the source footage the clip ends)
         const unclampedTrimEnd = currentTrimStart + (newDuration * timeScale)
         const newTrimEnd = Number.isFinite(sourceDuration)
           ? Math.min(unclampedTrimEnd, sourceDuration)
           : unclampedTrimEnd
-        
+
         updateClipTrim(trimState.clipId, {
           duration: newDuration,
           trimEnd: newTrimEnd
         })
       }
     }
-    
+
     const handleMouseUp = () => {
       setTrimState(null)
       clearActiveSnap()
     }
-    
+
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
@@ -3835,7 +3652,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     if (trimState || slipState || fadeDragState || e.target.closest('[data-trim-handle]') || e.target.closest('[data-fade-handle]') || e.target.closest('button')) {
       return
     }
-    
+
     e.stopPropagation()
     e.preventDefault()
 
@@ -3901,7 +3718,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       }
       return
     }
-    
+
     // Store original positions of all selected clips for multi-drag.
     // If the clicked clip belongs to a linked group, include its linked mates so sync is preserved.
     const clipIdsToMove = [...new Set(
@@ -3911,7 +3728,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     )]
     const clipsToMove = clips.filter((candidate) => clipIdsToMove.includes(candidate.id))
     clipDragHistorySavedRef.current = false
-    
+
     setClipDragState({
       clipId: clip.id,
       startX: e.clientX,
@@ -3929,7 +3746,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         family: getClipTrackFamily(c),
       }))
     })
-    
+
     // Only change selection if this clip isn't already selected
     if (!selectedClipIds.includes(clip.id) && !hasSelectionModifier) {
       selectClip(clip.id)
@@ -3976,14 +3793,14 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // Supports moving multiple selected clips together
   useEffect(() => {
     if (!clipDragState || trimState || slipState) return
-    
+
     const handleMouseMove = (e) => {
       const deltaX = e.clientX - clipDragState.startX
       const deltaY = e.clientY - clipDragState.startY
-      
+
       // Check if we've moved enough to consider it a drag (prevents accidental drags on click)
       const hasMoved = clipDragState.hasMoved || Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3
-      
+
       if (!hasMoved) {
         setClipDragState(prev => ({ ...prev, hasMoved: false }))
         return
@@ -3994,20 +3811,20 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         saveToHistory()
         clipDragHistorySavedRef.current = true
       }
-      
+
       setClipDragState(prev => ({ ...prev, hasMoved: true }))
-      
+
       const clip = clips.find(c => c.id === clipDragState.clipId)
       if (!clip) return
       const movingClipIds = clipDragState.movingClipIds || clipDragState.originalPositions.map(({ id }) => id)
-      
+
       // Calculate new start time based on mouse movement
       const deltaTime = deltaX / pixelsPerSecond
       let proposedStartTime = Math.max(0, clipDragState.originalStartTime + deltaTime)
-      
+
       // Apply snapping (only for the primary dragged clip)
       const snapResult = snapClipPosition(movingClipIds, proposedStartTime, clip.duration)
-      
+
       let finalDeltaTime = deltaTime
       if (snapResult.snapped) {
         proposedStartTime = snapResult.startTime
@@ -4016,13 +3833,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       } else {
         clearActiveSnap()
       }
-      
+
       // Handle vertical track switching
       let newTrackId = clipDragState.originalTrackId
       const isDraggingMultiple = movingClipIds.length > 1
       let groupTrackDelta = 0
       let pendingAutoCreateVideoTrack = false
-      
+
       // Use track content ref for Y (scrollable area where tracks live)
       if (trackContentRef.current) {
         const contentRect = trackContentRef.current.getBoundingClientRect()
@@ -4059,7 +3876,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           if (hoveredTrackId) newTrackId = hoveredTrackId
         }
       }
-      
+
       // Update clip position(s) - don't resolve overlaps during drag, only on mouse up
       if (isDraggingMultiple) {
         // Set all selected clips to original + total delta and preserve their relative track layout.
@@ -4097,7 +3914,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         }))
       }
     }
-    
+
     const handleMouseUp = () => {
       const resolveOverlapsOnDrop = true
 
@@ -4106,6 +3923,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         if (clipDragState && clipDragState.hasMoved) {
           const movingClipIds = clipDragState.movingClipIds || clipDragState.originalPositions.map(({ id }) => id)
           const isDraggingMultiple = movingClipIds.length > 1
+          const resolveOverlapsOnDrop = Boolean(e.ctrlKey || e.metaKey)
           if (clipDragState.pendingAutoCreateVideoTrack) {
             const newTrack = addTrack('video')
             if (newTrack) {
@@ -4173,11 +3991,11 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         clearActiveSnap()
       }
     }
-    
+
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
     window.addEventListener('blur', handleMouseUp)
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
@@ -4196,7 +4014,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       clipB
     })
   }
-  
+
   // Select transition type and duration from menu
   const handleSelectTransition = (type, durationSeconds) => {
     if (transitionMenu) {
@@ -4208,7 +4026,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       setTransitionMenu(null)
     }
   }
-  
+
   const parseTransitionDrop = (e) => {
     const raw = e.dataTransfer.getData('application/x-comfystudio-transition')
     if (!raw) return null
@@ -4228,7 +4046,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       return null
     }
   }
-  
+
   // Keep timeline transition menu in sync with global default duration.
   useEffect(() => {
     const handler = (e) => {
@@ -4240,19 +4058,19 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     window.addEventListener('comfystudio-transition-default-duration-changed', handler)
     return () => window.removeEventListener('comfystudio-transition-default-duration-changed', handler)
   }, [])
-  
+
   // Close transition menu when clicking outside
   useEffect(() => {
     if (!transitionMenu) return
-    
+
     const handleClick = () => setTransitionMenu(null)
     const handleEscape = (e) => {
       if (e.key === 'Escape') setTransitionMenu(null)
     }
-    
+
     window.addEventListener('click', handleClick)
     window.addEventListener('keydown', handleEscape)
-    
+
     return () => {
       window.removeEventListener('click', handleClick)
       window.removeEventListener('keydown', handleEscape)
@@ -4262,13 +4080,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // Handle transition duration dragging
   useEffect(() => {
     if (!transitionDragState || trimState || slipState) return
-    
+
     const handleMouseMove = (e) => {
       const deltaX = e.clientX - transitionDragState.startX
       // 1:1 with mouse: duration change in seconds = pixels moved / pixels per second
       const deltaDuration = deltaX / pixelsPerSecond
       const minDuration = 1 / FRAME_RATE
-      
+
       let newDuration
       if (transitionDragState.edge === 'left') {
         // Left edge: decreasing duration
@@ -4277,17 +4095,17 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         // Right edge: increasing duration
         newDuration = Math.max(minDuration, transitionDragState.startDuration + deltaDuration)
       }
-      
+
       updateTransition(transitionDragState.transitionId, { duration: parseFloat(newDuration.toFixed(2)) })
     }
-    
+
     const handleMouseUp = () => {
       setTransitionDragState(null)
     }
-    
+
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
@@ -4297,7 +4115,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // Handle roll edit (dragging between two adjacent clips)
   useEffect(() => {
     if (!rollEditState || trimState || slipState) return
-    
+
     const handleMouseMove = (e) => {
       const deltaX = e.clientX - rollEditState.startX
       const proposedDelta = deltaX / pixelsPerSecond
@@ -4332,7 +4150,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       const newClipADuration = rollEditState.clipAOriginalDuration + actualDelta
       const newClipBStart = rollEditState.clipBOriginalStart + actualDelta
       const newClipBTrimStart = Math.max(0, rollEditState.clipBOriginalTrimStart + actualDelta * clipBTimeScale)
-      
+
       // Rolling edit semantics:
       // - Clip A tail: adjust out-point (duration/trimEnd)
       // - Clip B head: adjust in-point (startTime/trimStart), keeping trimEnd fixed
@@ -4346,14 +4164,14 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         trimEnd: rollEditState.clipBOriginalTrimEnd,
       })
     }
-    
+
     const handleMouseUp = () => {
       setRollEditState(null)
     }
-    
+
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
@@ -4362,7 +4180,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
 
   // Get transition between two clips (if exists)
   const getTransitionBetween = (clipAId, clipBId) => {
-    return transitions.find(t => 
+    return transitions.find(t =>
       (t.clipAId === clipAId && t.clipBId === clipBId) ||
       (t.clipAId === clipBId && t.clipBId === clipAId)
     )
@@ -4374,20 +4192,20 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     const trackClips = clips
       .filter(c => c.trackId === trackId)
       .sort((a, b) => a.startTime - b.startTime)
-    
+
     const pairs = []
     for (let i = 0; i < trackClips.length - 1; i++) {
       const clipA = trackClips[i]
       const clipB = trackClips[i + 1]
       const clipAEnd = clipA.startTime + clipA.duration
-      
+
       // Check if clips are adjacent (small gap) OR overlapping (transition exists)
       const gap = clipB.startTime - clipAEnd
       const isOverlapping = clipB.startTime < clipAEnd
       const frameDuration = 1 / (timelineFps || FRAME_RATE)
       const trueEditPointTolerance = Math.min(0.001, frameDuration / 10)
       const isTrueEditPoint = Math.abs(gap) <= trueEditPointTolerance
-      
+
       if (isOverlapping || Math.abs(gap) < ADJACENT_CLIP_UI_GAP_SECONDS) {
         // Check if there's a transition between these clips
         const transition = getTransitionBetween(clipA.id, clipB.id)
@@ -4470,7 +4288,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
 
   const handleTrackDragMove = (e) => {
     if (!trackDragState) return
-    
+
     // Calculate which index we're hovering over
     const tracksOfType = trackDragState.trackType === 'video' ? videoTracks : audioTracks
     const draggedTrack = tracksOfType.find(t => t.id === trackDragState.trackId)
@@ -4478,7 +4296,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
     const deltaY = e.clientY - trackDragState.startY
     const indexDelta = Math.round(deltaY / trackHeight)
     const newIndex = Math.max(0, Math.min(tracksOfType.length - 1, trackDragState.originalIndex + indexDelta))
-    
+
     if (newIndex !== trackDropTarget) {
       setTrackDropTarget(newIndex)
     }
@@ -4495,13 +4313,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
   // Track drag mouse move/up listeners
   useEffect(() => {
     if (!trackDragState) return
-    
+
     const handleMouseMove = (e) => handleTrackDragMove(e)
     const handleMouseUp = () => handleTrackDragEnd()
-    
+
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
@@ -4885,13 +4703,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
       {/* Timeline Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Track Headers - Resizable */}
-        <div 
+        <div
           className="flex-shrink-0 border-r border-sf-dark-700 flex flex-col relative"
           style={{ width: `${trackHeadersWidth}px` }}
         >
           {/* Time ruler header spacer */}
           <div className="h-5 flex-shrink-0 border-b border-sf-dark-700 bg-sf-dark-800" />
-          
+
           {/* Resize handle */}
           <div
             className="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-sf-accent/50 active:bg-sf-accent z-20 group"
@@ -4905,9 +4723,9 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
             {/* Visual indicator on hover */}
             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-sf-dark-500 rounded opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
-          
+
           {/* Scrollable track headers container */}
-          <div 
+          <div
             ref={trackHeadersRef}
             className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-track-sf-dark-900 scrollbar-thumb-sf-dark-600"
             onScroll={(e) => {
@@ -4917,7 +4735,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               }
             }}
           >
-          
+
           {autoCreateVideoTrackIndicatorVisible && (
             <div
               className="relative flex items-center px-2 gap-1.5 border-b border-dashed border-sf-accent/70 bg-sf-accent/8"
@@ -4942,9 +4760,9 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
             const isDragging = trackDragState?.trackId === track.id
             const isDropTarget = trackDragState?.trackType === 'video' && trackDropTarget === index && !isDragging
             const headerHeight = getTrackHeight(track)
-            
+
             return (
-            <div 
+            <div
               key={track.id}
               onClick={() => setActiveTrack(track.id)}
               title={activeTrackId === track.id ? `Active track — press ${splitActiveHotkeyLabel} to split at playhead, or ${splitAllHotkeyLabel} to split all tracks` : `Click to set as active track (${splitActiveHotkeyLabel} cuts at playhead on this track; ${splitAllHotkeyLabel} splits all tracks)`}
@@ -4970,7 +4788,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               >
                 {getTrackIcon(track)}
               </div>
-              
+
               {/* Track name - editable */}
               {renamingTrackId === track.id ? (
                 <div className="flex-1 flex items-center gap-1">
@@ -4993,7 +4811,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                   </button>
                 </div>
               ) : (
-                <span 
+                <span
                   className="text-[11px] text-sf-text-primary flex-1 truncate cursor-pointer hover:text-sf-accent"
                   onDoubleClick={(e) => { e.stopPropagation(); handleStartRename(track) }}
                   title="Double-click to rename"
@@ -5001,17 +4819,17 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                   {track.name}
                 </span>
               )}
-              
+
               <div className="flex items-center gap-0.5">
                 {/* Rename button */}
-                <button 
+                <button
                   onClick={(e) => { e.stopPropagation(); handleStartRename(track) }}
                   className="p-0.5 hover:bg-sf-dark-600 rounded opacity-0 group-hover/track:opacity-100 transition-opacity"
                   title="Rename track"
                 >
                   <Pencil className="w-3 h-3 text-sf-text-muted" />
                 </button>
-                <button 
+                <button
                   onClick={(e) => { e.stopPropagation(); toggleTrackVisibility(track.id) }}
                   className="p-0.5 hover:bg-sf-dark-600 rounded"
                 >
@@ -5021,7 +4839,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     <EyeOff className="w-3 h-3 text-sf-text-muted opacity-50" />
                   )}
                 </button>
-                <button 
+                <button
                   onClick={(e) => { e.stopPropagation(); toggleTrackLock(track.id) }}
                   className="p-0.5 hover:bg-sf-dark-600 rounded"
                 >
@@ -5033,7 +4851,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                 </button>
                 {/* Delete track button */}
                 {canDeleteTrack(track) && (
-                  <button 
+                  <button
                     onClick={(e) => { e.stopPropagation(); handleDeleteTrack(track) }}
                     className="p-0.5 hover:bg-sf-error/30 rounded opacity-0 group-hover/track:opacity-100 transition-opacity"
                     title="Delete track"
@@ -5064,33 +4882,33 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               </div>
             </div>
           )})}
-          
+
           {/* Audio Section Divider */}
           <div className="h-5 bg-sf-dark-800 border-b border-sf-dark-700 flex items-center px-2">
             <span className="text-[9px] text-sf-text-muted uppercase tracking-wider">Audio</span>
-            <button 
+            <button
               onClick={() => onOpenAudioGenerate && onOpenAudioGenerate('music')}
-              className="ml-auto p-0.5 hover:bg-sf-dark-700 rounded" 
+              className="ml-auto p-0.5 hover:bg-sf-dark-700 rounded"
               title="Generate AI Audio"
             >
               <Sparkles className="w-3 h-3 text-sf-accent" />
             </button>
           </div>
-          
+
           {/* Audio Tracks */}
           {audioTracks.map((track, index) => {
             const isDragging = trackDragState?.trackId === track.id
             const isDropTarget = trackDragState?.trackType === 'audio' && trackDropTarget === index && !isDragging
-            
+
             const isStereo = track.type === 'audio' && track.channels !== 'mono'
             const headerHeight = getTrackHeight(track)
             const audioTrackNumber = index + 1
             const channelLabels = isStereo
               ? [`A${audioTrackNumber}L`, `A${audioTrackNumber}R`]
               : [`A${audioTrackNumber}`]
-            
+
             return (
-            <div 
+            <div
               key={track.id}
               onClick={() => setActiveTrack(track.id)}
               title={activeTrackId === track.id ? `Active track — press ${splitActiveHotkeyLabel} to split at playhead, or ${splitAllHotkeyLabel} to split all tracks` : `Click to set as active track (${splitActiveHotkeyLabel} cuts at playhead on this track; ${splitAllHotkeyLabel} splits all tracks)`}
@@ -5157,17 +4975,17 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     </div>
                   </div>
                 )}
-              
+
               <div className="flex items-center gap-0.5">
                 {/* Rename button */}
-                <button 
+                <button
                   onClick={(e) => { e.stopPropagation(); handleStartRename(track) }}
                   className="p-0.5 hover:bg-sf-dark-600 rounded opacity-0 group-hover/track:opacity-100 transition-opacity"
                   title="Rename track"
                 >
                   <Pencil className="w-3 h-3 text-sf-text-muted" />
                 </button>
-                <button 
+                <button
                   onClick={(e) => { e.stopPropagation(); toggleTrackMute(track.id) }}
                   className="p-0.5 hover:bg-sf-dark-600 rounded"
                 >
@@ -5177,7 +4995,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     <Volume2 className="w-3 h-3 text-sf-text-muted" />
                   )}
                 </button>
-                <button 
+                <button
                   onClick={(e) => { e.stopPropagation(); toggleTrackLock(track.id) }}
                   className="p-0.5 hover:bg-sf-dark-600 rounded"
                 >
@@ -5189,7 +5007,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                 </button>
                 {/* Delete track button */}
                 {canDeleteTrack(track) && (
-                  <button 
+                  <button
                     onClick={(e) => { e.stopPropagation(); handleDeleteTrack(track) }}
                     className="p-0.5 hover:bg-sf-error/30 rounded opacity-0 group-hover/track:opacity-100 transition-opacity"
                     title="Delete track"
@@ -5225,11 +5043,11 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         </div>
 
         {/* Track Content Area */}
-        <div 
+        <div
           ref={timelineRef}
           className={`flex-1 min-h-0 overflow-x-auto overflow-y-hidden relative bg-sf-dark-900 flex flex-col ${
-            isPanning ? 'cursor-grabbing select-none' : 
-            isSpaceHeld ? 'cursor-grab' : 
+            isPanning ? 'cursor-grabbing select-none' :
+            isSpaceHeld ? 'cursor-grab' :
             isScrubbing ? 'cursor-ew-resize select-none' : ''
           }`}
           onMouseDown={handleTimelineMouseDown}
@@ -5279,7 +5097,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
             </div>
 
           {/* Scrollable tracks container */}
-          <div 
+          <div
             ref={trackContentRef}
             className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden hide-scrollbar"
             style={{ scrollbarWidth: 'none' }}
@@ -5308,9 +5126,9 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           {videoTracks.map((track) => {
             const trackClips = clips.filter(c => c.trackId === track.id)
             const contentHeight = getTrackHeight(track)
-            
+
             return (
-              <div 
+              <div
                 key={track.id}
                 data-track-lane="true"
                 className={`border-b border-sf-dark-700 relative ${
@@ -5347,16 +5165,15 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                   const interactiveClipWidth = Math.max(MIN_INTERACTIVE_CLIP_WIDTH_PX, renderedClipWidth)
                   const interactiveClipOffset = Math.max(0, (interactiveClipWidth - renderedClipWidth) / 2)
                   // Calculate how many thumbnail frames to show (roughly one per 60px)
-                  const thumbCount = Math.max(1, Math.min(MAX_TIMELINE_VIDEO_THUMBNAILS, Math.ceil(renderedClipWidth / TIMELINE_VIDEO_THUMB_WIDTH_PX)))
+                  const thumbCount = Math.max(1, Math.floor(renderedClipWidth / 60))
                   const isTextClip = clip.type === 'text'
                   const isAdjustmentClip = clip.type === 'adjustment'
-                  const clipAsset = clip.assetId ? assetsById.get(clip.assetId) : null
+                  const clipEnabled = isClipEnabled(clip)
                   const shouldRenderClipThumbnails = showTimelineClipThumbnails !== false
-                  const suspendTimelineThumbs = timelineIsPlaying || Boolean(clipDragState || trimState || slipState || fadeDragState || transitionDragState || rollEditState || isPanning)
-                  const clipMediaUrl = shouldRenderClipThumbnails && clip.type === 'image'
+                  const clipMediaUrl = shouldRenderClipThumbnails && (clip.type === 'image' || clip.type === 'video')
                     ? getClipUrl(clip)
                     : null
-                  
+
                   return (
                   <div
                     key={clip.id}
@@ -5398,8 +5215,8 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     } ${
                       slipState?.clipId === clip.id || clipDragState?.movingClipIds?.includes(clip.id) ? 'z-30' : ''
                     }`}
-                    style={{ 
-                      left: `${(clip.startTime * pixelsPerSecond) - interactiveClipOffset}px`, 
+                    style={{
+                      left: `${(clip.startTime * pixelsPerSecond) - interactiveClipOffset}px`,
                       width: `${interactiveClipWidth}px`,
                     }}
                   >
@@ -5412,7 +5229,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                         clipDragState?.movingClipIds?.includes(clip.id)
                           ? 'ring-2 ring-sf-accent cursor-grabbing z-30' : ''
                       } ${
-                        isClipEnabled(clip) ? '' : 'opacity-60 saturate-0'
+                        clipEnabled ? '' : 'opacity-60 saturate-0'
                       }`}
                       style={{
                         left: `${interactiveClipOffset}px`,
@@ -5438,11 +5255,11 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     {isTextClip ? (
                       <>
                         {/* Text clip background with accent color bar */}
-                        <div 
+                        <div
                           className="absolute inset-0 bg-gradient-to-b from-sf-accent/30 to-sf-accent-muted/40"
                           style={{ borderTop: `3px solid ${clip.color}` }}
                         />
-                        
+
                         {/* Text pattern background */}
                         <div className="absolute inset-0 top-[3px] flex items-center justify-center overflow-hidden">
                           <div className="absolute inset-0 opacity-20">
@@ -5454,10 +5271,10 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                             </div>
                           </div>
                         </div>
-                        
+
                         {/* Text preview */}
                         <div className="absolute inset-0 top-[3px] flex items-center justify-center px-2 overflow-hidden">
-                          <span 
+                          <span
                             className="text-[11px] text-sf-text-primary font-medium truncate"
                             style={{
                               textShadow: '0 1px 2px rgba(0,0,0,0.5)',
@@ -5467,7 +5284,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                             {clip.textProperties?.text || 'Text'}
                           </span>
                         </div>
-                        
+
                         {/* Text icon badge - top left */}
                         <div className="absolute top-1 left-1 z-10 flex items-center gap-1">
                           <div className="bg-sf-accent/80 rounded px-1 py-0.5 flex items-center gap-0.5">
@@ -5475,12 +5292,12 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                             <span className="text-[8px] text-white font-medium">TEXT</span>
                           </div>
                         </div>
-                        
+
                         {/* Duration badge - bottom right */}
                         <div className="absolute bottom-1 right-1 px-1 py-0.5 bg-black/60 rounded text-[8px] text-white/90 font-mono">
                           {clip.duration.toFixed(1)}s
                         </div>
-                        
+
                         {/* Keyframe markers */}
                         {clip.keyframes && Object.keys(clip.keyframes).length > 0 && (
                           <div className="absolute bottom-[3px] left-0 right-0 h-2 pointer-events-none">
@@ -5547,19 +5364,17 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                       <>
                         {/* Image Clip Rendering */}
                         {/* Clip background with color bar at top - purple tint for images */}
-                        <div 
+                        <div
                           className="absolute inset-0 bg-[#1e1a28]"
-                          style={{ 
+                          style={{
                             borderTop: `3px solid #6b5080`,
                           }}
                         />
-                        
+
                         {/* Single image thumbnail repeated */}
                         {clipMediaUrl && (
-                        <div className="absolute inset-0 top-[3px] flex overflow-hidden">
-                            <LazyTimelineThumbnail
-                              projectHandle={currentProjectHandle}
-                              asset={clipAsset}
+                          <div className="absolute inset-0 top-[3px] flex overflow-hidden">
+                            <img
                               src={clipMediaUrl}
                               alt={clip.name}
                               className="h-full object-cover opacity-80 pointer-events-none"
@@ -5568,14 +5383,14 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                                 objectFit: 'cover',
                               }}
                               draggable={false}
-                              loadDelayMs={getThumbnailStaggerMs(clip.id)}
+                              onContextMenu={(e) => e.preventDefault()}
                             />
                           </div>
                         )}
-                        
+
                         {/* Gradient overlay for top badges readability */}
                         <div className="absolute inset-x-0 top-[3px] h-6 bg-gradient-to-b from-black/60 to-transparent pointer-events-none" />
-                        
+
                         {/* Image badge + AI/IMP tag - top left */}
                         <div className="absolute top-1 left-1 z-10 flex items-center gap-1">
                           <div className="bg-purple-500/80 rounded px-1 py-0.5 flex items-center gap-0.5">
@@ -5592,7 +5407,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                             )
                           })()}
                         </div>
-                        
+
                         {/* Bottom name strip (Resolve-style) */}
                         <div className="absolute inset-x-0 bottom-0 h-[14px] bg-[#3a6584]/95 border-t border-black/45 pointer-events-none" />
                         <div className="absolute bottom-[1px] left-1.5 right-12 z-10">
@@ -5605,7 +5420,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                         <div className="absolute bottom-[1px] right-1 px-1 py-0 rounded bg-black/55 text-[8px] text-white/90 font-mono leading-none">
                           {clip.duration.toFixed(1)}s
                         </div>
-                        
+
                         {/* Keyframe markers */}
                         {clip.keyframes && Object.keys(clip.keyframes).length > 0 && (
                           <div className="absolute bottom-[15px] left-0 right-0 h-2 pointer-events-none">
@@ -5626,23 +5441,40 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                       <>
                         {/* Video Clip Rendering */}
                         {/* Clip background with color bar at top - Resolve-style desaturated teal */}
-                        <div 
+                        <div
                           className="absolute inset-0 bg-[#1a2528]"
-                          style={{ 
+                          style={{
                             borderTop: `3px solid #3d7080`,
                           }}
                         />
-                        
-                        {/* Filmstrip thumbnails: render cached sprite frames, never live video elements. */}
-                        {shouldRenderClipThumbnails && (
+
+                        {/* Filmstrip thumbnails */}
+                        {clipMediaUrl && (
                           <div className="absolute inset-0 top-[3px] flex overflow-hidden">
-                            {renderTimelineVideoFilmstrip(clip, renderedClipWidth, thumbCount, contentHeight)}
+                            {Array.from({ length: thumbCount }).map((_, i) => (
+                              <div
+                                key={i}
+                                className="flex-shrink-0 h-full relative overflow-hidden"
+                                style={{ width: `${renderedClipWidth / thumbCount}px` }}
+                              >
+                                <video
+                                  src={clipMediaUrl}
+                                  className="absolute inset-0 w-full h-full object-cover opacity-80 pointer-events-none"
+                                  muted
+                                  style={{
+                                    // Offset each thumbnail to show different part of video
+                                    objectPosition: `${(i / Math.max(1, thumbCount - 1)) * 100}% center`
+                                  }}
+                                  onContextMenu={(e) => e.preventDefault()}
+                                />
+                              </div>
+                            ))}
                           </div>
                         )}
-                        
+
                         {/* Gradient overlay for top badges readability */}
                         <div className="absolute inset-x-0 top-[3px] h-6 bg-gradient-to-b from-black/60 to-transparent pointer-events-none" />
-                        
+
                         {/* AI/IMP tag - top left */}
                         <div className="absolute top-1 left-1.5 right-6 z-10 flex items-center gap-1.5 flex-wrap">
                           {clip.assetId && (() => {
@@ -5661,7 +5493,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                             </div>
                           )}
                         </div>
-                        
+
                         {/* Effects/Cache indicator - top right area */}
                         {(clip.effects?.length > 0) && (
                           <div className="absolute top-1 right-8 z-10 flex items-center gap-1">
@@ -5687,7 +5519,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                             )}
                           </div>
                         )}
-                        
+
                         {/* Bottom name strip (Resolve-style) */}
                         <div className="absolute inset-x-0 bottom-0 h-[14px] bg-[#3a6584]/95 border-t border-black/45 pointer-events-none" />
                         <div className="absolute bottom-[1px] left-1.5 right-12 z-10">
@@ -5700,7 +5532,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                         <div className="absolute bottom-[1px] right-1 px-1 py-0 rounded bg-black/55 text-[8px] text-white/90 font-mono leading-none">
                           {clip.duration.toFixed(1)}s
                         </div>
-                        
+
                         {/* Keyframe markers */}
                         {clip.keyframes && Object.keys(clip.keyframes).length > 0 && (
                           <div className="absolute bottom-[15px] left-0 right-0 h-2 pointer-events-none">
@@ -5718,8 +5550,8 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                         )}
                       </>
                     )}
-                    
-                    {!isClipEnabled(clip) && (
+
+                    {!clipEnabled && (
                       <>
                         <div className="absolute inset-0 bg-slate-950/35 pointer-events-none z-10" />
                         <div className="absolute top-1 right-1 z-20 flex items-center gap-1 rounded bg-slate-950/85 border border-white/10 px-1 py-0.5 text-[8px] text-slate-100 uppercase tracking-[0.14em] pointer-events-none">
@@ -5731,7 +5563,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
 
                     {/* Hover overlay */}
                     <div className="absolute inset-0 bg-white/0 group-hover:bg-white/5 transition-colors pointer-events-none" />
-                    
+
                     {trimHandlesEnabled && !isSyncLockedClip(clip) && (
                       <>
                         {/* Left trim handle - wider hit area for easier grabbing */}
@@ -5753,7 +5585,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                         </div>
                       </>
                     )}
-                    
+
                     {/* Left/Right edge borders */}
                     <div className="absolute left-0 top-0 bottom-0 w-px bg-black/40 pointer-events-none" />
                     <div className="absolute right-0 top-0 bottom-0 w-px bg-black/40 pointer-events-none" />
@@ -5762,7 +5594,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                   )
                 })}
                 {renderAssetDropPreviewClip(track)}
-                
+
                 {/* Roll edit zones and transition buttons/overlays between adjacent clips */}
                 {getAdjacentClips(track.id).map(({ clipA, clipB, transition, isOverlapping, gap, isTrueEditPoint }) => {
                   const clipAEnd = clipA.startTime + clipA.duration
@@ -5780,7 +5612,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     if (transitionAlignment === 'end') return { clipA: 0, clipB: 1 }
                     return { clipA: 0.5, clipB: 0.5 }
                   })()
-                  
+
                   if (transition) {
                     const editPoint = Number.isFinite(Number(transition.editPoint))
                       ? Number(transition.editPoint)
@@ -5920,7 +5752,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                       </div>
                     )
                   }
-                  
+
                   // Non-overlapping adjacent clips - show add transition button / drop target.
                   // The transition affordance should only appear on a true butt cut,
                   // not near misses or short gaps that are only useful for roll-edit hover zones.
@@ -5928,7 +5760,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                   const editPointX = clipAEnd * pixelsPerSecond
                   const dropKey = `${clipA.id}-${clipB.id}`
                   const isDropTarget = transitionDropTarget === dropKey
-                  
+
                   return (
                     <div
                       key={`edit-${clipA.id}-${clipB.id}`}
@@ -6006,7 +5838,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                       >
                         <div className={`w-0.5 h-full transition-colors ${canRollEdit ? 'bg-white/0 group-hover/edit:bg-yellow-400/70' : 'bg-white/0'}`} />
                       </div>
-                      
+
                       {/* Add transition button */}
                       {isTrueEditPoint && canAddTransitionBetweenClips(clipA, clipB) && (
                         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-auto">
@@ -6025,20 +5857,20 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               </div>
             )
           })}
-          
+
           {/* Audio Section Spacer */}
           <div className="h-5 bg-sf-dark-800 border-b border-sf-dark-700 flex items-center">
             <span className="text-[10px] text-sf-text-muted ml-2 uppercase tracking-wider">Audio</span>
           </div>
-          
+
           {/* Audio Tracks Content */}
           {audioTracks.map((track) => {
             const trackClips = clips.filter(c => c.trackId === track.id)
             const isStereoContent = track.channels !== 'mono'
             const contentHeight = getTrackHeight(track)
-            
+
             return (
-              <div 
+              <div
                 key={track.id}
                 data-track-lane="true"
                 className={`border-b border-sf-dark-700 relative flex flex-col ${
@@ -6103,7 +5935,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     || (isNativeMediaUrl(clip?.url) ? clip.url : null)
                   )
                   const waveformInput = nativeWaveformInput || clipUrl
-                  
+
                   return (
                   <div
                     key={clip.id}
@@ -6122,8 +5954,8 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     } ${
                       slipState?.clipId === clip.id || clipDragState?.movingClipIds?.includes(clip.id) ? 'z-30' : ''
                     }`}
-                    style={{ 
-                      left: `${(clip.startTime * pixelsPerSecond) - interactiveClipOffset}px`, 
+                    style={{
+                      left: `${(clip.startTime * pixelsPerSecond) - interactiveClipOffset}px`,
                       width: `${interactiveClipWidth}px`,
                     }}
                   >
@@ -6138,15 +5970,15 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                       }}
                     >
                     {/* Clip background + top accent (Resolve-style teal) */}
-                    <div 
+                    <div
                       className="absolute inset-0"
                       style={{ backgroundColor: AUDIO_TRACK_BG }}
                     />
-                    <div 
+                    <div
                       className="absolute inset-x-0 top-0 h-[3px]"
                       style={{ backgroundColor: AUDIO_CLIP_ACCENT }}
                     />
-                    
+
                     {/* Real waveform visualization (Resolve-style colors) */}
                     <AudioWaveformBars
                       clip={clip}
@@ -6192,10 +6024,10 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                         </div>
                       </div>
                     )}
-                    
+
                     {/* Clip label - top left with background */}
                     <div className="absolute top-[4px] left-1 right-5 z-10">
-                      <span 
+                      <span
                         className="text-[9px] text-white font-medium truncate block px-1 py-0.5 rounded"
                         style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
                       >
@@ -6203,7 +6035,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                       </span>
                     </div>
 
-                        {!isClipEnabled(clip) && (
+                    {!clipEnabled && (
                       <>
                         <div className="absolute inset-0 bg-slate-950/35 pointer-events-none z-10" />
                         <div className="absolute top-[4px] right-1 z-20 flex items-center gap-1 rounded bg-slate-950/85 border border-white/10 px-1 py-0.5 text-[8px] text-slate-100 uppercase tracking-[0.14em] pointer-events-none">
@@ -6212,14 +6044,14 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                         </div>
                       </>
                     )}
-                    
+
                     {/* Hover overlay */}
                     <div className="absolute inset-0 bg-white/0 group-hover:bg-white/10 transition-colors pointer-events-none" />
-                    
+
                     {/* Left/Right edge borders */}
                     <div className="absolute left-0 top-0 bottom-0 w-px bg-black/40 pointer-events-none" />
                     <div className="absolute right-0 top-0 bottom-0 w-px bg-black/40 pointer-events-none" />
-                    
+
                     {trimHandlesEnabled && !isSyncLockedClip(clip) && (
                       <>
                         {/* Trim handles on hover - wider hit area for easier grabbing */}
@@ -6291,13 +6123,13 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                   )
                 })}
                 {renderAssetDropPreviewClip(track)}
-                
+
                 {/* Roll edit zones between adjacent audio clips */}
                 {getAdjacentClips(track.id).map(({ clipA, clipB, isOverlapping, gap }) => {
                   const canRollEdit = isTrimToolActive && (isOverlapping || Math.abs(gap) <= ROLL_EDIT_MAX_GAP_SECONDS)
                   if (!canRollEdit) return null
                   const editPointX = (clipA.startTime + clipA.duration) * pixelsPerSecond
-                  
+
                   return (
                     <div
                       key={`edit-${clipA.id}-${clipB.id}`}
@@ -6345,14 +6177,14 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     </div>
                   )
                 })}
-                
+
               </div>
             )
           })}
           </div>
 
           </div>
-          
+
           {/* Marquee Selection Rectangle */}
           {marqueeState && (
             <div
@@ -6420,7 +6252,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               </div>
             )
           })}
-          
+
           {/* In Point Marker */}
           {inPoint !== null && (
             <div
@@ -6433,7 +6265,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               </div>
             </div>
           )}
-          
+
           {/* Out Point Marker */}
           {outPoint !== null && (
             <div
@@ -6446,23 +6278,23 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               </div>
             </div>
           )}
-          
+
           {/* I/O Range Highlight */}
           {inPoint !== null && outPoint !== null && inPoint < outPoint && (
             <div
               className="absolute top-0 bottom-0 bg-[#5a7a9e]/10 z-5 pointer-events-none border-t border-b border-[#5a7a9e]/30"
-              style={{ 
+              style={{
                 left: `${inPoint * pixelsPerSecond}px`,
                 width: `${(outPoint - inPoint) * pixelsPerSecond}px`
               }}
             />
           )}
-          
+
           {/* Snap Guide Lines */}
           {activeSnapTime !== null && snappingEnabled && (
             <div
               className="absolute top-0 bottom-0 w-px bg-white/75 z-20 pointer-events-none"
-              style={{ 
+              style={{
                 left: `${activeSnapTime * pixelsPerSecond}px`,
                 boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.28)'
               }}
@@ -6470,7 +6302,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               <div className="absolute -top-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rotate-45 bg-white/80 border border-black/25" />
             </div>
           )}
-          
+
           {/* Playhead */}
           <div
             className={`absolute top-0 bottom-0 z-10 ${isScrubbing ? 'pointer-events-none' : ''}`}
@@ -6478,7 +6310,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           >
             <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-[2px] bg-orange-400 shadow-[0_0_12px_rgba(251,146,60,0.45)]" />
             {/* Playhead handle (draggable) */}
-            <div 
+            <div
               className="absolute -top-1 left-1/2 -translate-x-1/2 w-5 h-4 cursor-ew-resize flex items-start justify-center"
               onMouseDown={(e) => {
                 e.stopPropagation()
@@ -6520,7 +6352,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
               )
             })()}
             {/* Playhead line extension for easier grabbing */}
-            <div 
+            <div
               className="absolute top-0 left-1/2 -translate-x-1/2 w-2 h-full cursor-ew-resize"
               onMouseDown={(e) => {
                 e.stopPropagation()
@@ -6530,19 +6362,19 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
             />
           </div>
         </div>
-        
+
         {/* Audio Meter Panel - Right side, full height of track panel, resizes with it */}
         <div className="flex-shrink-0 flex flex-col border-l border-sf-dark-700 w-[72px] min-h-0">
           {/* Time ruler header spacer - aligns with time ruler */}
           <div className="h-5 flex-shrink-0 border-b border-sf-dark-700 bg-sf-dark-800" />
-          
+
           {/* Meter fills remaining height and resizes with track panel */}
           <div className="flex-1 min-h-0 flex flex-col">
             <MasterAudioMeter className="flex-1 min-h-0" />
           </div>
         </div>
       </div>
-      
+
       {/* Transition menu: single "Add transition" — change type/duration in Inspector */}
       {transitionMenu && (() => {
         const maxDuration = getMaxTransitionDuration(transitionMenu.clipA.id, transitionMenu.clipB.id)
@@ -6553,8 +6385,8 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
         return (
           <div
             className="fixed z-50 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl py-1 min-w-[180px]"
-            style={{ 
-              left: `${transitionMenu.x}px`, 
+            style={{
+              left: `${transitionMenu.x}px`,
               top: `${transitionMenu.y}px`,
               transform: 'translate(-50%, 8px)'
             }}
@@ -6585,7 +6417,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
           </div>
         )
       })()}
-      
+
       {/* Clip Context Menu (Portal). We deliberately do NOT put
           `overflow-auto` on this container: the mask submenu is an
           absolutely-positioned child that opens to the side, and an
@@ -6606,7 +6438,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
             const contextClip = clips.find(c => c.id === clipContextMenu.clipId)
             const canUseMask = contextClip?.type === 'video' || contextClip?.type === 'image'
             if (!canUseMask) return null
-            
+
             return (
               <>
                 <div className="relative">
@@ -6617,7 +6449,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                     <span>Add Mask…</span>
                     <ChevronRight className="ml-auto w-3 h-3 text-sf-text-muted" />
                   </button>
-                  
+
                   {maskSubmenuOpen && (() => {
                     // Decide which side of the parent menu to open the
                     // submenu on. We don't know the exact submenu width
@@ -6649,9 +6481,9 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
                       >
                         <span>Open Mask Picker…</span>
                       </button>
-                      
+
                       <div className="h-px bg-sf-dark-600 my-1" />
-                      
+
                       {availableMasks.length > 0 ? (
                         availableMasks.map((mask) => (
                           <button
@@ -6704,7 +6536,7 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
             <span>Split at Playhead</span>
             <span className="ml-auto text-sf-text-muted text-[10px]">{splitActiveHotkeyLabel}</span>
           </button>
-          
+
           <button
             onClick={() => handleContextMenuAction('duplicate')}
             className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors"
@@ -6806,9 +6638,9 @@ function Timeline({ isActive = true, onOpenAudioGenerate, onActiveToolChange }) 
             <span>Paste at Playhead</span>
             <span className="ml-auto text-sf-text-muted text-[10px]">Ctrl+V</span>
           </button>
-          
+
           <div className="h-px bg-sf-dark-600 my-1" />
-          
+
           <button
             onClick={() => handleContextMenuAction('delete')}
             className="w-full px-3 py-1.5 text-left text-xs text-sf-error hover:bg-sf-error/20 flex items-center gap-2 transition-colors"
