@@ -23,6 +23,7 @@ import { isTextEditingElement } from '../utils/keyboardFocus'
 import {
   formatSecondsFrames,
   formatTimecode as formatFrameTimecode,
+  doSegmentsOverlap,
   getSafeTimelineFps,
   getTimecodeFrameRate,
   quantizeTimeToFrame,
@@ -774,16 +775,12 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   const rippleHotkeyLabel = formatEditorHotkey(editorHotkeys[EDITOR_HOTKEY_IDS.TOGGLE_RIPPLE])
   const toggleClipEnabledHotkeyLabel = formatEditorHotkey(editorHotkeys[EDITOR_HOTKEY_IDS.TOGGLE_CLIP_ENABLED])
   const addTextClipHotkeyLabel = formatEditorHotkey(editorHotkeys[EDITOR_HOTKEY_IDS.ADD_TEXT_CLIP])
+  const addTransitionHotkeyLabel = formatEditorHotkey(editorHotkeys[EDITOR_HOTKEY_IDS.ADD_TRANSITION])
   const isMacPlatform = typeof navigator !== 'undefined' && /mac|iphone|ipad/i.test(navigator.platform || '')
   const copyHotkeyLabel = `${isMacPlatform ? 'Cmd' : 'Ctrl'}+C`
   const pasteHotkeyLabel = `${isMacPlatform ? 'Cmd' : 'Ctrl'}+V`
   const durationByHotkeyHint = durationByHotkeyLabel === 'Not set' ? '' : durationByHotkeyLabel
   const isClipEnabled = useCallback((clip) => clip?.enabled !== false, [])
-  const getContextSelectionClipIds = useCallback((clipId) => {
-    if (!clipId) return []
-    if (selectedClipIds.includes(clipId)) return selectedClipIds
-    return getLinkedClipIds([clipId])
-  }, [getLinkedClipIds, selectedClipIds])
   const getTrackGapAtTime = useCallback((trackId, time) => {
     if (!trackId || !Number.isFinite(time)) return null
 
@@ -881,14 +878,37 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     setPlayheadPosition(time, { snap: true })
   }, [getTimeFromMouseEvent, getTrackGapAtTime, selectGap, setPlayheadPosition])
   const clipContextSelectionIds = useMemo(() => (
-    clipContextMenu ? getContextSelectionClipIds(clipContextMenu.clipId) : []
-  ), [clipContextMenu, getContextSelectionClipIds])
+    clipContextMenu ? selectedClipIds : []
+  ), [clipContextMenu, selectedClipIds])
   const clipContextSelectionClips = useMemo(
     () => clipContextSelectionIds
       .map((clipId) => clips.find((clip) => clip.id === clipId))
       .filter(Boolean),
     [clips, clipContextSelectionIds]
   )
+  const selectedTransitionTargetClips = useMemo(() => (
+    clipContextMenu ? clipContextSelectionClips : selectedClipIds
+      .map((clipId) => clips.find((clip) => clip.id === clipId))
+      .filter(Boolean)
+  ), [clips, clipContextMenu, clipContextSelectionClips, selectedClipIds])
+  const selectedTransitionClipsOnSameTrack = useMemo(() => {
+    if (selectedTransitionTargetClips.length < 2) return []
+    const trackId = selectedTransitionTargetClips[0]?.trackId
+    if (!trackId) return []
+    return selectedTransitionTargetClips.filter((clip) => clip.trackId === trackId)
+  }, [selectedTransitionTargetClips])
+  const canAddTransitionBetweenClips = useCallback((clipA, clipB) => {
+    if (!clipA || !clipB) return false
+    if (clipA.trackId !== clipB.trackId) return false
+    const clipAEnd = Number(clipA.startTime) + Number(clipA.duration)
+    const clipBStart = Number(clipB.startTime)
+    const gap = clipBStart - clipAEnd
+    const frameDuration = 1 / FRAME_RATE
+    const tolerance = Math.min(0.001, frameDuration / 10)
+    if (gap > tolerance) return false
+    const maxDuration = useTimelineStore.getState().getMaxTransitionDurationForAlignment(clipA.id, clipB.id, 'center')
+    return maxDuration >= 1 / FRAME_RATE
+  }, [])
   const isSyncCapableClip = useCallback((clip) => {
     const asset = clip.assetId ? getAssetById(clip.assetId) : null
     return isMusicVideoSyncCapableClip(clip, asset)
@@ -921,6 +941,45 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     clipContextSelectionClips.every((clip) => clip.linkGroupId === clipContextLinkedGroupIds[0])
   )
   const clipContextCanUnlink = clipContextLinkedGroupIds.length > 0
+  const clipContextCanAddTransition = useMemo(() => {
+    if (selectedTransitionClipsOnSameTrack.length < 2) return false
+
+    const sorted = [...selectedTransitionClipsOnSameTrack].sort((a, b) => a.startTime - b.startTime)
+    for (let i = 0; i < sorted.length - 1; i += 1) {
+      if (canAddTransitionBetweenClips(sorted[i], sorted[i + 1])) {
+        return true
+      }
+    }
+
+    return false
+  }, [canAddTransitionBetweenClips, selectedTransitionClipsOnSameTrack])
+  const addTransitionFromSelectedClips = useCallback(() => {
+    const selectionByTrack = new Map()
+    for (const clip of selectedTransitionTargetClips) {
+      const trackId = String(clip.trackId || '')
+      if (!selectionByTrack.has(trackId)) selectionByTrack.set(trackId, [])
+      selectionByTrack.get(trackId).push(clip)
+    }
+
+    let addedAny = false
+    for (const clipsOnTrack of selectionByTrack.values()) {
+      const sorted = [...clipsOnTrack].sort((a, b) => a.startTime - b.startTime)
+      for (let i = 0; i < sorted.length - 1; i += 1) {
+        const clipA = sorted[i]
+        const clipB = sorted[i + 1]
+        if (canAddTransitionBetweenClips(clipA, clipB)) {
+          const durationSeconds = Math.max(1 / FRAME_RATE, defaultTransitionFrames / FRAME_RATE)
+          addTransition(clipA.id, clipB.id, 'dissolve', durationSeconds)
+          addedAny = true
+        }
+      }
+    }
+
+    if (addedAny) {
+      setClipContextMenu(null)
+    }
+    return addedAny
+  }, [addTransition, canAddTransitionBetweenClips, defaultTransitionFrames, selectedTransitionTargetClips])
   const clipContextShouldEnable = useMemo(
     () => clipContextSelectionClips.length > 0 && clipContextSelectionClips.every((clip) => !isClipEnabled(clip)),
     [clipContextSelectionClips, isClipEnabled]
@@ -2202,7 +2261,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           setActiveTimelineTool(TIMELINE_TOOLS.SELECT)
           return
         }
-        if (key === 't') {
+        if (key === 't' && !e.shiftKey) {
           e.preventDefault()
           setActiveTimelineTool(TIMELINE_TOOLS.TRIM)
           return
@@ -2254,6 +2313,13 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       if (matchEditorHotkey(e, editorHotkeys[EDITOR_HOTKEY_IDS.ADD_TEXT_CLIP])) {
         const newClip = addTextClipAtPlayhead()
         if (newClip) {
+          e.preventDefault()
+        }
+        return
+      }
+
+      if (matchEditorHotkey(e, editorHotkeys[EDITOR_HOTKEY_IDS.ADD_TRANSITION])) {
+        if (addTransitionFromSelectedClips()) {
           e.preventDefault()
         }
         return
@@ -3750,29 +3816,30 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   trackId: nextTrackId,
                 }
               })
+              const resolveOverlapsOnDrop = Boolean(e.ctrlKey || e.metaKey)
               setSelectedClipPositions(updates, movingClipIds)
-              moveSelectedClips(0, null, true, movingClipIds)
+              moveSelectedClips(0, null, resolveOverlapsOnDrop, movingClipIds)
             } else {
               const latestClip = useTimelineStore.getState().clips.find((entry) => entry.id === clipDragState.clipId)
               const finalStartTime = latestClip?.startTime ?? clipDragState.currentStartTime ?? clipDragState.originalStartTime
-              moveClip(clipDragState.clipId, newTrack.id, finalStartTime, true)
+              moveClip(clipDragState.clipId, newTrack.id, finalStartTime, Boolean(e.ctrlKey || e.metaKey))
             }
           } else if (isDraggingMultiple) {
-            moveSelectedClips(0, null, true, movingClipIds)
+            moveSelectedClips(0, null, Boolean(e.ctrlKey || e.metaKey), movingClipIds)
           } else {
             const clip = clips.find(c => c.id === clipDragState.clipId)
             if (clip) {
-              moveClip(clipDragState.clipId, clip.trackId, clip.startTime, true)
+              moveClip(clipDragState.clipId, clip.trackId, clip.startTime, Boolean(e.ctrlKey || e.metaKey))
             }
           }
         } else if (isDraggingMultiple) {
           // For multi-clip drag, resolve overlaps with delta of 0 (clips already in position)
-          moveSelectedClips(0, null, true, movingClipIds)
+          moveSelectedClips(0, null, Boolean(e.ctrlKey || e.metaKey), movingClipIds)
         } else {
           // For single clip drag, resolve overlaps at the current position
           const clip = clips.find(c => c.id === clipDragState.clipId)
           if (clip) {
-            moveClip(clipDragState.clipId, clip.trackId, clip.startTime, true)
+            moveClip(clipDragState.clipId, clip.trackId, clip.startTime, Boolean(e.ctrlKey || e.metaKey))
           }
         }
       }
@@ -5386,13 +5453,30 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                 {getAdjacentClips(track.id).map(({ clipA, clipB, transition, isOverlapping, gap, isTrueEditPoint }) => {
                   const clipAEnd = clipA.startTime + clipA.duration
                   const canRollEdit = isTrimToolActive && (isOverlapping || Math.abs(gap) <= ROLL_EDIT_MAX_GAP_SECONDS)
+                  const transitionSplit = transition?.settings?.split || null
+                  const transitionAlignment = transition?.settings?.alignment || 'center'
+                  const normalizedSplit = (() => {
+                    if (transitionSplit && Number.isFinite(Number(transitionSplit.clipA)) && Number.isFinite(Number(transitionSplit.clipB))) {
+                      const clipAValue = Math.max(0, Number(transitionSplit.clipA))
+                      const clipBValue = Math.max(0, Number(transitionSplit.clipB))
+                      const total = clipAValue + clipBValue
+                      if (total > 0) return { clipA: clipAValue / total, clipB: clipBValue / total }
+                    }
+                    if (transitionAlignment === 'start') return { clipA: 1, clipB: 0 }
+                    if (transitionAlignment === 'end') return { clipA: 0, clipB: 1 }
+                    return { clipA: 0.5, clipB: 0.5 }
+                  })()
                   
-                  if (transition && isOverlapping) {
-                    // Resolve-like transition tile over the overlap area.
-                    const overlapStart = clipB.startTime
-                    const overlapEnd = clipAEnd
-                    const overlapWidth = (overlapEnd - overlapStart) * pixelsPerSecond
-                    const overlapX = overlapStart * pixelsPerSecond
+                  if (transition) {
+                    const editPoint = Number.isFinite(Number(transition.editPoint))
+                      ? Number(transition.editPoint)
+                      : clipAEnd
+                    const clipAContribution = (Number(transition.duration) || 0) * normalizedSplit.clipA
+                    const clipBContribution = (Number(transition.duration) || 0) * normalizedSplit.clipB
+                    const transitionStart = editPoint - clipAContribution
+                    const transitionEnd = editPoint + clipBContribution
+                    const transitionWidth = Math.max(0, transitionEnd - transitionStart) * pixelsPerSecond
+                    const transitionX = transitionStart * pixelsPerSecond
                     const isSelected = selectedTransitionId === transition.id
                     const transitionMeta = TRANSITION_TYPES.find(t => t.id === transition.type)
                     const transitionName = transitionMeta?.name || transition.type
@@ -5405,7 +5489,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                         className={`absolute top-0 bottom-[14px] z-25 pointer-events-auto cursor-pointer group/trans ${
                           isSelected ? 'ring-2 ring-white/80 ring-inset shadow-[0_0_0_1px_rgba(255,255,255,0.4)]' : ''
                         }`}
-                        style={{ left: `${overlapX}px`, width: `${overlapWidth}px` }}
+                        style={{ left: `${transitionX}px`, width: `${transitionWidth}px` }}
                         onClick={(e) => {
                           e.stopPropagation()
                           selectTransition(transition.id)
@@ -5601,7 +5685,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                       </div>
                       
                       {/* Add transition button */}
-                      {isTrueEditPoint && (
+                      {isTrueEditPoint && canAddTransitionBetweenClips(clipA, clipB) && (
                         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-auto">
                           <button
                             onClick={(e) => handleAddTransition(e, clipA, clipB)}
@@ -6325,6 +6409,16 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
               <span className="ml-auto text-sf-text-muted text-[10px]">{durationByHotkeyHint}</span>
             )}
           </button>
+          {clipContextCanAddTransition && (
+            <button
+              onClick={() => addTransitionFromSelectedClips()}
+              className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors"
+              title={`Add a default transition between the selected touching clips (${addTransitionHotkeyLabel})`}
+            >
+              <span>Add transition</span>
+              <span className="ml-auto text-sf-text-muted text-[10px]">{addTransitionHotkeyLabel}</span>
+            </button>
+          )}
           <button
             onClick={() => handleContextMenuAction('toggle-enabled')}
             className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors"

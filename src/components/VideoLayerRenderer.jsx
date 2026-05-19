@@ -1020,6 +1020,9 @@ const MaskedVideoCanvas = memo(function MaskedVideoCanvas({
 
 // How far ahead to preload (in seconds)
 const PRELOAD_LOOKAHEAD = 2.5
+// Give the incoming clip a little extra time to warm up before a transition
+// becomes visible. This helps avoid the first-frame flash at the seam.
+const TRANSITION_PREROLL_LOOKAHEAD = 0.4
 const PLAYBACK_DIAG_KEY = 'comfystudio-playback-diag'
 
 function isPlaybackDiagEnabled() {
@@ -1031,6 +1034,20 @@ function shortPlaybackUrl(url) {
   if (!url) return null
   const asString = String(url)
   return asString.length > 72 ? `${asString.slice(0, 72)}...` : asString
+}
+
+function normalizeTransitionSplit(split = null) {
+  const clipA = Number(split?.clipA)
+  const clipB = Number(split?.clipB)
+  const hasClipA = Number.isFinite(clipA) && clipA >= 0
+  const hasClipB = Number.isFinite(clipB) && clipB >= 0
+  if (hasClipA && hasClipB) {
+    const total = clipA + clipB
+    if (total > 0) {
+      return { clipA: clipA / total, clipB: clipB / total }
+    }
+  }
+  return { clipA: 0.5, clipB: 0.5 }
 }
 
 function logPlaybackDiag(event, payload = {}) {
@@ -1380,14 +1397,16 @@ const VideoLayer = memo(function VideoLayer({
       const cutFrameCanvas = getCutFrameCanvas(clip, clipUrl)
       if (!cutFrameCanvas) return false
       if (!drawCutFrameToCanvas(holdFrameRef.current, cutFrameCanvas)) return false
-      setShowHoldFrame(true)
-      scheduleCutFrameOverlayRelease()
+      if (isInTransition) {
+        setShowHoldFrame(true)
+        scheduleCutFrameOverlayRelease()
+      }
       return true
     }
 
     const revealReadyFrame = (reason) => {
       setIsReady(true)
-      if (!cutFrameReleaseFrameRequest && !cutFrameReleaseTimeout) {
+      if (!isInTransition && !cutFrameReleaseFrameRequest && !cutFrameReleaseTimeout) {
         setShowHoldFrame(false)
       }
       logLayerDiag('layer:ready', {
@@ -1647,7 +1666,7 @@ const VideoLayer = memo(function VideoLayer({
       const speedMismatch = Math.abs(timeScale - 1) > 0.001
       const driftThreshold = isInTransition
         ? 0.25
-        : (speedMismatch ? 0.5 : 0.15)
+        : (speedMismatch ? 0.9 : 0.7)
       const boundaryEpsilon = 0.03
       const nearForwardEnd = !reverse && clampedTime >= (maxTime - boundaryEpsilon)
       const nearReverseStart = reverse && clampedTime <= (minTime + boundaryEpsilon)
@@ -1752,7 +1771,7 @@ const VideoLayer = memo(function VideoLayer({
     } else {
       // When paused (not scrubbing): Use tight threshold for precise positioning
       // Seek immediately if video is ready, don't wait
-      if (video.readyState >= 1 && timeDiff > 0.02) {
+      if (video.readyState >= 1 && timeDiff > 0.05) {
         logLayerDiag('sync:paused-seek', {
           timeDiff: Number(timeDiff.toFixed(3)),
           from: Number((video.currentTime || 0).toFixed(3)),
@@ -2550,6 +2569,45 @@ function VideoLayerRenderer({
     return relevantClips
   }, [clips, tracks, playbackRate])
 
+  const getTransitionClipsToPreload = useCallback((currentTime) => {
+    const state = useTimelineStore.getState()
+    const transitionInfo = state.getTransitionAtTime(currentTime)
+    const ids = new Set()
+
+    if (transitionInfo && transitionInfo.transition?.kind === 'between') {
+      for (const id of getTransitionClipIds(transitionInfo)) {
+        ids.add(id)
+      }
+    }
+
+    const nextTransition = state.transitions
+      .filter((transition) => transition?.kind === 'between')
+      .map((transition) => {
+        const clipA = state.clips.find((clip) => clip.id === transition.clipAId)
+        const clipB = state.clips.find((clip) => clip.id === transition.clipBId)
+        if (!clipA || !clipB || clipA.trackId !== clipB.trackId) return null
+        const split = normalizeTransitionSplit(transition?.settings?.split, transition?.settings?.alignment || 'center')
+        const duration = Math.max(0, Number(transition.duration) || 0)
+        const editPoint = Number.isFinite(Number(transition.editPoint))
+          ? Number(transition.editPoint)
+          : (clipA.startTime + clipA.duration)
+        const start = editPoint - (duration * split.clipA)
+        const end = editPoint + (duration * split.clipB)
+        return { transition, clipA, clipB, start, end }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.start - b.start)
+      .find((entry) => entry.start >= currentTime && entry.start - currentTime <= TRANSITION_PREROLL_LOOKAHEAD)
+
+    if (nextTransition) {
+      ids.add(nextTransition.clipA.id)
+      ids.add(nextTransition.clipB.id)
+    }
+
+    if (ids.size === 0) return []
+    return clips.filter((clip) => ids.has(clip.id) && clip.type === 'video' && clip.enabled !== false)
+  }, [clips])
+
   const autoCacheClip = useCallback(async (clip) => {
     if (!clip || clip.type !== 'video') return
     if (clip.cacheStatus === 'cached' || renderCacheService.isRendering(clip.id)) return
@@ -2604,7 +2662,10 @@ function VideoLayerRenderer({
    * Preload upcoming clips
    */
   const preloadUpcoming = useCallback(() => {
-    const clipsToPreload = getClipsToPreload(playheadPosition)
+    const clipsToPreload = [
+      ...getClipsToPreload(playheadPosition, isPlaying),
+      ...getTransitionClipsToPreload(playheadPosition),
+    ]
     
     clipsToPreload.forEach(clip => {
       const resolvedUrl = resolvePlaybackUrl(clip, getAssetById)
@@ -2623,15 +2684,24 @@ function VideoLayerRenderer({
         url: shortPlaybackUrl(resolvedUrl),
       })
       const cachedVideo = videoCache.getVideoElement({ ...clip, url: resolvedUrl }, true)
-      const clipEnd = (Number(clip.startTime) || 0) + (Number(clip.duration) || 0)
-      const isActiveNow = playheadPosition >= (Number(clip.startTime) || 0) && playheadPosition < clipEnd
-      if (cachedVideo && !isActiveNow && cachedVideo.readyState >= 1) {
-        const targetTimelineTime = playbackRate >= 0
-          ? (Number(clip.startTime) || 0)
-          : clipEnd
+      const clipStart = Number(clip.startTime) || 0
+      const clipEnd = clipStart + (Number(clip.duration) || 0)
+      const isCurrentlyActive = playheadPosition >= clipStart && playheadPosition < clipEnd
+      const transitionInfo = useTimelineStore.getState().getTransitionAtTime(playheadPosition)
+      const isTransitionIncomingClip = Boolean(
+        transitionInfo?.transition?.kind === 'between' &&
+        transitionInfo?.clipB?.id === clip.id
+      )
+      if (cachedVideo && cachedVideo.readyState >= 1 && (!isPlaying || !isCurrentlyActive || isTransitionIncomingClip)) {
+        const targetTimelineTime = playheadPosition >= clipStart && playheadPosition < clipEnd
+          ? playheadPosition
+          : playbackRate >= 0 ? clipStart : clipEnd
         const targetTime = getClipPlaybackTimeAtTimeline(clip, targetTimelineTime)
-        if (Math.abs((cachedVideo.currentTime || 0) - targetTime) > 0.03) {
-          cachedVideo.currentTime = targetTime
+        const prerollTargetTime = isTransitionIncomingClip
+          ? Math.max(0, targetTime - 0.04)
+          : targetTime
+        if (Math.abs((cachedVideo.currentTime || 0) - prerollTargetTime) > 0.03) {
+          cachedVideo.currentTime = prerollTargetTime
         }
         scheduleCutFrameCapture(clip, resolvedUrl, cachedVideo, targetTime)
       }
@@ -2639,7 +2709,7 @@ function VideoLayerRenderer({
     })
     
     lastPreloadPosition.current = playheadPosition
-  }, [playheadPosition, playbackRate, getClipsToPreload, getAssetById, useProxyPlaybackForAssets])
+  }, [playheadPosition, playbackRate, isPlaying, getClipsToPreload, getTransitionClipsToPreload, getAssetById, useProxyPlaybackForAssets])
 
   // Auto-render cache for clips with mask effects (smooth playback)
   useEffect(() => {

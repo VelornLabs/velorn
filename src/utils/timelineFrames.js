@@ -87,3 +87,16 @@ export function formatSecondsFrames(seconds, fps) {
   const frames = totalFrames % timecodeFps
   return `${wholeSeconds}:${String(frames).padStart(2, '0')}`
 }
+
+export function doSegmentsOverlap(segmentA, segmentB, toleranceSeconds = 0) {
+  const aStart = Number(segmentA?.startTime) || 0
+  const aDuration = Math.max(0, Number(segmentA?.duration) || 0)
+  const bStart = Number(segmentB?.startTime) || 0
+  const bDuration = Math.max(0, Number(segmentB?.duration) || 0)
+  const tolerance = Math.max(0, Number(toleranceSeconds) || 0)
+
+  const aEnd = aStart + aDuration
+  const bEnd = bStart + bDuration
+
+  return aStart <= bEnd + tolerance && bStart <= aEnd + tolerance
+}

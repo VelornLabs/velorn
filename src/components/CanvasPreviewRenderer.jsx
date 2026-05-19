@@ -335,6 +335,7 @@ function CanvasPreviewRenderer({
   const imageCacheRef = useRef(new Map())
   const maskCacheRef = useRef(new Map())
   const buffersRef = useRef({})
+  const lastFrameCanvasRef = useRef(null)
   const latestRef = useRef({})
   const drawFrameRef = useRef(null)
   const deferredDrawTimerRef = useRef(0)
@@ -828,37 +829,68 @@ function CanvasPreviewRenderer({
     ensureCanvasSize(canvas, width, height)
     const ctx = canvas.getContext('2d', { alpha: false })
     if (!ctx) return
+
+    const shouldHoldLastFrame = state.isPlaying && hasPaintedFrameRef.current
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.globalAlpha = 1
     ctx.globalCompositeOperation = 'source-over'
     ctx.filter = 'none'
-    ctx.fillStyle = '#000000'
-    ctx.fillRect(0, 0, width, height)
+    const lastFrameCanvas = lastFrameCanvasRef.current
+    if (shouldHoldLastFrame && lastFrameCanvas) {
+      ctx.drawImage(lastFrameCanvas, 0, 0, width, height)
+    } else {
+      ctx.fillStyle = '#000000'
+      ctx.fillRect(0, 0, width, height)
+    }
+
+    const stageCanvas = document.createElement('canvas')
+    ensureCanvasSize(stageCanvas, width, height)
+    const stageCtx = stageCanvas.getContext('2d', { alpha: false })
+    if (!stageCtx) return
+    stageCtx.imageSmoothingEnabled = true
+    stageCtx.imageSmoothingQuality = 'high'
+    stageCtx.setTransform(1, 0, 0, 1, 0, 0)
+    stageCtx.globalAlpha = 1
+    stageCtx.globalCompositeOperation = 'source-over'
+    stageCtx.filter = 'none'
+    stageCtx.fillStyle = '#000000'
+    stageCtx.fillRect(0, 0, width, height)
 
     for (const entry of visualClips) {
       const { clip } = entry
       if (!clip) continue
       if (clip.type === 'adjustment') {
-        applyAdjustmentLayer(ctx, clip, time, frameIndex, { ...state, width, height, fps })
+        applyAdjustmentLayer(stageCtx, clip, time, frameIndex, { ...state, width, height, fps })
         continue
       }
       if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text') {
-        drawVisualClip(ctx, entry, time, transitionInfo, { ...state, width, height, fps }, frameIndex)
+        drawVisualClip(stageCtx, entry, time, transitionInfo, { ...state, width, height, fps }, frameIndex)
       }
     }
 
     const overlayOpacity = getFadeOverlayOpacity(transitionInfo)
     if (overlayOpacity !== null) {
       const type = transitionInfo?.transition?.type
-      ctx.save()
-      ctx.globalAlpha = overlayOpacity
-      ctx.fillStyle = type === 'fade-white' ? '#FFFFFF' : '#000000'
-      ctx.fillRect(0, 0, width, height)
-      ctx.restore()
+      stageCtx.save()
+      stageCtx.globalAlpha = overlayOpacity
+      stageCtx.fillStyle = type === 'fade-white' ? '#FFFFFF' : '#000000'
+      stageCtx.fillRect(0, 0, width, height)
+      stageCtx.restore()
     }
 
+    ctx.clearRect(0, 0, width, height)
+    ctx.drawImage(stageCanvas, 0, 0)
+    if (!lastFrameCanvasRef.current) {
+      lastFrameCanvasRef.current = document.createElement('canvas')
+    }
+    ensureCanvasSize(lastFrameCanvasRef.current, width, height)
+    const lastCtx = lastFrameCanvasRef.current.getContext('2d', { alpha: false })
+    if (lastCtx) {
+      lastCtx.clearRect(0, 0, width, height)
+      lastCtx.drawImage(stageCanvas, 0, 0)
+    }
     hasPaintedFrameRef.current = true
   }, [applyAdjustmentLayer, drawVisualClip, preloadVideosAroundTime, safeFps, safeHeight, safeWidth, scheduleDeferredDraw])
 

@@ -2312,26 +2312,13 @@ function PreviewPanel() {
                 ) : (
                   <>
                     <AudioLayerRenderer />
-                    {previewCompositorMode === 'dom' ? (
-                      <VideoLayerRenderer
-                        buildVideoTransform={buildVideoTransform}
-                        getClipTransform={getClipTransform}
-                        transitionInfo={transitionInfo}
-                        getTransitionStyles={getTransitionStyles}
-                        getTransitionOverlay={getTransitionOverlay}
-                        onClipPointerDown={handlePreviewClipPointerDown}
-                        onClipDoubleClick={handlePreviewTextDoubleClick}
-                        previewScale={previewScale.uniform}
-                      />
-                    ) : (
-                      <CanvasPreviewRenderer
-                        timelineWidth={timelineWidth}
-                        timelineHeight={timelineHeight}
-                        timelineFps={timelineSettings?.fps || timelineFps || 30}
-                        onClipPointerDown={handlePreviewClipPointerDown}
-                        onClipDoubleClick={handlePreviewTextDoubleClick}
-                      />
-                    )}
+                    <CanvasPreviewRenderer
+                      timelineWidth={timelineWidth}
+                      timelineHeight={timelineHeight}
+                      timelineFps={timelineSettings?.fps || timelineFps || 30}
+                      onClipPointerDown={handlePreviewClipPointerDown}
+                      onClipDoubleClick={handlePreviewTextDoubleClick}
+                    />
                   </>
                 )}
                 
@@ -2446,20 +2433,12 @@ function PreviewPanel() {
                           <option value="eighth">Eighth</option>
                         </select>
                       </label>
-                      <label
-                        className="flex items-center gap-1 rounded bg-sf-dark-700 px-2 py-1 text-xs text-sf-text-muted"
-                        title="Canvas preview avoids Windows cut-frame flashes. DOM keeps the old renderer as a fallback."
+                      <div
+                        className="px-2 py-1 rounded text-xs bg-blue-700/80 text-white"
+                        title="Timeline preview now uses the canvas compositor to avoid DOM reparenting flicker."
                       >
-                        <span>Renderer</span>
-                        <select
-                          value={previewCompositorMode === 'dom' ? 'dom' : 'canvas'}
-                          onChange={(event) => setPreviewCompositorMode(event.target.value)}
-                          className="bg-sf-dark-800 text-sf-text-secondary outline-none"
-                        >
-                          <option value="canvas">Canvas</option>
-                          <option value="dom">DOM</option>
-                        </select>
-                      </label>
+                        Canvas preview
+                      </div>
                       {useProxyPlaybackForAssets && currentProjectHandle && window.electronAPI && proxyCoverage.total > 0 && (
                         <button
                           type="button"

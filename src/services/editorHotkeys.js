@@ -17,6 +17,7 @@ export const EDITOR_HOTKEY_IDS = {
   OPEN_MOVE_BY: 'timeline.openMoveBy',
   OPEN_DURATION_BY: 'timeline.openDurationBy',
   ADD_TEXT_CLIP: 'timeline.addTextClip',
+  ADD_TRANSITION: 'timeline.addTransition',
   LINK_SELECTION: 'timeline.linkSelection',
   UNLINK_SELECTION: 'timeline.unlinkSelection',
 }
@@ -111,6 +112,12 @@ export const EDITOR_HOTKEY_DEFINITIONS = [
     label: 'Add text clip at playhead',
     description: 'Timeline text',
     defaultBinding: 'T',
+  },
+  {
+    id: EDITOR_HOTKEY_IDS.ADD_TRANSITION,
+    label: 'Add transition between selected clips',
+    description: 'Timeline transitions',
+    defaultBinding: 'Shift+T',
   },
   {
     id: EDITOR_HOTKEY_IDS.LINK_SELECTION,

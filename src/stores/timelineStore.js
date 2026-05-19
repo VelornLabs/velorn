@@ -73,16 +73,32 @@ const movePropertyKeyframeArray = (propertyKeyframes, fromTime, toTime, toleranc
   return { moved: true, keyframes: framesWithoutSource }
 }
 
-const getTransitionContributions = (duration, alignment = 'center') => {
-  const d = Math.max(0, Number(duration) || 0)
+const normalizeTransitionSplit = (split = null, alignment = 'center') => {
+  if (split && Number.isFinite(Number(split.clipA)) && Number.isFinite(Number(split.clipB))) {
+    const clipA = Math.max(0, Number(split.clipA))
+    const clipB = Math.max(0, Number(split.clipB))
+    const total = clipA + clipB
+    if (total > 0) return { clipA: clipA / total, clipB: clipB / total }
+  }
+
   switch (alignment) {
     case 'start':
-      return { clipA: d, clipB: 0 }
+      return { clipA: 1, clipB: 0 }
     case 'end':
-      return { clipA: 0, clipB: d }
+      return { clipA: 0, clipB: 1 }
     case 'center':
     default:
-      return { clipA: d / 2, clipB: d / 2 }
+      return { clipA: 0.5, clipB: 0.5 }
+  }
+}
+
+const getTransitionContributions = (duration, settings = {}) => {
+  const d = Math.max(0, Number(duration) || 0)
+  const alignment = settings?.alignment || 'center'
+  const split = normalizeTransitionSplit(settings?.split, alignment)
+  return {
+    clipA: d * split.clipA,
+    clipB: d * split.clipB,
   }
 }
 
@@ -3543,40 +3559,13 @@ export const useTimelineStore = create(
     if (!clipA || !clipB) return 0
     if (isAdjustmentClipType(clipA) || isAdjustmentClipType(clipB)) return 0
     
-    // ClipA needs tail handle (to extend past its current end)
-    const clipAHandles = get().getClipHandles(clipAId)
-    // ClipB needs head handle (to start earlier than its current start)
-    const clipBHandles = get().getClipHandles(clipBId)
-    
-    // If editing an existing transition, add back its currently consumed handles
-    // so max duration is relative to the original cut, not the already-overlapped state.
-    let consumedA = 0
-    let consumedB = 0
-    if (transitionId) {
-      const transition = state.transitions.find(t => t.id === transitionId)
-      if (transition && transition.kind === 'between') {
-        const currentAlignment = transition?.settings?.alignment || 'center'
-        const consumed = getTransitionContributions(transition.duration, currentAlignment)
-        consumedA = consumed.clipA
-        consumedB = consumed.clipB
-      }
-    }
-    
-    const availableA = Math.max(0, clipAHandles.tail + consumedA)
-    const availableB = Math.max(0, clipBHandles.head + consumedB)
-    
-    // Also keep a conservative cap against current clip durations.
-    const maxFromClipA = Math.max(MIN_TRANSITION_DURATION, clipA.duration + consumedA)
-    const maxFromClipB = Math.max(MIN_TRANSITION_DURATION, clipB.duration + consumedB)
-    
-    if (alignment === 'start') {
-      return Math.min(availableA, maxFromClipA, maxFromClipB)
-    }
-    if (alignment === 'end') {
-      return Math.min(availableB, maxFromClipA, maxFromClipB)
-    }
-    // center
-    return Math.min(availableA * 2, availableB * 2, maxFromClipA, maxFromClipB)
+    const split = normalizeTransitionSplit(state.transitions.find(t => t.id === transitionId)?.settings?.split, alignment)
+    const effectiveA = Math.max(0, Number(clipA.duration) || 0)
+    const effectiveB = Math.max(0, Number(clipB.duration) || 0)
+
+    const maxFromA = split.clipA > 0 ? effectiveA / split.clipA : Infinity
+    const maxFromB = split.clipB > 0 ? effectiveB / split.clipB : Infinity
+    return Math.max(0, Math.min(maxFromA, maxFromB))
   },
 
   /**
@@ -3600,6 +3589,7 @@ export const useTimelineStore = create(
       ...(settings || {})
     }
     if (!merged.alignment) merged.alignment = 'center'
+    if (!merged.split) merged.split = { clipA: 0.5, clipB: 0.5 }
     return merged
   },
 
@@ -3625,32 +3615,32 @@ export const useTimelineStore = create(
       return existingTransition
     }
     
-    // Validate that clips are on the same track and adjacent
+    // Validate that clips are on the same track and touch or overlap.
     if (clipA.trackId !== clipB.trackId) {
       console.warn('Cannot add transition between clips on different tracks')
       return null
     }
-    
+
     const initialSettings = get().buildTransitionSettings(transitionType)
     const alignment = initialSettings.alignment || 'center'
 
-    // Get max allowed transition duration based on available handles + alignment
+    // Cut-anchored transitions consume time from each clip without moving them.
     const maxDuration = get().getMaxTransitionDurationForAlignment(clipAId, clipBId, alignment)
     if (maxDuration < MIN_TRANSITION_DURATION) {
-      console.warn('Insufficient handles for transition. Need more footage before/after trim points.')
+      console.warn('Insufficient clip duration for transition. Need more footage on one or both clips.')
       return null
     }
-    
+
     // Clamp duration to available handles
     const actualDuration = Math.max(MIN_TRANSITION_DURATION, Math.min(duration, maxDuration))
-    const contribution = getTransitionContributions(actualDuration, alignment)
-    
+    const contribution = getTransitionContributions(actualDuration, initialSettings)
+
     // Store the original edit point (where clips meet)
     const editPoint = clipA.startTime + clipA.duration
-    
+
     // Save to history before modifying
     get().saveToHistory()
-    
+
     const newTransition = {
       id: `transition-${state.transitionCounter}`,
       kind: 'between',
@@ -3659,7 +3649,9 @@ export const useTimelineStore = create(
       type: transitionType,
       duration: actualDuration,
       settings: initialSettings,
-      // Store original positions for removal
+      split: initialSettings.split || null,
+      contributions: contribution,
+      // Store original positions for compatibility / rendering
       editPoint: editPoint,
       originalClipAEnd: clipA.startTime + clipA.duration,
       originalClipADuration: clipA.duration,
@@ -3668,33 +3660,8 @@ export const useTimelineStore = create(
       originalClipBDuration: clipB.duration,
       originalClipBTrimStart: clipB.trimStart,
     }
-    
-    // Modify clips to create overlap:
-    // clipA contributes from its tail; clipB contributes from its head.
+
     set((state) => ({
-      clips: state.clips.map(c => {
-        if (c.id === clipAId) {
-          // Extend clipA's duration/trimEnd by clipA contribution
-          const trimEnd = getClipTrimEnd(c)
-          const trimEndDelta = timelineToSourceTime(c, contribution.clipA)
-          return {
-            ...c,
-            duration: c.duration + contribution.clipA,
-            trimEnd: trimEnd + trimEndDelta
-          }
-        }
-        if (c.id === clipBId) {
-          // Start clipB earlier and adjust trimStart by clipB contribution
-          const trimStartDelta = timelineToSourceTime(c, contribution.clipB)
-          return {
-            ...c,
-            startTime: c.startTime - contribution.clipB,
-            duration: c.duration + contribution.clipB,
-            trimStart: Math.max(0, (c.trimStart || 0) - trimStartDelta)
-          }
-        }
-        return c
-      }),
       transitions: [...state.transitions, newTransition],
       transitionCounter: state.transitionCounter + 1,
       selectedTransitionId: newTransition.id,
@@ -3763,41 +3730,14 @@ export const useTimelineStore = create(
     // Save to history before modifying
     get().saveToHistory()
 
-    // Edge transitions don't modify clips
-    if (transition.kind === 'edge') {
+    // Between transitions are metadata-only now, so removing them just drops the record.
+    if (transition.kind === 'edge' || transition.kind === 'between') {
       set((state) => ({
         transitions: state.transitions.filter(t => t.id !== transitionId),
         selectedTransitionId: state.selectedTransitionId === transitionId ? null : state.selectedTransitionId
       }))
       return
     }
-    
-    // Restore clips to their original positions (between transitions)
-    set((state) => ({
-      clips: state.clips.map(c => {
-        if (c.id === transition.clipAId && transition.originalClipATrimEnd !== undefined) {
-          const newDuration = transition.originalClipADuration ?? (transition.originalClipAEnd - c.startTime)
-          return {
-            ...c,
-            duration: newDuration,
-            trimEnd: transition.originalClipATrimEnd
-          }
-        }
-        if (c.id === transition.clipBId && transition.originalClipBStart !== undefined) {
-          const newDuration = transition.originalClipBDuration ?? (c.duration - (c.startTime - transition.originalClipBStart))
-          return {
-            ...c,
-            startTime: transition.originalClipBStart,
-            duration: newDuration,
-            trimStart: transition.originalClipBTrimStart
-          }
-        }
-        return c
-      }),
-      transitions: state.transitions.filter(t => t.id !== transitionId)
-      ,
-      selectedTransitionId: state.selectedTransitionId === transitionId ? null : state.selectedTransitionId
-    }))
   },
 
   /**
@@ -3865,7 +3805,7 @@ export const useTimelineStore = create(
     const clipB = state.clips.find(c => c.id === transition.clipBId)
     if (!clipA || !clipB) return
 
-    // Between transition: rebalance overlap by old/new contribution model
+    // Between transition: just update stored metadata and split ratios.
     const oldAlignment = transition?.settings?.alignment || 'center'
     const nextAlignment = alignmentUpdate || oldAlignment
     const newDuration = updates.duration ?? transition.duration
@@ -3878,36 +3818,11 @@ export const useTimelineStore = create(
     )
     if (maxDuration < MIN_TRANSITION_DURATION) return
     const actualNewDuration = Math.min(Math.max(MIN_TRANSITION_DURATION, newDuration), maxDuration)
-    const oldContribution = getTransitionContributions(oldDuration, oldAlignment)
-    const newContribution = getTransitionContributions(actualNewDuration, nextAlignment)
-    const deltaA = newContribution.clipA - oldContribution.clipA
-    const deltaB = newContribution.clipB - oldContribution.clipB
-    
+
     // Save to history
     get().saveToHistory()
-    
+
     set((state) => ({
-      clips: state.clips.map(c => {
-        if (c.id === transition.clipAId) {
-          const trimEnd = getClipTrimEnd(c)
-          const trimEndDelta = timelineToSourceTime(c, deltaA)
-          return {
-            ...c,
-            duration: c.duration + deltaA,
-            trimEnd: trimEnd + trimEndDelta
-          }
-        }
-        if (c.id === transition.clipBId) {
-          const trimStartDelta = timelineToSourceTime(c, deltaB)
-          return {
-            ...c,
-            startTime: c.startTime - deltaB,
-            duration: c.duration + deltaB,
-            trimStart: Math.max(0, (c.trimStart || 0) - trimStartDelta)
-          }
-        }
-        return c
-      }),
       transitions: state.transitions.map(t =>
         t.id === transitionId
           ? {
@@ -3966,21 +3881,53 @@ export const useTimelineStore = create(
   getActiveClipsAtTime: (time) => {
     const state = get()
     const activeClips = []
-    
+    const addedClipIds = new Set()
+
+    const pushActiveClip = (clip, track) => {
+      if (!clip || addedClipIds.has(clip.id)) return
+      addedClipIds.add(clip.id)
+      activeClips.push({ clip, track })
+    }
+
+    const addTransitionClipsAtTime = (transition, progress = 0) => {
+      if (!transition || transition.kind !== 'between') return
+      const clipA = state.clips.find(c => c.id === transition.clipAId)
+      const clipB = state.clips.find(c => c.id === transition.clipBId)
+      if (!clipA || !clipB) return
+      const track = state.tracks.find(t => t.id === clipA.trackId)
+      if (!track) return
+      pushActiveClip(clipA, track)
+      pushActiveClip(clipB, track)
+    }
+
     for (const track of state.tracks) {
       if (!track.visible || track.muted) continue
-      
+
       const trackClips = state.clips.filter(c =>
         c.trackId === track.id &&
         isClipEnabled(c) &&
         time >= c.startTime &&
         time < c.startTime + c.duration
       )
-      if (trackClips.length > 0) {
-        // Keep deterministic order (earlier clips first)
-        trackClips
-          .sort((a, b) => a.startTime - b.startTime)
-          .forEach(clip => activeClips.push({ clip, track }))
+      trackClips
+        .sort((a, b) => a.startTime - b.startTime)
+        .forEach(clip => pushActiveClip(clip, track))
+    }
+
+    for (const transition of state.transitions) {
+      if (!transition || transition.kind !== 'between') continue
+      const clipA = state.clips.find(c => c.id === transition.clipAId)
+      const clipB = state.clips.find(c => c.id === transition.clipBId)
+      if (!clipA || !clipB) continue
+      const split = normalizeTransitionSplit(transition?.settings?.split, transition?.settings?.alignment || 'center')
+      const editPoint = Number.isFinite(Number(transition.editPoint))
+        ? Number(transition.editPoint)
+        : (clipA.startTime + clipA.duration)
+      const duration = Math.max(0, Number(transition.duration) || 0)
+      const transitionStart = editPoint - (duration * split.clipA)
+      const transitionEnd = editPoint + (duration * split.clipB)
+      if (time >= transitionStart && time < transitionEnd) {
+        addTransitionClipsAtTime(transition)
       }
     }
     return activeClips
@@ -4057,17 +4004,15 @@ export const useTimelineStore = create(
       const duration = Number(transition.duration)
       if (!Number.isFinite(duration) || duration <= 0) continue
 
-      // With overlap model:
-      // - ClipB.startTime is where the transition starts
-      // - ClipA.startTime + ClipA.duration is where the transition ends
-      // Both clips are visible during this overlap period
-      const transitionStart = clipB.startTime
-      const clipAEnd = clipA.startTime + clipA.duration
+      const split = normalizeTransitionSplit(transition?.settings?.split, transition?.settings?.alignment || 'center')
+      const editPoint = Number.isFinite(Number(transition.editPoint))
+        ? Number(transition.editPoint)
+        : (clipA.startTime + clipA.duration)
+      const transitionStart = editPoint - (duration * split.clipA)
+      const transitionEnd = editPoint + (duration * split.clipB)
 
-      // The overlap zone is where both clips exist simultaneously
-      if (safeTime >= transitionStart && safeTime < clipAEnd) {
-        // Progress goes from 0 (start of clipB) to 1 (end of clipA overlap)
-        const progress = (safeTime - transitionStart) / duration
+      if (safeTime >= transitionStart && safeTime < transitionEnd) {
+        const progress = (safeTime - transitionStart) / Math.max(1e-6, transitionEnd - transitionStart)
         candidates.push({
           trackPriority: getTrackPriority(clipA.trackId),
           kindPriority: 0,
