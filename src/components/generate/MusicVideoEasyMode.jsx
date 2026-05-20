@@ -565,6 +565,8 @@ export default function MusicVideoEasyMode({
   const [selectedShotIndexes, setSelectedShotIndexes] = useState([0])
   const [selectionAnchorIndex, setSelectionAnchorIndex] = useState(0)
   const [runtimeImageDimensions, setRuntimeImageDimensions] = useState({})
+  const [selectedShotIndexes, setSelectedShotIndexes] = useState([0])
+  const [selectionAnchorIndex, setSelectionAnchorIndex] = useState(0)
   const [advancedAudioOpen, setAdvancedAudioOpen] = useState(false)
   const [briefStatus, setBriefStatus] = useState('')
   const [parseStatus, setParseStatus] = useState('')
@@ -3157,10 +3159,10 @@ export default function MusicVideoEasyMode({
                       {[selectedVideoWorkflowLabel, outputResolutionLabel, `${videoFps} fps`, getCoverageLabel(selectedShotRow.scene, selectedShotRow.shot)].filter(Boolean).join(' / ')}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleRegenerateSelectedVideo}
-                    disabled={singleVideoActionDisabled}
+                <button
+                  type="button"
+                  onClick={handleRegenerateSelectedVideo}
+                  disabled={singleVideoActionDisabled}
                     className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
