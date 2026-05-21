@@ -90,7 +90,18 @@ export default function WorkflowBrowser({
                     : 'text-sf-text-muted hover:bg-sf-dark-700 hover:text-sf-text-primary'
                 }`}
               >
-                {ROUTE_LABELS[routeId] || routeId}
+                <span className="inline-flex items-center gap-1.5">
+                  <span>{ROUTE_LABELS[routeId] || routeId}</span>
+                  {routeId === GENERATE_WORKFLOW_ROUTES.custom && (
+                    <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none ${
+                      route === routeId
+                        ? 'bg-white/20 text-white'
+                        : 'bg-amber-500/15 text-amber-200'
+                    }`}>
+                      Beta
+                    </span>
+                  )}
+                </span>
               </button>
             ))}
           </div>

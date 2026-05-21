@@ -2612,36 +2612,113 @@ async function extractFrameAsFile(videoUrl, time, filename = 'frame.png') {
   })
 }
 
+const GENERATE_WORKSPACE_LEGACY_STORAGE_KEY = 'generate-workspace-state'
+const GENERATE_WORKSPACE_PROJECT_STORAGE_PREFIX = 'generate-workspace-state:project:'
+
+function migrateGenerateWorkspaceState(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const migrated = { ...value }
+  if (migrated.workflowId === 'nano-banana-pro') {
+    migrated.workflowId = 'nano-banana-2'
+  }
+  if (migrated.workflowId === 'ltx2-t2v' || migrated.workflowId === 'ltx2-i2v') {
+    migrated.workflowId = 'wan22-i2v'
+  }
+  if (migrated.yoloVideoWorkflowTarget === 'ltx2-i2v' || migrated.yoloVideoWorkflowTarget === 'both') {
+    migrated.yoloVideoWorkflowTarget = 'wan22-i2v'
+  }
+  return migrated
+}
+
+function getGenerateWorkspaceProjectScope(projectHandle, project) {
+  if (typeof projectHandle === 'string' && projectHandle.trim()) {
+    return `path:${projectHandle.trim()}`
+  }
+  if (project?.created) return `created:${project.created}`
+  if (project?.name) return `name:${project.name}`
+  return ''
+}
+
+function getGenerateWorkspaceProjectStorageKey(projectScope) {
+  return projectScope ? `${GENERATE_WORKSPACE_PROJECT_STORAGE_PREFIX}${projectScope}` : ''
+}
+
+function getProjectAssetIdSet(project) {
+  return new Set((Array.isArray(project?.assets) ? project.assets : [])
+    .map((asset) => String(asset?.id || '').trim())
+    .filter(Boolean))
+}
+
+function collectGenerateWorkspaceAssetIds(state) {
+  const ids = [
+    state?.selectedAssetId,
+    state?.selectedAudioAssetId,
+    state?.referenceAssetId1,
+    state?.referenceAssetId2,
+    state?.yoloAdProductAssetId,
+    state?.yoloAdModelAssetId,
+    state?.yoloAdVoiceoverAssetId,
+    state?.yoloMusicAudioAssetId,
+    state?.yoloMusicArtistAssetId,
+  ]
+  Object.values(state?.selectedAssetFieldIds || {}).forEach((assetId) => ids.push(assetId))
+  ;(Array.isArray(state?.yoloMusicCast) ? state.yoloMusicCast : []).forEach((entry) => ids.push(entry?.assetId))
+  return ids.map((id) => String(id || '').trim()).filter(Boolean)
+}
+
+function legacyGenerateStateMatchesProject(state, project) {
+  const assetIds = collectGenerateWorkspaceAssetIds(state)
+  if (assetIds.length === 0) return false
+  const projectAssetIds = getProjectAssetIdSet(project)
+  if (projectAssetIds.size === 0) return false
+  return assetIds.every((assetId) => projectAssetIds.has(assetId))
+}
+
+function readGenerateWorkspaceStorage(storageKey) {
+  if (!storageKey || typeof localStorage === 'undefined') return null
+  try {
+    const raw = localStorage.getItem(storageKey)
+    return raw ? migrateGenerateWorkspaceState(JSON.parse(raw)) : null
+  } catch (error) {
+    console.error('Failed to load persisted Generate workspace state:', error)
+    return null
+  }
+}
+
+function loadPersistedGenerateWorkspaceState(project, projectHandle) {
+  if (project && Object.prototype.hasOwnProperty.call(project, 'generateWorkspace')) {
+    return migrateGenerateWorkspaceState(project.generateWorkspace)
+  }
+
+  const projectStorageKey = getGenerateWorkspaceProjectStorageKey(
+    getGenerateWorkspaceProjectScope(projectHandle, project)
+  )
+  const projectState = readGenerateWorkspaceStorage(projectStorageKey)
+  if (projectState) return projectState
+
+  const legacyState = readGenerateWorkspaceStorage(GENERATE_WORKSPACE_LEGACY_STORAGE_KEY)
+  return legacyGenerateStateMatchesProject(legacyState, project) ? legacyState : null
+}
+
 // ============================================
 // Main GenerateWorkspace Component
 // ============================================
 function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
-  // Load persisted state from localStorage
-  const loadPersistedState = () => {
-    try {
-      const saved = localStorage.getItem('generate-workspace-state')
-      if (saved) {
-        const parsed = JSON.parse(saved)
-        // Migrate legacy workflow id after Nano Banana 2 replacement.
-        if (parsed?.workflowId === 'nano-banana-pro') {
-          parsed.workflowId = 'nano-banana-2'
-        }
-        // Migrate removed LTX2 workflows/targets to WAN 2.2.
-        if (parsed?.workflowId === 'ltx2-t2v' || parsed?.workflowId === 'ltx2-i2v') {
-          parsed.workflowId = 'wan22-i2v'
-        }
-        if (parsed?.yoloVideoWorkflowTarget === 'ltx2-i2v' || parsed?.yoloVideoWorkflowTarget === 'both') {
-          parsed.yoloVideoWorkflowTarget = 'wan22-i2v'
-        }
-        return parsed
-      }
-    } catch (error) {
-      console.error('Failed to load persisted Generate workspace state:', error)
-    }
-    return null
-  }
-
-  const persistedState = loadPersistedState()
+  const {
+    currentProjectHandle,
+    currentProject,
+    saveProject,
+    setGenerateWorkspaceState,
+  } = useProjectStore()
+  const generateWorkspaceProjectScope = useMemo(() => (
+    getGenerateWorkspaceProjectScope(currentProjectHandle, currentProject)
+  ), [currentProject?.created, currentProject?.name, currentProjectHandle])
+  const generateWorkspaceProjectStorageKey = useMemo(() => (
+    getGenerateWorkspaceProjectStorageKey(generateWorkspaceProjectScope)
+  ), [generateWorkspaceProjectScope])
+  const persistedState = useMemo(() => (
+    loadPersistedGenerateWorkspaceState(currentProject, currentProjectHandle)
+  ), [currentProject?.created, currentProject?.name, currentProjectHandle])
 
   // UI mode
   const [generationMode, setGenerationMode] = useState(persistedState?.generationMode || 'single')
@@ -2980,7 +3057,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   // Hooks
   const { isConnected, wsConnected, queueCount, recheckConnection } = useComfyUI()
   const { addAsset, generateName, assets } = useAssetsStore()
-  const { currentProjectHandle, currentProject, saveProject } = useProjectStore()
   const timelineTracks = useTimelineStore((s) => s.tracks)
   const timelineAddTextClip = useTimelineStore((s) => s.addTextClip)
   const timelineAddTrack = useTimelineStore((s) => s.addTrack)
@@ -3080,6 +3156,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   useEffect(() => {
     try {
       const stateToSave = {
+        version: 2,
+        projectScope: generateWorkspaceProjectScope,
         generationMode,
         category,
         workflowId,
@@ -3156,11 +3234,17 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         yoloMusicPlan,
         yoloMusicPlanSignature,
       }
-      localStorage.setItem('generate-workspace-state', JSON.stringify(stateToSave))
+      if (generateWorkspaceProjectStorageKey && typeof localStorage !== 'undefined') {
+        localStorage.setItem(generateWorkspaceProjectStorageKey, JSON.stringify(stateToSave))
+      }
+      setGenerateWorkspaceState?.(stateToSave)
     } catch (error) {
       console.error('Failed to save Generate workspace state:', error)
     }
   }, [
+    generateWorkspaceProjectScope,
+    generateWorkspaceProjectStorageKey,
+    setGenerateWorkspaceState,
     generationMode,
     category,
     workflowId,
@@ -4073,67 +4157,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const createGenerateCustomImageStarter = useCallback(async () => {
     const starter = {
       '1': {
-        class_type: 'LoadImage',
-        inputs: {
-          image: '',
-        },
-        _meta: {
-          title: 'COMFYSTUDIO_INPUT_IMAGE',
-        },
-      },
-      '2': {
-        class_type: 'PrimitiveStringMultiline',
-        inputs: {
-          value: 'ComfyStudio will inject the image prompt here.',
-        },
-        _meta: {
-          title: 'COMFYSTUDIO_PROMPT',
-        },
-      },
-      '3': {
-        class_type: 'PrimitiveInt',
-        inputs: {
-          value: 0,
-        },
-        _meta: {
-          title: 'COMFYSTUDIO_SEED',
-        },
-      },
-      '4': {
-        class_type: 'PrimitiveInt',
-        inputs: {
-          value: 1280,
-        },
-        _meta: {
-          title: 'COMFYSTUDIO_WIDTH',
-        },
-      },
-      '5': {
-        class_type: 'PrimitiveInt',
-        inputs: {
-          value: 720,
-        },
-        _meta: {
-          title: 'COMFYSTUDIO_HEIGHT',
-        },
-      },
-      '6': {
-        class_type: 'ImageScale',
-        inputs: {
-          image: ['1', 0],
-          upscale_method: 'lanczos',
-          width: ['4', 0],
-          height: ['5', 0],
-          crop: 'center',
-        },
-        _meta: {
-          title: 'ComfyStudio Output Resize',
-        },
-      },
-      '7': {
         class_type: 'SaveImage',
         inputs: {
-          images: ['6', 0],
           filename_prefix: 'image/custom_generate_starter',
         },
         _meta: {
@@ -4141,7 +4166,11 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         },
       },
     }
-    const validation = validateCustomKeyframeWorkflow(starter, { requireInputImage: false })
+    const validation = validateCustomKeyframeWorkflow(starter, {
+      requireInputImage: false,
+      requirePrompt: false,
+      validateOptionalEndpoints: false,
+    })
     return {
       name: 'ComfyStudio custom image starter',
       workflow: starter,
@@ -5338,7 +5367,11 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       }
     }
     try {
-      return validateCustomKeyframeWorkflow(JSON.parse(text), { requireInputImage: false })
+      return validateCustomKeyframeWorkflow(JSON.parse(text), {
+        requireInputImage: false,
+        requirePrompt: false,
+        validateOptionalEndpoints: false,
+      })
     } catch (error) {
       return {
         ok: false,
@@ -10517,11 +10550,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         case CUSTOM_GENERATE_IMAGE_WORKFLOW_ID:
           modifiedWorkflow = modifyCustomKeyframeWorkflow(workflowJson, {
             requireInputImage: false,
-            prompt: job.prompt,
+            requirePrompt: false,
+            validateOptionalEndpoints: false,
+            prompt: '',
             inputImage: assetFieldFilenames.customInputImage || uploadedFilename || '',
-            seed: job.seed,
-            width: job.resolution?.width,
-            height: job.resolution?.height,
+            seed: null,
+            width: null,
+            height: null,
             filenamePrefix: outputPrefix || 'image/custom_generate',
           })
           break
@@ -11530,6 +11565,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                   />
                 ) : isYoloMusicMode ? (
                   <MusicVideoEasyMode
+                    draftStorageScope={generateWorkspaceProjectScope}
                     assets={assets}
                     yoloMusicAudioAssets={yoloMusicAudioAssets}
                     yoloMusicAudioAssetId={yoloMusicAudioAssetId}

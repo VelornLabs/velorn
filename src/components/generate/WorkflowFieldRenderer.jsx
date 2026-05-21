@@ -208,10 +208,12 @@ export default function WorkflowFieldRenderer({ field, workflow, values, actions
               <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
                 {customKind === 'video'
                   ? 'Required: COMFYSTUDIO_PROMPT and COMFYSTUDIO_OUTPUT_VIDEO. Optional: COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_AUDIO, COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT, COMFYSTUDIO_FPS, COMFYSTUDIO_DURATION.'
-                  : 'Required: COMFYSTUDIO_PROMPT and COMFYSTUDIO_OUTPUT_IMAGE. Optional: COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT.'}
+                  : 'Required: COMFYSTUDIO_OUTPUT_IMAGE.'}
               </p>
               <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-                ComfyStudio shows controls only for endpoint nodes found in the loaded graph. Leave an endpoint out when you want ComfyUI to control that setting.
+                {customKind === 'video'
+                  ? 'ComfyStudio shows controls for supported endpoint nodes found in the loaded graph. Leave an endpoint out when you want ComfyUI to control that setting.'
+                  : 'Use ComfyUI to control prompts, references, seed, size, and model settings for this image graph.'}
               </p>
               <div className={`mt-2 text-[10px] ${isReady ? 'text-emerald-300' : 'text-amber-200'}`}>
                 {validation.message || 'Open the starter in ComfyUI, then send it back or import API JSON.'}

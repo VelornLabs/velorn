@@ -278,6 +278,9 @@ function App() {
     autoSaveEnabled,
     autoSaveInterval,
   } = useProjectStore()
+  const projectSessionKey = currentProject
+    ? (currentProject.created || currentProject.name || 'project')
+    : 'no-project'
   const mediaPreparation = useAssetsStore((state) => state.mediaPreparation)
   const mediaPreparationTotal = Math.max(0, Number(mediaPreparation?.total) || 0)
   const mediaPreparationCompleted = Math.max(0, Math.min(mediaPreparationTotal, Number(mediaPreparation?.completed) || 0))
@@ -523,7 +526,10 @@ function App() {
           className="flex-1 flex flex-col min-h-0 overflow-hidden bg-sf-dark-950"
           style={{ display: mainTab === 'generate' ? 'flex' : 'none' }}
         >
-          <GenerateWorkspace onOpenWorkflowSetup={() => openSettingsModal(WORKFLOW_SETUP_SECTION_ID)} />
+          <GenerateWorkspace
+            key={`generate-workspace-${projectSessionKey}`}
+            onOpenWorkflowSetup={() => openSettingsModal(WORKFLOW_SETUP_SECTION_ID)}
+          />
         </div>
         {hasMountedFlowAi && (
           <div

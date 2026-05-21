@@ -425,6 +425,7 @@ export const useProjectStore = create(
             currentTimelineId: defaultTimeline.id,
             assets: [],
             flowAi: createDefaultFlowAiProjectData(),
+            generateWorkspace: null,
           }
           
           // Save project file
@@ -1172,6 +1173,23 @@ export const useProjectStore = create(
           } : null,
         }))
         return normalized
+      },
+
+      /**
+       * Keep Generate/Create workspace state with the active project so
+       * new projects start blank and existing projects can reopen their own
+       * music-video/script/custom-workflow context.
+       */
+      setGenerateWorkspaceState: (generateWorkspace) => {
+        set((state) => {
+          if (!state.currentProject) return {}
+          return {
+            currentProject: {
+              ...state.currentProject,
+              generateWorkspace,
+            },
+          }
+        })
       },
       
       /**

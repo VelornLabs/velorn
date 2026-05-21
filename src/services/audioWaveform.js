@@ -2,7 +2,7 @@ let audioWaveformContext = null
 
 const AUDIO_WAVEFORM_CACHE = new Map()
 const AUDIO_WAVEFORM_PENDING = new Map()
-const DEFAULT_AUDIO_WAVEFORM_SAMPLES = 4096
+const DEFAULT_AUDIO_WAVEFORM_SAMPLES = 8192
 
 function getAudioWaveformContext() {
   if (typeof window === 'undefined') return null

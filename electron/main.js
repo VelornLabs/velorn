@@ -2315,8 +2315,8 @@ ipcMain.handle('media:getAudioWaveform', async (event, mediaInput, options = {})
     return { success: false, error: 'Invalid audio input path.' }
   }
 
-  const sampleCount = Math.max(128, Math.min(8192, Math.round(Number(options?.sampleCount) || 4096)))
-  const sampleRate = Math.max(400, Math.min(6000, Math.round(Number(options?.sampleRate) || 2000)))
+  const sampleCount = Math.max(128, Math.min(32768, Math.round(Number(options?.sampleCount) || 8192)))
+  const sampleRate = Math.max(400, Math.min(12000, Math.round(Number(options?.sampleRate) || 4000)))
 
   let stat
   try {

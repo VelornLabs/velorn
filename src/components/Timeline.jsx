@@ -39,7 +39,7 @@ import {
 import MasterAudioMeter from './AudioMeter'
 
 const TRANSITION_DEFAULT_DURATION_KEY = 'comfystudio-transition-default-duration-frames'
-const DEFAULT_WAVEFORM_SAMPLES = 4096
+const DEFAULT_WAVEFORM_SAMPLES = 8192
 const MARQUEE_DRAG_THRESHOLD_PX = 6
 const MARQUEE_AUTO_SCROLL_EDGE_PX = 32
 const MARQUEE_AUTO_SCROLL_STEP_PX = 24
@@ -49,8 +49,8 @@ const MIN_INTERACTIVE_CLIP_WIDTH_PX = 24
 
 // Resolve-style audio track/waveform colors
 const AUDIO_TRACK_BG = '#2d4038'
-const AUDIO_WAVEFORM_FILL = '#7eb8a8'
-const AUDIO_WAVEFORM_CENTER_LINE = 'rgba(255,255,255,0.35)'
+const AUDIO_WAVEFORM_FILL = 'rgba(238, 255, 249, 0.94)'
+const AUDIO_WAVEFORM_CENTER_LINE = 'rgba(255,255,255,0.32)'
 const AUDIO_CLIP_ACCENT = '#4a6b5c'
 const ADJACENT_CLIP_UI_GAP_SECONDS = 0.5
 const ROLL_EDIT_MAX_GAP_SECONDS = 1 / FRAME_RATE
@@ -289,7 +289,16 @@ const getAudioWaveformData = async (url, sampleCount = DEFAULT_WAVEFORM_SAMPLES)
 
 // Pixel count for canvas waveform: one sample per pixel up to 2x display width (Resolve-like resolution)
 function getWaveformPixelCount(clipWidthPx) {
-  return Math.min(2048, Math.max(64, Math.round(clipWidthPx)))
+  return Math.min(8192, Math.max(96, Math.round(clipWidthPx * 2)))
+}
+
+function getWaveformSampleCount(pixelCount) {
+  const target = Math.max(DEFAULT_WAVEFORM_SAMPLES, Math.round(Number(pixelCount) || 0) * 2)
+  let sampleCount = DEFAULT_WAVEFORM_SAMPLES
+  while (sampleCount < target && sampleCount < 32768) {
+    sampleCount *= 2
+  }
+  return Math.min(32768, sampleCount)
 }
 
 function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
@@ -297,6 +306,8 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   const containerRef = useRef(null)
   const canvasRef = useRef(null)
+  const pixelCount = getWaveformPixelCount(clipWidth)
+  const waveformSampleCount = getWaveformSampleCount(pixelCount)
 
   useEffect(() => {
     let cancelled = false
@@ -307,7 +318,7 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
       return () => { cancelled = true }
     }
 
-    getAudioWaveformData(mediaInput)
+    getAudioWaveformData(mediaInput, waveformSampleCount)
       .then((data) => {
         if (!cancelled) setWaveform(data)
       })
@@ -318,7 +329,7 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     return () => {
       cancelled = true
     }
-  }, [clipUrl, waveformInput])
+  }, [clipUrl, waveformInput, waveformSampleCount])
 
   useEffect(() => {
     const el = containerRef.current
@@ -330,7 +341,6 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     return () => ro.disconnect()
   }, [clipWidth])
 
-  const pixelCount = getWaveformPixelCount(clipWidth)
   const amplitudePixels = useMemo(() => {
     if (!waveform?.peaks?.length) return null
 
@@ -349,20 +359,24 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
 
     const out = new Array(pixelCount)
     for (let i = 0; i < pixelCount; i++) {
-      const progress = pixelCount <= 1 ? 0.5 : i / (pixelCount - 1)
-      const sourceTime = isReverse
-        ? trimEnd - (progress * sourceSpan)
-        : trimStart + (progress * sourceSpan)
-      const normalized = Math.max(0, Math.min(0.999999, sourceTime / sourceDuration))
-      const exact = normalized * (peaks.length - 1)
-      const leftIndex = Math.floor(exact)
-      const rightIndex = Math.min(peaks.length - 1, leftIndex + 1)
-      const mix = exact - leftIndex
-      const left = peaks[leftIndex] || 0
-      const right = peaks[rightIndex] || 0
-      const sample = left * (1 - mix) + right * mix
-      const smoothed = (sample + (peaks[leftIndex - 1] ?? left) + (peaks[rightIndex + 1] ?? right)) / 3
-      out[i] = Math.max(0.04, Math.min(1, smoothed))
+      const startProgress = i / pixelCount
+      const endProgress = (i + 1) / pixelCount
+      const startTime = isReverse
+        ? trimEnd - (endProgress * sourceSpan)
+        : trimStart + (startProgress * sourceSpan)
+      const endTime = isReverse
+        ? trimEnd - (startProgress * sourceSpan)
+        : trimStart + (endProgress * sourceSpan)
+      const normalizedStart = Math.max(0, Math.min(0.999999, startTime / sourceDuration))
+      const normalizedEnd = Math.max(0, Math.min(0.999999, endTime / sourceDuration))
+      const leftIndex = Math.max(0, Math.floor(normalizedStart * (peaks.length - 1)))
+      const rightIndex = Math.min(peaks.length - 1, Math.ceil(normalizedEnd * (peaks.length - 1)))
+      let peak = 0
+      for (let peakIndex = leftIndex; peakIndex <= rightIndex; peakIndex += 1) {
+        const value = Number(peaks[peakIndex] || 0)
+        if (value > peak) peak = value
+      }
+      out[i] = Math.max(0.015, Math.min(1, peak))
     }
     return out
   }, [waveform, clip.sourceDuration, clip.trimStart, clip.trimEnd, clip.reverse, pixelCount])
@@ -391,24 +405,19 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     const n = amplitudePixels ? amplitudePixels.length : 0
 
     if (n > 0) {
-      ctx.fillStyle = AUDIO_WAVEFORM_FILL
+      ctx.strokeStyle = AUDIO_WAVEFORM_FILL
+      ctx.lineWidth = 1
+      ctx.lineCap = 'butt'
       ctx.beginPath()
-      ctx.moveTo(0, centerY)
       for (let i = 0; i < n; i++) {
-        const x = (i / (n - 1 || 1)) * w
+        const x = ((i + 0.5) / n) * w
         const amp = amplitudePixels[i] ?? 0.1
-        const y = centerY - amp * halfH
-        ctx.lineTo(x, y)
+        const y1 = centerY - amp * halfH
+        const y2 = centerY + amp * halfH
+        ctx.moveTo(x, y1)
+        ctx.lineTo(x, y2)
       }
-      ctx.lineTo(w, centerY)
-      for (let i = n - 1; i >= 0; i--) {
-        const x = (i / (n - 1 || 1)) * w
-        const amp = amplitudePixels[i] ?? 0.1
-        const y = centerY + amp * halfH
-        ctx.lineTo(x, y)
-      }
-      ctx.closePath()
-      ctx.fill()
+      ctx.stroke()
     }
 
     ctx.strokeStyle = AUDIO_WAVEFORM_CENTER_LINE

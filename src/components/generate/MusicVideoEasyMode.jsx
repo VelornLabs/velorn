@@ -28,6 +28,7 @@ import {
 } from '../../config/musicVideoShotConfig'
 
 const DRAFT_STORAGE_KEY = 'comfystudio-music-video-easy-mode-draft-v1'
+const DRAFT_PROJECT_STORAGE_PREFIX = `${DRAFT_STORAGE_KEY}:project:`
 
 const STEPS = [
   { id: 'song', label: 'Song', number: '1' },
@@ -174,10 +175,14 @@ function normalizeDraftBoolean(value, fallback) {
   return fallback
 }
 
-function loadDraft() {
-  if (typeof localStorage === 'undefined') return DEFAULT_DRAFT
+function getDraftStorageKey(projectScope = '') {
+  return projectScope ? `${DRAFT_PROJECT_STORAGE_PREFIX}${projectScope}` : ''
+}
+
+function loadDraft(storageKey = '') {
+  if (!storageKey || typeof localStorage === 'undefined') return DEFAULT_DRAFT
   try {
-    const parsed = JSON.parse(localStorage.getItem(DRAFT_STORAGE_KEY) || '{}')
+    const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}')
     return {
       step: normalizeDraftStep(parsed.step),
       aspectRatio: normalizeDraftOption(parsed.aspectRatio, ASPECT_RATIO_OPTIONS, DEFAULT_DRAFT.aspectRatio),
@@ -388,6 +393,7 @@ function Stat({ label, value }) {
 }
 
 export default function MusicVideoEasyMode({
+  draftStorageScope = '',
   assets,
   generationQueue,
   yoloMusicAudioAssets,
@@ -451,7 +457,8 @@ export default function MusicVideoEasyMode({
   setResolution,
   setImageResolution,
 }) {
-  const initialDraft = useMemo(() => loadDraft(), [])
+  const draftStorageKey = useMemo(() => getDraftStorageKey(draftStorageScope), [draftStorageScope])
+  const initialDraft = useMemo(() => loadDraft(draftStorageKey), [draftStorageKey])
   const audioDefaultMigratedRef = useRef(false)
   const [step, setStep] = useState(initialDraft.step)
   const [aspectRatio, setAspectRatio] = useState(initialDraft.aspectRatio)
@@ -476,8 +483,8 @@ export default function MusicVideoEasyMode({
   const [mediaPreview, setMediaPreview] = useState(null)
 
   useEffect(() => {
-    if (typeof localStorage === 'undefined') return
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({
+    if (!draftStorageKey || typeof localStorage === 'undefined') return
+    localStorage.setItem(draftStorageKey, JSON.stringify({
       step,
       aspectRatio,
       resolutionPreset,
@@ -498,6 +505,7 @@ export default function MusicVideoEasyMode({
     resolutionPreset,
     step,
     videoFps,
+    draftStorageKey,
   ])
 
   useEffect(() => {

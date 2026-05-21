@@ -221,6 +221,8 @@ function normalizeComfyStudioOutputResize(workflow) {
 export function validateCustomKeyframeWorkflow(workflow, options = {}) {
   const {
     requireInputImage = true,
+    requirePrompt = true,
+    validateOptionalEndpoints = true,
   } = options || {}
   if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) {
     return {
@@ -236,7 +238,7 @@ export function validateCustomKeyframeWorkflow(workflow, options = {}) {
   const missing = []
   const warnings = []
   if (requireInputImage && !endpoints.inputImage) missing.push(CUSTOM_KEYFRAME_ENDPOINTS.inputImage)
-  if (!endpoints.prompt) missing.push(CUSTOM_KEYFRAME_ENDPOINTS.prompt)
+  if (requirePrompt && !endpoints.prompt) missing.push(CUSTOM_KEYFRAME_ENDPOINTS.prompt)
   if (!endpoints.outputImage) missing.push(CUSTOM_KEYFRAME_ENDPOINTS.outputImage)
   const blocking = [...missing]
 
@@ -246,16 +248,16 @@ export function validateCustomKeyframeWorkflow(workflow, options = {}) {
   if (endpoints.outputImage && endpoints.outputImage.node?.class_type !== 'SaveImage') {
     blocking.push(`${CUSTOM_KEYFRAME_ENDPOINTS.outputImage} must be a SaveImage node`)
   }
-  if (endpoints.prompt && !firstWritableInputKey(endpoints.prompt.node, ['value', 'prompt', 'text', 'string'])) {
+  if (requirePrompt && endpoints.prompt && !firstWritableInputKey(endpoints.prompt.node, ['value', 'prompt', 'text', 'string'])) {
     blocking.push(`${CUSTOM_KEYFRAME_ENDPOINTS.prompt} needs a writable value, prompt, text, or string input`)
   }
-  if (endpoints.seed && !firstWritableInputKey(endpoints.seed.node, ['seed', 'noise_seed', 'value'])) {
+  if (validateOptionalEndpoints && endpoints.seed && !firstWritableInputKey(endpoints.seed.node, ['seed', 'noise_seed', 'value'])) {
     warnings.push(`${CUSTOM_KEYFRAME_ENDPOINTS.seed} exists but has no seed, noise_seed, or value input.`)
   }
-  if (endpoints.width && !firstWritableInputKey(endpoints.width.node, ['width', 'value'])) {
+  if (validateOptionalEndpoints && endpoints.width && !firstWritableInputKey(endpoints.width.node, ['width', 'value'])) {
     warnings.push(`${CUSTOM_KEYFRAME_ENDPOINTS.width} exists but has no width or value input.`)
   }
-  if (endpoints.height && !firstWritableInputKey(endpoints.height.node, ['height', 'value'])) {
+  if (validateOptionalEndpoints && endpoints.height && !firstWritableInputKey(endpoints.height.node, ['height', 'value'])) {
     warnings.push(`${CUSTOM_KEYFRAME_ENDPOINTS.height} exists but has no height or value input.`)
   }
 
@@ -1668,10 +1670,16 @@ export function modifyCustomKeyframeWorkflow(workflow, options = {}) {
     referenceImages = [],
     filenamePrefix = 'image/custom_keyframe',
     requireInputImage = true,
+    requirePrompt = true,
+    validateOptionalEndpoints = true,
   } = options
 
   const modified = JSON.parse(JSON.stringify(workflow))
-  const validation = validateCustomKeyframeWorkflow(modified, { requireInputImage })
+  const validation = validateCustomKeyframeWorkflow(modified, {
+    requireInputImage,
+    requirePrompt,
+    validateOptionalEndpoints,
+  })
   if (!validation.ok) {
     throw new Error(validation.message || 'Custom keyframe workflow is missing required endpoints.')
   }
@@ -1680,8 +1688,12 @@ export function modifyCustomKeyframeWorkflow(workflow, options = {}) {
   if (endpoints.inputImage && (inputImage || requireInputImage)) {
     setEndpointValue(endpoints.inputImage.node, inputImage, ['image'])
   }
-  setEndpointValue(endpoints.prompt?.node, prompt, ['value', 'prompt', 'text', 'string'])
-  if (endpoints.seed) setEndpointValue(endpoints.seed.node, seed, ['seed', 'noise_seed', 'value'])
+  if (endpoints.prompt && (prompt || requirePrompt)) {
+    setEndpointValue(endpoints.prompt.node, prompt, ['value', 'prompt', 'text', 'string'])
+  }
+  if (endpoints.seed && seed !== null && seed !== undefined) {
+    setEndpointValue(endpoints.seed.node, seed, ['seed', 'noise_seed', 'value'])
+  }
   if (endpoints.width && Number(width) > 0) setEndpointValue(endpoints.width.node, Number(width), ['width', 'value'])
   if (endpoints.height && Number(height) > 0) setEndpointValue(endpoints.height.node, Number(height), ['height', 'value'])
 

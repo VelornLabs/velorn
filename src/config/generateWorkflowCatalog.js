@@ -146,15 +146,6 @@ const imageEditFields = Object.freeze([
 
 const customImageFields = Object.freeze([
   field('customWorkflow', { label: 'Custom workflow', type: 'customWorkflow', customKind: 'image' }),
-  field('customInputImage', {
-    label: 'Input image',
-    type: 'assetSelect',
-    assetType: 'image',
-    helper: 'Shown because this graph keeps COMFYSTUDIO_INPUT_IMAGE.',
-  }),
-  field('prompt', { label: 'Prompt', type: 'textarea' }),
-  field('imageResolution', { label: 'Size input', type: 'imageResolution' }),
-  field('seed', { label: 'Seed', type: 'seed' }),
 ])
 
 const customVideoFields = Object.freeze([
@@ -766,13 +757,13 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     id: 'custom-image-workflow',
     workflowId: CUSTOM_GENERATE_IMAGE_WORKFLOW_ID,
     title: 'Custom Image Workflow',
-    description: 'Bring your own ComfyUI image graph. ComfyStudio exposes only the inputs declared by matching endpoint nodes.',
+    description: 'Bring your own ComfyUI image graph. ComfyStudio runs it from Generate and imports the output image.',
     subtitle: 'Your ComfyUI image graph',
     mode: 'generate',
     route: 'custom',
     category: 'image',
     provider: 'ComfyStudio',
-    cover: cover('image-edit.webp'),
+    cover: cover('custom-image-workflow.webp'),
     badge: 'Custom',
     runtimeLabel: 'Graph-dependent',
     needsImage: false,
@@ -792,7 +783,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     route: 'custom',
     category: 'video',
     provider: 'ComfyStudio',
-    cover: cover('ltx23-i2v.webp'),
+    cover: cover('custom-video-workflow.webp'),
     badge: 'Custom',
     runtimeLabel: 'Graph-dependent',
     needsImage: false,
