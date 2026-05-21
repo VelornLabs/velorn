@@ -287,6 +287,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAudioWaveform: (mediaInput, options = {}) => ipcRenderer.invoke('media:getAudioWaveform', mediaInput, options),
 
   /**
+   * Extract a poster image from the first frames of a video via ffmpeg.
+   * @param {string} inputPath - Absolute source file path
+   * @param {string} outputPath - Absolute poster destination path
+   * @param {object} options - { seekSeconds?: number, width?: number, quality?: number }
+   * @returns {Promise<{success: boolean, width?: number, height?: number, error?: string}>}
+   */
+  extractVideoPoster: (inputPath, outputPath, options = {}) => ipcRenderer.invoke('media:extractVideoPoster', inputPath, outputPath, options),
+
+  /**
    * Mix the full timeline's program audio into a single mono 16 kHz WAV file
    * via FFmpeg in the main process. Required for timeline-scope transcription
    * (decoding long videos in the renderer via Web Audio causes renderer OOMs).

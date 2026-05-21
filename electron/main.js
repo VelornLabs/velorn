@@ -2408,6 +2408,67 @@ ipcMain.handle('media:getAudioWaveform', async (event, mediaInput, options = {})
   })
 })
 
+ipcMain.handle('media:extractVideoPoster', async (event, inputPath, outputPath, options = {}) => {
+  if (!ffmpegPath) {
+    return { success: false, error: 'FFmpeg binary not available.' }
+  }
+  if (!inputPath || !outputPath) {
+    return { success: false, error: 'Missing inputPath or outputPath.' }
+  }
+
+  let stat
+  try {
+    stat = await fs.stat(inputPath)
+  } catch (err) {
+    return { success: false, error: `Video file not found: ${err.message}` }
+  }
+
+  const seekSeconds = Math.max(0, Math.min(10, Number(options?.seekSeconds) || 0.1))
+  const posterWidth = Math.max(240, Math.min(1280, Math.round(Number(options?.width) || 640)))
+  const quality = Math.max(2, Math.min(31, Math.round(Number(options?.quality) || 3)))
+
+  try {
+    await fs.mkdir(path.dirname(outputPath), { recursive: true })
+  } catch (err) {
+    return { success: false, error: `Could not create poster directory: ${err.message}` }
+  }
+
+  return await new Promise((resolve) => {
+    const args = [
+      '-y',
+      '-ss', String(seekSeconds),
+      '-i', inputPath,
+      '-frames:v', '1',
+      '-vf', `scale=${posterWidth}:-2:force_original_aspect_ratio=decrease`,
+      '-q:v', String(quality),
+      outputPath,
+    ]
+
+    const proc = spawn(ffmpegPath, args, { windowsHide: true })
+    let stderr = ''
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString()
+    })
+    proc.on('error', (err) => {
+      resolve({ success: false, error: err.message })
+    })
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve({
+          success: true,
+          width: posterWidth,
+          height: null,
+          sourceSize: stat.size,
+          sourceModified: stat.mtimeMs,
+        })
+      } else {
+        resolve({ success: false, error: stderr || `FFmpeg exited with code ${code}` })
+      }
+    })
+  })
+})
+
 // Mix the full timeline's program audio (video-embedded audio + audio clips) into
 // a single mono 16 kHz WAV file using FFmpeg in the main process. This exists as
 // a dedicated handler (not part of export:mixAudio) because:

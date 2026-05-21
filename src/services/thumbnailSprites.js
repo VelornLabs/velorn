@@ -26,6 +26,38 @@ const SPRITE_CONFIG = {
   minDuration: 0.5,       // Don't generate sprites for clips shorter than this
 }
 
+const SPRITE_INDEX_FILE = 'sprite_index.json'
+
+async function getThumbnailDirectory(projectPath) {
+  const api = window.electronAPI
+  return await api.pathJoin(projectPath, 'thumbnails')
+}
+
+export async function loadSpriteIndex(projectPath) {
+  if (!isElectron()) return {}
+  const api = window.electronAPI
+  try {
+    const thumbDir = await getThumbnailDirectory(projectPath)
+    const indexPath = await api.pathJoin(thumbDir, SPRITE_INDEX_FILE)
+    if (!await api.exists(indexPath)) return {}
+    const result = await api.readFile(indexPath, { encoding: 'utf8' })
+    if (!result.success) return {}
+    const parsed = JSON.parse(result.data)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+async function saveSpriteIndex(projectPath, index) {
+  if (!isElectron()) return
+  const api = window.electronAPI
+  const thumbDir = await getThumbnailDirectory(projectPath)
+  await api.createDirectory(thumbDir)
+  const indexPath = await api.pathJoin(thumbDir, SPRITE_INDEX_FILE)
+  await api.writeFile(indexPath, JSON.stringify(index || {}, null, 2))
+}
+
 /**
  * Generate a thumbnail sprite for a video file
  * Uses canvas-based frame extraction (works in both Electron and web)
@@ -178,7 +210,7 @@ export async function saveSpriteToProject(projectPath, assetId, spriteBlob, spri
   const api = window.electronAPI
   
   // Create thumbnails directory
-  const thumbDir = await api.pathJoin(projectPath, 'thumbnails')
+  const thumbDir = await getThumbnailDirectory(projectPath)
   await api.createDirectory(thumbDir)
   
   // Save sprite image
@@ -196,6 +228,18 @@ export async function saveSpriteToProject(projectPath, assetId, spriteBlob, spri
     createdAt: new Date().toISOString(),
   }
   await api.writeFile(metaPath, JSON.stringify(metaToSave, null, 2))
+
+  try {
+    const index = await loadSpriteIndex(projectPath)
+    index[assetId] = {
+      ...metaToSave,
+      spritePath,
+      metaPath,
+    }
+    await saveSpriteIndex(projectPath, index)
+  } catch (err) {
+    console.warn('Failed to update sprite index:', err)
+  }
   
   return { spritePath, metaPath, spriteData: metaToSave }
 }
@@ -207,7 +251,7 @@ export async function saveSpriteToProject(projectPath, assetId, spriteBlob, spri
  * @param {string} assetId - Asset ID
  * @returns {Promise<{spriteUrl: string, spriteData: object}|null>}
  */
-export async function loadSpriteFromProject(projectPath, assetId) {
+export async function loadSpriteFromProject(projectPath, assetId, spriteIndex = null) {
   if (!isElectron()) {
     return null
   }
@@ -215,22 +259,43 @@ export async function loadSpriteFromProject(projectPath, assetId) {
   const api = window.electronAPI
   
   try {
-    const thumbDir = await api.pathJoin(projectPath, 'thumbnails')
-    const spritePath = await api.pathJoin(thumbDir, `${assetId}_sprite.jpg`)
-    const metaPath = await api.pathJoin(thumbDir, `${assetId}_sprite.json`)
-    
-    // Check if files exist
-    if (!await api.exists(spritePath) || !await api.exists(metaPath)) {
-      return null
+    const thumbDir = await getThumbnailDirectory(projectPath)
+    const loadedIndex = spriteIndex || await loadSpriteIndex(projectPath)
+    const indexedSprite = loadedIndex?.[assetId] || null
+    const legacySpritePath = await api.pathJoin(thumbDir, `${assetId}_sprite.jpg`)
+    const legacyMetaPath = await api.pathJoin(thumbDir, `${assetId}_sprite.json`)
+    const indexedSpritePath = indexedSprite?.spritePath || null
+    const indexedMetaPath = indexedSprite?.metaPath || null
+    const spriteCandidates = [indexedSpritePath, legacySpritePath].filter(Boolean)
+    let resolvedSpritePath = null
+    for (const candidate of spriteCandidates) {
+      if (await api.exists(candidate)) {
+        resolvedSpritePath = candidate
+        break
+      }
     }
-    
-    // Load metadata
-    const metaResult = await api.readFile(metaPath, { encoding: 'utf8' })
-    if (!metaResult.success) return null
-    const spriteData = JSON.parse(metaResult.data)
+    if (!resolvedSpritePath) return null
+
+    let spriteData = null
+    if (indexedSprite && indexedSpritePath === resolvedSpritePath) {
+      spriteData = indexedSprite
+    } else {
+      const metaCandidates = [
+        resolvedSpritePath === indexedSpritePath ? indexedMetaPath : null,
+        legacyMetaPath,
+      ].filter(Boolean)
+      for (const candidate of metaCandidates) {
+        if (!await api.exists(candidate)) continue
+        const metaResult = await api.readFile(candidate, { encoding: 'utf8' })
+        if (!metaResult.success) continue
+        spriteData = JSON.parse(metaResult.data)
+        break
+      }
+    }
+    if (!spriteData) return null
     
     // Get URL for sprite image
-    const spriteUrl = await api.getFileUrlDirect(spritePath)
+    const spriteUrl = await api.getFileUrlDirect(resolvedSpritePath)
     
     return { spriteUrl, spriteData: { ...spriteData, url: spriteUrl } }
   } catch (err) {
@@ -251,12 +316,22 @@ export async function deleteSpriteFromProject(projectPath, assetId) {
   const api = window.electronAPI
   
   try {
-    const thumbDir = await api.pathJoin(projectPath, 'thumbnails')
+    const thumbDir = await getThumbnailDirectory(projectPath)
     const spritePath = await api.pathJoin(thumbDir, `${assetId}_sprite.jpg`)
     const metaPath = await api.pathJoin(thumbDir, `${assetId}_sprite.json`)
     
     await api.deleteFile(spritePath)
     await api.deleteFile(metaPath)
+
+    try {
+      const index = await loadSpriteIndex(projectPath)
+      if (index && Object.prototype.hasOwnProperty.call(index, assetId)) {
+        delete index[assetId]
+        await saveSpriteIndex(projectPath, index)
+      }
+    } catch (_) {
+      // Ignore index cleanup failures.
+    }
   } catch (err) {
     // Ignore errors (files may not exist)
   }
@@ -320,6 +395,7 @@ export default {
   saveSpriteToProject,
   loadSpriteFromProject,
   deleteSpriteFromProject,
+  loadSpriteIndex,
   getSpriteFramePosition,
   getSpriteFrameStyle,
   SPRITE_CONFIG,
