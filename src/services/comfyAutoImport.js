@@ -413,6 +413,7 @@ const inFlightByPromptId = new Map()
 // Bounded so very long-running sessions don't leak memory.
 const MAX_SEEN_PROMPT_IDS = 1000
 const seenPromptIds = new Set()
+let historyBaselineInitialized = false
 
 function rememberSeenPrompt(promptId) {
   if (!promptId) return
@@ -425,14 +426,31 @@ function rememberSeenPrompt(promptId) {
   }
 }
 
-async function handlePromptSuccess(promptId, preFetchedEntry = null) {
+async function initializeHistoryBaseline() {
+  if (historyBaselineInitialized) return
+  try {
+    const historyMap = await comfyui.getHistory()
+    if (historyMap && typeof historyMap === 'object') {
+      Object.keys(historyMap).forEach((promptId) => {
+        if (!eligibleUnmanagedPromptIds.has(String(promptId))) rememberSeenPrompt(promptId)
+      })
+    }
+    historyBaselineInitialized = true
+  } catch (_) {
+    // ComfyUI may still be booting. The first successful active-tab scan will
+    // establish a baseline before importing unclaimed history entries.
+  }
+}
+
+async function handlePromptSuccess(promptId, preFetchedEntry = null, options = {}) {
   if (!promptId) return
   if (!isAutoImportEnabled()) return
   if (isPromptHandledByApp(promptId)) {
     rememberSeenPrompt(promptId)
     return
   }
-  if (!isEligibleUnmanagedPrompt(promptId)) {
+  const allowUnclaimed = Boolean(options?.allowUnclaimed)
+  if (!isEligibleUnmanagedPrompt(promptId) && !allowUnclaimed) {
     rememberSeenPrompt(promptId)
     return
   }
@@ -803,11 +821,11 @@ async function importStitchedSequence({ classification, apiWorkflow, promptId, p
 //   - `progress` during sampling (broadcast=True)
 //   - `status`   whenever the queue changes (queue_updated)
 //
-// We use broadcast `executing` events to claim prompt IDs only while the
-// app shell says the embedded ComfyUI tab is active, then use `status` as
-// the completion trigger to fetch `/history` for those claimed prompts.
-// This avoids importing unrelated runs from an external browser or another
-// project that happens to share the same ComfyUI server.
+// We use broadcast `executing` / `execution_start` events to claim prompt IDs
+// while the app shell says the embedded ComfyUI tab is active, then use status
+// and active-tab history scans as completion triggers. The history fallback is
+// intentionally baseline-gated so old ComfyUI history is not imported just
+// because the user opens the tab.
 
 let started = false
 const detachers = []
@@ -818,6 +836,7 @@ let scanTimer = null
 const SCAN_DEBOUNCE_MS = 300
 let lastScanAt = 0
 const MIN_SCAN_INTERVAL_MS = 400
+const ACTIVE_TAB_POLL_MS = 2500
 
 // How many history entries to examine per scan. ComfyUI's `/history`
 // with no promptId returns the in-memory ring buffer (default 200
@@ -825,7 +844,9 @@ const MIN_SCAN_INTERVAL_MS = 400
 async function scanRecentHistoryForCompletions() {
   if (!isAutoImportEnabled()) return
   if (!currentProjectHandle()) return
-  if (typeof runtimeOptions?.shouldImportUnmanagedPrompt === 'function' && eligibleUnmanagedPromptIds.size === 0) return
+  const scopedToActiveTab = typeof runtimeOptions?.shouldImportUnmanagedPrompt === 'function'
+  const allowActiveTabFallback = scopedToActiveTab && canObserveUnmanagedPrompts({ event: 'history_scan' })
+  if (scopedToActiveTab && eligibleUnmanagedPromptIds.size === 0 && !allowActiveTabFallback) return
   const now = Date.now()
   if (now - lastScanAt < MIN_SCAN_INTERVAL_MS) return
   lastScanAt = now
@@ -838,6 +859,14 @@ async function scanRecentHistoryForCompletions() {
     return
   }
   if (!historyMap || typeof historyMap !== 'object') return
+  const hadHistoryBaseline = historyBaselineInitialized
+  if (!historyBaselineInitialized) {
+    historyBaselineInitialized = true
+    Object.keys(historyMap).forEach((promptId) => {
+      if (!eligibleUnmanagedPromptIds.has(String(promptId))) rememberSeenPrompt(promptId)
+    })
+  }
+  const allowUnclaimedHistoryImport = allowActiveTabFallback && hadHistoryBaseline
 
   for (const promptId of Object.keys(historyMap)) {
     const pidKey = String(promptId)
@@ -855,14 +884,14 @@ async function scanRecentHistoryForCompletions() {
       continue
     }
     if (status.status_str !== 'success') continue
-    if (!isEligibleUnmanagedPrompt(pidKey)) {
+    if (!isEligibleUnmanagedPrompt(pidKey) && !allowUnclaimedHistoryImport) {
       rememberSeenPrompt(pidKey)
       continue
     }
 
     // Fire and forget per prompt; handlePromptSuccess serializes
     // on inFlightByPromptId so concurrent scans are safe.
-    handlePromptSuccess(pidKey, entry).catch((err) => {
+    handlePromptSuccess(pidKey, entry, { allowUnclaimed: allowUnclaimedHistoryImport }).catch((err) => {
       console.warn('[comfyAutoImport] handlePromptSuccess threw:', err)
     })
   }
@@ -880,6 +909,15 @@ export function startComfyAutoImport(options = {}) {
   if (started) return stopComfyAutoImport
   started = true
   runtimeOptions = options && typeof options === 'object' ? options : {}
+  void initializeHistoryBaseline()
+  try {
+    comfyui.checkConnection?.().then((connected) => {
+      if (connected && !comfyui.isWebSocketConnected?.()) {
+        return comfyui.connect?.()
+      }
+      return null
+    }).catch(() => {})
+  } catch (_) { /* ignore */ }
 
   // Primary trigger: broadcast `status` event fires on every queue
   // change (enqueue + task_done). We only scan after seeing an eligible
@@ -902,6 +940,14 @@ export function startComfyAutoImport(options = {}) {
     scheduleScan()
   }
 
+  const onExecutionStart = (evt) => {
+    const promptId = evt?.promptId
+    if (promptId && canObserveUnmanagedPrompts({ promptId, event: 'execution_start' })) {
+      rememberEligibleUnmanagedPrompt(promptId)
+    }
+    scheduleScan()
+  }
+
   // Tertiary: `executing` is broadcast and carries the prompt id, so this
   // is where we claim custom ComfyUI-tab runs without claiming every prompt
   // in the shared ComfyUI history.
@@ -914,15 +960,23 @@ export function startComfyAutoImport(options = {}) {
   }
 
   try { comfyui.on('status', onStatus) } catch (_) { /* ignore */ }
+  try { comfyui.on('execution_start', onExecutionStart) } catch (_) { /* ignore */ }
   try { comfyui.on('execution_success', onSuccess) } catch (_) { /* ignore */ }
   try { comfyui.on('executing', onExecuting) } catch (_) { /* ignore */ }
   try { comfyui.on('complete', onExecuting) } catch (_) { /* ignore */ }
 
+  const activeTabPoll = setInterval(() => {
+    if (!historyBaselineInitialized) void initializeHistoryBaseline()
+    if (canObserveUnmanagedPrompts({ event: 'active_tab_poll' })) scheduleScan()
+  }, ACTIVE_TAB_POLL_MS)
+
   detachers.push(
     () => { try { comfyui.off('status', onStatus) } catch (_) { /* ignore */ } },
+    () => { try { comfyui.off('execution_start', onExecutionStart) } catch (_) { /* ignore */ } },
     () => { try { comfyui.off('execution_success', onSuccess) } catch (_) { /* ignore */ } },
     () => { try { comfyui.off('executing', onExecuting) } catch (_) { /* ignore */ } },
     () => { try { comfyui.off('complete', onExecuting) } catch (_) { /* ignore */ } },
+    () => { try { clearInterval(activeTabPoll) } catch (_) { /* ignore */ } },
   )
 
   return stopComfyAutoImport
@@ -937,6 +991,7 @@ export function stopComfyAutoImport() {
   }
   runtimeOptions = {}
   eligibleUnmanagedPromptIds.clear()
+  historyBaselineInitialized = false
   while (detachers.length) {
     const fn = detachers.pop()
     try { fn?.() } catch (_) { /* ignore */ }

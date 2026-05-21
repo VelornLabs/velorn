@@ -33,6 +33,48 @@ function getPortType(inputSpec = null) {
   return type || '*'
 }
 
+function inputSpecHasControlAfterGenerate(inputSpec = null) {
+  return Boolean(Array.isArray(inputSpec) && inputSpec[1]?.control_after_generate)
+}
+
+function inputSpecHasWidget(inputSpec = null) {
+  const specType = getSpecType(inputSpec)
+  if (Array.isArray(specType)) return true
+  return ['BOOLEAN', 'COMBO', 'FLOAT', 'INT', 'STRING'].includes(String(specType || '').toUpperCase())
+}
+
+function getDefaultWidgetValue(inputSpec = null) {
+  if (!Array.isArray(inputSpec)) return null
+  const specType = getSpecType(inputSpec)
+  const options = inputSpec[1] && typeof inputSpec[1] === 'object' ? inputSpec[1] : {}
+  if (Object.prototype.hasOwnProperty.call(options, 'default')) return cloneJsonValue(options.default)
+  if (Array.isArray(specType)) return cloneJsonValue(specType[0] ?? null)
+  switch (String(specType || '').toUpperCase()) {
+    case 'BOOLEAN':
+      return false
+    case 'FLOAT':
+    case 'INT':
+      return 0
+    case 'STRING':
+      return ''
+    default:
+      return null
+  }
+}
+
+function resolveLinkedWidgetValue(inputValue, apiWorkflow = {}, nodeIdSet = new Set()) {
+  if (!isLinkValue(inputValue, nodeIdSet)) return undefined
+  const sourceNode = apiWorkflow?.[String(inputValue[0])]
+  if (!sourceNode?.inputs || typeof sourceNode.inputs !== 'object') return undefined
+  if (Object.prototype.hasOwnProperty.call(sourceNode.inputs, 'value')) {
+    return cloneJsonValue(sourceNode.inputs.value)
+  }
+  for (const value of Object.values(sourceNode.inputs)) {
+    if (!isLinkValue(value, nodeIdSet)) return cloneJsonValue(value)
+  }
+  return undefined
+}
+
 function getOrderedInputNames(nodeSchema = null, inputs = {}) {
   const requiredOrder = Array.isArray(nodeSchema?.input_order?.required) ? nodeSchema.input_order.required : []
   const optionalOrder = Array.isArray(nodeSchema?.input_order?.optional) ? nodeSchema.input_order.optional : []
@@ -111,7 +153,27 @@ function estimateNodeSize(linkInputs = [], outputs = [], widgetValues = []) {
   return [width, Math.max(100, height)]
 }
 
-function buildWorkflowLinks(apiWorkflow = {}, objectInfo = {}) {
+function getGraphNodeId(graphIdByNodeId = null, nodeId) {
+  const key = String(nodeId ?? '').trim()
+  return graphIdByNodeId?.get(key) ?? toGraphNodeId(key)
+}
+
+function buildGraphNodeIdMap(nodeIds = []) {
+  const numericIds = nodeIds
+    .map((nodeId) => Number(nodeId))
+    .filter((nodeId) => Number.isInteger(nodeId) && nodeId > 0)
+  const hasNonNumericIds = nodeIds.some((nodeId) => !/^\d+$/.test(String(nodeId ?? '').trim()))
+  const hasDuplicateNumericIds = new Set(numericIds).size !== numericIds.length
+
+  if (!hasNonNumericIds && !hasDuplicateNumericIds) {
+    return new Map(nodeIds.map((nodeId) => [String(nodeId), Number(nodeId)]))
+  }
+
+  let nextGraphId = 1
+  return new Map(nodeIds.map((nodeId) => [String(nodeId), nextGraphId++]))
+}
+
+function buildWorkflowLinks(apiWorkflow = {}, objectInfo = {}, graphIdByNodeId = null) {
   const nodeIds = Object.keys(apiWorkflow || {})
   const nodeIdSet = new Set(nodeIds)
   const linkInputsByNode = new Map()
@@ -132,9 +194,9 @@ function buildWorkflowLinks(apiWorkflow = {}, objectInfo = {}) {
       const inputSpec = getInputSpec(nodeSchema, inputName)
       const link = {
         id: nextLinkId++,
-        origin_id: toGraphNodeId(originNodeId),
+        origin_id: getGraphNodeId(graphIdByNodeId, originNodeId),
         origin_slot: originSlot,
-        target_id: toGraphNodeId(targetNodeId),
+        target_id: getGraphNodeId(graphIdByNodeId, targetNodeId),
         target_slot: inputName,
         type: getPortType(inputSpec),
       }
@@ -189,7 +251,7 @@ function buildOutputPorts(nodeSchema = null, nodeOutputLinks = new Map()) {
   return outputs
 }
 
-function buildWidgetValues(nodeDef = {}, nodeSchema = null, nodeIdSet = new Set()) {
+function buildWidgetValues(nodeDef = {}, nodeSchema = null, nodeIdSet = new Set(), apiWorkflow = {}) {
   const orderedNames = getOrderedInputNames(nodeSchema, nodeDef.inputs || {})
   const used = new Set()
   const values = []
@@ -197,14 +259,42 @@ function buildWidgetValues(nodeDef = {}, nodeSchema = null, nodeIdSet = new Set(
   for (const inputName of orderedNames) {
     if (!(inputName in (nodeDef.inputs || {}))) continue
     const inputValue = nodeDef.inputs[inputName]
-    if (isLinkValue(inputValue, nodeIdSet)) continue
+    const inputSpec = getInputSpec(nodeSchema, inputName)
+    if (isLinkValue(inputValue, nodeIdSet)) {
+      if (inputSpecHasWidget(inputSpec)) {
+        const linkedValue = resolveLinkedWidgetValue(inputValue, apiWorkflow, nodeIdSet)
+        values.push(linkedValue !== undefined ? linkedValue : getDefaultWidgetValue(inputSpec))
+        if (inputSpecHasControlAfterGenerate(inputSpec)) {
+          values.push('fixed')
+        }
+      }
+      used.add(inputName)
+      continue
+    }
     values.push(cloneJsonValue(inputValue))
+    if (inputSpecHasControlAfterGenerate(inputSpec)) {
+      values.push('fixed')
+    }
     used.add(inputName)
   }
 
   for (const [inputName, inputValue] of Object.entries(nodeDef.inputs || {})) {
-    if (used.has(inputName) || isLinkValue(inputValue, nodeIdSet)) continue
+    if (used.has(inputName)) continue
+    const inputSpec = getInputSpec(nodeSchema, inputName)
+    if (isLinkValue(inputValue, nodeIdSet)) {
+      if (inputSpecHasWidget(inputSpec)) {
+        const linkedValue = resolveLinkedWidgetValue(inputValue, apiWorkflow, nodeIdSet)
+        values.push(linkedValue !== undefined ? linkedValue : getDefaultWidgetValue(inputSpec))
+        if (inputSpecHasControlAfterGenerate(inputSpec)) {
+          values.push('fixed')
+        }
+      }
+      continue
+    }
     values.push(cloneJsonValue(inputValue))
+    if (inputSpecHasControlAfterGenerate(inputSpec)) {
+      values.push('fixed')
+    }
   }
 
   return values
@@ -220,13 +310,14 @@ export function convertApiWorkflowToComfyGraph(apiWorkflow = {}, objectInfo = {}
     return String(left).localeCompare(String(right))
   })
   const nodeIdSet = new Set(nodeIds)
+  const graphIdByNodeId = buildGraphNodeIdMap(nodeIds)
   const {
     links,
     linkInputsByNode,
     outputLinksByNode,
     incomingByNode,
     lastLinkId,
-  } = buildWorkflowLinks(apiWorkflow, objectInfo)
+  } = buildWorkflowLinks(apiWorkflow, objectInfo, graphIdByNodeId)
   const positions = buildNodePositions(nodeIds, incomingByNode)
 
   const nodes = nodeIds.map((nodeId, index) => {
@@ -243,11 +334,11 @@ export function convertApiWorkflowToComfyGraph(apiWorkflow = {}, objectInfo = {}
       return left.name.localeCompare(right.name)
     })
     const outputs = buildOutputPorts(nodeSchema, outputLinksByNode.get(nodeId) || new Map())
-    const widgetValues = buildWidgetValues(nodeDef, nodeSchema, nodeIdSet)
+    const widgetValues = buildWidgetValues(nodeDef, nodeSchema, nodeIdSet, apiWorkflow)
     const position = positions.get(nodeId) || [40, 40 + index * 220]
 
     return {
-      id: toGraphNodeId(nodeId),
+      id: getGraphNodeId(graphIdByNodeId, nodeId),
       type: nodeDef.class_type,
       pos: position,
       size: estimateNodeSize(linkInputs, outputs, widgetValues),
@@ -265,7 +356,7 @@ export function convertApiWorkflowToComfyGraph(apiWorkflow = {}, objectInfo = {}
   })
 
   const numericNodeIds = nodeIds
-    .map((nodeId) => Number(nodeId))
+    .map((nodeId) => getGraphNodeId(graphIdByNodeId, nodeId))
     .filter((nodeId) => Number.isFinite(nodeId))
 
   return {
@@ -553,4 +644,3 @@ export function classifyBatchOutputs(apiWorkflow, filesByNode, options = {}) {
     reason: 'contiguous-numeric-sequence',
   }
 }
-

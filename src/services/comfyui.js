@@ -25,6 +25,28 @@ const COMFY_BINARY_EVENT_TYPES = Object.freeze({
   TEXT: 3,
 })
 const UTF8_DECODER = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8') : null
+export const CUSTOM_KEYFRAME_ENDPOINTS = Object.freeze({
+  inputImage: 'COMFYSTUDIO_INPUT_IMAGE',
+  prompt: 'COMFYSTUDIO_PROMPT',
+  seed: 'COMFYSTUDIO_SEED',
+  width: 'COMFYSTUDIO_WIDTH',
+  height: 'COMFYSTUDIO_HEIGHT',
+  referenceImage1: 'COMFYSTUDIO_REFERENCE_IMAGE_1',
+  referenceImage2: 'COMFYSTUDIO_REFERENCE_IMAGE_2',
+  outputImage: 'COMFYSTUDIO_OUTPUT_IMAGE',
+})
+export const CUSTOM_VIDEO_ENDPOINTS = Object.freeze({
+  inputImage: 'COMFYSTUDIO_INPUT_IMAGE',
+  prompt: 'COMFYSTUDIO_PROMPT',
+  seed: 'COMFYSTUDIO_SEED',
+  width: 'COMFYSTUDIO_WIDTH',
+  height: 'COMFYSTUDIO_HEIGHT',
+  fps: 'COMFYSTUDIO_FPS',
+  duration: 'COMFYSTUDIO_DURATION',
+  inputAudio: 'COMFYSTUDIO_AUDIO',
+  outputVideo: 'COMFYSTUDIO_OUTPUT_VIDEO',
+})
+const COMFYSTUDIO_OUTPUT_RESIZE_TITLE = 'ComfyStudio Output Resize'
 
 function parseNumericLike(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -35,6 +57,282 @@ function parseNumericLike(value) {
     if (Number.isFinite(parsed)) return parsed
   }
   return null
+}
+
+function normalizeEndpointTitle(value = '') {
+  return String(value || '').trim().toUpperCase()
+}
+
+function nodeHasEndpointTitle(node, endpointName) {
+  const title = normalizeEndpointTitle(node?._meta?.title)
+  return Boolean(title && title.includes(endpointName))
+}
+
+function findCustomEndpointNodes(workflow, endpointConfig) {
+  const endpoints = {}
+  for (const [nodeId, node] of Object.entries(workflow || {})) {
+    if (!node || typeof node !== 'object') continue
+    for (const [key, endpointName] of Object.entries(endpointConfig || {})) {
+      if (nodeHasEndpointTitle(node, endpointName) && !endpoints[key]) {
+        endpoints[key] = { nodeId, node }
+      }
+    }
+  }
+  return endpoints
+}
+
+function findCustomKeyframeEndpointNodes(workflow) {
+  return findCustomEndpointNodes(workflow, CUSTOM_KEYFRAME_ENDPOINTS)
+}
+
+function findCustomVideoEndpointNodes(workflow) {
+  return findCustomEndpointNodes(workflow, CUSTOM_VIDEO_ENDPOINTS)
+}
+
+function firstWritableInputKey(node, preferredKeys = []) {
+  const inputs = node?.inputs || {}
+  for (const key of preferredKeys) {
+    if (Object.prototype.hasOwnProperty.call(inputs, key)) return key
+  }
+  return null
+}
+
+function setEndpointValue(node, value, preferredKeys = []) {
+  if (!node?.inputs) return false
+  const key = firstWritableInputKey(node, preferredKeys)
+  if (!key) return false
+  node.inputs[key] = value
+  return true
+}
+
+function inputRefEquals(value, nodeId, outputIndex = 0) {
+  return Array.isArray(value) && String(value[0]) === String(nodeId) && Number(value[1]) === Number(outputIndex)
+}
+
+function getUniqueWorkflowNodeId(workflow, preferredId) {
+  const base = String(preferredId || 'comfystudio_node')
+  if (!workflow[base]) return base
+  let suffix = 1
+  while (workflow[`${base}_${suffix}`]) suffix += 1
+  return `${base}_${suffix}`
+}
+
+function findNodeIdByTitle(workflow, title) {
+  const needle = String(title || '').trim().toLowerCase()
+  if (!needle) return null
+  for (const [nodeId, node] of Object.entries(workflow || {})) {
+    const nodeTitle = String(node?._meta?.title || '').trim().toLowerCase()
+    if (nodeTitle === needle) return nodeId
+  }
+  return null
+}
+
+function findFirstNodeIdByClass(workflow, classType) {
+  const needle = String(classType || '').trim()
+  if (!needle) return null
+  for (const [nodeId, node] of Object.entries(workflow || {})) {
+    if (String(node?.class_type || '') === needle) return nodeId
+  }
+  return null
+}
+
+export function addQwenImageEditResolutionControls(workflow, options = {}) {
+  const {
+    width = 1280,
+    height = 720,
+    useEndpointNodes = false,
+  } = options
+
+  if (!workflow || typeof workflow !== 'object') return workflow
+
+  const numericWidth = Math.max(256, Math.round(Number(width) || 1280))
+  const numericHeight = Math.max(256, Math.round(Number(height) || 720))
+  const sourceNodeId = findFirstNodeIdByClass(workflow, 'FluxKontextImageScale')
+    || findFirstNodeIdByClass(workflow, 'LoadImage')
+  if (!sourceNodeId) return workflow
+
+  let widthNodeId = findNodeIdByTitle(workflow, CUSTOM_KEYFRAME_ENDPOINTS.width)
+  let heightNodeId = findNodeIdByTitle(workflow, CUSTOM_KEYFRAME_ENDPOINTS.height)
+  if (useEndpointNodes && !widthNodeId) {
+    widthNodeId = getUniqueWorkflowNodeId(workflow, 'comfystudio_width')
+    workflow[widthNodeId] = {
+      class_type: 'PrimitiveInt',
+      inputs: { value: numericWidth },
+      _meta: { title: CUSTOM_KEYFRAME_ENDPOINTS.width },
+    }
+  }
+  if (useEndpointNodes && !heightNodeId) {
+    heightNodeId = getUniqueWorkflowNodeId(workflow, 'comfystudio_height')
+    workflow[heightNodeId] = {
+      class_type: 'PrimitiveInt',
+      inputs: { value: numericHeight },
+      _meta: { title: CUSTOM_KEYFRAME_ENDPOINTS.height },
+    }
+  }
+
+  let resizeNodeId = findNodeIdByTitle(workflow, COMFYSTUDIO_OUTPUT_RESIZE_TITLE)
+  if (!resizeNodeId) {
+    resizeNodeId = getUniqueWorkflowNodeId(workflow, 'comfystudio_output_resize')
+    workflow[resizeNodeId] = {
+      class_type: 'ImageScale',
+      inputs: {},
+      _meta: { title: COMFYSTUDIO_OUTPUT_RESIZE_TITLE },
+    }
+  }
+
+  const resizeNode = workflow[resizeNodeId]
+  resizeNode.class_type = 'ImageScale'
+  resizeNode.inputs = {
+    ...(resizeNode.inputs || {}),
+    image: [sourceNodeId, 0],
+    upscale_method: resizeNode.inputs?.upscale_method || 'lanczos',
+    width: useEndpointNodes && widthNodeId ? [widthNodeId, 0] : numericWidth,
+    height: useEndpointNodes && heightNodeId ? [heightNodeId, 0] : numericHeight,
+    crop: 'center',
+  }
+  resizeNode._meta = {
+    ...(resizeNode._meta || {}),
+    title: resizeNode._meta?.title || COMFYSTUDIO_OUTPUT_RESIZE_TITLE,
+  }
+
+  const resizeRef = [resizeNodeId, 0]
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    if (!node?.inputs || String(nodeId) === String(resizeNodeId)) continue
+    for (const [inputName, inputValue] of Object.entries(node.inputs)) {
+      if (inputRefEquals(inputValue, sourceNodeId, 0)) {
+        node.inputs[inputName] = resizeRef
+      }
+    }
+  }
+  resizeNode.inputs.image = [sourceNodeId, 0]
+
+  return workflow
+}
+
+function normalizeComfyStudioOutputResize(workflow) {
+  const resizeNodeId = findNodeIdByTitle(workflow, COMFYSTUDIO_OUTPUT_RESIZE_TITLE)
+  const resizeNode = resizeNodeId ? workflow?.[resizeNodeId] : null
+  if (resizeNode?.class_type === 'ImageScale' && resizeNode.inputs) {
+    resizeNode.inputs.crop = 'center'
+  }
+  return workflow
+}
+
+export function validateCustomKeyframeWorkflow(workflow, options = {}) {
+  const {
+    requireInputImage = true,
+  } = options || {}
+  if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) {
+    return {
+      ok: false,
+      missing: ['workflow_json'],
+      warnings: [],
+      endpoints: {},
+      message: 'Workflow JSON is empty or invalid.',
+    }
+  }
+
+  const endpoints = findCustomKeyframeEndpointNodes(workflow)
+  const missing = []
+  const warnings = []
+  if (requireInputImage && !endpoints.inputImage) missing.push(CUSTOM_KEYFRAME_ENDPOINTS.inputImage)
+  if (!endpoints.prompt) missing.push(CUSTOM_KEYFRAME_ENDPOINTS.prompt)
+  if (!endpoints.outputImage) missing.push(CUSTOM_KEYFRAME_ENDPOINTS.outputImage)
+  const blocking = [...missing]
+
+  if (endpoints.inputImage && endpoints.inputImage.node?.class_type !== 'LoadImage') {
+    blocking.push(`${CUSTOM_KEYFRAME_ENDPOINTS.inputImage} must be a LoadImage node`)
+  }
+  if (endpoints.outputImage && endpoints.outputImage.node?.class_type !== 'SaveImage') {
+    blocking.push(`${CUSTOM_KEYFRAME_ENDPOINTS.outputImage} must be a SaveImage node`)
+  }
+  if (endpoints.prompt && !firstWritableInputKey(endpoints.prompt.node, ['value', 'prompt', 'text', 'string'])) {
+    blocking.push(`${CUSTOM_KEYFRAME_ENDPOINTS.prompt} needs a writable value, prompt, text, or string input`)
+  }
+  if (endpoints.seed && !firstWritableInputKey(endpoints.seed.node, ['seed', 'noise_seed', 'value'])) {
+    warnings.push(`${CUSTOM_KEYFRAME_ENDPOINTS.seed} exists but has no seed, noise_seed, or value input.`)
+  }
+  if (endpoints.width && !firstWritableInputKey(endpoints.width.node, ['width', 'value'])) {
+    warnings.push(`${CUSTOM_KEYFRAME_ENDPOINTS.width} exists but has no width or value input.`)
+  }
+  if (endpoints.height && !firstWritableInputKey(endpoints.height.node, ['height', 'value'])) {
+    warnings.push(`${CUSTOM_KEYFRAME_ENDPOINTS.height} exists but has no height or value input.`)
+  }
+
+  return {
+    ok: blocking.length === 0,
+    missing,
+    warnings,
+    endpoints: Object.fromEntries(Object.entries(endpoints).map(([key, entry]) => [key, entry.nodeId])),
+    message: blocking.length === 0
+      ? 'Custom keyframe workflow is ready.'
+      : `Custom workflow needs: ${blocking.join(', ')}`,
+  }
+}
+
+export function validateCustomVideoWorkflow(workflow, options = {}) {
+  const {
+    requireInputImage = true,
+  } = options || {}
+  if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) {
+    return {
+      ok: false,
+      missing: ['workflow_json'],
+      warnings: [],
+      endpoints: {},
+      message: 'Workflow JSON is empty or invalid.',
+    }
+  }
+
+  const endpoints = findCustomVideoEndpointNodes(workflow)
+  const missing = []
+  const warnings = []
+  if (requireInputImage && !endpoints.inputImage) missing.push(CUSTOM_VIDEO_ENDPOINTS.inputImage)
+  if (!endpoints.prompt) missing.push(CUSTOM_VIDEO_ENDPOINTS.prompt)
+  if (!endpoints.outputVideo) missing.push(CUSTOM_VIDEO_ENDPOINTS.outputVideo)
+  const blocking = [...missing]
+
+  if (endpoints.inputImage && endpoints.inputImage.node?.class_type !== 'LoadImage') {
+    blocking.push(`${CUSTOM_VIDEO_ENDPOINTS.inputImage} must be a LoadImage node`)
+  }
+  if (endpoints.prompt && !firstWritableInputKey(endpoints.prompt.node, ['value', 'prompt', 'text', 'string'])) {
+    blocking.push(`${CUSTOM_VIDEO_ENDPOINTS.prompt} needs a writable value, prompt, text, or string input`)
+  }
+  if (
+    endpoints.outputVideo
+    && !firstWritableInputKey(endpoints.outputVideo.node, ['filename_prefix'])
+    && !/video|save|combine/i.test(String(endpoints.outputVideo.node?.class_type || ''))
+  ) {
+    warnings.push(`${CUSTOM_VIDEO_ENDPOINTS.outputVideo} should be the node that writes or returns the final video.`)
+  }
+  if (endpoints.seed && !firstWritableInputKey(endpoints.seed.node, ['seed', 'noise_seed', 'value'])) {
+    warnings.push(`${CUSTOM_VIDEO_ENDPOINTS.seed} exists but has no seed, noise_seed, or value input.`)
+  }
+  if (endpoints.width && !firstWritableInputKey(endpoints.width.node, ['width', 'value'])) {
+    warnings.push(`${CUSTOM_VIDEO_ENDPOINTS.width} exists but has no width or value input.`)
+  }
+  if (endpoints.height && !firstWritableInputKey(endpoints.height.node, ['height', 'value'])) {
+    warnings.push(`${CUSTOM_VIDEO_ENDPOINTS.height} exists but has no height or value input.`)
+  }
+  if (endpoints.fps && !firstWritableInputKey(endpoints.fps.node, ['fps', 'frame_rate', 'value'])) {
+    warnings.push(`${CUSTOM_VIDEO_ENDPOINTS.fps} exists but has no fps, frame_rate, or value input.`)
+  }
+  if (endpoints.duration && !firstWritableInputKey(endpoints.duration.node, ['duration', 'seconds', 'length', 'value'])) {
+    warnings.push(`${CUSTOM_VIDEO_ENDPOINTS.duration} exists but has no duration, seconds, length, or value input.`)
+  }
+  if (endpoints.inputAudio && !firstWritableInputKey(endpoints.inputAudio.node, ['audio', 'file', 'filename', 'value'])) {
+    warnings.push(`${CUSTOM_VIDEO_ENDPOINTS.inputAudio} exists but has no audio, file, filename, or value input.`)
+  }
+
+  return {
+    ok: blocking.length === 0,
+    missing,
+    warnings,
+    endpoints: Object.fromEntries(Object.entries(endpoints).map(([key, entry]) => [key, entry.nodeId])),
+    message: blocking.length === 0
+      ? 'Custom video workflow is ready.'
+      : `Custom video workflow needs: ${blocking.join(', ')}`,
+  }
 }
 
 function inferUploadExtension(file, filename) {
@@ -1351,6 +1649,109 @@ export function modifyMultipleAnglesWorkflow(workflow, options = {}) {
 }
 
 /**
+ * Generic modifier for user-supplied music-video keyframe workflows.
+ *
+ * Contract:
+ * - Required node titles:
+ *   COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_PROMPT, COMFYSTUDIO_OUTPUT_IMAGE
+ * - Optional node titles:
+ *   COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT,
+ *   COMFYSTUDIO_REFERENCE_IMAGE_1, COMFYSTUDIO_REFERENCE_IMAGE_2
+ */
+export function modifyCustomKeyframeWorkflow(workflow, options = {}) {
+  const {
+    prompt = '',
+    inputImage = '',
+    seed = Math.floor(Math.random() * 1000000000000),
+    width = null,
+    height = null,
+    referenceImages = [],
+    filenamePrefix = 'image/custom_keyframe',
+    requireInputImage = true,
+  } = options
+
+  const modified = JSON.parse(JSON.stringify(workflow))
+  const validation = validateCustomKeyframeWorkflow(modified, { requireInputImage })
+  if (!validation.ok) {
+    throw new Error(validation.message || 'Custom keyframe workflow is missing required endpoints.')
+  }
+
+  const endpoints = findCustomKeyframeEndpointNodes(modified)
+  if (endpoints.inputImage && (inputImage || requireInputImage)) {
+    setEndpointValue(endpoints.inputImage.node, inputImage, ['image'])
+  }
+  setEndpointValue(endpoints.prompt?.node, prompt, ['value', 'prompt', 'text', 'string'])
+  if (endpoints.seed) setEndpointValue(endpoints.seed.node, seed, ['seed', 'noise_seed', 'value'])
+  if (endpoints.width && Number(width) > 0) setEndpointValue(endpoints.width.node, Number(width), ['width', 'value'])
+  if (endpoints.height && Number(height) > 0) setEndpointValue(endpoints.height.node, Number(height), ['height', 'value'])
+
+  const ref1 = Array.isArray(referenceImages) ? referenceImages[0] : null
+  const ref2 = Array.isArray(referenceImages) ? referenceImages[1] : null
+  if (ref1 && endpoints.referenceImage1) setEndpointValue(endpoints.referenceImage1.node, ref1, ['image'])
+  if (ref2 && endpoints.referenceImage2) setEndpointValue(endpoints.referenceImage2.node, ref2, ['image'])
+
+  if (endpoints.outputImage?.node?.inputs && 'filename_prefix' in endpoints.outputImage.node.inputs) {
+    endpoints.outputImage.node.inputs.filename_prefix = filenamePrefix || endpoints.outputImage.node.inputs.filename_prefix || 'image/custom_keyframe'
+  }
+
+  normalizeComfyStudioOutputResize(modified)
+
+  return modified
+}
+
+/**
+ * Generic modifier for user-supplied music-video workflows.
+ *
+ * Contract:
+ * - Required node titles:
+ *   COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_PROMPT, COMFYSTUDIO_OUTPUT_VIDEO
+ * - Optional node titles:
+ *   COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT,
+ *   COMFYSTUDIO_FPS, COMFYSTUDIO_DURATION, COMFYSTUDIO_AUDIO
+ */
+export function modifyCustomVideoWorkflow(workflow, options = {}) {
+  const {
+    prompt = '',
+    inputImage = '',
+    inputAudio = '',
+    seed = Math.floor(Math.random() * 1000000000000),
+    width = null,
+    height = null,
+    fps = null,
+    duration = null,
+    filenamePrefix = 'video/custom_music',
+    requireInputImage = true,
+  } = options
+
+  const modified = JSON.parse(JSON.stringify(workflow))
+  const validation = validateCustomVideoWorkflow(modified, { requireInputImage })
+  if (!validation.ok) {
+    throw new Error(validation.message || 'Custom video workflow is missing required endpoints.')
+  }
+
+  const endpoints = findCustomVideoEndpointNodes(modified)
+  if (endpoints.inputImage && (inputImage || requireInputImage)) {
+    setEndpointValue(endpoints.inputImage.node, inputImage, ['image'])
+  }
+  setEndpointValue(endpoints.prompt?.node, prompt, ['value', 'prompt', 'text', 'string'])
+  if (endpoints.inputAudio && inputAudio) {
+    setEndpointValue(endpoints.inputAudio.node, inputAudio, ['audio', 'file', 'filename', 'value'])
+  }
+  if (endpoints.seed) setEndpointValue(endpoints.seed.node, seed, ['seed', 'noise_seed', 'value'])
+  if (endpoints.width && Number(width) > 0) setEndpointValue(endpoints.width.node, Number(width), ['width', 'value'])
+  if (endpoints.height && Number(height) > 0) setEndpointValue(endpoints.height.node, Number(height), ['height', 'value'])
+  if (endpoints.fps && Number(fps) > 0) setEndpointValue(endpoints.fps.node, Number(fps), ['fps', 'frame_rate', 'value'])
+  if (endpoints.duration && Number(duration) > 0) setEndpointValue(endpoints.duration.node, Number(duration), ['duration', 'seconds', 'length', 'value'])
+  if (endpoints.outputVideo?.node?.inputs && 'filename_prefix' in endpoints.outputVideo.node.inputs) {
+    endpoints.outputVideo.node.inputs.filename_prefix = filenamePrefix || endpoints.outputVideo.node.inputs.filename_prefix || 'video/custom_music'
+  }
+
+  normalizeComfyStudioOutputResize(modified)
+
+  return modified
+}
+
+/**
  * Workflow modifier for Image Edit (Qwen 2509)
  * Finds nodes by class_type / _meta.title so it works with exported API workflow.
  * Optional referenceImages: [filename1?, filename2?] – add LoadImage nodes and wire image2/image3 when present.
@@ -1360,11 +1761,16 @@ export function modifyQwenImageEdit2509Workflow(workflow, options = {}) {
     prompt = 'edit the image',
     inputImage = '',
     seed = Math.floor(Math.random() * 1000000000000),
+    width = null,
+    height = null,
     referenceImages = [],
     filenamePrefix = '',
   } = options
 
   const modified = JSON.parse(JSON.stringify(workflow))
+  if (Number(width) > 0 && Number(height) > 0) {
+    addQwenImageEditResolutionControls(modified, { width, height })
+  }
   const ref1 = referenceImages[0]
   const ref2 = referenceImages[1]
   const hasDedicatedModelAndProductLoaders = Object.values(modified).some((node) => {

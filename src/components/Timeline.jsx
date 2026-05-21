@@ -875,8 +875,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     e.preventDefault()
     e.stopPropagation()
     selectGap(gap)
-    setPlayheadPosition(time, { snap: true })
-  }, [getTimeFromMouseEvent, getTrackGapAtTime, selectGap, setPlayheadPosition])
+  }, [getTimeFromMouseEvent, getTrackGapAtTime, selectGap])
   const clipContextSelectionIds = useMemo(() => (
     clipContextMenu ? selectedClipIds : []
   ), [clipContextMenu, selectedClipIds])
@@ -1521,38 +1520,43 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     }
   }
 
-  // Handle playhead scrubbing - start on mousedown
-  const handleTimelineMouseDown = (e) => {
-    // Don't start scrubbing if clicking on a clip or trim handle
-    if (e.target.closest('[data-clip]') || e.target.closest('[data-trim-handle]') || e.target.closest('[data-marker-handle]')) {
-      return
-    }
-    
+  const startTimelinePanning = (e) => {
     e.preventDefault()
-    
-    // Check for spacebar held - start panning
-    if (spacePanningKeyDownRef.current) {
-      setIsPanning(true)
-      setPanStart({
-        x: e.clientX,
-        y: e.clientY,
-        scrollLeft: timelineRef.current?.scrollLeft || 0,
-        scrollTop: trackContentRef.current?.scrollTop || 0
-      })
-      return
-    }
-    
-    // Switch to timeline preview mode when clicking on timeline
-    // Also pause asset playback if it's playing
+    setIsPanning(true)
+    setPanStart({
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: timelineRef.current?.scrollLeft || 0,
+      scrollTop: trackContentRef.current?.scrollTop || 0
+    })
+  }
+
+  const startTimelinePreview = () => {
     if (clips.length > 0) {
       setPreviewMode('timeline')
       if (assetIsPlaying) {
         setAssetIsPlaying(false)
       }
     }
-    
+  }
+
+  // Container clicks should only pan/marquee. Playhead scrubbing starts from the ruler or playhead handle.
+  const handleTimelineMouseDown = (e) => {
+    // Don't start scrubbing if clicking on a clip or trim handle
+    if (e.target.closest('[data-clip]') || e.target.closest('[data-trim-handle]') || e.target.closest('[data-marker-handle]')) {
+      return
+    }
+
+    // Check for spacebar held - start panning
+    if (spacePanningKeyDownRef.current) {
+      startTimelinePanning(e)
+      return
+    }
+
     // Check for Alt+Click to start marquee selection
     if (e.altKey) {
+      e.preventDefault()
+      startTimelinePreview()
       const pointer = getTimelinePointerPosition(e.clientX, e.clientY)
       if (!pointer) return
       const addToSelection = e.shiftKey || e.ctrlKey || e.metaKey
@@ -1573,16 +1577,23 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       }
       return
     }
-    
-    // Regular click - start scrubbing
+
+    // Normal timeline clicks are selection/scrolling only; playhead movement belongs to the ruler/handle.
+  }
+
+  const handleTimelineRulerMouseDown = (e) => {
+    if (e.button !== 0 || e.target.closest('[data-marker-handle]')) return
+    e.stopPropagation()
+
+    if (spacePanningKeyDownRef.current) {
+      startTimelinePanning(e)
+      return
+    }
+
+    e.preventDefault()
+    startTimelinePreview()
     setIsScrubbing(true)
-    
-    // Don't clear selection when clicking on empty space - keep showing last selected clip in inspector
-    // User can press Escape to explicitly clear selection if needed
-    
-    // Immediately move playhead to click position
-    const time = getTimeFromMouseEvent(e)
-    setPlayheadPosition(time, { snap: true })
+    setPlayheadPosition(getTimeFromMouseEvent(e), { snap: true })
   }
 
   // Handle scrubbing mouse move and mouse up
@@ -1683,7 +1694,6 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
 
     const handleMouseUp = () => {
       selectGap(pendingLanePointerState.gap)
-          setPlayheadPosition(pendingLanePointerState.time, { snap: true })
       setPendingLanePointerState(null)
     }
 
@@ -1694,7 +1704,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [pendingLanePointerState, clearSelection, getTimelinePointerPosition, selectGap, setPlayheadPosition])
+  }, [pendingLanePointerState, clearSelection, getTimelinePointerPosition, selectGap])
 
   // Handle track headers resize
   useEffect(() => {
@@ -3777,84 +3787,89 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     }
     
     const handleMouseUp = () => {
-      // On mouse up, resolve overlaps for the final position (NLE overwrite behavior)
-      if (clipDragState && clipDragState.hasMoved) {
-        const movingClipIds = clipDragState.movingClipIds || clipDragState.originalPositions.map(({ id }) => id)
-        const isDraggingMultiple = movingClipIds.length > 1
-        if (clipDragState.pendingAutoCreateVideoTrack) {
-          const newTrack = addTrack('video')
-          if (newTrack) {
-            if (isDraggingMultiple) {
-              const latestState = useTimelineStore.getState()
-              const latestClipsById = new Map(latestState.clips.map((entry) => [entry.id, entry]))
-              const selectedVideoTrackIndices = clipDragState.originalPositions
-                .filter((entry) => entry.family === 'video')
-                .map((entry) => {
-                  const latestClip = latestClipsById.get(entry.id)
-                  const currentTrackId = latestClip?.trackId || entry.trackId
-                  return videoTracks.findIndex((track) => track.id === currentTrackId)
+      const resolveOverlapsOnDrop = true
+
+      try {
+        // On mouse up, commit the move with normal overwrite behavior: the dropped clip cuts whatever it covers.
+        if (clipDragState && clipDragState.hasMoved) {
+          const movingClipIds = clipDragState.movingClipIds || clipDragState.originalPositions.map(({ id }) => id)
+          const isDraggingMultiple = movingClipIds.length > 1
+          if (clipDragState.pendingAutoCreateVideoTrack) {
+            const newTrack = addTrack('video')
+            if (newTrack) {
+              if (isDraggingMultiple) {
+                const latestState = useTimelineStore.getState()
+                const latestClipsById = new Map(latestState.clips.map((entry) => [entry.id, entry]))
+                const selectedVideoTrackIndices = clipDragState.originalPositions
+                  .filter((entry) => entry.family === 'video')
+                  .map((entry) => {
+                    const latestClip = latestClipsById.get(entry.id)
+                    const currentTrackId = latestClip?.trackId || entry.trackId
+                    return videoTracks.findIndex((track) => track.id === currentTrackId)
+                  })
+                  .filter((index) => index >= 0)
+                const topSelectedVideoTrackIndex = selectedVideoTrackIndices.length > 0
+                  ? Math.min(...selectedVideoTrackIndices)
+                  : -1
+                const updates = clipDragState.originalPositions.map(({ id, startTime, trackId, family }) => {
+                  const latestClip = latestClipsById.get(id)
+                  let nextTrackId = latestClip?.trackId || trackId
+
+                  if (family === 'video') {
+                    const currentTrackId = latestClip?.trackId || trackId
+                    const currentIndex = videoTracks.findIndex((track) => track.id === currentTrackId)
+                    nextTrackId = currentIndex <= topSelectedVideoTrackIndex
+                      ? newTrack.id
+                      : (videoTracks[currentIndex - 1]?.id || newTrack.id)
+                  }
+
+                  return {
+                    id,
+                    startTime: latestClip?.startTime ?? startTime,
+                    trackId: nextTrackId,
+                  }
                 })
-                .filter((index) => index >= 0)
-              const topSelectedVideoTrackIndex = selectedVideoTrackIndices.length > 0
-                ? Math.min(...selectedVideoTrackIndices)
-                : -1
-              const updates = clipDragState.originalPositions.map(({ id, startTime, trackId, family }) => {
-                const latestClip = latestClipsById.get(id)
-                let nextTrackId = latestClip?.trackId || trackId
-
-                if (family === 'video') {
-                  const currentTrackId = latestClip?.trackId || trackId
-                  const currentIndex = videoTracks.findIndex((track) => track.id === currentTrackId)
-                  nextTrackId = currentIndex <= topSelectedVideoTrackIndex
-                    ? newTrack.id
-                    : (videoTracks[currentIndex - 1]?.id || newTrack.id)
-                }
-
-                return {
-                  id,
-                  startTime: latestClip?.startTime ?? startTime,
-                  trackId: nextTrackId,
-                }
-              })
-              const resolveOverlapsOnDrop = Boolean(e.ctrlKey || e.metaKey)
-              setSelectedClipPositions(updates, movingClipIds)
+                setSelectedClipPositions(updates, movingClipIds)
+                moveSelectedClips(0, null, resolveOverlapsOnDrop, movingClipIds)
+              } else {
+                const latestClip = useTimelineStore.getState().clips.find((entry) => entry.id === clipDragState.clipId)
+                const finalStartTime = latestClip?.startTime ?? clipDragState.currentStartTime ?? clipDragState.originalStartTime
+                moveClip(clipDragState.clipId, newTrack.id, finalStartTime, resolveOverlapsOnDrop)
+              }
+            } else if (isDraggingMultiple) {
               moveSelectedClips(0, null, resolveOverlapsOnDrop, movingClipIds)
             } else {
-              const latestClip = useTimelineStore.getState().clips.find((entry) => entry.id === clipDragState.clipId)
-              const finalStartTime = latestClip?.startTime ?? clipDragState.currentStartTime ?? clipDragState.originalStartTime
-              moveClip(clipDragState.clipId, newTrack.id, finalStartTime, Boolean(e.ctrlKey || e.metaKey))
+              const clip = clips.find(c => c.id === clipDragState.clipId)
+              if (clip) {
+                moveClip(clipDragState.clipId, clip.trackId, clip.startTime, resolveOverlapsOnDrop)
+              }
             }
           } else if (isDraggingMultiple) {
-            moveSelectedClips(0, null, Boolean(e.ctrlKey || e.metaKey), movingClipIds)
+            // For multi-clip drag, resolve overlaps with delta of 0 (clips already in position)
+            moveSelectedClips(0, null, resolveOverlapsOnDrop, movingClipIds)
           } else {
+            // For single clip drag, commit the current position and overwrite anything underneath.
             const clip = clips.find(c => c.id === clipDragState.clipId)
             if (clip) {
-              moveClip(clipDragState.clipId, clip.trackId, clip.startTime, Boolean(e.ctrlKey || e.metaKey))
+              moveClip(clipDragState.clipId, clip.trackId, clip.startTime, resolveOverlapsOnDrop)
             }
           }
-        } else if (isDraggingMultiple) {
-          // For multi-clip drag, resolve overlaps with delta of 0 (clips already in position)
-          moveSelectedClips(0, null, Boolean(e.ctrlKey || e.metaKey), movingClipIds)
-        } else {
-          // For single clip drag, resolve overlaps at the current position
-          const clip = clips.find(c => c.id === clipDragState.clipId)
-          if (clip) {
-            moveClip(clipDragState.clipId, clip.trackId, clip.startTime, Boolean(e.ctrlKey || e.metaKey))
-          }
         }
+      } finally {
+        setClipDragState(null)
+        clipDragHistorySavedRef.current = false
+        clearActiveSnap()
       }
-      
-      setClipDragState(null)
-      clipDragHistorySavedRef.current = false
-      clearActiveSnap()
     }
     
     window.addEventListener('mousemove', handleMouseMove)
     window.addEventListener('mouseup', handleMouseUp)
+    window.addEventListener('blur', handleMouseUp)
     
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
+      window.removeEventListener('blur', handleMouseUp)
     }
   }, [clipDragState, trimState, slipState, clips, pixelsPerSecond, moveClip, moveSelectedClips, setSelectedClipPositions, selectedClipIds, snapClipPosition, setActiveSnapTime, clearActiveSnap, saveToHistory, addTrack, getClipTrackFamily, getHoveredTrackIdForFamily, getResolvedGroupTrackDelta, getTracksForFamily, videoTracks])
 
@@ -4912,6 +4927,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
             {/* Time Ruler - professional timecode style */}
             <div
               className="h-5 flex-shrink-0 bg-gradient-to-b from-sf-dark-800 to-sf-dark-900 border-b border-sf-dark-700 relative select-none"
+              onMouseDown={handleTimelineRulerMouseDown}
               onDoubleClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
@@ -6073,7 +6089,6 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   }}
                   onClick={(e) => {
                     e.stopPropagation()
-                    setPlayheadPosition(marker.time, { snap: true })
                     selectMarker(marker.id)
                   }}
                   onContextMenu={(e) => {
@@ -6139,18 +6154,13 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           {/* Snap Guide Lines */}
           {activeSnapTime !== null && snappingEnabled && (
             <div
-              className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 z-20 pointer-events-none"
+              className="absolute top-0 bottom-0 w-px bg-white/75 z-20 pointer-events-none"
               style={{ 
                 left: `${activeSnapTime * pixelsPerSecond}px`,
-                boxShadow: '0 0 8px 2px rgba(250, 204, 21, 0.4)'
+                boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.28)'
               }}
             >
-              {/* Snap indicator at top */}
-              <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3 h-3 bg-yellow-400 rotate-45" />
-              {/* Snap time tooltip */}
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-yellow-400 text-black text-[9px] font-mono px-1 py-0.5 rounded whitespace-nowrap">
-                {activeSnapTime.toFixed(2)}s
-              </div>
+              <div className="absolute -top-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rotate-45 bg-white/80 border border-black/25" />
             </div>
           )}
           
@@ -6162,15 +6172,19 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
             <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-[2px] bg-orange-400 shadow-[0_0_12px_rgba(251,146,60,0.45)]" />
             {/* Playhead handle (draggable) */}
             <div 
-              className="absolute -top-1 left-1/2 -translate-x-1/2 w-5 h-4 bg-orange-400 border border-orange-200/70 cursor-ew-resize hover:bg-orange-300 transition-colors shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
-              style={{ clipPath: 'polygon(12% 0, 88% 0, 100% 55%, 50% 100%, 0 55%)' }}
+              className="absolute -top-1 left-1/2 -translate-x-1/2 w-5 h-4 cursor-ew-resize flex items-start justify-center"
               onMouseDown={(e) => {
                 e.stopPropagation()
                 e.preventDefault()
                 setIsScrubbing(true)
               }}
               title="Drag to scrub"
-            />
+            >
+              <div
+                className="w-3 h-3 bg-orange-400 border border-orange-200/70 hover:bg-orange-300 transition-colors shadow-[0_3px_8px_rgba(0,0,0,0.38)]"
+                style={{ clipPath: 'polygon(12% 0, 88% 0, 100% 55%, 50% 100%, 0 55%)' }}
+              />
+            </div>
             {/* Notch at active track (Flame-style) — aligns with primary track */}
             {activeTrackId && (() => {
               const audioSectionHeight = 20

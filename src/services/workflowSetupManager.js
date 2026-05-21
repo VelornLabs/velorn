@@ -351,32 +351,56 @@ export async function openBundledWorkflowInComfyUi(workflowId) {
     }
 
     const apiWorkflow = await response.json()
-    const objectInfo = await comfyui.getObjectInfo()
-    const workflowGraph = await buildComfyGraphFromApiWorkflow(apiWorkflow, objectInfo)
-    const comfyBaseUrl = getLocalComfyConnectionSync().httpBase
-
-    if (!window?.electronAPI?.loadComfyUiWorkflowGraph) {
-      throw new Error('Workflow loading into the embedded ComfyUI tab is only available in the desktop build.')
-    }
-
-    const becameVisible = await waitForVisibleComfyIframe(4000)
-    if (!becameVisible) {
-      throw new Error('The embedded ComfyUI tab did not become visible in time.')
-    }
-
-    const loadResult = await window.electronAPI.loadComfyUiWorkflowGraph({
-      workflowGraph,
-      comfyBaseUrl,
-      waitForMs: 12000,
-    })
-
-    if (!loadResult?.success) {
-      throw new Error(loadResult?.error || 'Could not load the workflow into the embedded ComfyUI tab.')
-    }
+    await loadApiWorkflowGraphIntoComfyUi(apiWorkflow)
 
     return {
       success: true,
       hint: `Loaded ${getWorkflowDisplayLabel(normalizedWorkflowId)} into the embedded ComfyUI tab.`,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Could not open workflow in ComfyUI.',
+    }
+  }
+}
+
+async function loadApiWorkflowGraphIntoComfyUi(apiWorkflow) {
+  const objectInfo = await comfyui.getObjectInfo()
+  const workflowGraph = await buildComfyGraphFromApiWorkflow(apiWorkflow, objectInfo)
+  const comfyBaseUrl = getLocalComfyConnectionSync().httpBase
+
+  if (!window?.electronAPI?.loadComfyUiWorkflowGraph) {
+    throw new Error('Workflow loading into the embedded ComfyUI tab is only available in the desktop build.')
+  }
+
+  const becameVisible = await waitForVisibleComfyIframe(4000)
+  if (!becameVisible) {
+    throw new Error('The embedded ComfyUI tab did not become visible in time.')
+  }
+
+  const loadResult = await window.electronAPI.loadComfyUiWorkflowGraph({
+    workflowGraph,
+    comfyBaseUrl,
+    waitForMs: 12000,
+  })
+
+  if (!loadResult?.success) {
+    throw new Error(loadResult?.error || 'Could not load the workflow into the embedded ComfyUI tab.')
+  }
+}
+
+export async function openApiWorkflowInComfyUi(apiWorkflow, { label = 'Custom workflow' } = {}) {
+  try {
+    window.dispatchEvent(new CustomEvent(OPEN_COMFY_TAB_EVENT, {
+      detail: { label },
+    }))
+
+    await loadApiWorkflowGraphIntoComfyUi(apiWorkflow)
+
+    return {
+      success: true,
+      hint: `Loaded ${label} into the embedded ComfyUI tab.`,
     }
   } catch (error) {
     return {

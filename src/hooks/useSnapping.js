@@ -47,24 +47,6 @@ export function useSnapping() {
     return points
   }, [clips])
 
-  const gridSnapPoints = useMemo(() => {
-    const points = []
-    const gridInterval = zoom > 200 ? 0.5 : zoom > 100 ? 1 : 2
-    let maxTime = 60
-    clips.forEach((clip) => {
-      const clipEnd = clip.startTime + clip.duration + 10
-      if (clipEnd > maxTime) maxTime = clipEnd
-    })
-    for (let t = 0; t <= maxTime; t += gridInterval) {
-      points.push({
-        time: t,
-        type: SNAP_TYPES.GRID,
-        priority: 3,
-      })
-    }
-    return points
-  }, [clips, zoom])
-
   const allSnapPoints = useMemo(() => {
     return [
       {
@@ -73,9 +55,8 @@ export function useSnapping() {
         priority: 1,
       },
       ...clipEdgeSnapPoints,
-      ...gridSnapPoints,
     ]
-  }, [playheadPosition, clipEdgeSnapPoints, gridSnapPoints])
+  }, [playheadPosition, clipEdgeSnapPoints])
 
   const getExcludedClipIdSet = useCallback((excludeClipIds = null) => {
     if (!excludeClipIds) return null

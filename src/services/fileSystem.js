@@ -544,7 +544,7 @@ export const importAsset = async (projectDir, file, category = 'video') => {
     let videoCodec = null
     let audioCodec = null
     
-    if (category === 'video' || category === 'audio') {
+    if (category === 'video' || category === 'audio' || category === 'images') {
       try {
         const fileUrl = await window.electronAPI.getFileUrlDirect(destPath)
         console.log(`Getting media info for ${finalFileName} from ${fileUrl}`)
@@ -658,7 +658,7 @@ export const importAsset = async (projectDir, file, category = 'video') => {
   let height = null
   let hasAudio = null
   
-  if (category === 'video' || category === 'audio') {
+  if (category === 'video' || category === 'audio' || category === 'images') {
     try {
       const mediaInfo = await getMediaInfo(file)
       duration = mediaInfo.duration
@@ -837,6 +837,22 @@ const getMediaInfo = (file) => {
       }
       
       audio.src = url
+    } else if (file.type.startsWith('image/')) {
+      const image = new Image()
+      image.onload = () => {
+        URL.revokeObjectURL(url)
+        resolve({
+          duration: null,
+          width: image.naturalWidth || image.width || null,
+          height: image.naturalHeight || image.height || null,
+          hasAudio: null,
+        })
+      }
+      image.onerror = () => {
+        URL.revokeObjectURL(url)
+        reject(new Error('Failed to load image metadata'))
+      }
+      image.src = url
     } else {
       URL.revokeObjectURL(url)
       resolve({ duration: null, width: null, height: null, hasAudio: null })
@@ -847,7 +863,7 @@ const getMediaInfo = (file) => {
 /**
  * Get media info from a URL (for Electron file:// URLs)
  * @param {string} url - The file URL
- * @param {string} type - 'video' or 'audio'
+ * @param {string} type - 'video', 'audio', or 'images'
  * @returns {Promise<object>} - { duration, width, height, hasAudio }
  */
 const getMediaInfoFromUrl = (url, type) => {
@@ -906,6 +922,23 @@ const getMediaInfoFromUrl = (url, type) => {
       
       audio.src = url
       audio.load()
+    } else if (type === 'images' || type === 'image') {
+      const image = new Image()
+      image.onload = () => {
+        clearTimeout(timeout)
+        resolve({
+          duration: null,
+          width: image.naturalWidth || image.width || null,
+          height: image.naturalHeight || image.height || null,
+          hasAudio: null,
+        })
+      }
+      image.onerror = (e) => {
+        clearTimeout(timeout)
+        console.error('Failed to load image metadata:', e)
+        reject(new Error('Failed to load image metadata'))
+      }
+      image.src = url
     } else {
       clearTimeout(timeout)
       resolve({ duration: null, width: null, height: null, hasAudio: null })

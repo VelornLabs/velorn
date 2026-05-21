@@ -342,6 +342,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('workflowSetup:progress', handler)
     return () => ipcRenderer.removeListener('workflowSetup:progress', handler)
   },
+  onDownloadProgress: (cb) => {
+    const handler = (_, data) => cb(data)
+    ipcRenderer.on('download:progress', handler)
+    return () => ipcRenderer.removeListener('download:progress', handler)
+  },
+
+  // ============================================
+  // ComfyStudio Bridge
+  // ============================================
+
+  comfyBridge: {
+    getStatus: () => ipcRenderer.invoke('comfyBridge:getStatus'),
+    install: () => ipcRenderer.invoke('comfyBridge:install'),
+  },
 
   // ============================================
   // ComfyUI Launcher (process manager)

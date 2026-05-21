@@ -20,8 +20,12 @@ export const SHOT_CATEGORIES = {
 
 export const CATEGORY_ORDER = ['Shot', 'Movement', 'Angle', 'Lighting', 'Mood', 'Style', 'Color', 'Speed', 'Depth', 'Lens']
 
+export const CUSTOM_GENERATE_IMAGE_WORKFLOW_ID = 'custom-generate-image'
+export const CUSTOM_GENERATE_VIDEO_WORKFLOW_ID = 'custom-generate-video'
+
 export const WORKFLOWS = {
   video: [
+    { id: CUSTOM_GENERATE_VIDEO_WORKFLOW_ID, label: 'Custom Video Workflow', needsImage: false, description: 'Run your own ComfyUI video graph from Generate' },
     { id: 'ltx23-i2v', label: 'Image to Video (LTX 2.3)', needsImage: true, description: 'Animate an image with local LTX 2.3' },
     { id: 'ltx23-ia2v', label: 'Image + Audio to Video (LTX 2.3)', needsImage: true, description: 'Animate an image with local LTX 2.3 audio conditioning' },
     { id: 'ltx23-t2v', label: 'Text to Video (LTX 2.3)', needsImage: false, description: 'Generate video from text with local LTX 2.3' },
@@ -37,6 +41,7 @@ export const WORKFLOWS = {
     { id: TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID, label: 'Topaz Video Enhance', needsImage: false, description: 'Cloud video upscaling and enhancement' },
   ],
   image: [
+    { id: CUSTOM_GENERATE_IMAGE_WORKFLOW_ID, label: 'Custom Image Workflow', needsImage: false, description: 'Run your own ComfyUI image graph from Generate' },
     { id: 'z-image-turbo', label: 'Text to Image (Z Image Turbo)', needsImage: false, description: 'Generate image from text prompt using Z Image Turbo' },
     { id: 'longcat-text-to-image', label: 'Text to Image (LongCat)', needsImage: false, description: 'Generate image with local LongCat' },
     { id: 'ernie-image-turbo', label: 'Text to Image (Ernie Turbo)', needsImage: false, description: 'Generate image with local Ernie Image Turbo' },
@@ -113,6 +118,9 @@ export const YOLO_MUSIC_PROFILES = Object.freeze({
   }),
 })
 
+export const CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID = 'custom-music-keyframe'
+export const CUSTOM_MUSIC_VIDEO_WORKFLOW_ID = 'custom-music-video'
+
 export const YOLO_MUSIC_KEYFRAME_WORKFLOW_OPTIONS = Object.freeze([
   {
     id: 'image-edit',
@@ -126,6 +134,12 @@ export const YOLO_MUSIC_KEYFRAME_WORKFLOW_OPTIONS = Object.freeze([
     runtimeLabel: 'Cloud',
     description: 'Cloud keyframes with stronger reference-image and identity consistency.',
   },
+  {
+    id: CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID,
+    label: 'Custom Workflow',
+    runtimeLabel: 'Advanced',
+    description: 'Use your own ComfyUI keyframe workflow as long as it keeps the ComfyStudio input/output endpoints.',
+  },
 ])
 
 export const YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
@@ -138,6 +152,12 @@ export const YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
     id: 'wan22-i2v',
     label: 'WAN 2.2',
     description: 'Alternate image-to-video pass. Often gives stronger physical animation, but does not use song audio for lip-sync.',
+  },
+  {
+    id: CUSTOM_MUSIC_VIDEO_WORKFLOW_ID,
+    label: 'Custom Workflow',
+    runtimeLabel: 'Advanced',
+    description: 'Use your own ComfyUI video workflow as long as it keeps the ComfyStudio input/output endpoints.',
   },
 ])
 
@@ -320,6 +340,10 @@ const WORKFLOW_DISPLAY_LABELS = Object.freeze({
   'seedance2-r2v': 'Seedance 2.0 Reference to Video',
   [TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID]: 'Topaz Video Upscale',
   [MUSIC_VIDEO_SHOT_WORKFLOW_ID]: 'LTX 2.3 Music Video (Image + Audio)',
+  [CUSTOM_GENERATE_IMAGE_WORKFLOW_ID]: 'Custom Image Workflow',
+  [CUSTOM_GENERATE_VIDEO_WORKFLOW_ID]: 'Custom Video Workflow',
+  [CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID]: 'Custom Keyframe Workflow',
+  [CUSTOM_MUSIC_VIDEO_WORKFLOW_ID]: 'Custom Video Workflow',
   [VOCAL_EXTRACT_WORKFLOW_ID]: 'Vocal Extract (Mel-Band)',
   [ELEVENLABS_TTS_WORKFLOW_ID]: 'ElevenLabs Text to Speech',
   'caption-qwen-asr': 'Caption Transcription (Qwen ASR)',
@@ -519,6 +543,22 @@ const WORKFLOW_HARDWARE = Object.freeze({
     minimumVramGb: 24,
     recommendedVramGb: 32,
   },
+  [CUSTOM_GENERATE_IMAGE_WORKFLOW_ID]: {
+    tierId: null,
+    runtime: 'custom',
+  },
+  [CUSTOM_GENERATE_VIDEO_WORKFLOW_ID]: {
+    tierId: null,
+    runtime: 'custom',
+  },
+  [CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID]: {
+    tierId: null,
+    runtime: 'custom',
+  },
+  [CUSTOM_MUSIC_VIDEO_WORKFLOW_ID]: {
+    tierId: null,
+    runtime: 'custom',
+  },
   [VOCAL_EXTRACT_WORKFLOW_ID]: {
     tierId: 'standard',
     runtime: 'local',
@@ -563,6 +603,9 @@ export function getWorkflowTierMeta(workflowId = '') {
 export function formatWorkflowHardwareRuntime(workflowId = '') {
   const hardware = getWorkflowHardwareInfo(workflowId)
   if (!hardware) return 'VRAM unknown'
+  if (hardware.runtime === 'custom') {
+    return 'Graph-dependent'
+  }
   if (hardware.runtime === 'cloud') {
     return 'Credits via ComfyUI partner nodes'
   }

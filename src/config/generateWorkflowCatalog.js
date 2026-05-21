@@ -1,4 +1,8 @@
 import { TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID } from './topazVideoUpscaleConfig'
+import {
+  CUSTOM_GENERATE_IMAGE_WORKFLOW_ID,
+  CUSTOM_GENERATE_VIDEO_WORKFLOW_ID,
+} from './generateWorkspaceConfig'
 
 const WORKFLOW_ASSET_BASE = (() => {
   const rawBase = typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL
@@ -17,10 +21,13 @@ export const GENERATE_WORKFLOW_MODES = Object.freeze({
 export const GENERATE_WORKFLOW_ROUTES = Object.freeze({
   local: 'local',
   cloud: 'cloud',
+  custom: 'custom',
 })
 
 export const GENERATE_WORKFLOW_CATEGORY_LABELS = Object.freeze({
   all: 'All',
+  image: 'Image',
+  video: 'Video',
   'image-to-video': 'Image to Video',
   'text-to-video': 'Text to Video',
   'text-to-image': 'Text to Image',
@@ -134,6 +141,40 @@ const imageEditFields = Object.freeze([
   field('asset', { label: 'Reference image', type: 'asset', assetType: 'image' }),
   field('prompt', { label: 'Edit instruction', type: 'textarea' }),
   field('imageResolution', { label: 'Image size', type: 'imageResolution' }),
+  field('seed', { label: 'Seed', type: 'seed' }),
+])
+
+const customImageFields = Object.freeze([
+  field('customWorkflow', { label: 'Custom workflow', type: 'customWorkflow', customKind: 'image' }),
+  field('customInputImage', {
+    label: 'Input image',
+    type: 'assetSelect',
+    assetType: 'image',
+    helper: 'Shown because this graph keeps COMFYSTUDIO_INPUT_IMAGE.',
+  }),
+  field('prompt', { label: 'Prompt', type: 'textarea' }),
+  field('imageResolution', { label: 'Size input', type: 'imageResolution' }),
+  field('seed', { label: 'Seed', type: 'seed' }),
+])
+
+const customVideoFields = Object.freeze([
+  field('customWorkflow', { label: 'Custom workflow', type: 'customWorkflow', customKind: 'video' }),
+  field('customInputImage', {
+    label: 'Input image',
+    type: 'assetSelect',
+    assetType: 'image',
+    helper: 'Shown because this graph keeps COMFYSTUDIO_INPUT_IMAGE.',
+  }),
+  field('customAudioAsset', {
+    label: 'Audio',
+    type: 'assetSelect',
+    assetType: 'audio',
+    helper: 'Shown because this graph keeps COMFYSTUDIO_AUDIO.',
+  }),
+  field('prompt', { label: 'Prompt', type: 'textarea' }),
+  field('resolution', { label: 'Size input', type: 'resolution' }),
+  field('fps', { label: 'FPS input', type: 'fps' }),
+  field('duration', { label: 'Duration input', type: 'duration' }),
   field('seed', { label: 'Seed', type: 'seed' }),
 ])
 
@@ -720,6 +761,46 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     fields: videoToAudioFields,
     runnable: true,
     tags: ['sonilo', 'video to music', 'audio', 'cloud'],
+  },
+  {
+    id: 'custom-image-workflow',
+    workflowId: CUSTOM_GENERATE_IMAGE_WORKFLOW_ID,
+    title: 'Custom Image Workflow',
+    description: 'Bring your own ComfyUI image graph. ComfyStudio exposes only the inputs declared by matching endpoint nodes.',
+    subtitle: 'Your ComfyUI image graph',
+    mode: 'generate',
+    route: 'custom',
+    category: 'image',
+    provider: 'ComfyStudio',
+    cover: cover('image-edit.webp'),
+    badge: 'Custom',
+    runtimeLabel: 'Graph-dependent',
+    needsImage: false,
+    inputAssetType: 'image',
+    outputType: 'image',
+    fields: customImageFields,
+    runnable: true,
+    tags: ['custom', 'comfyui', 'image', 'image edit', 'text to image'],
+  },
+  {
+    id: 'custom-video-workflow',
+    workflowId: CUSTOM_GENERATE_VIDEO_WORKFLOW_ID,
+    title: 'Custom Video Workflow',
+    description: 'Bring your own ComfyUI video graph. ComfyStudio exposes only the inputs declared by matching endpoint nodes.',
+    subtitle: 'Your ComfyUI video graph',
+    mode: 'generate',
+    route: 'custom',
+    category: 'video',
+    provider: 'ComfyStudio',
+    cover: cover('ltx23-i2v.webp'),
+    badge: 'Custom',
+    runtimeLabel: 'Graph-dependent',
+    needsImage: false,
+    inputAssetType: 'image',
+    outputType: 'video',
+    fields: customVideoFields,
+    runnable: true,
+    tags: ['custom', 'comfyui', 'video', 'image to video', 'text to video', 'audio'],
   },
   {
     id: 'product-ad-easy-mode',

@@ -31,6 +31,20 @@ import {
 import { startComfyLauncherEventBridge } from './services/comfyLauncherEventBridge'
 import { startComfyAutoImport } from './services/comfyAutoImport'
 
+function formatDownloadBytes(bytes) {
+  const numeric = Math.max(0, Number(bytes) || 0)
+  if (numeric < 1024) return `${numeric} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = numeric / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2
+  return `${value.toFixed(digits)} ${units[unitIndex]}`
+}
+
 function App() {
   const [audioModalOpen, setAudioModalOpen] = useState(false)
   const [audioModalType, setAudioModalType] = useState('music')
@@ -42,7 +56,9 @@ function App() {
   const [hasMountedFlowAi, setHasMountedFlowAi] = useState(false)
   const [bottomEditorView, setBottomEditorView] = useState('timeline')
   const [activeTimelineToolLabel, setActiveTimelineToolLabel] = useState('Move tool')
+  const [downloadProgressItems, setDownloadProgressItems] = useState([])
   const mainTabRef = useRef(mainTab)
+  const downloadDismissTimersRef = useRef(new Map())
   
   // Left panel state
   const [leftPanelExpanded, setLeftPanelExpanded] = useState(true)
@@ -131,6 +147,36 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const subscribe = typeof window !== 'undefined' ? window?.electronAPI?.onDownloadProgress : null
+    if (typeof subscribe !== 'function') return undefined
+    const clearDismissTimer = (id) => {
+      const timer = downloadDismissTimersRef.current.get(id)
+      if (timer) clearTimeout(timer)
+      downloadDismissTimersRef.current.delete(id)
+    }
+    const unsubscribe = subscribe((payload) => {
+      if (!payload?.id) return
+      clearDismissTimer(payload.id)
+      setDownloadProgressItems((current) => {
+        const withoutCurrent = current.filter((item) => item.id !== payload.id)
+        return [...withoutCurrent, payload].slice(-4)
+      })
+      if (payload.done) {
+        const timer = setTimeout(() => {
+          setDownloadProgressItems((current) => current.filter((item) => item.id !== payload.id))
+          downloadDismissTimersRef.current.delete(payload.id)
+        }, payload.state === 'completed' ? 5000 : 8000)
+        downloadDismissTimersRef.current.set(payload.id, timer)
+      }
+    })
+    return () => {
+      unsubscribe?.()
+      downloadDismissTimersRef.current.forEach((timer) => clearTimeout(timer))
+      downloadDismissTimersRef.current.clear()
+    }
+  }, [])
+
+  useEffect(() => {
     const setPointerModality = () => {
       document.documentElement.dataset.inputModality = 'pointer'
     }
@@ -165,6 +211,12 @@ function App() {
     const handler = () => setMainTab('generate')
     window.addEventListener('comfystudio-open-generate-with-frame', handler)
     return () => window.removeEventListener('comfystudio-open-generate-with-frame', handler)
+  }, [])
+
+  useEffect(() => {
+    const handler = () => setMainTab('generate')
+    window.addEventListener('comfystudio-open-generate-tab', handler)
+    return () => window.removeEventListener('comfystudio-open-generate-tab', handler)
   }, [])
 
   // Allow Generate tab to open ComfyUI directly (used for workflow import guidance).
@@ -233,6 +285,7 @@ function App() {
     ? Math.round((mediaPreparationCompleted / mediaPreparationTotal) * 100)
     : 0
   const showMediaPreparation = Boolean(mediaPreparation?.active && mediaPreparationTotal > 0)
+  const visibleDownloadProgressItems = downloadProgressItems.filter(Boolean)
   
   // Initialize project store on mount
   useEffect(() => {
@@ -376,6 +429,51 @@ function App() {
           </div>
         </div>
       )}
+
+      {visibleDownloadProgressItems.length > 0 && (
+        <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[min(420px,calc(100vw-32px))] flex-col gap-2">
+          {visibleDownloadProgressItems.map((item) => {
+            const isCompleted = item.state === 'completed'
+            const isCancelled = item.state === 'cancelled'
+            const isInterrupted = item.state === 'interrupted'
+            const percent = typeof item.percent === 'number' ? Math.max(0, Math.min(100, item.percent)) : null
+            const progressLabel = percent !== null
+              ? `${percent}%`
+              : `${formatDownloadBytes(item.receivedBytes)} downloaded`
+            const detail = item.totalBytes > 0
+              ? `${formatDownloadBytes(item.receivedBytes)} / ${formatDownloadBytes(item.totalBytes)}`
+              : formatDownloadBytes(item.receivedBytes)
+            return (
+              <div
+                key={item.id}
+                className="rounded-xl border border-sf-dark-600 bg-sf-dark-900/95 p-3 shadow-2xl shadow-black/40 backdrop-blur"
+              >
+                <div className="mb-2 flex items-start gap-2 text-xs">
+                  {!item.done && <Loader2 className="mt-0.5 h-3.5 w-3.5 animate-spin text-sf-accent" />}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium text-sf-text-primary">
+                      {isCompleted ? 'Download complete' : isCancelled ? 'Download cancelled' : isInterrupted ? 'Download interrupted' : 'Downloading'}
+                    </div>
+                    <div className="truncate text-[10px] text-sf-text-muted" title={item.filename}>
+                      {item.filename || 'File download'}
+                    </div>
+                  </div>
+                  <span className="font-mono text-[10px] text-sf-text-muted">{progressLabel}</span>
+                </div>
+                <div className="mb-1 h-1.5 overflow-hidden rounded-full bg-sf-dark-700">
+                  <div
+                    className={`h-full rounded-full transition-[width] duration-200 ${isCompleted ? 'bg-green-500' : isCancelled || isInterrupted ? 'bg-red-500' : 'bg-sf-accent'} ${percent === null && !item.done ? 'animate-pulse' : ''}`}
+                    style={{ width: `${percent ?? 100}%` }}
+                  />
+                </div>
+                <div className="truncate text-[10px] text-sf-text-muted" title={item.savePath}>
+                  {detail}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
       
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden min-h-0">
@@ -417,7 +515,7 @@ function App() {
             src={comfyIframeUrl}
             title="ComfyUI"
             className="flex-1 w-full min-h-0 border-0"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           />
         </div>
         {/* Generate tab – keep mounted so queue/progress survives tab switches */}

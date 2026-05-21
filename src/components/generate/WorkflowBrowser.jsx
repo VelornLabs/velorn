@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import {
   GENERATE_WORKFLOW_CATEGORY_LABELS,
@@ -6,6 +6,18 @@ import {
   GENERATE_WORKFLOW_ROUTES,
 } from '../../config/generateWorkflowCatalog'
 import WorkflowCard from './WorkflowCard'
+
+const ROUTE_LABELS = {
+  local: 'Local',
+  cloud: 'Cloud',
+  custom: 'Custom',
+}
+
+const CUSTOM_WORKFLOW_FILTERS = Object.freeze([
+  { id: 'all', label: 'All' },
+  { id: 'image', label: 'Image' },
+  { id: 'video', label: 'Video' },
+])
 
 function matchesWorkflow(workflow, query, filterId) {
   if (filterId !== 'all' && workflow.category !== filterId) return false
@@ -34,9 +46,19 @@ export default function WorkflowBrowser({
   const [query, setQuery] = useState('')
   const [filterId, setFilterId] = useState('all')
   const isCreateLauncher = variant === 'create-launcher'
+  const routeFilters = route === GENERATE_WORKFLOW_ROUTES.custom
+    ? CUSTOM_WORKFLOW_FILTERS
+    : GENERATE_WORKFLOW_FILTERS
+
+  useEffect(() => {
+    if (routeFilters.some((filter) => filter.id === filterId)) return
+    setFilterId('all')
+  }, [filterId, routeFilters])
 
   const normalizedQuery = isCreateLauncher ? '' : query.trim().toLowerCase()
-  const activeFilterId = isCreateLauncher ? 'all' : filterId
+  const activeFilterId = isCreateLauncher || !routeFilters.some((filter) => filter.id === filterId)
+    ? 'all'
+    : filterId
 
   const filteredWorkflows = useMemo(() => (
     workflows.filter((workflow) => matchesWorkflow(workflow, normalizedQuery, activeFilterId))
@@ -68,7 +90,7 @@ export default function WorkflowBrowser({
                     : 'text-sf-text-muted hover:bg-sf-dark-700 hover:text-sf-text-primary'
                 }`}
               >
-                {routeId === 'cloud' ? 'Cloud' : 'Local'}
+                {ROUTE_LABELS[routeId] || routeId}
               </button>
             ))}
           </div>
@@ -87,7 +109,7 @@ export default function WorkflowBrowser({
 
       {!isCreateLauncher && (
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          {GENERATE_WORKFLOW_FILTERS.map((filter) => (
+          {routeFilters.map((filter) => (
             <button
               key={filter.id}
               type="button"
@@ -108,7 +130,7 @@ export default function WorkflowBrowser({
         <span>
           {isCreateLauncher
             ? 'Choose a creator workflow'
-            : `Showing ${filteredWorkflows.length} ${route === 'cloud' ? 'cloud' : 'local'} workflow${filteredWorkflows.length === 1 ? '' : 's'}`}
+            : `Showing ${filteredWorkflows.length} ${(ROUTE_LABELS[route] || route).toLowerCase()} workflow${filteredWorkflows.length === 1 ? '' : 's'}`}
         </span>
         {!isCreateLauncher && filterId !== 'all' && <span>{GENERATE_WORKFLOW_CATEGORY_LABELS[filterId]}</span>}
       </div>

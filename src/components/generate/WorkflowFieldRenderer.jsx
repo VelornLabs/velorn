@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { CheckCircle2, Clipboard, ExternalLink, RefreshCw, X } from 'lucide-react'
 import useAssetsStore from '../../stores/assetsStore'
 
 const VIDEO_RESOLUTION_OPTIONS = [
@@ -75,6 +75,27 @@ export default function WorkflowFieldRenderer({ field, workflow, values, actions
       {label}
     </label>
   )
+  const customKindForWorkflow = workflow?.route === 'custom'
+    ? (workflow?.outputType === 'video' ? 'video' : 'image')
+    : null
+  if (customKindForWorkflow && field.type !== 'customWorkflow') {
+    const customState = values.customWorkflows?.[customKindForWorkflow] || {}
+    const hasWorkflow = Boolean(String(customState.jsonText || '').trim())
+    const endpoints = customState.validation?.endpoints || {}
+    const endpointMap = {
+      customInputImage: ['inputImage'],
+      customAudioAsset: ['inputAudio'],
+      prompt: ['prompt'],
+      imageResolution: ['width', 'height'],
+      resolution: ['width', 'height'],
+      fps: ['fps'],
+      duration: ['duration'],
+      seed: ['seed'],
+    }
+    const endpointKeys = endpointMap[field.id] || []
+    const isDeclaredByGraph = endpointKeys.some((key) => Boolean(endpoints[key]))
+    if (!hasWorkflow || !isDeclaredByGraph) return null
+  }
 
   if (field.type === 'asset') {
     const selectedAsset = values.selectedAsset
@@ -154,6 +175,117 @@ export default function WorkflowFieldRenderer({ field, workflow, values, actions
           )}
           {field.helper && (
             <p className="mt-2 text-[10px] leading-snug text-sf-text-muted">{field.helper}</p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (field.type === 'customWorkflow') {
+    const customKind = field.customKind === 'video' ? 'video' : 'image'
+    const customState = values.customWorkflows?.[customKind] || {}
+    const validation = customState.validation || {}
+    const isReady = Boolean(validation.ok)
+    const hasWorkflow = Boolean(String(customState.name || '').trim() || String(customState.jsonText || '').trim())
+    return (
+      <div className="space-y-1.5">
+        {commonLabel}
+        <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-800/70 p-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-sf-text-primary">
+                  {customState.name || `No custom ${customKind} workflow loaded`}
+                </span>
+                <span className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                  isReady
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                    : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                }`}>
+                  {isReady ? 'Ready' : 'Needs setup'}
+                </span>
+              </div>
+              <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
+                {customKind === 'video'
+                  ? 'Required: COMFYSTUDIO_PROMPT and COMFYSTUDIO_OUTPUT_VIDEO. Optional: COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_AUDIO, COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT, COMFYSTUDIO_FPS, COMFYSTUDIO_DURATION.'
+                  : 'Required: COMFYSTUDIO_PROMPT and COMFYSTUDIO_OUTPUT_IMAGE. Optional: COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT.'}
+              </p>
+              <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
+                ComfyStudio shows controls only for endpoint nodes found in the loaded graph. Leave an endpoint out when you want ComfyUI to control that setting.
+              </p>
+              <div className={`mt-2 text-[10px] ${isReady ? 'text-emerald-300' : 'text-amber-200'}`}>
+                {validation.message || 'Open the starter in ComfyUI, then send it back or import API JSON.'}
+              </div>
+              {Array.isArray(validation.warnings) && validation.warnings.length > 0 && (
+                <div className="mt-1 text-[10px] text-amber-200">
+                  {validation.warnings.slice(0, 2).join(' ')}
+                </div>
+              )}
+            </div>
+            <div className="grid w-full shrink-0 gap-2 sm:w-auto sm:min-w-[180px]">
+              <button
+                type="button"
+                onClick={() => actions.onOpenCustomWorkflow?.(customKind)}
+                className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20"
+                title={hasWorkflow ? 'Open the loaded workflow in the embedded ComfyUI tab.' : 'Load the starter workflow and open it in the embedded ComfyUI tab.'}
+              >
+                <ExternalLink className="h-3 w-3" />
+                {hasWorkflow ? 'Open in ComfyUI' : 'Open Starter'}
+              </button>
+              <button
+                type="button"
+                onClick={() => actions.onImportCustomWorkflow?.(customKind)}
+                className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-900 px-2 py-1.5 text-[10px] font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+                title="Import the API JSON exported from ComfyUI."
+              >
+                <Clipboard className="h-3 w-3" />
+                Import JSON
+              </button>
+              <button
+                type="button"
+                onClick={() => actions.onClearCustomWorkflow?.(customKind)}
+                className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-900 px-2 py-1.5 text-[10px] font-medium text-sf-text-muted transition-colors hover:border-red-500/60 hover:text-red-300"
+                title="Clear the loaded custom workflow."
+              >
+                <X className="h-3 w-3" />
+                Clear
+              </button>
+            </div>
+          </div>
+          {customState.bridge && (
+            <div className="mt-3 flex flex-col gap-2 border-t border-sf-dark-700 pt-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-2 text-[10px] text-sf-text-muted">
+                <span className="font-semibold uppercase tracking-wider">ComfyStudio bridge</span>
+                <span className={`rounded-full border px-2 py-0.5 ${
+                  customState.bridge.installed
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                    : 'border-sf-accent/40 bg-sf-accent/10 text-sf-accent'
+                }`}>
+                  {customState.bridge.installed ? 'Installed' : 'Optional'}
+                </span>
+                <span>{customState.bridge.message}</span>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  onClick={() => actions.onInstallCustomBridge?.()}
+                  disabled={customState.bridge.installed || customState.bridge.busy}
+                  className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-900 disabled:text-sf-text-muted"
+                >
+                  <CheckCircle2 className="h-3 w-3" />
+                  {customState.bridge.installed ? 'Installed' : 'Install'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => actions.onCheckCustomBridge?.()}
+                  disabled={customState.bridge.busy}
+                  className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-900 px-2 py-1.5 text-[10px] font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3 w-3 ${customState.bridge.busy ? 'animate-spin' : ''}`} />
+                  Re-check
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </div>

@@ -32,6 +32,8 @@ const COMFY_CONNECTION_SETTING_KEY = 'comfyConnection'
 const DEFAULT_LOCAL_COMFY_PORT = 8188
 const MAIN_WINDOW_STATE_SETTING_KEY = 'mainWindowState'
 const DEFAULT_MAIN_WINDOW_BOUNDS = Object.freeze({ width: 1600, height: 1000 })
+const COMFYSTUDIO_BRIDGE_DIR_NAME = 'comfystudio_bridge'
+const COMFYSTUDIO_BRIDGE_VERSION = '0.1.0'
 const EXTRA_MODEL_PATH_CONFIG_NAMES = Object.freeze(['extra_model_paths.yaml', 'extra_model_paths.yml'])
 const COMMON_MODEL_SEARCH_KEYS = Object.freeze([
   'checkpoints',
@@ -52,6 +54,9 @@ const MODEL_SEARCH_KEY_ALIASES = Object.freeze({
 let mainWindow = null
 let splashWindow = null
 let exportWorkerWindow = null
+let downloadSaveDialogHandlerInstalled = false
+let downloadCounter = 0
+const activeDownloads = new Map()
 const activeFramePipeExports = new Map()
 let restoreFullscreenAfterMinimize = false
 let mainWindowStateSaveTimer = null
@@ -250,6 +255,135 @@ function scheduleSaveMainWindowState() {
     mainWindowStateSaveTimer = null
     saveMainWindowStateNow()
   }, 350)
+}
+
+function getDownloadDefaultPath(item) {
+  const fallbackName = `download-${Date.now()}`
+  const rawName = String(item?.getFilename?.() || '').trim()
+  let filename = rawName || fallbackName
+  try {
+    if (!rawName) {
+      const url = String(item?.getURL?.() || '')
+      const parsed = new URL(url)
+      const basename = path.basename(decodeURIComponent(parsed.pathname || ''))
+      if (basename) filename = basename
+    }
+  } catch (_) {
+    // Keep the fallback when the download URL is not parseable.
+  }
+  filename = filename
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return path.join(app.getPath('downloads'), filename || fallbackName)
+}
+
+function updateDownloadProgressBar() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const downloads = Array.from(activeDownloads.values()).filter(Boolean)
+  if (downloads.length === 0) {
+    mainWindow.setProgressBar(-1)
+    return
+  }
+  const knownDownloads = downloads.filter((entry) => entry.totalBytes > 0)
+  if (knownDownloads.length === 0) {
+    mainWindow.setProgressBar(2)
+    return
+  }
+  const receivedBytes = knownDownloads.reduce((sum, entry) => sum + Math.max(0, entry.receivedBytes || 0), 0)
+  const totalBytes = knownDownloads.reduce((sum, entry) => sum + Math.max(0, entry.totalBytes || 0), 0)
+  mainWindow.setProgressBar(totalBytes > 0 ? Math.max(0, Math.min(1, receivedBytes / totalBytes)) : 2)
+}
+
+function sendDownloadProgress(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('download:progress', payload)
+}
+
+function installDownloadSaveDialogHandler() {
+  if (downloadSaveDialogHandlerInstalled || !mainWindow || mainWindow.isDestroyed()) return
+  downloadSaveDialogHandlerInstalled = true
+  const session = mainWindow.webContents.session
+  session.on('will-download', (event, item) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      item.cancel()
+      return
+    }
+
+    const id = `download-${Date.now()}-${++downloadCounter}`
+    const filename = String(item?.getFilename?.() || path.basename(getDownloadDefaultPath(item)) || 'Download')
+    const defaultPath = getDownloadDefaultPath(item)
+    const savePath = dialog.showSaveDialogSync(mainWindow, {
+      title: 'Save download',
+      defaultPath,
+      buttonLabel: 'Save',
+      filters: [
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    })
+
+    if (!savePath) {
+      item.cancel()
+      return
+    }
+
+    item.setSavePath(savePath)
+    const startedAt = Date.now()
+    let lastProgressSentAt = 0
+    let lastPercent = -1
+    const updateProgress = (state = 'downloading', force = false) => {
+      const totalBytes = Math.max(0, Number(item.getTotalBytes?.()) || 0)
+      const receivedBytes = Math.max(0, Number(item.getReceivedBytes?.()) || 0)
+      const percent = totalBytes > 0 ? Math.max(0, Math.min(100, Math.round((receivedBytes / totalBytes) * 100))) : null
+      const now = Date.now()
+      if (!force && percent === lastPercent && now - lastProgressSentAt < 500) return
+      lastProgressSentAt = now
+      lastPercent = percent
+      const payload = {
+        id,
+        filename,
+        savePath,
+        state,
+        receivedBytes,
+        totalBytes,
+        percent,
+        startedAt,
+        done: false,
+      }
+      if (state === 'downloading') {
+        activeDownloads.set(id, payload)
+      }
+      updateDownloadProgressBar()
+      sendDownloadProgress(payload)
+    }
+
+    updateProgress('downloading', true)
+    item.on('updated', (_updatedEvent, state) => {
+      updateProgress(state === 'interrupted' ? 'interrupted' : 'downloading')
+    })
+    item.once('done', (_doneEvent, state) => {
+      const totalBytes = Math.max(0, Number(item.getTotalBytes?.()) || 0)
+      const receivedBytes = Math.max(0, Number(item.getReceivedBytes?.()) || 0)
+      activeDownloads.delete(id)
+      updateDownloadProgressBar()
+      sendDownloadProgress({
+        id,
+        filename,
+        savePath,
+        state,
+        receivedBytes,
+        totalBytes,
+        percent: totalBytes > 0 ? Math.max(0, Math.min(100, Math.round((receivedBytes / totalBytes) * 100))) : (state === 'completed' ? 100 : null),
+        startedAt,
+        done: true,
+      })
+      if (state === 'completed') {
+        console.log('[download] completed:', savePath)
+      } else if (state !== 'cancelled') {
+        console.warn('[download] failed:', state, savePath)
+      }
+    })
+  })
 }
 
 function setSplashStatus(text) {
@@ -644,6 +778,160 @@ async function validateWorkflowSetupRootInternal(rootPath) {
     python,
     extraModelConfigPath: extraModelPaths.configPath,
     extraModelPathCount: extraModelPaths.pathCount,
+  }
+}
+
+function deriveComfyRootFromLauncherScript(launcherScript) {
+  const normalized = String(launcherScript || '').trim()
+  if (!normalized) return ''
+  try {
+    const launcherDir = path.dirname(path.resolve(normalized))
+    const portableRoot = path.join(launcherDir, 'ComfyUI')
+    if (fsSync.existsSync(path.join(portableRoot, 'main.py')) || fsSync.existsSync(path.join(portableRoot, 'custom_nodes'))) {
+      return portableRoot
+    }
+    if (fsSync.existsSync(path.join(launcherDir, 'main.py')) || fsSync.existsSync(path.join(launcherDir, 'custom_nodes'))) {
+      return launcherDir
+    }
+  } catch {
+    /* ignore invalid launcher paths */
+  }
+  return ''
+}
+
+async function resolveComfyBridgeRoot() {
+  await refreshLauncherConfigCache()
+  const settings = await readSettingsRaw()
+  const candidates = [
+    settings?.[COMFY_ROOT_SETTING_KEY],
+    deriveComfyRootFromLauncherScript(cachedLauncherConfig?.launcherScript),
+  ].map((value) => String(value || '').trim()).filter(Boolean)
+
+  const seen = new Set()
+  for (const candidate of candidates) {
+    const normalized = path.resolve(candidate)
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    const validation = await validateWorkflowSetupRootInternal(normalized)
+    if (validation?.success && validation?.isValid) return validation
+  }
+
+  return {
+    success: false,
+    isValid: false,
+    error: 'Choose your ComfyUI folder in Workflow Setup or configure a ComfyUI launcher first.',
+    normalizedPath: '',
+    customNodesPath: '',
+  }
+}
+
+async function readJsonFileSafe(filePath) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+async function copyDirectoryContents(sourceDir, targetDir) {
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true })
+  await fs.mkdir(targetDir, { recursive: true })
+  let copied = 0
+
+  for (const entry of entries) {
+    const sourcePath = path.join(sourceDir, entry.name)
+    const targetPath = path.join(targetDir, entry.name)
+    if (entry.isDirectory()) {
+      copied += await copyDirectoryContents(sourcePath, targetPath)
+      continue
+    }
+    if (!entry.isFile()) continue
+
+    const desired = await fs.readFile(sourcePath)
+    let current = null
+    try {
+      current = await fs.readFile(targetPath)
+    } catch {
+      /* target file does not exist yet */
+    }
+    if (current && Buffer.isBuffer(current) && current.equals(desired)) continue
+    await fs.mkdir(path.dirname(targetPath), { recursive: true })
+    await fs.writeFile(targetPath, desired)
+    copied += 1
+  }
+
+  return copied
+}
+
+async function getComfyStudioBridgeStatusInternal() {
+  const root = await resolveComfyBridgeRoot()
+  if (!root?.success || !root?.isValid) {
+    return {
+      success: false,
+      state: 'unavailable',
+      installed: false,
+      version: '',
+      targetDir: '',
+      comfyRootPath: '',
+      customNodesPath: '',
+      message: root?.error || 'Could not find a local ComfyUI install.',
+    }
+  }
+
+  const targetDir = path.join(root.customNodesPath, COMFYSTUDIO_BRIDGE_DIR_NAME)
+  const manifest = await readJsonFileSafe(path.join(targetDir, 'comfystudio_bridge.json'))
+  const initExists = await pathExists(path.join(targetDir, '__init__.py'))
+  const frontendExists = await pathExists(path.join(targetDir, 'web', 'js', 'comfystudio_bridge.js'))
+  const version = String(manifest?.version || '').trim()
+  const installed = initExists && frontendExists && version === COMFYSTUDIO_BRIDGE_VERSION
+
+  return {
+    success: true,
+    state: installed ? 'installed' : 'not_installed',
+    installed,
+    version,
+    expectedVersion: COMFYSTUDIO_BRIDGE_VERSION,
+    targetDir,
+    comfyRootPath: root.normalizedPath,
+    customNodesPath: root.customNodesPath,
+    message: installed
+      ? 'ComfyStudio Bridge is installed. Restart ComfyUI if the Send button is not visible yet.'
+      : 'ComfyStudio Bridge is not installed yet.',
+  }
+}
+
+async function installComfyStudioBridgeInternal() {
+  const root = await resolveComfyBridgeRoot()
+  if (!root?.success || !root?.isValid) {
+    return {
+      success: false,
+      state: 'unavailable',
+      installed: false,
+      error: root?.error || 'Could not find a local ComfyUI install.',
+    }
+  }
+
+  const sourceDir = path.join(__dirname, 'comfyui-injected', COMFYSTUDIO_BRIDGE_DIR_NAME)
+  if (!(await isDirectoryPath(sourceDir))) {
+    return {
+      success: false,
+      state: 'unavailable',
+      installed: false,
+      error: `Bundled ComfyStudio Bridge files are missing: ${sourceDir}`,
+    }
+  }
+
+  const targetDir = path.join(root.customNodesPath, COMFYSTUDIO_BRIDGE_DIR_NAME)
+  const copied = await copyDirectoryContents(sourceDir, targetDir)
+  const status = await getComfyStudioBridgeStatusInternal()
+  return {
+    ...status,
+    success: status.success && status.installed,
+    copied,
+    restartRequired: true,
+    message: copied > 0
+      ? `Installed ComfyStudio Bridge (${copied} file${copied === 1 ? '' : 's'} updated). Restart ComfyUI to load it.`
+      : 'ComfyStudio Bridge is already up to date. Restart ComfyUI if the Send button is not visible.',
   }
 }
 
@@ -1422,6 +1710,7 @@ async function createWindow() {
   if (restoredWindowState.isMaximized) {
     mainWindow.maximize()
   }
+  installDownloadSaveDialogHandler()
 
   // Route every external link to the user's default browser instead of
   // letting Electron spawn an in-app BrowserWindow. This covers:
@@ -2533,6 +2822,36 @@ ipcMain.handle('comfyLauncher:pickLauncherScript', async () => {
     return { success: false, canceled: true }
   }
   return { success: true, filePath: result.filePaths[0] }
+})
+
+// ============================================
+// ComfyStudio Bridge IPC
+// ============================================
+
+ipcMain.handle('comfyBridge:getStatus', async () => {
+  try {
+    return await getComfyStudioBridgeStatusInternal()
+  } catch (error) {
+    return {
+      success: false,
+      state: 'unavailable',
+      installed: false,
+      error: error?.message || 'Could not check the ComfyStudio Bridge.',
+    }
+  }
+})
+
+ipcMain.handle('comfyBridge:install', async () => {
+  try {
+    return await installComfyStudioBridgeInternal()
+  } catch (error) {
+    return {
+      success: false,
+      state: 'unavailable',
+      installed: false,
+      error: error?.message || 'Could not install the ComfyStudio Bridge.',
+    }
+  }
 })
 
 // ============================================

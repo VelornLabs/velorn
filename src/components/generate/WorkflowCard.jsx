@@ -7,7 +7,10 @@ export default function WorkflowCard({ workflow, selected = false, onSelect, sho
   const coverPosition = workflow.coverPosition || 'center'
   const routeClass = workflow.route === 'cloud'
     ? 'bg-fuchsia-400/15 text-fuchsia-200 border-fuchsia-300/25'
-    : 'bg-emerald-400/15 text-emerald-200 border-emerald-300/25'
+    : workflow.route === 'custom'
+      ? 'bg-amber-400/15 text-amber-200 border-amber-300/25'
+      : 'bg-emerald-400/15 text-emerald-200 border-emerald-300/25'
+  const routeLabel = workflow.route === 'cloud' ? 'Cloud' : workflow.route === 'custom' ? 'Custom' : 'Local'
 
   return (
     <button
@@ -43,8 +46,8 @@ export default function WorkflowCard({ workflow, selected = false, onSelect, sho
         <div className="absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/65" />
         {showRouteBadge && (
           <span className={`absolute left-2 top-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${routeClass}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${workflow.route === 'cloud' ? 'bg-fuchsia-300' : 'bg-emerald-300'}`} />
-            {workflow.route === 'cloud' ? 'Cloud' : 'Local'}
+            <span className={`h-1.5 w-1.5 rounded-full ${workflow.route === 'cloud' ? 'bg-fuchsia-300' : workflow.route === 'custom' ? 'bg-amber-300' : 'bg-emerald-300'}`} />
+            {routeLabel}
           </span>
         )}
         <span className="absolute bottom-2 right-2 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
