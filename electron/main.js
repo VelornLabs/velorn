@@ -2408,6 +2408,89 @@ ipcMain.handle('media:getAudioWaveform', async (event, mediaInput, options = {})
   })
 })
 
+ipcMain.handle('media:trimAudioSegment', async (event, options = {}) => {
+  if (!ffmpegPath) {
+    return { success: false, error: 'FFmpeg binary not available.' }
+  }
+
+  const inputPath = resolveMediaInputPath(String(options?.inputPath || ''))
+  const startSeconds = Math.max(0, Number(options?.startSeconds) || 0)
+  const durationSeconds = Math.max(0, Number(options?.durationSeconds) || 0)
+  const timeoutMs = Math.max(30000, Math.min(300000, Math.round(Number(options?.timeoutMs) || 90000)))
+  if (!inputPath) {
+    return { success: false, error: 'Missing audio input path.' }
+  }
+  if (durationSeconds <= 0.001) {
+    return { success: false, error: 'Audio segment duration is zero.' }
+  }
+
+  try {
+    await fs.stat(inputPath)
+  } catch (err) {
+    return { success: false, error: `Audio file not found: ${err.message}` }
+  }
+
+  const tempDir = path.join(app.getPath('temp'), 'comfystudio-shot-audio')
+  try {
+    await fs.mkdir(tempDir, { recursive: true })
+  } catch (err) {
+    return { success: false, error: `Could not create temp audio folder: ${err.message}` }
+  }
+
+  const rawName = String(options?.outputName || `shot_audio_${Date.now()}.wav`)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  const baseName = (rawName || `shot_audio_${Date.now()}.wav`).replace(/\.[a-zA-Z0-9]{1,8}$/, '')
+  const outputPath = path.join(tempDir, `${baseName}_${Date.now()}.wav`)
+
+  return await new Promise((resolve) => {
+    const args = [
+      '-y',
+      '-v', 'error',
+      '-ss', formatFilterNumber(startSeconds),
+      '-t', formatFilterNumber(durationSeconds),
+      '-i', inputPath,
+      '-vn',
+      '-ar', '44100',
+      '-ac', '2',
+      '-c:a', 'pcm_s16le',
+      outputPath,
+    ]
+
+    const proc = spawn(ffmpegPath, args, { windowsHide: true })
+    let stderr = ''
+    let killedByTimeout = false
+    const timeoutHandle = setTimeout(() => {
+      killedByTimeout = true
+      proc.kill('SIGKILL')
+    }, timeoutMs)
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString()
+    })
+    proc.on('error', (err) => {
+      clearTimeout(timeoutHandle)
+      resolve({ success: false, error: err.message })
+    })
+    proc.on('close', async (code) => {
+      clearTimeout(timeoutHandle)
+      if (killedByTimeout) {
+        try { await fs.unlink(outputPath) } catch (_) { /* ignore */ }
+        resolve({ success: false, error: `Audio trim timed out after ${Math.round(timeoutMs / 1000)}s` })
+        return
+      }
+      if (code === 0) {
+        resolve({ success: true, outputPath, duration: durationSeconds })
+        return
+      }
+      try { await fs.unlink(outputPath) } catch (_) { /* ignore */ }
+      resolve({ success: false, error: stderr || `FFmpeg exited with code ${code}` })
+    })
+  })
+})
+
 ipcMain.handle('media:extractVideoPoster', async (event, inputPath, outputPath, options = {}) => {
   if (!ffmpegPath) {
     return { success: false, error: 'FFmpeg binary not available.' }

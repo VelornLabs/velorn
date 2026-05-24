@@ -10207,6 +10207,18 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         }
         return asset.url || null
       }
+      const getJobAssetPath = async (asset) => {
+        if (!asset) return null
+        if (asset.absolutePath) return asset.absolutePath
+        if (asset.path && typeof originProjectHandle === 'string' && window.electronAPI?.pathJoin) {
+          try {
+            return await window.electronAPI.pathJoin(originProjectHandle, asset.path)
+          } catch (_) {
+            return null
+          }
+        }
+        return null
+      }
       const getUploadExtension = (asset, blob, fallbackName) => {
         const candidates = [fallbackName, asset?.path, asset?.name].filter(Boolean)
         for (const candidate of candidates) {
@@ -10244,6 +10256,22 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         return new File([blob], getSafeUploadName(asset, blob, fallbackName), {
           type: blob.type || asset.mimeType || 'application/octet-stream',
         })
+      }
+      const createFileFromPath = async (filePath, fallbackName, mimeType = 'application/octet-stream') => {
+        if (!filePath || !window.electronAPI?.readFileAsBuffer) return null
+        const result = await window.electronAPI.readFileAsBuffer(filePath)
+        if (!result?.success || !result.data) {
+          throw new Error(result?.error || `Could not read file ${fallbackName || filePath}`)
+        }
+        let filename = fallbackName || 'asset'
+        if (!fallbackName && window.electronAPI?.pathBasename) {
+          try {
+            filename = await window.electronAPI.pathBasename(filePath)
+          } catch (_) {
+            filename = 'asset'
+          }
+        }
+        return new File([result.data], filename, { type: mimeType })
       }
       const outputPrefix = (
         isSingleVideoWorkflowId(job.workflowId) ||
@@ -10386,13 +10414,44 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             ? 'Audio asset not found — re-select the song/voiceover in Director setup and rebuild the plan.'
             : 'Audio asset not found — re-select conditioning audio and queue again.')
         }
+        const shouldTrimMusicAudio = job.workflowId === CUSTOM_MUSIC_VIDEO_WORKFLOW_ID
+        let cleanupPath = null
         try {
-          const file = await createFileFromJobAsset(audioAsset, `audio_${Date.now()}.mp3`)
+          let file = null
+          if (shouldTrimMusicAudio) {
+            if (!isElectron() || !window.electronAPI?.trimAudioSegment) {
+              throw new Error('Shot audio trimming requires the Electron app.')
+            }
+            const sourcePath = await getJobAssetPath(audioAsset)
+            if (!sourcePath) {
+              throw new Error('Could not find the local song audio file to trim.')
+            }
+            const shotStart = Math.max(0, Number(job?.musicShot?.audioStart) || 0)
+            const shotDuration = Math.max(0.25, Number(job.duration || job?.musicShot?.length || 0) || 0)
+            const trimResult = await window.electronAPI.trimAudioSegment({
+              inputPath: sourcePath,
+              startSeconds: shotStart,
+              durationSeconds: shotDuration,
+              outputName: `custom_music_${outputToken}_audio.wav`,
+              timeoutMs: 90000,
+            })
+            if (!trimResult?.success || !trimResult.outputPath) {
+              throw new Error(trimResult?.error || 'Could not trim shot audio.')
+            }
+            cleanupPath = trimResult.outputPath
+            file = await createFileFromPath(trimResult.outputPath, `custom_music_${outputToken}_audio.wav`, 'audio/wav')
+          } else {
+            file = await createFileFromJobAsset(audioAsset, `audio_${Date.now()}.mp3`)
+          }
           if (!file) throw new Error('Audio asset is not accessible')
           const uploadResult = await comfyui.uploadFile(file)
           uploadedAudioFilename = uploadResult?.name || file.name
         } catch (audioError) {
           throw new Error(`Failed to upload audio: ${audioError?.message || audioError}`)
+        } finally {
+          if (cleanupPath && window.electronAPI?.deleteFile) {
+            window.electronAPI.deleteFile(cleanupPath).catch(() => {})
+          }
         }
       }
 

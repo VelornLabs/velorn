@@ -287,6 +287,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAudioWaveform: (mediaInput, options = {}) => ipcRenderer.invoke('media:getAudioWaveform', mediaInput, options),
 
   /**
+   * Trim a short audio segment with FFmpeg and return a temporary WAV path.
+   * @param {object} options - { inputPath, startSeconds, durationSeconds, outputName?, timeoutMs? }
+   * @returns {Promise<{success: boolean, outputPath?: string, duration?: number, error?: string}>}
+   */
+  trimAudioSegment: (options = {}) => ipcRenderer.invoke('media:trimAudioSegment', options),
+
+  /**
    * Extract a poster image from the first frames of a video via ffmpeg.
    * @param {string} inputPath - Absolute source file path
    * @param {string} outputPath - Absolute poster destination path
