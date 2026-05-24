@@ -11,7 +11,7 @@ The normal release flow is:
 1. Commit the release changes.
 2. Push `main`.
 3. Push a version tag, for example `v0.1.12`.
-4. GitHub Actions builds Windows and macOS.
+4. GitHub Actions builds Windows, macOS, and Linux.
 5. GitHub Actions signs and notarizes macOS.
 6. GitHub creates or updates a draft release with assets.
 
@@ -41,6 +41,8 @@ The GitHub Actions release workflow uploads:
 - `Windows Portable`
 - `Mac (Apple Silicon)`
 - `Mac (Intel)`
+- `Linux AppImage`
+- `Linux deb`
 
 Do not upload `.blockmap` or `latest*.yml` files unless auto-update support is added later.
 

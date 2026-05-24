@@ -85,6 +85,56 @@ jobs:
             "release/ComfyStudio-$version-windows-portable-x64.exe#Windows Portable" `
             --clobber
 
+  build-linux:
+    name: Build Linux
+    needs: ensure-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            fakeroot
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare Linux icons
+        run: |
+          mkdir -p build/icons
+          cp build/icon.png build/icons/256x256.png
+          cp build/icon.png build/icons/512x512.png
+
+      - name: Read app version
+        id: app_version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "app_version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build Linux artifacts
+        run: npm run build && npx electron-builder --linux --publish never
+
+      - name: Upload Linux release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.app_version.outputs.app_version }}"
+          gh release upload "$RELEASE_TAG" \
+            "release/ComfyStudio-${VERSION}-linux-x64.AppImage#Linux AppImage" \
+            "release/ComfyStudio-${VERSION}-linux-x64.deb#Linux deb" \
+            --clobber
+
   build-macos:
     name: Build macOS
     needs: ensure-release

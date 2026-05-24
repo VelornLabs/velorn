@@ -3,7 +3,7 @@
 Use GitHub Actions for desktop releases.
 
 Normal development stays on Windows.
-GitHub builds Windows and macOS for release tags.
+GitHub builds Windows, macOS, and Linux for release tags.
 macOS signing and notarization happen in GitHub Actions.
 
 Future AI agents should also read `docs/AI_RELEASE_HANDOFF.md` before release work.
@@ -35,6 +35,8 @@ git push origin v0.1.12
    - `Windows Portable`
    - `Mac (Apple Silicon)`
    - `Mac (Intel)`
+   - `Linux AppImage`
+   - `Linux deb`
 10. Publish the release.
 
 ## What The Workflow Uploads
@@ -45,6 +47,8 @@ The workflow uploads only the user-facing desktop downloads:
 - Windows portable `.exe`
 - macOS Apple Silicon `.dmg`
 - macOS Intel `.dmg`
+- Linux AppImage `.AppImage`
+- Linux Debian package `.deb`
 
 It does not upload `.blockmap` or `latest*.yml` files.
 
