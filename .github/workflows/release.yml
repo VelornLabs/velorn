@@ -131,8 +131,8 @@ jobs:
         run: |
           VERSION="${{ steps.app_version.outputs.app_version }}"
           gh release upload "$RELEASE_TAG" \
-            "release/ComfyStudio-${VERSION}-linux-x64.AppImage#Linux AppImage" \
-            "release/ComfyStudio-${VERSION}-linux-x64.deb#Linux deb" \
+            "release/ComfyStudio-${VERSION}-linux-x86_64.AppImage#Linux AppImage" \
+            "release/ComfyStudio-${VERSION}-linux-amd64.deb#Linux deb" \
             --clobber
 
   build-macos:
