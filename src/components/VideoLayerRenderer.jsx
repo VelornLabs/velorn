@@ -2516,6 +2516,7 @@ function VideoLayerRenderer({
 
   // Track preloaded clip URL keys per clipId to avoid stale-preload bugs.
   const preloadedClips = useRef(new Map())
+  const warmedTransitionClips = useRef(new Set())
 
   const {
     clips,
@@ -2727,6 +2728,30 @@ function VideoLayerRenderer({
           cachedVideo.currentTime = prerollTargetTime
         }
         scheduleCutFrameCapture(clip, resolvedUrl, cachedVideo, targetTime)
+        if (isPlaying && isTransitionIncomingClip && !isCurrentlyActive && cachedVideo.readyState >= 2) {
+          const warmKey = `${clip.id}|${resolvedUrl}`
+          if (!warmedTransitionClips.current.has(warmKey)) {
+            warmedTransitionClips.current.add(warmKey)
+            const warmFrame = () => {
+              if (!cachedVideo.paused) return
+              const playPromise = cachedVideo.play()
+              if (playPromise && typeof playPromise.then === 'function') {
+                playPromise
+                  .then(() => {
+                    if (typeof cachedVideo.requestVideoFrameCallback === 'function') {
+                      cachedVideo.requestVideoFrameCallback(() => {
+                        cachedVideo.pause()
+                      })
+                    } else {
+                      setTimeout(() => cachedVideo.pause(), 24)
+                    }
+                  })
+                  .catch(() => {})
+              }
+            }
+            warmFrame()
+          }
+        }
       }
       preloadedClips.current.set(clip.id, preloadKey)
     })
@@ -2874,6 +2899,12 @@ function VideoLayerRenderer({
             Math.abs(clipEnd - playheadPosition) < keepWindow
           )
         })
+      )
+      const validWarmKeys = new Set(
+        [...preloadedClips.current.values()]
+      )
+      warmedTransitionClips.current = new Set(
+        [...warmedTransitionClips.current].filter((key) => validWarmKeys.has(key))
       )
     }, 5000)
 
