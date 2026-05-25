@@ -1112,7 +1112,6 @@ const VideoLayer = memo(function VideoLayer({
   const lastClipUrlRef = useRef(null) // Track src changes for hold frame
   const diagEventTimesRef = useRef({})
   const attemptedPlaybackFallbackRef = useRef(false)
-  const transitionClockRef = useRef(null)
 
   // Get the current valid URL (may be cached render or original)
   const { url: clipUrl, isCached: isCachedRender } = useClipUrl(clip)
@@ -1689,7 +1688,6 @@ const VideoLayer = memo(function VideoLayer({
         ? 0.25
         : (speedMismatch ? 0.9 : 0.7)
       const suppressTransitionDriftSeek = isInTransition && isTransitionIncoming
-      const incomingForwardTransition = suppressTransitionDriftSeek && !reverse
       const boundaryEpsilon = 0.03
       const nearForwardEnd = !reverse && clampedTime >= (maxTime - boundaryEpsilon)
       const nearReverseStart = reverse && clampedTime <= (minTime + boundaryEpsilon)
@@ -1718,28 +1716,6 @@ const VideoLayer = memo(function VideoLayer({
           video.pause()
         }
       } else {
-        if (incomingForwardTransition) {
-          if (!transitionClockRef.current) {
-            transitionClockRef.current = {
-              playheadStart: playheadPosition,
-              videoStart: video.currentTime || clampedTime,
-            }
-          }
-          const elapsed = Math.max(0, playheadPosition - transitionClockRef.current.playheadStart)
-          const transitionTarget = Math.max(
-            minTime,
-            Math.min(
-              transitionClockRef.current.videoStart + elapsed * Math.max(0.01, Math.abs(timeScale)),
-              maxTime - 0.01
-            )
-          )
-          if (Math.abs((video.currentTime || 0) - transitionTarget) > 0.18) {
-            video.currentTime = transitionTarget
-          }
-        } else if (transitionClockRef.current) {
-          transitionClockRef.current = null
-        }
-
         if (timeDiff > driftThreshold && (!suppressTransitionDriftSeek || timeDiff > 1.5)) {
           if (debugPlayback && Date.now() - lastPlaybackDebugRef.current > 1000) {
             lastPlaybackDebugRef.current = Date.now()
@@ -1794,7 +1770,6 @@ const VideoLayer = memo(function VideoLayer({
         }
       }
     } else if (isScrubbing.current) {
-      if (transitionClockRef.current) transitionClockRef.current = null
       // When scrubbing with sprite: skip video seeking entirely (sprite handles display)
       // When scrubbing without sprite: use throttled seeking
       if (!useSpriteScrub) {
@@ -1815,7 +1790,6 @@ const VideoLayer = memo(function VideoLayer({
         video.pause()
       }
     } else {
-      if (transitionClockRef.current) transitionClockRef.current = null
       // When paused (not scrubbing): Use tight threshold for precise positioning
       // Seek immediately if video is ready, don't wait
       if (video.readyState >= 1 && timeDiff > 0.05) {
