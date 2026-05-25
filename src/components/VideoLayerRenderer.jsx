@@ -2883,6 +2883,15 @@ function VideoLayerRenderer({
   // Combined video and image layers (both render in the same z-order space)
   const allMediaClips = activeLayerClips.filter(({ clip }) => clip.type === 'video' || clip.type === 'image')
 
+  const transitionReady = useMemo(() => {
+    if (!transitionInfo) return false
+    if (transitionInfo.transition?.kind !== 'between') return true
+    const clipAId = transitionInfo.clipA?.id
+    const clipBId = transitionInfo.clipB?.id
+    if (!clipAId || !clipBId) return false
+    return videoCache.isReady(clipAId) && videoCache.isReady(clipBId)
+  }, [transitionInfo, playheadPosition])
+
   const getTransitionStyleForClip = (clip) => {
     if (!transitionInfo || !clip) return null
     if (typeof getTransitionStyles !== 'function') return null
@@ -2894,10 +2903,16 @@ function VideoLayerRenderer({
     }
 
     if (transitionInfo.clipA?.id === clip.id) {
+      if (!transitionReady) {
+        return { opacity: 1, zIndex: 2 }
+      }
       return getTransitionStyles(transitionInfo, true)
     }
 
     if (transitionInfo.clipB?.id === clip.id) {
+      if (!transitionReady) {
+        return { opacity: 0, display: 'none', zIndex: 1 }
+      }
       return getTransitionStyles(transitionInfo, false)
     }
 
@@ -3081,7 +3096,7 @@ function VideoLayerRenderer({
         ? <div className="absolute inset-0 bg-black" />
         : layerElements}
       {/* Transition overlay (for fade effects) */}
-      {transitionInfo ? getTransitionOverlay(transitionInfo) : null}
+      {transitionInfo && transitionReady ? getTransitionOverlay(transitionInfo) : null}
     </div>
   )
 }
