@@ -2608,45 +2608,6 @@ function VideoLayerRenderer({
     return clips.filter((clip) => ids.has(clip.id) && clip.type === 'video' && clip.enabled !== false)
   }, [clips])
 
-  const getTransitionClipsToPreload = useCallback((currentTime) => {
-    const state = useTimelineStore.getState()
-    const transitionInfo = state.getTransitionAtTime(currentTime)
-    const ids = new Set()
-
-    if (transitionInfo && transitionInfo.transition?.kind === 'between') {
-      for (const id of getTransitionClipIds(transitionInfo)) {
-        ids.add(id)
-      }
-    }
-
-    const nextTransition = state.transitions
-      .filter((transition) => transition?.kind === 'between')
-      .map((transition) => {
-        const clipA = state.clips.find((clip) => clip.id === transition.clipAId)
-        const clipB = state.clips.find((clip) => clip.id === transition.clipBId)
-        if (!clipA || !clipB || clipA.trackId !== clipB.trackId) return null
-        const split = normalizeTransitionSplit(transition?.settings?.split, transition?.settings?.alignment || 'center')
-        const duration = Math.max(0, Number(transition.duration) || 0)
-        const editPoint = Number.isFinite(Number(transition.editPoint))
-          ? Number(transition.editPoint)
-          : (clipA.startTime + clipA.duration)
-        const start = editPoint - (duration * split.clipA)
-        const end = editPoint + (duration * split.clipB)
-        return { transition, clipA, clipB, start, end }
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.start - b.start)
-      .find((entry) => entry.start >= currentTime && entry.start - currentTime <= TRANSITION_PREROLL_LOOKAHEAD)
-
-    if (nextTransition) {
-      ids.add(nextTransition.clipA.id)
-      ids.add(nextTransition.clipB.id)
-    }
-
-    if (ids.size === 0) return []
-    return clips.filter((clip) => ids.has(clip.id) && clip.type === 'video' && clip.enabled !== false)
-  }, [clips])
-
   const autoCacheClip = useCallback(async (clip) => {
     if (!clip || clip.type !== 'video') return
     if (clip.cacheStatus === 'cached' || renderCacheService.isRendering(clip.id)) return

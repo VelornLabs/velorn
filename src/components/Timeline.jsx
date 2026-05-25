@@ -5450,9 +5450,6 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                             borderTop: `3px solid #3d7080`,
                           }}
                         />
-                        {/* Filmstrip thumbnails */}
-                        {clipMediaUrl && (
-                          <div className="absolute inset-0 top-[3px] flex overflow-hidden">
                         {shouldRenderClipThumbnails && (
                           <div className="absolute inset-0 top-[3px] flex overflow-hidden">
                             {renderTimelineVideoFilmstrip(clip, renderedClipWidth, thumbCount, contentHeight)}

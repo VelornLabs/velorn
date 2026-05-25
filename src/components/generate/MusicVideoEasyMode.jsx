@@ -350,7 +350,6 @@ function LazyShotPreview({ children, placeholderLabel = 'Preview', enabled = tru
     observer.observe(el)
     return () => observer.disconnect()
   }, [enabled, shouldLoad])
-  }, [enabled, shouldLoad])
 
   return (
     <div ref={ref} className="h-full w-full">
