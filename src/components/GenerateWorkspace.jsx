@@ -6407,19 +6407,38 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     }
   }, [addComfyLog, handleCheckYoloMusicCustomKeyframeBridge, recheckConnection, requestConfirm])
 
-  const getExistingYoloStageKeys = useCallback((stage) => (
-    new Set(
-      generationQueue
-        .filter((job) => {
-          if (job?.yolo?.stage !== stage || !job?.yolo?.key || job.status === 'error') return false
-          const jobMode = job?.yolo?.mode
-          return yoloModeKey === 'music'
-            ? jobMode === 'music'
-            : jobMode !== 'music'
-        })
-        .map((job) => job.yolo.key)
+  const getExistingYoloStageKeys = useCallback((stage) => {
+    const keys = new Set()
+    const modeMatches = (mode) => (
+      yoloModeKey === 'music'
+        ? mode === 'music'
+        : mode !== 'music'
     )
-  ), [generationQueue, yoloModeKey])
+    const addYoloKeys = (yolo) => {
+      if (!yolo || yolo.stage !== stage || !modeMatches(yolo.mode)) return
+      const key = String(yolo.key || '').trim()
+      if (key) keys.add(key)
+      if (stage === 'video') {
+        const variantKey = String(yolo.variantKey || '').trim()
+        const workflowId = String(yolo.workflowId || '').trim()
+        if (variantKey && workflowId) keys.add(`${variantKey}::${workflowId}`)
+        if (variantKey && !workflowId) keys.add(variantKey)
+      }
+    }
+
+    for (const job of generationQueue || []) {
+      if (job?.status === 'error') continue
+      addYoloKeys(job?.yolo)
+    }
+
+    for (const asset of assets || []) {
+      if (stage === 'storyboard' && asset?.type !== 'image') continue
+      if (stage === 'video' && asset?.type !== 'video') continue
+      addYoloKeys(asset?.yolo)
+    }
+
+    return keys
+  }, [assets, generationQueue, yoloModeKey])
 
   const handleClearGenerationQueue = useCallback(async () => {
     if (generationQueue.length === 0) return
