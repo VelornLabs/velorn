@@ -8784,11 +8784,18 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       setFormError('Selected keyframe workflow needs at least a model or product reference image.')
       return 0
     }
-    const depsOk = await validateDependenciesForQueue(
-      [yoloStoryboardWorkflowId],
-      `keyframe re-render for ${targetKeys.size} selected shots`
-    )
-    if (!depsOk) return 0
+    const usesCustomMusicKeyframes = isYoloMusicMode && yoloStoryboardWorkflowId === CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID
+    if (usesCustomMusicKeyframes && !yoloMusicCustomKeyframeValidation.ok) {
+      setFormError(yoloMusicCustomKeyframeValidation.message || 'Load and validate a custom keyframe workflow before queueing.')
+      return 0
+    }
+    if (!usesCustomMusicKeyframes) {
+      const depsOk = await validateDependenciesForQueue(
+        [yoloStoryboardWorkflowId],
+        `keyframe re-render for ${targetKeys.size} selected shots`
+      )
+      if (!depsOk) return 0
+    }
 
     const planToUse = yoloActivePlan.length > 0 ? yoloActivePlan : buildActiveYoloPlan()
     if (!planToUse) return 0
@@ -8813,6 +8820,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     queueYoloStoryboardVariants,
     yoloActivePlanIsStale,
     validateDependenciesForQueue,
+    yoloMusicCustomKeyframeValidation,
     yoloActivePlan,
     yoloAdHasReferenceAnchors,
     yoloAdModelAsset,
@@ -9373,11 +9381,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       setFormError('Choose a video workflow before creating shot videos.')
       return 0
     }
-    const depsOk = await validateDependenciesForQueue(
-      targetsWorkflowIds,
-      `video re-render for ${targetKeys.size} selected shots`
-    )
-    if (!depsOk) return 0
+    const usesCustomMusicVideoWorkflow = isYoloMusicMode && targetsWorkflowIds.includes(CUSTOM_MUSIC_VIDEO_WORKFLOW_ID)
+    if (usesCustomMusicVideoWorkflow && !yoloMusicCustomVideoValidation.ok) {
+      setFormError(yoloMusicCustomVideoValidation.message || 'Load and validate a custom video workflow before queueing.')
+      return 0
+    }
+    const dependencyTargets = targetsWorkflowIds.filter((id) => id !== CUSTOM_MUSIC_VIDEO_WORKFLOW_ID)
+    if (dependencyTargets.length > 0) {
+      const depsOk = await validateDependenciesForQueue(
+        dependencyTargets,
+        `video re-render for ${targetKeys.size} selected shots`
+      )
+      if (!depsOk) return 0
+    }
 
     const planToUse = Array.isArray(planOverride) && planOverride.length > 0
       ? planOverride
@@ -9414,6 +9430,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     yoloActivePlanIsStale,
     validateDependenciesForQueue,
     yoloActivePlan,
+    yoloMusicCustomVideoValidation,
     yoloSelectedVideoWorkflowIds,
   ])
 

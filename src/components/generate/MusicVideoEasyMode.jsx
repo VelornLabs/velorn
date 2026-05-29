@@ -1178,7 +1178,7 @@ export default function MusicVideoEasyMode({
   }
 
   const handleRegenerateSelectedKeyframe = async () => {
-    if (selectedShotRows.length === 0) return
+    if (selectedShotRows.length === 0 || singleKeyframeActionDisabled) return
     setIsQueuingKeyframes(true)
     const targetLabel = hasMultipleSelectedShots
       ? `${selectedShotRows.length} selected shots`
@@ -1266,7 +1266,7 @@ export default function MusicVideoEasyMode({
   }
 
   const handleRegenerateSelectedVideo = async () => {
-    if (selectedShotRows.length === 0) return
+    if (selectedShotRows.length === 0 || singleVideoActionDisabled) return
     const queueableRows = []
     let missingVariants = 0
     let missingKeyframes = 0
@@ -2696,7 +2696,7 @@ export default function MusicVideoEasyMode({
                 <button
                   type="button"
                   onClick={handleRegenerateSelectedKeyframe}
-                  disabled={isQueuingKeyframes || yoloDependencyCheckInProgress}
+                  disabled={singleKeyframeActionDisabled}
                   className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {hasMultipleSelectedShots ? `Regenerate ${selectedShotCount} Selected` : 'Regenerate Selected Shot'}
@@ -3111,7 +3111,7 @@ export default function MusicVideoEasyMode({
                   <button
                     type="button"
                     onClick={handleRegenerateSelectedVideo}
-                    disabled={isQueuingVideos || yoloDependencyCheckInProgress}
+                    disabled={singleVideoActionDisabled}
                     className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
