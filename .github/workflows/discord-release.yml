@@ -1,0 +1,58 @@
+name: Announce Release on Discord
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  announce:
+    name: Post Discord Announcement
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send release announcement
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "::notice::DISCORD_RELEASE_WEBHOOK is not set, so no Discord announcement was posted."
+            exit 0
+          fi
+
+          python - <<'PY' > payload.json
+          import json
+          import os
+
+          name = os.environ.get("RELEASE_NAME") or os.environ.get("RELEASE_TAG") or "New release"
+          tag = os.environ.get("RELEASE_TAG") or ""
+          url = os.environ.get("RELEASE_URL") or ""
+          body = (os.environ.get("RELEASE_BODY") or "").strip()
+
+          if len(body) > 1800:
+              body = body[:1800].rstrip() + "\n\nRelease notes continue on GitHub."
+
+          title = name if not tag or tag in name else f"{name} ({tag})"
+          description = body or "The latest ComfyStudio release is now available."
+
+          payload = {
+              "content": f"New ComfyStudio release is live: **{title}**\n{url}",
+              "embeds": [
+                  {
+                      "title": title,
+                      "url": url,
+                      "description": description,
+                      "color": 4413439,
+                  }
+              ],
+          }
+
+          print(json.dumps(payload))
+          PY
+
+          curl -fsS \
+            -H "Content-Type: application/json" \
+            --data @payload.json \
+            "$DISCORD_WEBHOOK"
