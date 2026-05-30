@@ -7478,6 +7478,27 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     updateYoloShot(sceneId, shotId, (shot) => ({ ...shot, imageBeat: value }))
   }, [updateYoloShot])
 
+  const handleYoloShotNanoBananaReferencesChange = useCallback((sceneId, shotId, patch = {}) => {
+    updateYoloShot(sceneId, shotId, (shot) => {
+      const nextShot = { ...shot }
+      if (Object.prototype.hasOwnProperty.call(patch, 'enabled')) {
+        nextShot.nanoBananaReferenceOverrideEnabled = Boolean(patch.enabled)
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'referenceAssetId1')) {
+        nextShot.nanoBananaReferenceAssetId1 = patch.referenceAssetId1 || ''
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'referenceAssetId2')) {
+        nextShot.nanoBananaReferenceAssetId2 = patch.referenceAssetId2 || ''
+      }
+      if (patch.clear) {
+        nextShot.nanoBananaReferenceOverrideEnabled = false
+        nextShot.nanoBananaReferenceAssetId1 = ''
+        nextShot.nanoBananaReferenceAssetId2 = ''
+      }
+      return nextShot
+    })
+  }, [updateYoloShot])
+
   const handleReplaceYoloMusicKeyframe = useCallback(async ({ sceneId, shotId, assetId = '', file = null } = {}) => {
     if (!isYoloMusicMode) return null
     const variant = (yoloQueueVariants || []).find((entry) => (
@@ -8622,10 +8643,20 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       const qwenMusicReferences = usesReferenceMusicStoryboardWorkflow
         ? resolveQwenMusicStoryboardReferences(variant)
         : { primaryAssetId: null, secondaryAssetId: null }
+      const usesNanoBananaMusicOverride = isYoloMusicMode &&
+        ['nano-banana-2', 'nano-banana-pro'].includes(yoloStoryboardWorkflowId) &&
+        Boolean(variant?.nanoBananaReferenceOverride?.enabled)
+      const nanoBananaOverrideAssetIds = usesNanoBananaMusicOverride
+        ? (Array.isArray(variant?.nanoBananaReferenceOverride?.assetIds)
+            ? variant.nanoBananaReferenceOverride.assetIds.filter((assetId) => musicImageAssetById.has(assetId)).slice(0, 2)
+            : [])
+        : []
       const musicReferenceAssetId1 = isYoloMusicMode
         ? (
           usesReferenceMusicStoryboardWorkflow
             ? qwenMusicReferences.primaryAssetId
+            : usesNanoBananaMusicOverride
+              ? (nanoBananaOverrideAssetIds[0] || null)
             : (variant.resolvedArtistAssetIds?.[0] || yoloMusicArtistAsset?.id || null)
         )
         : null
@@ -8633,6 +8664,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         ? (
           usesReferenceMusicStoryboardWorkflow
             ? qwenMusicReferences.secondaryAssetId
+            : usesNanoBananaMusicOverride
+              ? (nanoBananaOverrideAssetIds[1] || null)
             : (variant.resolvedArtistAssetIds?.[1] || null)
         )
         : null
@@ -12161,6 +12194,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     handleQueueYoloShotVideo={handleQueueYoloShotVideo}
                     handleQueueYoloShotVideos={handleQueueYoloShotVideos}
                     handleYoloShotImageBeatChange={handleYoloShotImageBeatChange}
+                    handleYoloShotNanoBananaReferencesChange={handleYoloShotNanoBananaReferencesChange}
                     handleYoloShotVideoBeatChange={handleYoloShotVideoBeatChange}
                     handleCopyMusicVideoLlmPrompt={handleCopyMusicVideoLlmPrompt}
                     handleAssembleMusicVideoTimeline={handleAssembleMusicVideoTimeline}

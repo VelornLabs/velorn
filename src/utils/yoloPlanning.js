@@ -736,6 +736,15 @@ export function flattenYoloPlanVariants(plan = []) {
             resolvedArtistAssetIds: Array.isArray(shot?.resolvedArtistAssetIds)
               ? shot.resolvedArtistAssetIds.filter(Boolean).slice(0, 2)
               : [],
+            nanoBananaReferenceOverride: shot?.nanoBananaReferenceOverrideEnabled
+              ? {
+                  enabled: true,
+                  assetIds: [
+                    shot?.nanoBananaReferenceAssetId1,
+                    shot?.nanoBananaReferenceAssetId2,
+                  ].filter(Boolean).slice(0, 2),
+                }
+              : null,
             // Origin pass: { type, altSlotId, altLabel }. Null for ad mode and
             // legacy plans that pre-date pass tagging. Consumers of this field
             // must tolerate null and fall back to the pre-pass behavior.

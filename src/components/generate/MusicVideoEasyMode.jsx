@@ -509,6 +509,7 @@ export default function MusicVideoEasyMode({
   handleQueueYoloShotVideo,
   handleQueueYoloShotVideos,
   handleYoloShotImageBeatChange,
+  handleYoloShotNanoBananaReferencesChange,
   handleYoloShotVideoBeatChange,
   handleCopyMusicVideoLlmPrompt,
   handleAssembleMusicVideoTimeline,
@@ -714,6 +715,7 @@ export default function MusicVideoEasyMode({
   const selectedVideoWorkflowLabel = selectedVideoWorkflow?.label || selectedVideoWorkflowId || 'Video model'
   const selectedKeyframeWorkflowId = String(selectedKeyframeWorkflow?.id || '').trim()
   const selectedKeyframeWorkflowLabel = selectedKeyframeWorkflow?.label || selectedKeyframeWorkflowId || 'Keyframe model'
+  const nanoBananaKeyframeSelected = selectedKeyframeWorkflowId === 'nano-banana-2' || selectedKeyframeWorkflowId === 'nano-banana-pro'
   const customKeyframeWorkflowSelected = selectedKeyframeWorkflowId === CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID
   const customVideoWorkflowSelected = selectedVideoWorkflowId === CUSTOM_MUSIC_VIDEO_WORKFLOW_ID
   const customKeyframeWorkflowLoaded = Boolean(String(yoloMusicCustomKeyframeWorkflow?.jsonText || '').trim())
@@ -1236,6 +1238,77 @@ export default function MusicVideoEasyMode({
       {label}
     </button>
   )
+
+  const updateNanoBananaShotReferences = (row, patch = {}) => {
+    if (!row?.scene?.id || !row?.shot?.id || !handleYoloShotNanoBananaReferencesChange) return
+    handleYoloShotNanoBananaReferencesChange(row.scene.id, row.shot.id, patch)
+  }
+
+  const renderNanoBananaShotReferences = (row, compact = false) => {
+    if (!nanoBananaKeyframeSelected || !row?.scene || !row?.shot || hasMultipleSelectedShots) return null
+    const overrideEnabled = Boolean(row.shot.nanoBananaReferenceOverrideEnabled)
+    const referenceAssetId1 = row.shot.nanoBananaReferenceAssetId1 || ''
+    const referenceAssetId2 = row.shot.nanoBananaReferenceAssetId2 || ''
+    const hasImages = replacementImageAssets.length > 0
+
+    return (
+      <div className={`mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 ${compact ? 'px-3 py-2' : 'p-3'}`}>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Nano Banana references</div>
+            <div className="mt-0.5 text-xs text-sf-text-secondary">
+              {overrideEnabled ? 'This shot uses its own reference selection.' : 'Using the default cast/project references for this shot.'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => updateNanoBananaShotReferences(row, { enabled: !overrideEnabled })}
+            disabled={!handleYoloShotNanoBananaReferencesChange}
+            className="inline-flex shrink-0 items-center justify-center rounded-md border border-sf-dark-600 bg-sf-dark-950 px-2.5 py-1.5 text-[10px] font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {overrideEnabled ? 'Use Defaults' : 'Override References'}
+          </button>
+        </div>
+        {overrideEnabled && (
+          <>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {[1, 2].map((slot) => {
+                const value = slot === 1 ? referenceAssetId1 : referenceAssetId2
+                return (
+                  <select
+                    key={`nano-ref-${row.scene.id}-${row.shot.id}-${slot}`}
+                    value={value}
+                    onChange={(event) => updateNanoBananaShotReferences(row, {
+                      [`referenceAssetId${slot}`]: event.target.value || '',
+                    })}
+                    disabled={!hasImages}
+                    className="w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-2 py-1.5 text-xs text-sf-text-primary outline-none focus:border-sf-accent disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <option value="">{slot === 1 ? 'No reference / prompt only' : 'No second reference'}</option>
+                    {replacementImageAssets.map((asset) => (
+                      <option key={`nano-ref-${slot}-${asset.id}`} value={asset.id}>{asset.name || asset.id}</option>
+                    ))}
+                  </select>
+                )
+              })}
+            </div>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-[10px] leading-4 text-sf-text-muted">
+                Leave both empty to force Nano Banana to use only this shot's prompt.
+              </p>
+              <button
+                type="button"
+                onClick={() => updateNanoBananaShotReferences(row, { clear: true })}
+                className="inline-flex shrink-0 items-center justify-center rounded-md border border-sf-dark-600 px-2 py-1 text-[10px] font-semibold text-sf-text-muted transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+              >
+                Clear Override
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
 
   const handleCopyBrief = async () => {
     setBriefStatus('')
@@ -2825,7 +2898,7 @@ export default function MusicVideoEasyMode({
                   Prompt editing is available when a single shot is selected.
                 </div>
               ) : (
-                <label className="mt-3 block text-xs text-sf-text-secondary">
+                <div className="mt-3 text-xs text-sf-text-secondary">
                   <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Keyframe prompt</span>
                   <textarea
                     value={selectedShotRow.shot.imageBeat || selectedShotRow.shot.beat || ''}
@@ -2833,7 +2906,8 @@ export default function MusicVideoEasyMode({
                     rows={4}
                     className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
                   />
-                </label>
+                  {renderNanoBananaShotReferences(selectedShotRow)}
+                </div>
               )}
             </div>
           )}
@@ -3413,6 +3487,7 @@ export default function MusicVideoEasyMode({
                   rows={4}
                   className="mt-2 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
                 />
+                {editableKeyframePrompt && previewShotRow ? renderNanoBananaShotReferences(previewShotRow, true) : null}
               </div>
             ) : previewPrompt ? (
               <div className="border-t border-sf-dark-700 px-4 py-3 text-xs leading-5 text-sf-text-secondary">
