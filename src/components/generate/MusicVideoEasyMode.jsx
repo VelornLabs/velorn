@@ -436,6 +436,39 @@ function FieldLabel({ children }) {
   return <label className="text-[10px] uppercase text-sf-text-muted">{children}</label>
 }
 
+const ASR_LANGUAGE_OPTIONS = Object.freeze([
+  'English',
+  'Auto',
+  'Portuguese',
+  'Chinese',
+  'Cantonese',
+  'Spanish',
+  'French',
+  'German',
+  'Italian',
+  'Japanese',
+  'Korean',
+  'Arabic',
+  'Hindi',
+  'Russian',
+  'Turkish',
+  'Vietnamese',
+  'Indonesian',
+  'Malay',
+  'Dutch',
+  'Swedish',
+  'Danish',
+  'Finnish',
+  'Polish',
+  'Czech',
+  'Filipino',
+  'Persian',
+  'Greek',
+  'Romanian',
+  'Hungarian',
+  'Macedonian',
+])
+
 function Stat({ label, value }) {
   return (
     <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 px-3 py-2">
@@ -454,10 +487,16 @@ export default function MusicVideoEasyMode({
   setYoloMusicAudioAssetId,
   yoloMusicAudioKind,
   setYoloMusicAudioKind,
+  yoloMusicAsrLanguage = 'English',
+  setYoloMusicAsrLanguage,
   yoloMusicAudioAsset,
   yoloMusicTranscribingSrt,
   yoloMusicTranscriptionStatus,
   handleYoloMusicTranscribeSrt,
+  yoloMusicProvidedLyrics,
+  setYoloMusicProvidedLyrics,
+  yoloMusicAlignProvidedLyrics,
+  setYoloMusicAlignProvidedLyrics,
   yoloMusicLyrics,
   setYoloMusicLyrics,
   yoloMusicParsedLyrics,
@@ -816,6 +855,13 @@ export default function MusicVideoEasyMode({
     [defaultVideoWorkflowId, selectedVideoWorkflowId, videoAssetMap, yoloQueueVariants]
   )
   const timedLineCount = Array.isArray(yoloMusicParsedLyrics?.lines) ? yoloMusicParsedLyrics.lines.length : 0
+  const providedLyricsLineCount = useMemo(
+    () => String(yoloMusicProvidedLyrics || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean).length,
+    [yoloMusicProvidedLyrics]
+  )
   const selectedAudioKindOption = getMusicVideoAudioKindOption(yoloMusicAudioKind) || getMusicVideoAudioKindOption('mixed_track')
   const selectedAudioModeHelper = getAudioModeHelper(selectedAudioKindOption?.id)
   const outputResolution = useMemo(
@@ -1855,17 +1901,89 @@ export default function MusicVideoEasyMode({
               </span>
             )}
           </div>
+          <div className="mt-3 max-w-xs">
+            <label className="block">
+              <span className="text-[10px] uppercase text-sf-text-muted">ASR Language</span>
+              <select
+                value={yoloMusicAsrLanguage || 'English'}
+                onChange={(event) => setYoloMusicAsrLanguage?.(event.target.value || 'English')}
+                className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+              >
+                {ASR_LANGUAGE_OPTIONS.map((language) => (
+                  <option key={language} value={language}>{language}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/70 p-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="text-xs leading-5 text-sf-text-secondary">
+                <div className="font-semibold text-sf-text-primary">Lyrics source</div>
+                {yoloMusicAlignProvidedLyrics
+                  ? 'Paste plain lyrics below. ComfyStudio listens to the selected audio for timing, then writes your lyrics as SRT.'
+                  : 'ComfyStudio listens to the selected audio and writes timed SRT output.'}
+              </div>
+              <div className="inline-flex rounded-lg border border-sf-dark-600 bg-sf-dark-900 p-1">
+                <button
+                  type="button"
+                  aria-pressed={!yoloMusicAlignProvidedLyrics}
+                  onClick={() => setYoloMusicAlignProvidedLyrics?.(false)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    !yoloMusicAlignProvidedLyrics
+                      ? 'bg-sf-accent text-white'
+                      : 'text-sf-text-secondary hover:text-sf-text-primary'
+                  }`}
+                >
+                  Transcribe Song
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={Boolean(yoloMusicAlignProvidedLyrics)}
+                  onClick={() => setYoloMusicAlignProvidedLyrics?.(true)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    yoloMusicAlignProvidedLyrics
+                      ? 'bg-sf-accent text-white'
+                      : 'text-sf-text-secondary hover:text-sf-text-primary'
+                  }`}
+                >
+                  Align My Lyrics
+                </button>
+              </div>
+            </div>
+          </div>
+          {yoloMusicAlignProvidedLyrics && (
+            <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/70 p-3">
+              <div className="mb-2 text-[10px] text-sf-text-muted">
+                Plain lyrics - {providedLyricsLineCount} lines
+              </div>
+              <label className="block">
+                <span className="text-[10px] uppercase text-sf-text-muted">Plain Lyrics Input</span>
+                <textarea
+                  value={yoloMusicProvidedLyrics || ''}
+                  onChange={(event) => setYoloMusicProvidedLyrics?.(event.target.value)}
+                  placeholder={'Paste plain lyrics here, one line per row.\n\n[Rose]\nYou paint your eyelids with correction fluid moons\nChewed up saints on the floor\n\n[Jake]\nSwollen sound inside my head'}
+                  className="mt-1 min-h-[160px] w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
+                />
+              </label>
+            </div>
+          )}
           {(yoloMusicTranscribingSrt || yoloMusicTranscriptionStatus) && (
             <div className="mt-2 text-xs text-sf-text-secondary">
               {yoloMusicTranscriptionStatus || 'Preparing lyrics timing. This might take a moment.'}
             </div>
           )}
-          <textarea
-            value={yoloMusicLyrics}
-            onChange={(event) => setYoloMusicLyrics(event.target.value)}
-            placeholder="Paste lyrics, SRT, or LRC timing here."
-            className="mt-3 min-h-[220px] w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
-          />
+          <div className="mt-3">
+            <label className="block">
+              <span className="text-[10px] uppercase text-sf-text-muted">SRT Output</span>
+              <textarea
+                value={yoloMusicLyrics}
+                onChange={(event) => setYoloMusicLyrics(event.target.value)}
+                placeholder="Timed lyrics will appear here after transcription or alignment."
+                readOnly={!yoloMusicAlignProvidedLyrics}
+                className={`mt-1 min-h-[220px] w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent ${!yoloMusicAlignProvidedLyrics ? 'opacity-90' : ''}`}
+              />
+            </label>
+          </div>
         </div>
       </div>
     </div>
@@ -3300,10 +3418,10 @@ export default function MusicVideoEasyMode({
                       {[selectedVideoWorkflowLabel, outputResolutionLabel, `${videoFps} fps`, getCoverageLabel(selectedShotRow.scene, selectedShotRow.shot)].filter(Boolean).join(' / ')}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleRegenerateSelectedVideo}
-                    disabled={singleVideoActionDisabled}
+                <button
+                  type="button"
+                  onClick={handleRegenerateSelectedVideo}
+                  disabled={singleVideoActionDisabled}
                     className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
