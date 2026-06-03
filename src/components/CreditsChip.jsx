@@ -193,6 +193,7 @@ function CreditsChip({ className = '', size = 'sm' }) {
   return (
     <button
       type="button"
+      onMouseDown={(event) => event.stopPropagation()}
       onClick={handleRefresh}
       aria-live="polite"
       title={labelPieces.tooltip}

@@ -118,7 +118,7 @@ function TitleBar({
       </div>
       
       {/* Right - Launcher chip + Window Controls (Windows style) */}
-      <div className="flex items-center">
+      <div className="no-drag flex items-center">
         <CreditsChip size="xs" className="mr-1" />
         <ComfyLauncherChip />
         <button
