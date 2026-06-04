@@ -17,7 +17,10 @@ const INITIAL_STATE = Object.freeze({
   exitCode: null,
   exitSignal: null,
   uptimeMs: 0,
+  launcherMode: 'script',
   launcherScript: '',
+  macAppPath: '',
+  macAppLaunchHidden: true,
   httpBase: '',
   statusMessage: '',
   error: '',
@@ -26,7 +29,10 @@ const INITIAL_STATE = Object.freeze({
 })
 
 const INITIAL_CONFIG = Object.freeze({
+  launcherMode: 'script',
   launcherScript: '',
+  macAppPath: '',
+  macAppLaunchHidden: true,
   autoStart: false,
   stopOnQuit: true,
   startupTimeoutMs: 120_000,
@@ -179,7 +185,17 @@ export async function pickComfyLauncherScript() {
   if (!bridge?.pickLauncherScript) return { success: false, error: 'Electron bridge unavailable.' }
   const result = await bridge.pickLauncherScript()
   if (result?.success && result.filePath) {
-    await updateComfyLauncherConfig({ launcherScript: result.filePath })
+    await updateComfyLauncherConfig({ launcherMode: 'script', launcherScript: result.filePath })
+  }
+  return result
+}
+
+export async function pickComfyLauncherMacApp() {
+  const bridge = getBridge()
+  if (!bridge?.pickMacApp) return { success: false, error: 'Electron bridge unavailable.' }
+  const result = await bridge.pickMacApp()
+  if (result?.success && result.filePath) {
+    await updateComfyLauncherConfig({ launcherMode: 'mac-app', macAppPath: result.filePath })
   }
   return result
 }

@@ -356,6 +356,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
 
   loadComfyUiWorkflowGraph: (payload = {}) => ipcRenderer.invoke('comfyui:loadWorkflowGraph', payload),
+  getComfyCloudCreditBalance: () => ipcRenderer.invoke('comfyui:getCloudCreditBalance'),
   validateWorkflowSetupRoot: (rootPath) => ipcRenderer.invoke('workflowSetup:validateRoot', rootPath),
   checkWorkflowSetupFiles: (payload = {}) => ipcRenderer.invoke('workflowSetup:checkFiles', payload),
   openExternalUrl: (url) => ipcRenderer.invoke('shell:openExternal', url),
@@ -398,6 +399,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openLogFile: () => ipcRenderer.invoke('comfyLauncher:openLogFile'),
     detectLaunchers: (payload) => ipcRenderer.invoke('comfyLauncher:detectLaunchers', payload),
     pickLauncherScript: () => ipcRenderer.invoke('comfyLauncher:pickLauncherScript'),
+    pickMacApp: () => ipcRenderer.invoke('comfyLauncher:pickMacApp'),
     describePortOwner: () => ipcRenderer.invoke('comfyLauncher:describePortOwner'),
     connectExternal: () => ipcRenderer.invoke('comfyLauncher:connectExternal'),
     onState: (cb) => {

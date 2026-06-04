@@ -31,7 +31,10 @@ const STATE_EVENT = 'state'
 const LOG_EVENT = 'log'
 
 const DEFAULT_CONFIG = Object.freeze({
+  launcherMode: 'script',
   launcherScript: '',
+  macAppPath: '',
+  macAppLaunchHidden: true,
   autoStart: false,
   stopOnQuit: true,
   startupTimeoutMs: 120_000,
@@ -45,8 +48,12 @@ function nowMs() {
 
 function safeCloneConfig(config) {
   const base = config && typeof config === 'object' ? config : {}
+  const launcherMode = base.launcherMode === 'mac-app' ? 'mac-app' : 'script'
   return {
+    launcherMode,
     launcherScript: typeof base.launcherScript === 'string' ? base.launcherScript : '',
+    macAppPath: typeof base.macAppPath === 'string' ? base.macAppPath : '',
+    macAppLaunchHidden: base.macAppLaunchHidden === undefined ? true : Boolean(base.macAppLaunchHidden),
     autoStart: Boolean(base.autoStart),
     stopOnQuit: base.stopOnQuit === undefined ? true : Boolean(base.stopOnQuit),
     startupTimeoutMs: Number.isFinite(Number(base.startupTimeoutMs)) ? Number(base.startupTimeoutMs) : DEFAULT_CONFIG.startupTimeoutMs,
@@ -169,6 +176,121 @@ function isPortOpen(httpBase, timeoutMs = 500) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function escapeAppleScriptString(value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+function runProcess(command, args = [], { timeoutMs = 8_000 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    let proc = null
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve({
+        ok: false,
+        code: null,
+        signal: '',
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        timedOut,
+        ...result,
+      })
+    }
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+        timedOut = true
+        try { proc?.kill?.('SIGTERM') } catch (_) { /* ignore */ }
+        finish({ ok: false, error: 'timeout' })
+      }, timeoutMs)
+      : null
+
+    try {
+      proc = spawn(command, args, {})
+      proc.stdout?.on('data', (buf) => { stdout += buf.toString('utf8') })
+      proc.stderr?.on('data', (buf) => { stderr += buf.toString('utf8') })
+      proc.on('error', (error) => finish({ ok: false, error: error?.message || String(error) }))
+      proc.on('exit', (code, signal) => finish({
+        ok: code === 0,
+        code,
+        signal: signal || '',
+        error: code === 0 ? '' : (stderr.trim() || `${command} exited with code ${code}`),
+      }))
+    } catch (error) {
+      finish({ ok: false, error: error?.message || String(error) })
+    }
+  })
+}
+
+async function getMacAppBundleIdentifier(appPath) {
+  if (process.platform !== 'darwin') return ''
+  const infoPlistPath = path.join(String(appPath || ''), 'Contents', 'Info.plist')
+  const result = await runProcess('/usr/bin/plutil', [
+    '-extract',
+    'CFBundleIdentifier',
+    'raw',
+    '-o',
+    '-',
+    infoPlistPath,
+  ], { timeoutMs: 5_000 })
+  if (!result.ok) return ''
+  return String(result.stdout || '').split(/\r?\n/)[0]?.trim() || ''
+}
+
+async function requestMacAppQuit(appPath) {
+  if (process.platform !== 'darwin') {
+    return { success: false, error: 'ComfyUI.app quit is only available on macOS.' }
+  }
+
+  const bundleId = await getMacAppBundleIdentifier(appPath)
+  const appName = path.basename(String(appPath || ''), '.app')
+  const attempts = []
+  if (bundleId) {
+    attempts.push({
+      label: `bundle id ${bundleId}`,
+      args: ['-e', `tell application id "${escapeAppleScriptString(bundleId)}" to quit`],
+    })
+  }
+  if (appName) {
+    attempts.push({
+      label: `app name ${appName}`,
+      args: ['-e', `tell application "${escapeAppleScriptString(appName)}" to quit`],
+    })
+  }
+
+  let lastError = ''
+  for (const attempt of attempts) {
+    const result = await runProcess('/usr/bin/osascript', attempt.args, { timeoutMs: 8_000 })
+    if (result.ok) {
+      return { success: true, detail: `Requested ComfyUI.app quit via ${attempt.label}.` }
+    }
+    lastError = result.error || result.stderr || `Could not quit via ${attempt.label}.`
+  }
+
+  return {
+    success: false,
+    error: lastError || 'Could not ask macOS to quit ComfyUI.app.',
+  }
+}
+
+async function waitForPortClosed(httpBase, timeoutMs = 20_000) {
+  const base = String(httpBase || '').trim()
+  if (!base) return true
+  const startedAt = nowMs()
+  while (nowMs() - startedAt < timeoutMs) {
+    // eslint-disable-next-line no-await-in-loop
+    const open = await isPortOpen(base, 500)
+    if (!open) return true
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(500)
+  }
+  return false
 }
 
 /**
@@ -430,7 +552,7 @@ class ComfyLauncher extends EventEmitter {
     this._stoppedAt = 0
     this._exitCode = null
     this._exitSignal = null
-    this._ownership = 'none' // 'ours' | 'external' | 'none'
+    this._ownership = 'none' // 'ours' | 'external' | 'app' | 'none'
     this._probeTimer = null
     this._probingSince = 0
     this._startupTimeoutMs = DEFAULT_CONFIG.startupTimeoutMs
@@ -454,13 +576,18 @@ class ComfyLauncher extends EventEmitter {
 
   async init() {
     await this._ensureLogDir()
+    const config = safeCloneConfig(this._getConfig?.())
     // Layer 2 — try to reclaim a previously spawned ComfyUI before falling
     // back to plain external detection. This handles the "ComfyStudio
     // crashed but ComfyUI is still running" case where we want full Stop/
     // Restart control again, not just read-only external status.
-    const reclaimed = await this._tryReclaimFromStateFile()
+    const reclaimed = config.launcherMode === 'mac-app' ? false : await this._tryReclaimFromStateFile()
     if (!reclaimed) {
-      await this._detectExternal()
+      if (config.launcherMode === 'mac-app') {
+        await this._detectMacAppExternal()
+      } else {
+        await this._detectExternal()
+      }
     }
   }
 
@@ -614,6 +741,7 @@ class ComfyLauncher extends EventEmitter {
   }
 
   getState() {
+    const config = this._getConfig?.() || {}
     return {
       state: this._state,
       ownership: this._ownership,
@@ -623,7 +751,10 @@ class ComfyLauncher extends EventEmitter {
       exitCode: this._exitCode,
       exitSignal: this._exitSignal,
       uptimeMs: this._startedAt && this._state === 'running' ? Math.max(0, nowMs() - this._startedAt) : 0,
-      launcherScript: (this._getConfig?.()?.launcherScript) || '',
+      launcherMode: config.launcherMode || 'script',
+      launcherScript: config.launcherScript || '',
+      macAppPath: config.macAppPath || '',
+      macAppLaunchHidden: config.macAppLaunchHidden === undefined ? true : Boolean(config.macAppLaunchHidden),
       httpBase: this._getHttpBase?.() || '',
       statusMessage: this._lastStatusMessage,
       error: this._lastError,
@@ -715,6 +846,23 @@ class ComfyLauncher extends EventEmitter {
     this._setState('external', { statusMessage: `ComfyUI already running at ${httpBase}` })
   }
 
+  async _detectMacAppExternal() {
+    const httpBase = this._getHttpBase?.() || ''
+    if (!httpBase) {
+      this._ownership = 'none'
+      this._setState('idle', { statusMessage: 'ComfyUI.app not detected.' })
+      return
+    }
+
+    const adopted = await this._tryAdoptMacAppInstance(httpBase)
+    if (adopted) return
+
+    this._child = null
+    this._pid = null
+    this._ownership = 'none'
+    this._setState('idle', { statusMessage: 'ComfyUI.app is not running.' })
+  }
+
   /**
    * Return the PID of the process listening on the HTTP port, or null if
    * we can't determine it. Uses the same platform-specific helpers as
@@ -786,6 +934,31 @@ class ComfyLauncher extends EventEmitter {
     this._ownership = 'external'
     this._setState('external', {
       statusMessage: `Adopted running ComfyUI at ${base}. Stop or restart it from the window where it was started.`,
+    })
+    return true
+  }
+
+  async _tryAdoptMacAppInstance(httpBase) {
+    const base = String(httpBase || '').trim()
+    if (!base) return false
+    const portOpen = await isPortOpen(base, 500)
+    if (!portOpen) return false
+    const probe = await probeHttp(base, 2000)
+    if (!probe.ok) {
+      this._lastStatusMessage = `Port ${parseHttpBase(base).port} is in use but no ComfyUI responded on /system_stats.`
+      return false
+    }
+
+    const pid = await this._findOwningPidFor(base)
+    this._child = null
+    this._pid = pid || null
+    this._ownership = 'app'
+    this._startedAt = nowMs()
+    this._exitCode = null
+    this._exitSignal = null
+    this._appendLog('system', `Connected to ComfyUI.app at ${base}${pid ? ` (pid ${pid})` : ''}.`)
+    this._setState('running', {
+      statusMessage: `Connected to ComfyUI.app at ${base}. Stop/Restart enabled.`,
     })
     return true
   }
@@ -965,6 +1138,7 @@ class ComfyLauncher extends EventEmitter {
     }
 
     const httpBase = this._getHttpBase?.() || ''
+    const config = safeCloneConfig(this._getConfig?.())
 
     // Layer 1 — probe before spawn. If ComfyUI is already answering on the
     // configured port (e.g. the user launched it manually, or our previous
@@ -972,13 +1146,18 @@ class ComfyLauncher extends EventEmitter {
     // always the right answer. Spawning a second process would fail with
     // EADDRINUSE and only confuse the user.
     if (httpBase) {
-      const adopted = await this._tryAdoptExistingInstance(httpBase)
+      const adopted = config.launcherMode === 'mac-app'
+        ? await this._tryAdoptMacAppInstance(httpBase)
+        : await this._tryAdoptExistingInstance(httpBase)
       if (adopted) {
         return { success: true, adopted: true, httpBase }
       }
     }
 
-    const config = safeCloneConfig(this._getConfig?.())
+    if (config.launcherMode === 'mac-app') {
+      return this._startMacApp(config, httpBase)
+    }
+
     const launcherScript = String(config.launcherScript || '').trim()
     if (!launcherScript) {
       const message = 'No ComfyUI launcher script is configured. Pick your run_nvidia_gpu.bat (or equivalent) in Settings.'
@@ -1095,6 +1274,115 @@ class ComfyLauncher extends EventEmitter {
 
     this._startProbing(httpBase, this._startupTimeoutMs)
     return { success: true }
+  }
+
+  async _startMacApp(config, httpBase) {
+    if (process.platform !== 'darwin') {
+      const message = 'ComfyUI.app launching is only available on macOS.'
+      this._setState('idle', { statusMessage: message, error: 'unsupported-launcher-mode' })
+      return { success: false, error: message }
+    }
+
+    const appPath = String(config.macAppPath || '').trim()
+    if (!appPath) {
+      const message = 'No ComfyUI.app is configured. Pick the ComfyUI.app bundle in Settings.'
+      this._setState('idle', { statusMessage: message, error: 'missing-mac-app' })
+      return { success: false, error: message }
+    }
+
+    try {
+      const stat = await fsp.stat(appPath)
+      if (!stat.isDirectory() || path.extname(appPath).toLowerCase() !== '.app') {
+        throw new Error('Not a macOS app bundle')
+      }
+    } catch (error) {
+      const message = `ComfyUI.app does not exist or is not an app bundle: ${appPath}`
+      this._setState('idle', { statusMessage: message, error: 'missing-mac-app-file' })
+      return { success: false, error: message }
+    }
+
+    this._startupTimeoutMs = Math.max(10_000, Number(config.startupTimeoutMs) || DEFAULT_CONFIG.startupTimeoutMs)
+    this._openLogFile()
+    const openArgs = config.macAppLaunchHidden ? ['-g', '-j', appPath] : [appPath]
+    this._appendLog('system', `Opening ComfyUI.app from ${appPath}${config.macAppLaunchHidden ? ' (background)' : ''}`)
+    this._appendLog('system', `httpBase=${httpBase || 'unknown'}`)
+
+    this._child = null
+    this._pid = null
+    this._ownership = 'app'
+    this._startedAt = nowMs()
+    this._stoppedAt = 0
+    this._exitCode = null
+    this._exitSignal = null
+    this._probingSince = nowMs()
+    this._setState('starting', { statusMessage: 'Opening ComfyUI.app and waiting for ComfyUI to respond.' })
+
+    try {
+      await new Promise((resolve, reject) => {
+        const opener = spawn('open', openArgs, {
+          stdio: ['ignore', 'ignore', 'pipe'],
+          detached: true,
+        })
+        let stderr = ''
+        opener.stderr?.on('data', (buf) => { stderr += buf.toString('utf8') })
+        opener.on('error', reject)
+        opener.on('exit', (code) => {
+          if (code === 0) {
+            resolve()
+          } else {
+            reject(new Error(stderr.trim() || `open exited with code ${code}`))
+          }
+        })
+        opener.unref?.()
+      })
+    } catch (error) {
+      const message = `Failed to open ComfyUI.app: ${error?.message || error}`
+      this._appendLog('system', message)
+      this._ownership = 'none'
+      this._setState('idle', { statusMessage: message, error: 'spawn-failed' })
+      this._closeLogFile()
+      return { success: false, error: message }
+    }
+
+    this._startMacAppProbing(httpBase, this._startupTimeoutMs)
+    return { success: true }
+  }
+
+  _startMacAppProbing(httpBase, timeoutMs) {
+    this._stopProbing()
+    const startedAt = nowMs()
+    const tick = async () => {
+      if (this._state !== 'starting' || this._ownership !== 'app') return
+      const elapsed = nowMs() - startedAt
+      if (elapsed > timeoutMs) {
+        const message = `ComfyUI.app did not respond on ${httpBase || 'the configured endpoint'} after ${Math.round(elapsed / 1000)}s.`
+        this._appendLog('system', message)
+        this._ownership = 'none'
+        this._pid = null
+        this._setState('idle', { statusMessage: message, error: 'startup-timeout' })
+        this._closeLogFile()
+        return
+      }
+
+      const portOpen = await isPortOpen(httpBase, 500)
+      if (!portOpen) {
+        this._probeTimer = setTimeout(tick, 750)
+        return
+      }
+      const probe = await probeHttp(httpBase, 1500)
+      if (probe.ok) {
+        const pid = await this._findOwningPidFor(httpBase)
+        this._pid = pid || null
+        this._ownership = 'app'
+        this._setState('running', {
+          statusMessage: `ComfyUI.app ready at ${httpBase}${pid ? ` (pid ${pid})` : ''}.`,
+        })
+        this._probeTimer = null
+        return
+      }
+      this._probeTimer = setTimeout(tick, 750)
+    }
+    this._probeTimer = setTimeout(tick, 500)
   }
 
   async _spawnLauncher(launcherScript, config) {
@@ -1259,7 +1547,64 @@ class ComfyLauncher extends EventEmitter {
     this._probingSince = 0
   }
 
+  async _stopMacApp({ restarting = false } = {}) {
+    if (process.platform !== 'darwin') {
+      const message = 'ComfyUI.app controls are only available on macOS.'
+      this._setState('running', { statusMessage: message, error: 'unsupported-launcher-mode' })
+      return { success: false, error: message }
+    }
+
+    const config = safeCloneConfig(this._getConfig?.())
+    const appPath = String(config.macAppPath || '').trim()
+    if (!appPath) {
+      const message = 'No ComfyUI.app is configured. Pick the ComfyUI.app bundle in Settings.'
+      this._setState('running', { statusMessage: message, error: 'missing-mac-app' })
+      return { success: false, error: message }
+    }
+
+    const httpBase = this._getHttpBase?.() || ''
+    const previousPid = this._pid
+    this._stopProbing()
+    this._openLogFile()
+    this._setState('stopping', {
+      statusMessage: restarting ? 'Restarting ComfyUI.app...' : 'Quitting ComfyUI.app...',
+    })
+    this._appendLog('system', restarting ? 'Restart requested for ComfyUI.app.' : 'Stop requested for ComfyUI.app.')
+
+    const quitResult = await requestMacAppQuit(appPath)
+    if (!quitResult.success) {
+      const message = `Failed to quit ComfyUI.app: ${quitResult.error || 'unknown error'}`
+      this._appendLog('system', message)
+      this._ownership = 'app'
+      this._pid = previousPid || await this._findOwningPidFor(httpBase)
+      this._setState('running', { statusMessage: message, error: 'stop-failed' })
+      return { success: false, error: message }
+    }
+
+    this._appendLog('system', quitResult.detail || 'Requested ComfyUI.app quit.')
+    const closed = await waitForPortClosed(httpBase, 20_000)
+    if (!closed) {
+      const message = 'ComfyUI.app did not stop within 20 seconds. Quit it from macOS and try again.'
+      this._appendLog('system', message)
+      this._ownership = 'app'
+      this._pid = previousPid || await this._findOwningPidFor(httpBase)
+      this._setState('running', { statusMessage: message, error: 'stop-timeout' })
+      return { success: false, error: message }
+    }
+
+    this._child = null
+    this._pid = null
+    this._ownership = 'none'
+    this._stoppedAt = nowMs()
+    this._setState('stopped', { statusMessage: 'ComfyUI.app stopped.' })
+    this._closeLogFile()
+    return { success: true }
+  }
+
   async stop() {
+    if (this._ownership === 'app') {
+      return this._stopMacApp()
+    }
     if (this._state === 'external') {
       return { success: false, error: 'ComfyUI was started outside of ComfyStudio. Stop it from the window where you started it.' }
     }
@@ -1303,6 +1648,12 @@ class ComfyLauncher extends EventEmitter {
   }
 
   async restart() {
+    if (this._ownership === 'app') {
+      const stopResult = await this._stopMacApp({ restarting: true })
+      if (!stopResult.success) return stopResult
+      await sleep(600)
+      return this.start()
+    }
     if (this._state === 'external') {
       return {
         success: false,
@@ -1324,7 +1675,12 @@ class ComfyLauncher extends EventEmitter {
 
   async refreshExternal() {
     if (this._ownership === 'ours') return
-    await this._detectExternal()
+    const config = safeCloneConfig(this._getConfig?.())
+    if (config.launcherMode === 'mac-app') {
+      await this._detectMacAppExternal()
+    } else {
+      await this._detectExternal()
+    }
   }
 
   async shutdown({ confirmStop = true } = {}) {

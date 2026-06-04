@@ -39,6 +39,7 @@ const COMFYUI_CHECK_MS = 2500        // Max wait for ComfyUI
 const STEP_DELAY_MS = 400            // Delay between status messages
 const COMFY_CONNECTION_SETTING_KEY = 'comfyConnection'
 const DEFAULT_LOCAL_COMFY_PORT = 8188
+const COMFY_CLOUD_CREDITS_PER_USD = 211
 const MAIN_WINDOW_STATE_SETTING_KEY = 'mainWindowState'
 const DEFAULT_MAIN_WINDOW_BOUNDS = Object.freeze({ width: 1600, height: 1000 })
 const COMFYSTUDIO_BRIDGE_DIR_NAME = 'comfystudio_bridge'
@@ -822,12 +823,27 @@ function deriveComfyRootFromLauncherScript(launcherScript) {
   return ''
 }
 
+function deriveComfyRootFromMacAppPath(macAppPath) {
+  const normalized = String(macAppPath || '').trim()
+  if (!normalized || process.platform !== 'darwin') return ''
+  try {
+    const comfyRoot = path.join(path.resolve(normalized), 'Contents', 'Resources', 'ComfyUI')
+    if (fsSync.existsSync(path.join(comfyRoot, 'main.py')) || fsSync.existsSync(path.join(comfyRoot, 'custom_nodes'))) {
+      return comfyRoot
+    }
+  } catch {
+    /* ignore invalid app paths */
+  }
+  return ''
+}
+
 async function resolveComfyBridgeRoot() {
   await refreshLauncherConfigCache()
   const settings = await readSettingsRaw()
   const candidates = [
     settings?.[COMFY_ROOT_SETTING_KEY],
     deriveComfyRootFromLauncherScript(cachedLauncherConfig?.launcherScript),
+    deriveComfyRootFromMacAppPath(cachedLauncherConfig?.macAppPath),
   ].map((value) => String(value || '').trim()).filter(Boolean)
 
   const seen = new Set()
@@ -1324,6 +1340,314 @@ async function findEmbeddedComfyFrame(comfyBaseUrl, timeoutMs = 12000) {
   return null
 }
 
+function isLoopbackHostname(hostname) {
+  const normalized = String(hostname || '').trim().toLowerCase()
+  if (!normalized) return false
+  if (normalized === 'localhost' || normalized === '::1') return true
+  if (!/^127(?:\.\d{1,3}){3}$/.test(normalized)) return false
+  return normalized
+    .split('.')
+    .map((part) => Number(part))
+    .every((value) => Number.isInteger(value) && value >= 0 && value <= 255)
+}
+
+function isLikelyEmbeddedComfyFrame(frame, port) {
+  try {
+    const parsed = new URL(String(frame?.url || ''))
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+    if (!isLoopbackHostname(parsed.hostname)) return false
+    const parsedPort = sanitizeLocalComfyPort(parsed.port || DEFAULT_LOCAL_COMFY_PORT)
+    return !port || parsedPort === port
+  } catch {
+    return false
+  }
+}
+
+async function findCurrentEmbeddedComfyFrame(timeoutMs = 1200) {
+  const port = await resolveLocalComfyPort()
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() <= deadline) {
+    const frame = getMainWindowFrames().find((candidate) => isLikelyEmbeddedComfyFrame(candidate, port))
+    if (frame) return frame
+    await delay(250)
+  }
+
+  return null
+}
+
+function parseFiniteNumericValue(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().replace(/,/g, '')
+    if (!normalized) return null
+    const parsed = Number(normalized)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function extractComfyCloudCreditBalance(payload) {
+  if (!payload || typeof payload !== 'object') return null
+
+  // ComfyUI currently names these fields "*Micros", but the frontend treats
+  // the value as cents before converting it to credits.
+  const centBalanceKeys = new Set([
+    'effectivebalancemicros',
+    'effective_balance_micros',
+    'amountmicros',
+    'amount_micros',
+    'balancemicros',
+    'balance_micros',
+  ])
+  const directCreditKeys = new Set([
+    'credits',
+    'creditbalance',
+    'credit_balance',
+    'remainingcredits',
+    'remaining_credits',
+  ])
+
+  const queue = [payload]
+  const visited = new Set()
+  let directCredits = null
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current || typeof current !== 'object' || visited.has(current)) continue
+    visited.add(current)
+
+    for (const [rawKey, rawValue] of Object.entries(current)) {
+      const normalizedKey = String(rawKey || '').trim().toLowerCase().replace(/[\s-]/g, '')
+      if (centBalanceKeys.has(normalizedKey)) {
+        const cents = parseFiniteNumericValue(rawValue)
+        if (cents !== null) {
+          return {
+            cents,
+            credits: (cents / 100) * COMFY_CLOUD_CREDITS_PER_USD,
+            field: rawKey,
+          }
+        }
+      }
+
+      if (directCreditKeys.has(normalizedKey) && directCredits === null) {
+        const credits = parseFiniteNumericValue(rawValue)
+        if (credits !== null) {
+          directCredits = {
+            cents: null,
+            credits,
+            field: rawKey,
+          }
+        }
+      }
+
+      if (rawValue && typeof rawValue === 'object') {
+        queue.push(rawValue)
+      }
+    }
+  }
+
+  return directCredits
+}
+
+async function getComfyCloudCreditBalanceFromEmbeddedComfy() {
+  const frame = await findCurrentEmbeddedComfyFrame(3500)
+  if (!frame) {
+    return {
+      status: 'frame-not-found',
+      credits: null,
+      error: 'Could not find the embedded ComfyUI frame.',
+    }
+  }
+
+  const script = `
+    (async () => {
+      const parseMaybeJson = (value) => {
+        if (typeof value !== 'string') return value;
+        try {
+          return JSON.parse(value);
+        } catch (_) {
+          return value;
+        }
+      };
+
+      const readRequest = (request) => new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('IndexedDB request failed'));
+      });
+
+      const openDatabase = (name) => new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
+      });
+
+      const readFirebaseIndexedDbValues = async () => {
+        if (!globalThis.indexedDB) return [];
+        let db = null;
+        try {
+          db = await openDatabase('firebaseLocalStorageDb');
+          if (!db.objectStoreNames || !db.objectStoreNames.contains('firebaseLocalStorage')) {
+            return [];
+          }
+          return await new Promise((resolve, reject) => {
+            const values = [];
+            const tx = db.transaction('firebaseLocalStorage', 'readonly');
+            const store = tx.objectStore('firebaseLocalStorage');
+            const request = store.openCursor();
+            request.onsuccess = () => {
+              const cursor = request.result;
+              if (!cursor) return;
+              values.push(cursor.value);
+              cursor.continue();
+            };
+            request.onerror = () => reject(request.error || new Error('IndexedDB cursor failed'));
+            tx.oncomplete = () => resolve(values);
+            tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+          });
+        } catch (_) {
+          return [];
+        } finally {
+          try {
+            db?.close?.();
+          } catch (_) {}
+        }
+      };
+
+      const readStorageValues = (storage) => {
+        try {
+          if (!storage) return [];
+          const values = [];
+          for (let i = 0; i < storage.length; i += 1) {
+            const key = storage.key(i);
+            values.push(storage.getItem(key));
+          }
+          return values;
+        } catch (_) {
+          return [];
+        }
+      };
+
+      const findAccessToken = (values) => {
+        const queue = values.map(parseMaybeJson);
+        const seen = new Set();
+
+        while (queue.length > 0) {
+          const current = parseMaybeJson(queue.shift());
+          if (!current) continue;
+
+          if (typeof current === 'string') {
+            if (current.startsWith('{') || current.startsWith('[')) {
+              queue.push(parseMaybeJson(current));
+            }
+            continue;
+          }
+
+          if (typeof current !== 'object') continue;
+          if (seen.has(current)) continue;
+          seen.add(current);
+
+          const token = current?.stsTokenManager?.accessToken
+            || current?.value?.stsTokenManager?.accessToken
+            || current?.accessToken
+            || current?.oauthAccessToken;
+          if (typeof token === 'string' && token.length > 20) {
+            return token;
+          }
+
+          for (const value of Object.values(current)) {
+            if (value && (typeof value === 'object' || typeof value === 'string')) {
+              queue.push(value);
+            }
+          }
+        }
+
+        return '';
+      };
+
+      const values = [
+        ...(await readFirebaseIndexedDbValues()),
+        ...readStorageValues(globalThis.localStorage),
+        ...readStorageValues(globalThis.sessionStorage),
+      ];
+      const accessToken = findAccessToken(values);
+
+      if (!accessToken) {
+        return { status: 'not-authenticated', payload: null, error: 'No Comfy.org login token found in the embedded ComfyUI session.' };
+      }
+
+      const source = 'https://api.comfy.org/customers/balance';
+      try {
+        const response = await fetch(source, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            Authorization: 'Bearer ' + accessToken,
+          },
+        });
+        const text = await response.text();
+        let payload = null;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch (_) {
+          payload = { text };
+        }
+
+        if (!response.ok) {
+          return {
+            status: response.status === 401 || response.status === 403 ? 'auth-failed' : 'request-failed',
+            httpStatus: response.status,
+            source,
+            payload,
+            error: text.slice(0, 500),
+          };
+        }
+
+        return { status: 'ok', source, payload, error: '' };
+      } catch (error) {
+        return {
+          status: 'network-failed',
+          source,
+          payload: null,
+          error: error?.message || String(error),
+        };
+      }
+    })()
+  `
+
+  try {
+    const result = await frame.executeJavaScript(script, true)
+    if (result?.status !== 'ok') {
+      return {
+        status: result?.status || 'unknown',
+        credits: null,
+        source: result?.source || '',
+        error: result?.error || '',
+        httpStatus: result?.httpStatus || null,
+      }
+    }
+
+    const balance = extractComfyCloudCreditBalance(result.payload)
+    return {
+      status: balance ? 'ok' : 'available-no-credit-field',
+      credits: balance?.credits ?? null,
+      cents: balance?.cents ?? null,
+      field: balance?.field || '',
+      source: result.source || '',
+      error: balance ? '' : 'Comfy.org returned a balance payload without a known balance field.',
+    }
+  } catch (error) {
+    return {
+      status: 'unavailable',
+      credits: null,
+      source: '',
+      error: error?.message || String(error),
+    }
+  }
+}
+
 async function loadWorkflowGraphInEmbeddedComfy({ workflowGraph, comfyBaseUrl, waitForMs = 12000 }) {
   const frame = await findEmbeddedComfyFrame(comfyBaseUrl, waitForMs)
   if (!frame) {
@@ -1556,7 +1880,10 @@ async function maybeAutoStartComfyLauncher() {
   try {
     const config = cachedLauncherConfig
     if (!config?.autoStart) return
-    if (!config.launcherScript) return
+    const hasLauncher = config.launcherMode === 'mac-app'
+      ? Boolean(config.macAppPath)
+      : Boolean(config.launcherScript)
+    if (!hasLauncher) return
     const state = comfyLauncher.getState()
     if (state.state === 'external' || state.state === 'starting' || state.state === 'running') return
     const result = await comfyLauncher.start()
@@ -1751,8 +2078,129 @@ async function createWindow() {
   //     Anything else is denied.
   {
     const { shell } = require('electron')
+    const MODEL_DOWNLOAD_EXTENSIONS = Object.freeze([
+      '.safetensors',
+      '.ckpt',
+      '.gguf',
+      '.ggml',
+      '.pt',
+      '.pth',
+      '.bin',
+      '.onnx',
+      '.sft',
+      '.zip',
+      '.7z',
+      '.tar',
+      '.tar.gz',
+      '.tgz',
+    ])
+    const isHttpUrl = (url) => /^https?:/i.test(String(url || ''))
     const isSafeExternalUrl = (url) => /^(https?:|mailto:)/i.test(String(url || ''))
     const isLocalFileUrl = (url) => /^file:/i.test(String(url || ''))
+
+    const isHostOrSubdomain = (hostname, domain) => {
+      const host = String(hostname || '').toLowerCase()
+      return host === domain || host.endsWith(`.${domain}`)
+    }
+
+    const isComfyAuthPopupUrl = (url) => {
+      if (!isHttpUrl(url)) return false
+      try {
+        const parsed = new URL(String(url || '').trim())
+        const hostname = parsed.hostname.toLowerCase()
+        const pathname = parsed.pathname.toLowerCase()
+
+        if (
+          (hostname === 'dreamboothy.firebaseapp.com' || hostname === 'dreamboothy-dev.firebaseapp.com') &&
+          pathname.startsWith('/__/auth/')
+        ) {
+          return true
+        }
+
+        if (
+          isHostOrSubdomain(hostname, 'firebaseapp.com') &&
+          pathname.startsWith('/__/auth/')
+        ) {
+          return true
+        }
+
+        if (hostname === 'accounts.google.com') return true
+        if (hostname === 'github.com' && pathname.startsWith('/login/')) return true
+        return false
+      } catch (_) {
+        return false
+      }
+    }
+
+    const getAuthPopupWindowOptions = () => ({
+      width: 520,
+      height: 720,
+      minWidth: 420,
+      minHeight: 540,
+      parent: mainWindow,
+      modal: false,
+      title: 'ComfyUI Sign In',
+      autoHideMenuBar: true,
+      backgroundColor: '#111113',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        session: mainWindow.webContents.session,
+      },
+    })
+
+    const isLikelyModelDownloadUrl = (url) => {
+      if (!isHttpUrl(url)) return false
+      try {
+        const parsed = new URL(String(url || '').trim())
+        const hostname = parsed.hostname.toLowerCase()
+        const pathname = decodeURIComponent(parsed.pathname || '').toLowerCase()
+        if (
+          (isHostOrSubdomain(hostname, 'civitai.com') || isHostOrSubdomain(hostname, 'civitai.red')) &&
+          /^\/api\/(download\/models|v1\/models-versions)\//.test(pathname)
+        ) {
+          return true
+        }
+        if (isHostOrSubdomain(hostname, 'huggingface.co') && pathname.includes('/resolve/')) {
+          return true
+        }
+        return MODEL_DOWNLOAD_EXTENSIONS.some((extension) => pathname.endsWith(extension))
+      } catch (_) {
+        return false
+      }
+    }
+
+    const startDownloadInApp = (url) => {
+      if (!isLikelyModelDownloadUrl(url)) return false
+      if (!mainWindow || mainWindow.isDestroyed()) return false
+      try {
+        mainWindow.webContents.downloadURL(url)
+        return true
+      } catch (err) {
+        console.warn('[downloadURL] failed:', err?.message || err)
+        return false
+      }
+    }
+
+    const configureAuthPopupWindow = (popupWindow) => {
+      if (!popupWindow || popupWindow.isDestroyed()) return
+      try {
+        popupWindow.setMenuBarVisibility(false)
+      } catch (_) {
+        // Some platforms/windows can reject menu changes; the popup can still work.
+      }
+      popupWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (isComfyAuthPopupUrl(url)) {
+          return {
+            action: 'allow',
+            overrideBrowserWindowOptions: getAuthPopupWindowOptions(),
+          }
+        }
+        handoffExternalUrl(url)
+        return { action: 'deny' }
+      })
+    }
 
     // Resolve a file:// URL back to an OS-native path. We URL-decode first so
     // percent-escapes (spaces, non-ASCII filenames) round-trip correctly, then
@@ -1772,6 +2220,7 @@ async function createWindow() {
     }
 
     const handoffExternalUrl = (url) => {
+      if (startDownloadInApp(url)) return true
       if (isSafeExternalUrl(url)) {
         shell.openExternal(url).catch((err) => {
           console.warn('[shell.openExternal] failed:', err?.message || err)
@@ -1795,12 +2244,28 @@ async function createWindow() {
       return false
     }
 
+    mainWindow.webContents.on('did-create-window', (popupWindow, details) => {
+      if (isComfyAuthPopupUrl(details?.url)) {
+        configureAuthPopupWindow(popupWindow)
+      }
+    })
+
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+      if (isComfyAuthPopupUrl(url)) {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: getAuthPopupWindowOptions(),
+        }
+      }
       handoffExternalUrl(url)
       return { action: 'deny' }
     })
 
     mainWindow.webContents.on('will-navigate', (event, url) => {
+      if (startDownloadInApp(url)) {
+        event.preventDefault()
+        return
+      }
       // Only intercept real external URLs — let in-app navigations
       // (localhost dev server, file:// bundled assets) through untouched.
       if (!isSafeExternalUrl(url)) return
@@ -3025,6 +3490,33 @@ ipcMain.handle('comfyLauncher:pickLauncherScript', async () => {
   return { success: true, filePath: result.filePaths[0] }
 })
 
+ipcMain.handle('comfyLauncher:pickMacApp', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { success: false, error: 'No active window.' }
+  }
+  if (process.platform !== 'darwin') {
+    return { success: false, error: 'ComfyUI.app selection is only available on macOS.' }
+  }
+  const defaultComfyApp = '/Applications/ComfyUI.app'
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select ComfyUI.app',
+    defaultPath: fsSync.existsSync(defaultComfyApp) ? defaultComfyApp : '/Applications',
+    properties: ['openFile'],
+    filters: [
+      { name: 'macOS apps', extensions: ['app'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || !result.filePaths?.length) {
+    return { success: false, canceled: true }
+  }
+  const appPath = result.filePaths[0]
+  if (path.extname(appPath).toLowerCase() !== '.app') {
+    return { success: false, error: 'Choose the ComfyUI.app bundle.' }
+  }
+  return { success: true, filePath: appPath }
+})
+
 // ============================================
 // ComfyStudio Bridge IPC
 // ============================================
@@ -3058,6 +3550,10 @@ ipcMain.handle('comfyBridge:install', async () => {
 // ============================================
 // Workflow Setup Manager
 // ============================================
+
+ipcMain.handle('comfyui:getCloudCreditBalance', async () => {
+  return getComfyCloudCreditBalanceFromEmbeddedComfy()
+})
 
 ipcMain.handle('comfyui:loadWorkflowGraph', async (event, payload = {}) => {
   try {

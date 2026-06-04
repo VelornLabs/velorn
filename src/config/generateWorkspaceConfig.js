@@ -22,6 +22,7 @@ export const CATEGORY_ORDER = ['Shot', 'Movement', 'Angle', 'Lighting', 'Mood', 
 
 export const CUSTOM_GENERATE_IMAGE_WORKFLOW_ID = 'custom-generate-image'
 export const CUSTOM_GENERATE_VIDEO_WORKFLOW_ID = 'custom-generate-video'
+export const CUSTOM_AD_KEYFRAME_WORKFLOW_ID = 'custom-ad-keyframe'
 
 export const WORKFLOWS = {
   video: [
@@ -342,6 +343,7 @@ const WORKFLOW_DISPLAY_LABELS = Object.freeze({
   [MUSIC_VIDEO_SHOT_WORKFLOW_ID]: 'LTX 2.3 Music Video (Image + Audio)',
   [CUSTOM_GENERATE_IMAGE_WORKFLOW_ID]: 'Custom Image Workflow',
   [CUSTOM_GENERATE_VIDEO_WORKFLOW_ID]: 'Custom Video Workflow',
+  [CUSTOM_AD_KEYFRAME_WORKFLOW_ID]: 'Custom Ad Keyframe Workflow',
   [CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID]: 'Custom Keyframe Workflow',
   [CUSTOM_MUSIC_VIDEO_WORKFLOW_ID]: 'Custom Video Workflow',
   [VOCAL_EXTRACT_WORKFLOW_ID]: 'Vocal Extract (Mel-Band)',
@@ -548,6 +550,10 @@ const WORKFLOW_HARDWARE = Object.freeze({
     runtime: 'custom',
   },
   [CUSTOM_GENERATE_VIDEO_WORKFLOW_ID]: {
+    tierId: null,
+    runtime: 'custom',
+  },
+  [CUSTOM_AD_KEYFRAME_WORKFLOW_ID]: {
     tierId: null,
     runtime: 'custom',
   },

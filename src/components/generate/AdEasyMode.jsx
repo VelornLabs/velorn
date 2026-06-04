@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Film, Loader2 } from 'lucide-react'
+import { CheckCircle2, Clipboard, ExternalLink, Film, Loader2, RefreshCw, X } from 'lucide-react'
+import { CUSTOM_AD_KEYFRAME_WORKFLOW_ID } from '../../config/generateWorkspaceConfig'
 
 const STEPS = [
-  { id: 'brief', label: 'Brief' },
-  { id: 'direction', label: 'Creative' },
-  { id: 'delivery', label: 'Delivery' },
+  { id: 'setup', label: 'Setup' },
   { id: 'references', label: 'References' },
-  { id: 'script', label: 'Script Plan' },
+  { id: 'script', label: 'Script' },
   { id: 'keyframes', label: 'Keyframes' },
-  { id: 'videos', label: 'Videos' },
-  { id: 'done', label: 'Complete' },
+  { id: 'videos', label: 'Videos + Timeline' },
 ]
 
 const FORMAT_OPTIONS = [
@@ -38,6 +36,37 @@ const VIDEO_MODEL_OPTIONS = [
   { id: 'wan22-i2v', label: 'WAN 2.2', helper: 'Good alternate for product motion and physical demo shots.' },
 ]
 
+const KEYFRAME_MODEL_OPTIONS = [
+  {
+    id: 'nano-banana-2',
+    workflowId: 'nano-banana-2',
+    label: 'Nano Banana 2',
+    runtimeLabel: 'Cloud',
+    source: 'cloud',
+    tier: 'quality',
+    helper: 'Current cloud keyframe route. Good for prompt-only ad storyboards and reference consistency.',
+  },
+  {
+    id: 'image-edit-model-product',
+    workflowId: 'image-edit-model-product',
+    label: 'Qwen Image Edit',
+    runtimeLabel: 'Local',
+    source: 'local',
+    tier: 'quality',
+    needsReference: true,
+    helper: 'Local keyframes using your product or talent reference as the edit source.',
+  },
+  {
+    id: CUSTOM_AD_KEYFRAME_WORKFLOW_ID,
+    workflowId: CUSTOM_AD_KEYFRAME_WORKFLOW_ID,
+    label: 'Custom Workflow',
+    runtimeLabel: 'Advanced',
+    source: 'local',
+    tier: 'quality',
+    helper: 'Run your own ComfyUI still-image graph for ad keyframes.',
+  },
+]
+
 const SHOT_COUNT_OPTIONS = [3, 4, 5, 6, 8, 10, 12, 16, 20, 24]
 const COMMERCIAL_LENGTH_OPTIONS = [6, 15, 30, 60]
 const RESOLUTION_OPTIONS = [
@@ -62,9 +91,11 @@ const DEFAULT_AD_EASY_MODE_DRAFT = Object.freeze({
   videoFps: 24,
   commercialLength: 30,
   shotCount: 8,
+  keyframeWorkflowId: 'nano-banana-2',
   videoWorkflowId: 'ltx23-i2v',
   productAssetId: '',
   talentAssetId: '',
+  environmentAssetId: '',
   noVisibleTalent: false,
   directorScript: '',
 })
@@ -95,9 +126,11 @@ function normalizeAdEasyModeDraft(rawDraft = {}) {
     videoFps: normalizeDraftNumber(raw.videoFps, FPS_OPTIONS, DEFAULT_AD_EASY_MODE_DRAFT.videoFps),
     commercialLength: normalizeDraftNumber(raw.commercialLength, COMMERCIAL_LENGTH_OPTIONS, DEFAULT_AD_EASY_MODE_DRAFT.commercialLength),
     shotCount: normalizeDraftNumber(raw.shotCount, SHOT_COUNT_OPTIONS, DEFAULT_AD_EASY_MODE_DRAFT.shotCount),
+    keyframeWorkflowId: normalizeDraftOption(raw.keyframeWorkflowId, KEYFRAME_MODEL_OPTIONS, DEFAULT_AD_EASY_MODE_DRAFT.keyframeWorkflowId),
     videoWorkflowId: normalizeDraftOption(raw.videoWorkflowId, VIDEO_MODEL_OPTIONS, DEFAULT_AD_EASY_MODE_DRAFT.videoWorkflowId),
     productAssetId: String(raw.productAssetId || ''),
     talentAssetId: String(raw.talentAssetId || ''),
+    environmentAssetId: String(raw.environmentAssetId || ''),
     noVisibleTalent: Boolean(raw.noVisibleTalent),
     directorScript: String(raw.directorScript || ''),
   }
@@ -177,6 +210,9 @@ function buildShotTemplates(data) {
   const audience = compact(data.audience, 'the target customer')
   const promise = compact(data.promise, 'the main product benefit')
   const colors = compact(data.colors, 'clean brand colors')
+  const environmentCue = data.environmentReferenceName
+    ? `, match the environment/location reference (${data.environmentReferenceName}) for setting and lighting`
+    : ''
   const talentMode = data.noVisibleTalent ? 'none' : 'lifestyle model'
   const talentLine = data.noVisibleTalent
     ? 'Talent mode: none'
@@ -188,7 +224,7 @@ function buildShotTemplates(data) {
       adBeat: 'hook',
       productMode: 'context',
       shotType: 'Close-up',
-      keyframe: `Single commercial keyframe of ${audience} experiencing the problem ${brandProduct} solves, ${colors}, no text.`,
+      keyframe: `Single commercial keyframe of ${audience} experiencing the problem ${brandProduct} solves, ${colors}${environmentCue}, no text.`,
       motion: `Start from the keyframe and show a clear problem moment with ${data.toneText} pacing.`,
       camera: 'Subtle push-in',
     },
@@ -197,7 +233,7 @@ function buildShotTemplates(data) {
       adBeat: 'product reveal',
       productMode: 'hero',
       shotType: 'Hero product',
-      keyframe: `Premium hero product shot of ${brandProduct}, readable shape and packaging, ${colors}, no text.`,
+      keyframe: `Premium hero product shot of ${brandProduct}, readable shape and packaging, ${colors}${environmentCue}, no text.`,
       motion: 'Slow reveal motion, keep the product centered and readable.',
       camera: 'Slow dolly in',
     },
@@ -206,7 +242,7 @@ function buildShotTemplates(data) {
       adBeat: 'demo',
       productMode: 'macro detail',
       shotType: 'Macro close-up',
-      keyframe: `Macro detail showing texture, material, formula, or finish for ${data.product}, premium lighting, no text.`,
+      keyframe: `Macro detail showing texture, material, formula, or finish for ${data.product}, premium lighting${environmentCue}, no text.`,
       motion: `Gentle macro movement that visually supports: ${promise}.`,
       camera: 'Locked macro with micro push-in',
     },
@@ -215,7 +251,7 @@ function buildShotTemplates(data) {
       adBeat: 'demo',
       productMode: 'in-hand',
       shotType: 'Medium close-up',
-      keyframe: `Natural use moment for ${brandProduct}, believable scale, ${talentLine.toLowerCase()}, ${colors}, no text.`,
+      keyframe: `Natural use moment for ${brandProduct}, believable scale, ${talentLine.toLowerCase()}, ${colors}${environmentCue}, no text.`,
       motion: 'Show the product being used clearly and naturally.',
       camera: 'Handheld but controlled',
     },
@@ -224,7 +260,7 @@ function buildShotTemplates(data) {
       adBeat: 'proof',
       productMode: 'lifestyle',
       shotType: 'Medium shot',
-      keyframe: `Lifestyle proof moment for ${audience}, product visible, aspirational but believable, no text.`,
+      keyframe: `Lifestyle proof moment for ${audience}, product visible, aspirational but believable${environmentCue}, no text.`,
       motion: `Show the payoff feeling after using the product: ${promise}.`,
       camera: 'Smooth tracking shot',
     },
@@ -233,7 +269,7 @@ function buildShotTemplates(data) {
       adBeat: 'benefit',
       productMode: 'hero',
       shotType: 'Insert shot',
-      keyframe: `Clean visual proof of the core benefit for ${brandProduct}, simple composition with space for editor-native overlay, no rendered text.`,
+      keyframe: `Clean visual proof of the core benefit for ${brandProduct}, simple composition with space for editor-native overlay${environmentCue}, no rendered text.`,
       motion: `Hold on the benefit visual long enough to read the story: ${promise}.`,
       camera: 'Locked insert with slight parallax',
     },
@@ -243,8 +279,8 @@ function buildShotTemplates(data) {
       productMode: 'lifestyle',
       shotType: 'Medium close-up',
       keyframe: data.noVisibleTalent
-        ? `Hands-only product moment for ${brandProduct}, no visible face, clean background, no text.`
-        : `Natural talent reaction after using ${brandProduct}, wardrobe and identity consistent with reference, no text.`,
+        ? `Hands-only product moment for ${brandProduct}, no visible face, clean background${environmentCue}, no text.`
+        : `Natural talent reaction after using ${brandProduct}, wardrobe and identity consistent with reference${environmentCue}, no text.`,
       motion: data.noVisibleTalent
         ? 'Hands interact with the product naturally, no face visible.'
         : 'Talent gives a subtle satisfied reaction, no exaggerated acting.',
@@ -255,7 +291,7 @@ function buildShotTemplates(data) {
       adBeat: 'proof',
       productMode: 'macro detail',
       shotType: 'Close-up',
-      keyframe: `Detailed premium product proof shot for ${brandProduct}, label or form clear, no text.`,
+      keyframe: `Detailed premium product proof shot for ${brandProduct}, label or form clear${environmentCue}, no text.`,
       motion: 'Slow motion across the product detail, keep packaging consistent.',
       camera: 'Lateral slider move',
     },
@@ -264,7 +300,7 @@ function buildShotTemplates(data) {
       adBeat: 'demo',
       productMode: 'context',
       shotType: 'Medium wide',
-      keyframe: `Believable setting where ${audience} would use ${brandProduct}, product present and easy to understand, no text.`,
+      keyframe: `Believable setting where ${audience} would use ${brandProduct}, product present and easy to understand${environmentCue}, no text.`,
       motion: 'Show the product naturally in its use environment.',
       camera: 'Slow pan',
     },
@@ -273,7 +309,7 @@ function buildShotTemplates(data) {
       adBeat: 'CTA',
       productMode: 'packshot',
       shotType: 'Locked packshot',
-      keyframe: `Clean packshot setup for ${brandProduct}, generous negative space for editor-native CTA text, no rendered text.`,
+      keyframe: `Clean packshot setup for ${brandProduct}, generous negative space for editor-native CTA text${environmentCue}, no rendered text.`,
       motion: 'Hold steady so the final CTA can be added in the editor.',
       camera: 'Locked packshot',
       endCard: `${data.brand || 'Brand'}, ${data.product || 'Product'}, Learn more`,
@@ -283,7 +319,7 @@ function buildShotTemplates(data) {
       adBeat: 'proof',
       productMode: 'packaging',
       shotType: 'Three-quarter product',
-      keyframe: `Three-quarter angle of ${brandProduct}, product shape and packaging readable, clean background, no text.`,
+      keyframe: `Three-quarter angle of ${brandProduct}, product shape and packaging readable, clean background${environmentCue}, no text.`,
       motion: 'Subtle orbit that keeps the product readable.',
       camera: 'Small orbit',
     },
@@ -292,7 +328,7 @@ function buildShotTemplates(data) {
       adBeat: 'proof',
       productMode: 'result',
       shotType: 'Split-free proof shot',
-      keyframe: `Tasteful single-frame result suggestion for ${promise}, no split screen, no before-after collage, no text.`,
+      keyframe: `Tasteful single-frame result suggestion for ${promise}${environmentCue}, no split screen, no before-after collage, no text.`,
       motion: 'Move from problem detail into result feeling without a split screen.',
       camera: 'Slow push-in',
     },
@@ -301,7 +337,7 @@ function buildShotTemplates(data) {
       adBeat: 'proof',
       productMode: 'macro detail',
       shotType: 'Extreme close-up',
-      keyframe: `Extreme close-up of product material, formula, texture, finish, or packaging detail for ${brandProduct}, no text.`,
+      keyframe: `Extreme close-up of product material, formula, texture, finish, or packaging detail for ${brandProduct}${environmentCue}, no text.`,
       motion: 'Premium macro movement across the material detail.',
       camera: 'Macro slider',
     },
@@ -310,7 +346,7 @@ function buildShotTemplates(data) {
       adBeat: 'brand',
       productMode: 'hero',
       shotType: 'Wide product composition',
-      keyframe: `Brand-forward composition for ${brandProduct}, ${colors}, premium commercial lighting, no text.`,
+      keyframe: `Brand-forward composition for ${brandProduct}, ${colors}, premium commercial lighting${environmentCue}, no text.`,
       motion: 'Slow cinematic camera move that reinforces brand feeling.',
       camera: 'Slow crane or dolly',
     },
@@ -319,7 +355,7 @@ function buildShotTemplates(data) {
       adBeat: 'lifestyle',
       productMode: 'lifestyle',
       shotType: 'Medium shot',
-      keyframe: `Relatable customer moment for ${audience}, product in scene, natural environment, no text.`,
+      keyframe: `Relatable customer moment for ${audience}, product in scene, natural environment${environmentCue}, no text.`,
       motion: 'Natural lifestyle movement, product remains visible.',
       camera: 'Steady handheld',
     },
@@ -328,7 +364,7 @@ function buildShotTemplates(data) {
       adBeat: 'problem',
       productMode: 'context',
       shotType: 'Close-up',
-      keyframe: `Clean callback to the original problem, now with ${brandProduct} as the clear solution, no text.`,
+      keyframe: `Clean callback to the original problem, now with ${brandProduct} as the clear solution${environmentCue}, no text.`,
       motion: 'Show the transition from problem to product solution.',
       camera: 'Subtle rack focus',
     },
@@ -337,7 +373,7 @@ function buildShotTemplates(data) {
       adBeat: 'proof',
       productMode: 'label',
       shotType: 'Insert shot',
-      keyframe: `Subtle trust cue for ${brandProduct}: clean label, routine, texture, or careful use detail, no text.`,
+      keyframe: `Subtle trust cue for ${brandProduct}: clean label, routine, texture, or careful use detail${environmentCue}, no text.`,
       motion: 'Small motion that makes the trust cue easy to read visually.',
       camera: 'Locked insert',
     },
@@ -346,7 +382,7 @@ function buildShotTemplates(data) {
       adBeat: 'benefit',
       productMode: 'hero',
       shotType: 'Close-up',
-      keyframe: `Secondary benefit visual for ${brandProduct}, supports ${promise}, clean composition, no text.`,
+      keyframe: `Secondary benefit visual for ${brandProduct}, supports ${promise}, clean composition${environmentCue}, no text.`,
       motion: 'Short visual beat supporting the main product promise.',
       camera: 'Gentle push-in',
     },
@@ -355,7 +391,7 @@ function buildShotTemplates(data) {
       adBeat: 'demo',
       productMode: 'in-use',
       shotType: 'Medium close-up',
-      keyframe: `Clear use case shot for ${brandProduct}, understandable action, believable scale, no text.`,
+      keyframe: `Clear use case shot for ${brandProduct}, understandable action, believable scale${environmentCue}, no text.`,
       motion: 'Show one simple action from start to finish.',
       camera: 'Controlled handheld',
     },
@@ -364,7 +400,7 @@ function buildShotTemplates(data) {
       adBeat: 'end card',
       productMode: 'packshot',
       shotType: 'Locked packshot',
-      keyframe: `Final clean packshot for ${brandProduct}, product centered, safe empty space for editor-native text, no rendered text.`,
+      keyframe: `Final clean packshot for ${brandProduct}, product centered, safe empty space for editor-native text${environmentCue}, no rendered text.`,
       motion: 'Hold steady for final brand impression.',
       camera: 'Locked packshot',
       endCard: `${data.brand || 'Brand'}, ${data.product || 'Product'}, Shop now`,
@@ -374,7 +410,7 @@ function buildShotTemplates(data) {
       adBeat: 'proof',
       productMode: 'packaging',
       shotType: 'Close-up',
-      keyframe: `Close-up product packaging shot for ${brandProduct}, readable form and label area, no text.`,
+      keyframe: `Close-up product packaging shot for ${brandProduct}, readable form and label area${environmentCue}, no text.`,
       motion: 'Slow glide across packaging, no fake typography.',
       camera: 'Slider close-up',
     },
@@ -383,7 +419,7 @@ function buildShotTemplates(data) {
       adBeat: 'payoff',
       productMode: 'lifestyle',
       shotType: 'Wide shot',
-      keyframe: `Emotional payoff moment for ${audience}, product story feels complete, premium commercial style, no text.`,
+      keyframe: `Emotional payoff moment for ${audience}, product story feels complete, premium commercial style${environmentCue}, no text.`,
       motion: 'Slow cinematic payoff movement.',
       camera: 'Wide slow push',
     },
@@ -392,7 +428,7 @@ function buildShotTemplates(data) {
       adBeat: 'CTA',
       productMode: 'hero',
       shotType: 'Hero product',
-      keyframe: `Final reminder shot of ${brandProduct}, simple brand-safe composition, no rendered text.`,
+      keyframe: `Final reminder shot of ${brandProduct}, simple brand-safe composition${environmentCue}, no rendered text.`,
       motion: 'Short restrained product hero motion.',
       camera: 'Subtle dolly',
     },
@@ -401,7 +437,7 @@ function buildShotTemplates(data) {
       adBeat: 'end card',
       productMode: 'packshot',
       shotType: 'Locked packshot',
-      keyframe: `Logo-safe final frame for ${brandProduct}, clean negative space for native end card typography, no text in image.`,
+      keyframe: `Logo-safe final frame for ${brandProduct}, clean negative space for native end card typography${environmentCue}, no text in image.`,
       motion: 'Hold steady with very subtle light movement.',
       camera: 'Locked end card',
       endCard: `${data.brand || 'Brand'}, ${data.product || 'Product'}, Try it today`,
@@ -416,6 +452,9 @@ function buildDirectorScript(data) {
   return [
     `Scene 1: ${compact(data.brand, 'Brand')} ${compact(data.product, 'Product')} Commercial`,
     `Scene context: ${compact(data.formatLabel, 'Product ad')} for ${compact(data.audience, 'the target audience')}. Visual rules: ${compact(data.colors, 'clean brand colors')}. Tone: ${compact(data.toneText, 'premium calm')}.`,
+    data.environmentReferenceName
+      ? `Environment reference: Match ${data.environmentReferenceName} for location, lighting, surface materials, and background continuity when it fits the shot.`
+      : '',
     '',
     ...shots.map((shot, index) => [
       `Shot ${index + 1}: ${shot.title}`,
@@ -444,6 +483,9 @@ function buildExternalLlmPrompt(data, currentScript) {
     `Audience: ${compact(data.audience, 'target customer')}`,
     `Promise: ${compact(data.promise, 'main product benefit')}`,
     `Visual rules: ${compact(data.colors, 'clean brand colors')}`,
+    data.environmentReferenceName
+      ? `Environment reference: ${data.environmentReferenceName}. Use it for location, lighting, surface materials, and background continuity when it fits the shot.`
+      : 'Environment reference: none provided',
     `Format: ${compact(data.formatLabel, 'Product Ad')}`,
     `Aspect ratio: ${compact(data.aspectRatioLabel, data.platform || '9:16')}`,
     `Tone: ${compact(data.toneText, 'premium calm')}`,
@@ -497,6 +539,10 @@ export default function AdEasyMode({
   yoloStoryboardReadyCount,
   yoloActivePlanIsStale,
   yoloDependencyCheckInProgress,
+  yoloAdCustomKeyframeWorkflow,
+  yoloAdCustomKeyframeValidation,
+  yoloCustomKeyframeBridgeStatus,
+  yoloCustomKeyframeBridgeBusy,
   yoloScript,
   setYoloScript,
   setYoloStyleNotes,
@@ -527,13 +573,18 @@ export default function AdEasyMode({
   handleQueueYoloShotStoryboard,
   handleQueueYoloVideos,
   handleQueueYoloShotVideo,
+  handleOpenYoloAdCustomKeyframeWorkflowInComfyUi,
+  handleImportYoloAdCustomKeyframeWorkflow,
+  handleClearYoloAdCustomKeyframeWorkflow,
+  handleInstallYoloMusicCustomKeyframeBridge,
+  handleCheckYoloMusicCustomKeyframeBridge,
   handleYoloShotImageBeatChange,
   handleYoloShotVideoBeatChange,
   handleYoloShotTakesChange,
   handleAssembleAdTimeline,
 }) {
   const initialDraft = useMemo(() => loadAdEasyModeDraft(), [])
-  const [step, setStep] = useState('brief')
+  const [step, setStep] = useState('setup')
   const [brand, setBrand] = useState(initialDraft.brand)
   const [product, setProduct] = useState(initialDraft.product)
   const [colors, setColors] = useState(initialDraft.colors)
@@ -547,9 +598,11 @@ export default function AdEasyMode({
   const [videoFps, setVideoFps] = useState(initialDraft.videoFps)
   const [commercialLength, setCommercialLength] = useState(initialDraft.commercialLength)
   const [shotCount, setShotCount] = useState(initialDraft.shotCount)
+  const [keyframeWorkflowId, setKeyframeWorkflowId] = useState(initialDraft.keyframeWorkflowId)
   const [videoWorkflowId, setVideoWorkflowId] = useState(initialDraft.videoWorkflowId)
   const [productAssetId, setProductAssetId] = useState(initialDraft.productAssetId)
   const [talentAssetId, setTalentAssetId] = useState(initialDraft.talentAssetId)
+  const [environmentAssetId, setEnvironmentAssetId] = useState(initialDraft.environmentAssetId)
   const [noVisibleTalent, setNoVisibleTalent] = useState(initialDraft.noVisibleTalent)
   const [directorScript, setDirectorScript] = useState(initialDraft.directorScript || yoloScript || '')
   const [selectedShotIndex, setSelectedShotIndex] = useState(0)
@@ -579,9 +632,11 @@ export default function AdEasyMode({
       videoFps,
       commercialLength,
       shotCount,
+      keyframeWorkflowId,
       videoWorkflowId,
       productAssetId,
       talentAssetId,
+      environmentAssetId,
       noVisibleTalent,
       directorScript,
       updatedAt: new Date().toISOString(),
@@ -597,7 +652,9 @@ export default function AdEasyMode({
     colors,
     commercialLength,
     directorScript,
+    environmentAssetId,
     format,
+    keyframeWorkflowId,
     noVisibleTalent,
     platform,
     product,
@@ -613,6 +670,10 @@ export default function AdEasyMode({
   ])
 
   const imageAssets = useMemo(() => (assets || []).filter((asset) => asset?.type === 'image'), [assets])
+  const environmentAsset = useMemo(
+    () => imageAssets.find((asset) => asset?.id === environmentAssetId) || null,
+    [environmentAssetId, imageAssets]
+  )
   const videoAssetMap = useMemo(() => {
     const map = new Map()
     for (const asset of assets || []) {
@@ -650,8 +711,34 @@ export default function AdEasyMode({
 
   const selectedTone = TONE_OPTIONS.find((option) => option.id === tone) || TONE_OPTIONS[0]
   const selectedFormat = FORMAT_OPTIONS.find((option) => option.id === format) || FORMAT_OPTIONS[0]
+  const selectedKeyframeWorkflow = KEYFRAME_MODEL_OPTIONS.find((option) => option.id === keyframeWorkflowId) || KEYFRAME_MODEL_OPTIONS[0]
   const selectedVideoWorkflow = VIDEO_MODEL_OPTIONS.find((option) => option.id === videoWorkflowId) || VIDEO_MODEL_OPTIONS[0]
   const selectedAspectRatio = ASPECT_RATIO_OPTIONS.find((option) => option.id === platform) || ASPECT_RATIO_OPTIONS[0]
+  const customKeyframeWorkflowSelected = selectedKeyframeWorkflow.workflowId === CUSTOM_AD_KEYFRAME_WORKFLOW_ID
+  const customKeyframeWorkflowLoaded = Boolean(String(yoloAdCustomKeyframeWorkflow?.jsonText || '').trim())
+  const customKeyframeWorkflowName = String(yoloAdCustomKeyframeWorkflow?.name || '').trim()
+  const customKeyframeValidation = yoloAdCustomKeyframeValidation || {
+    ok: false,
+    warnings: [],
+    message: 'No custom ad keyframe workflow loaded yet.',
+  }
+  const customKeyframeNeedsSetup = Boolean(customKeyframeWorkflowSelected && !customKeyframeValidation.ok)
+  const openCustomKeyframeWorkflowLabel = customKeyframeWorkflowLoaded ? 'Open in ComfyUI' : 'Open Starter in ComfyUI'
+  const bridgeState = String(yoloCustomKeyframeBridgeStatus?.state || '').trim()
+  const bridgeInstalled = Boolean(yoloCustomKeyframeBridgeStatus?.installed)
+  const bridgeMessage = String(yoloCustomKeyframeBridgeStatus?.message || yoloCustomKeyframeBridgeStatus?.error || '').trim()
+  const bridgeBadge = bridgeInstalled
+    ? { label: 'Installed', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' }
+    : bridgeState === 'unavailable'
+      ? { label: 'Unavailable', className: 'border-amber-500/40 bg-amber-500/10 text-amber-200' }
+      : { label: 'Optional', className: 'border-sf-dark-600 bg-sf-dark-900 text-sf-text-muted' }
+  const canInstallBridge = typeof handleInstallYoloMusicCustomKeyframeBridge === 'function'
+  const canOpenCustomKeyframeWorkflow = typeof handleOpenYoloAdCustomKeyframeWorkflowInComfyUi === 'function' && (!customKeyframeWorkflowLoaded || customKeyframeValidation.ok)
+  const keyframeReferenceMissing = Boolean(
+    selectedKeyframeWorkflow.needsReference &&
+    !productAssetId &&
+    (noVisibleTalent || !talentAssetId)
+  )
   const outputResolution = useMemo(
     () => resolveOutputResolution(platform, resolutionPreset),
     [platform, resolutionPreset]
@@ -677,6 +764,7 @@ export default function AdEasyMode({
     commercialLength,
     shotCount,
     noVisibleTalent,
+    environmentReferenceName: environmentAsset?.name || '',
   }
 
   const generatedScript = useMemo(() => buildDirectorScript(currentData), [
@@ -693,6 +781,7 @@ export default function AdEasyMode({
     outputResolutionLabel,
     videoFps,
     commercialLength,
+    environmentAsset?.name,
     shotCount,
     noVisibleTalent,
   ])
@@ -710,6 +799,7 @@ export default function AdEasyMode({
     `FPS: ${Number(videoFps) || 24}`,
     productAssetId ? 'Use the product reference as the packaging/product anchor.' : '',
     talentAssetId && !noVisibleTalent ? 'Use the talent reference as the identity/wardrobe anchor.' : '',
+    environmentAsset ? `Use the environment reference (${environmentAsset.name}) as the location, lighting, and background anchor.` : '',
   ].filter(Boolean).join('. '))
 
   const applyToDirector = (scriptOverride = directorScript || generatedScript) => {
@@ -724,8 +814,8 @@ export default function AdEasyMode({
     setYoloAdModelAssetId(noVisibleTalent ? null : (talentAssetId || null))
     setYoloAdFormatPreset(format)
     setYoloAdPlatformPreset(platform)
-    setYoloAdStoryboardSource('cloud')
-    setYoloAdStoryboardTier('quality')
+    setYoloAdStoryboardSource(selectedKeyframeWorkflow.source)
+    setYoloAdStoryboardTier(selectedKeyframeWorkflow.tier)
     setYoloAdVideoSource('local')
     setYoloAdVideoTier('quality')
     setYoloAdLocalVideoWorkflowId(videoWorkflowId)
@@ -738,6 +828,13 @@ export default function AdEasyMode({
     setImageResolution(outputResolution)
     setYoloStyleNotes(buildEasyModeStyleNotes())
     setYoloScript(script)
+  }
+
+  const handleKeyframeWorkflowChange = (workflowId) => {
+    const option = KEYFRAME_MODEL_OPTIONS.find((item) => item.id === workflowId) || KEYFRAME_MODEL_OPTIONS[0]
+    setKeyframeWorkflowId(option.id)
+    setYoloAdStoryboardSource(option.source)
+    setYoloAdStoryboardTier(option.tier)
   }
 
   const handleVideoWorkflowChange = (workflowId) => {
@@ -784,7 +881,7 @@ export default function AdEasyMode({
     platformPresetOverride: platform,
   })
 
-  const handleUpdatePlanOnly = () => {
+  const handleBuildPlan = () => {
     const script = directorScript || generatedScript
     const styleNotes = buildEasyModeStyleNotes()
     applyToDirector(script)
@@ -792,47 +889,11 @@ export default function AdEasyMode({
     if (Array.isArray(plan) && plan.length > 0) {
       setSelectedShotIndex(0)
       setSelectedVideoIndex(0)
-      setKeyframeStatus('Plan updated without queueing keyframes.')
-      setVideoStatus('Plan updated. You can create videos from the existing keyframes.')
-      if (yoloStoryboardReadyCount > 0) {
-        setStep('keyframes')
-      }
+      setKeyframeStatus('Plan ready. Choose a keyframe model, then create keyframes.')
+      setVideoStatus('Plan ready. Generate keyframes before creating videos.')
+      setStep('keyframes')
     } else {
-      setKeyframeStatus('Could not update the plan. Check the script format and try again.')
-    }
-  }
-
-  const handleBuildPlan = async () => {
-    const script = directorScript || generatedScript
-    const styleNotes = buildEasyModeStyleNotes()
-    applyToDirector(script)
-    setIsQueuingKeyframes(true)
-    setKeyframeStatus('Building the plan and queueing keyframes...')
-    try {
-      const plan = handleBuildActiveYoloPlan(buildPlanOptions(script, styleNotes))
-      if (Array.isArray(plan) && plan.length > 0) {
-        setSelectedShotIndex(0)
-        setSelectedVideoIndex(0)
-        setStep('keyframes')
-        const queuedCount = await handleQueueYoloStoryboards({
-          planOverride: plan,
-          skipStaleCheck: true,
-          skipConfirm: true,
-          sourceLabel: 'Ad Easy Mode keyframe pass',
-          productAssetIdOverride: productAssetId || '',
-          modelAssetIdOverride: noVisibleTalent ? '' : (talentAssetId || ''),
-          resolutionOverride: outputResolution,
-        })
-        setKeyframeStatus(
-          queuedCount > 0
-            ? `Queued ${queuedCount} keyframe job${queuedCount === 1 ? '' : 's'}. They will appear here as each shot finishes.`
-            : 'No new keyframe jobs were queued. Check the queue or existing keyframes.'
-        )
-      } else {
-        setKeyframeStatus('Could not build the plan. Check the script format and try again.')
-      }
-    } finally {
-      setIsQueuingKeyframes(false)
+      setKeyframeStatus('Could not build the plan. Check the script format and try again.')
     }
   }
 
@@ -846,10 +907,11 @@ export default function AdEasyMode({
         skipStaleCheck: true,
         skipConfirm: true,
         allowExistingDoneKeys: true,
-        sourceLabel: 'Ad Easy Mode keyframe regeneration pass',
+        sourceLabel: `Ad Easy Mode ${selectedKeyframeWorkflow.label} keyframe regeneration pass`,
         productAssetIdOverride: productAssetId || '',
         modelAssetIdOverride: noVisibleTalent ? '' : (talentAssetId || ''),
         resolutionOverride: outputResolution,
+        storyboardWorkflowIdOverride: selectedKeyframeWorkflow.workflowId,
       })
       setKeyframeStatus(
         queuedCount > 0
@@ -1002,7 +1064,7 @@ export default function AdEasyMode({
   const renderStepNav = () => (
     <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-3">
       <div className="text-[10px] uppercase tracking-[0.14em] text-sf-text-muted">Ad Creation Easy Mode</div>
-      <div className="mt-3 grid grid-cols-2 gap-1 md:grid-cols-4 xl:grid-cols-8">
+      <div className="mt-3 grid grid-cols-2 gap-1 md:grid-cols-5">
         {STEPS.map((item, index) => (
           <button
             key={item.id}
@@ -1042,6 +1104,114 @@ export default function AdEasyMode({
     </button>
   )
 
+  const renderCustomKeyframeWorkflowPanel = () => {
+    if (!customKeyframeWorkflowSelected) return null
+    return (
+      <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-3">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-sf-text-muted">Custom workflow contract</span>
+              <span className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                customKeyframeValidation.ok
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                  : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+              }`}>
+                {customKeyframeValidation.ok ? 'Ready' : 'Needs setup'}
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-sf-text-primary">
+              {customKeyframeWorkflowName || 'No custom workflow loaded'}
+            </div>
+            <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
+              Required: <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_PROMPT</span> and <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_OUTPUT_IMAGE</span>. Optional: <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_INPUT_IMAGE</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_SEED</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_WIDTH</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_HEIGHT</span>.
+            </p>
+            <div className={`mt-2 text-[10px] ${customKeyframeValidation.ok ? 'text-emerald-300' : 'text-amber-200'}`}>
+              {customKeyframeValidation.message}
+            </div>
+            {Array.isArray(customKeyframeValidation.warnings) && customKeyframeValidation.warnings.length > 0 && (
+              <div className="mt-1 text-[10px] text-amber-200">
+                {customKeyframeValidation.warnings.slice(0, 2).join(' ')}
+              </div>
+            )}
+          </div>
+          <div className="grid w-full shrink-0 gap-2 sm:w-auto sm:min-w-[180px]">
+            <button
+              type="button"
+              onClick={handleOpenYoloAdCustomKeyframeWorkflowInComfyUi}
+              disabled={!canOpenCustomKeyframeWorkflow}
+              className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-800 disabled:text-sf-text-muted"
+              title={customKeyframeWorkflowLoaded ? 'Open the loaded custom workflow in the embedded ComfyUI tab.' : 'Load the starter workflow and open it in the embedded ComfyUI tab.'}
+            >
+              <ExternalLink className="h-3 w-3" />
+              {openCustomKeyframeWorkflowLabel}
+            </button>
+            <button
+              type="button"
+              onClick={handleImportYoloAdCustomKeyframeWorkflow}
+              className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+              title="Import the API JSON you exported from ComfyUI."
+            >
+              <Clipboard className="h-3 w-3" />
+              Import JSON
+            </button>
+            <button
+              type="button"
+              onClick={handleClearYoloAdCustomKeyframeWorkflow}
+              className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-muted transition-colors hover:border-red-500/60 hover:text-red-300"
+              title="Clear the loaded custom workflow."
+            >
+              <X className="h-3 w-3" />
+              Clear Custom
+            </button>
+          </div>
+        </div>
+        <div className="mt-3 border-t border-sf-dark-700 pt-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-sf-text-muted">ComfyStudio bridge</span>
+                <span className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeBadge.className}`}>
+                  {bridgeBadge.label}
+                </span>
+              </div>
+              <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
+                Adds a Send to ComfyStudio button inside ComfyUI. Import JSON stays available as the fallback.
+              </p>
+              {bridgeMessage && (
+                <div className={`mt-2 text-[10px] ${bridgeInstalled ? 'text-emerald-300' : bridgeState === 'unavailable' ? 'text-amber-200' : 'text-sf-text-secondary'}`}>
+                  {bridgeMessage}
+                </div>
+              )}
+            </div>
+            <div className="grid w-full shrink-0 gap-2 sm:w-auto sm:min-w-[160px]">
+              <button
+                type="button"
+                onClick={handleInstallYoloMusicCustomKeyframeBridge}
+                disabled={!canInstallBridge || yoloCustomKeyframeBridgeBusy}
+                className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-800 disabled:text-sf-text-muted"
+                title={bridgeState === 'unavailable' ? 'Choose a ComfyUI folder or configure the launcher first.' : 'Install the bundled ComfyStudio Bridge into ComfyUI custom_nodes.'}
+              >
+                {yoloCustomKeyframeBridgeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                {bridgeInstalled ? 'Installed' : 'Install Bridge'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCheckYoloMusicCustomKeyframeBridge?.({ silent: false })}
+                disabled={yoloCustomKeyframeBridgeBusy || typeof handleCheckYoloMusicCustomKeyframeBridge !== 'function'}
+                className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                title="Re-check whether the bridge is installed."
+              >
+                <RefreshCw className={`h-3 w-3 ${yoloCustomKeyframeBridgeBusy ? 'animate-spin' : ''}`} />
+                Re-check
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const renderActions = (back, next, nextLabel) => (
     <div className="flex flex-wrap items-center justify-between gap-2">
       <button
@@ -1065,82 +1235,60 @@ export default function AdEasyMode({
     <div className="space-y-4">
       {renderStepNav()}
 
-      {step === 'brief' && (
+      {step === 'setup' && (
         <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/60 p-4 space-y-4">
           <div>
             <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">ComfyStudio asks</div>
-            <h2 className="mt-1 text-lg font-semibold text-sf-text-primary">Let's start with the product.</h2>
-            <p className="mt-1 text-xs text-sf-text-muted">Answer what you know. Blank fields can be filled in later from the editable script.</p>
+            <h2 className="mt-1 text-lg font-semibold text-sf-text-primary">Set up the ad.</h2>
+            <p className="mt-1 text-xs text-sf-text-muted">Define the product, creative direction, and delivery settings before choosing references.</p>
           </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label className="text-xs text-sf-text-secondary">
-              <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Brand name</span>
-              <input value={brand} onChange={(e) => setBrand(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
-            </label>
-            <label className="text-xs text-sf-text-secondary">
-              <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Product</span>
-              <input value={product} onChange={(e) => setProduct(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
-            </label>
-            <label className="text-xs text-sf-text-secondary">
-              <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Audience</span>
-              <input value={audience} onChange={(e) => setAudience(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
-            </label>
-            <label className="text-xs text-sf-text-secondary md:col-span-2">
-              <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">What should people remember?</span>
-              <textarea value={promise} onChange={(e) => setPromise(e.target.value)} rows={3} className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
-            </label>
-            <label className="text-xs text-sf-text-secondary">
-              <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Commercial length</span>
-              <select value={commercialLength} onChange={(e) => updateLength(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none">
-                {COMMERCIAL_LENGTH_OPTIONS.map((seconds) => <option key={seconds} value={seconds}>{seconds} seconds</option>)}
-              </select>
-            </label>
-          </div>
-          <div className="flex justify-end">
-            <button type="button" onClick={() => goTo('direction')} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover">Next: Creative Direction</button>
-          </div>
-        </div>
-      )}
-
-      {step === 'direction' && (
-        <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/60 p-4 space-y-4">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">ComfyStudio asks</div>
-            <h2 className="mt-1 text-lg font-semibold text-sf-text-primary">What kind of ad should this become?</h2>
-            <p className="mt-1 text-xs text-sf-text-muted">These choices become structured Director settings, not a freeform chatbot prompt.</p>
-          </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Format</div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {FORMAT_OPTIONS.map((option) => renderChoiceButton(format === option.id, option.label, () => setFormat(option.id)))}
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-800/40 p-3">
+              <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Product brief</div>
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className="text-xs text-sf-text-secondary">
+                  <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Brand name</span>
+                  <input value={brand} onChange={(e) => setBrand(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
+                </label>
+                <label className="text-xs text-sf-text-secondary">
+                  <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Product</span>
+                  <input value={product} onChange={(e) => setProduct(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
+                </label>
+                <label className="text-xs text-sf-text-secondary md:col-span-2">
+                  <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Audience</span>
+                  <input value={audience} onChange={(e) => setAudience(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
+                </label>
+                <label className="text-xs text-sf-text-secondary md:col-span-2">
+                  <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">What should people remember?</span>
+                  <textarea value={promise} onChange={(e) => setPromise(e.target.value)} rows={3} className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
+                </label>
               </div>
             </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Tone</div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {TONE_OPTIONS.map((option) => renderChoiceButton(tone === option.id, option.label, () => setTone(option.id)))}
+            <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-800/40 p-3">
+              <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Creative direction</div>
+              <div className="mt-3 grid gap-3">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Format</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {FORMAT_OPTIONS.map((option) => renderChoiceButton(format === option.id, option.label, () => setFormat(option.id)))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Tone</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {TONE_OPTIONS.map((option) => renderChoiceButton(tone === option.id, option.label, () => setTone(option.id)))}
+                  </div>
+                </div>
+                <label className="text-xs text-sf-text-secondary">
+                  <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Visual style / rules</span>
+                  <input value={colors} onChange={(e) => setColors(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
+                </label>
+                <label className="text-xs text-sf-text-secondary">
+                  <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Optional talent or voice direction</span>
+                  <textarea value={talentDirection} onChange={(e) => setTalentDirection(e.target.value)} rows={3} placeholder="Example: friendly skincare expert, calm female voiceover, no visible spokesperson" className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
+                </label>
               </div>
             </div>
-            <label className="text-xs text-sf-text-secondary md:col-span-2">
-              <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Visual style / rules</span>
-              <input value={colors} onChange={(e) => setColors(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
-            </label>
-            <label className="text-xs text-sf-text-secondary md:col-span-2">
-              <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Optional talent or voice direction</span>
-              <textarea value={talentDirection} onChange={(e) => setTalentDirection(e.target.value)} rows={3} placeholder="Example: friendly skincare expert, calm female voiceover, no visible spokesperson" className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none" />
-            </label>
-          </div>
-          {renderActions('brief', 'delivery', 'Next: Delivery')}
-        </div>
-      )}
-
-      {step === 'delivery' && (
-        <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/60 p-4 space-y-4">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">Delivery settings</div>
-            <h2 className="mt-1 text-lg font-semibold text-sf-text-primary">Where should the ad fit?</h2>
-            <p className="mt-1 text-xs text-sf-text-muted">These settings control frame shape, output size, and motion timing for keyframes and video renders.</p>
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-800/40 p-3">
@@ -1196,7 +1344,20 @@ export default function AdEasyMode({
               </div>
             </div>
           </div>
-          {renderActions('direction', 'references', 'Next: References')}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label className="text-xs text-sf-text-secondary">
+              <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Commercial length</span>
+              <select value={commercialLength} onChange={(e) => updateLength(e.target.value)} className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none">
+                {COMMERCIAL_LENGTH_OPTIONS.map((seconds) => <option key={seconds} value={seconds}>{seconds} seconds</option>)}
+              </select>
+            </label>
+            <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-800/40 px-3 py-2 text-xs text-sf-text-secondary">
+              Current output: <span className="text-sf-text-primary">{outputResolutionLabel} / {videoFps} fps</span>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <button type="button" onClick={() => goTo('references')} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover">Next: References</button>
+          </div>
         </div>
       )}
 
@@ -1204,10 +1365,10 @@ export default function AdEasyMode({
         <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/60 p-4 space-y-4">
           <div>
             <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">ComfyStudio asks</div>
-            <h2 className="mt-1 text-lg font-semibold text-sf-text-primary">Do you have product or talent references?</h2>
-            <p className="mt-1 text-xs text-sf-text-muted">Optional, but best results come from product sheets and character sheets with multiple angles.</p>
+            <h2 className="mt-1 text-lg font-semibold text-sf-text-primary">Do you have product, talent, or environment references?</h2>
+            <p className="mt-1 text-xs text-sf-text-muted">Optional, but best results come from clear product sheets, character sheets, and location references.</p>
           </div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-800/40 p-3">
               <div className="text-sm font-semibold text-sf-text-primary">Product reference</div>
               <p className="mt-1 text-[11px] text-sf-text-muted">Recommended: product sheet with front, side, label, packaging, and in-hand/use context.</p>
@@ -1230,8 +1391,16 @@ export default function AdEasyMode({
                 {imageAssets.map((asset) => <option key={`easy-talent-${asset.id}`} value={asset.id}>{asset.name}</option>)}
               </select>
             </div>
+            <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-800/40 p-3">
+              <div className="text-sm font-semibold text-sf-text-primary">Environment reference</div>
+              <p className="mt-1 text-[11px] text-sf-text-muted">Optional location, room, surface, lighting, or set design reference for the ad world.</p>
+              <select value={environmentAssetId} onChange={(e) => setEnvironmentAssetId(e.target.value)} className="mt-3 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs text-sf-text-primary focus:border-sf-accent focus:outline-none">
+                <option value="">No environment asset selected</option>
+                {imageAssets.map((asset) => <option key={`easy-environment-${asset.id}`} value={asset.id}>{asset.name}</option>)}
+              </select>
+            </div>
           </div>
-          {renderActions('delivery', 'script', 'Build Script Plan')}
+          {renderActions('setup', 'script', 'Build Script')}
         </div>
       )}
 
@@ -1256,7 +1425,7 @@ export default function AdEasyMode({
             </label>
             <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-800/40 px-3 py-2">
               <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Model route</div>
-              <div className="mt-1 text-xs text-sf-text-primary">Nano Banana 2 keyframes + video model chosen in Step 7</div>
+              <div className="mt-1 text-xs text-sf-text-primary">{selectedKeyframeWorkflow.label} keyframes + {selectedVideoWorkflow.label} video</div>
             </div>
           </div>
           <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-800/40 p-3">
@@ -1305,9 +1474,8 @@ export default function AdEasyMode({
             <button type="button" onClick={() => setStep('references')} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary">Back</button>
             <div className="flex flex-wrap justify-end gap-2">
               <button type="button" onClick={() => { const next = generatedScript; setDirectorScript(next); applyToDirector(next) }} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary">Regenerate script from brief</button>
-              <button type="button" onClick={handleUpdatePlanOnly} disabled={isQueuingKeyframes || isQueuingVideos} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50">Update Plan Only</button>
-              <button type="button" onClick={handleBuildPlan} disabled={isQueuingKeyframes || yoloDependencyCheckInProgress} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover disabled:cursor-not-allowed disabled:opacity-50">
-                {isQueuingKeyframes ? 'Queueing Keyframes...' : 'Looks Good - Create Keyframes'}
+              <button type="button" onClick={handleBuildPlan} disabled={isQueuingKeyframes || isQueuingVideos} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover disabled:cursor-not-allowed disabled:opacity-50">
+                Build Plan and Continue
               </button>
             </div>
           </div>
@@ -1323,11 +1491,34 @@ export default function AdEasyMode({
                 ? `Generating keyframes (${yoloStoryboardReadyCount}/${planShots.length} ready).`
                 : yoloStoryboardReadyCount > 0
                   ? 'Review your generated keyframes.'
-                  : 'Keyframes are queued for generation.'}
+                  : 'Create keyframes from the plan.'}
             </h2>
             <p className="mt-1 text-xs text-sf-text-muted">
               Completed shots will appear here one by one. You can select a shot, edit its keyframe prompt, and regenerate just that shot.
             </p>
+          </div>
+          <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-800/40 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">Keyframe model</div>
+                <div className="mt-1 text-sm font-semibold text-sf-text-primary">Using {selectedKeyframeWorkflow.label}</div>
+              </div>
+              <div className="grid min-w-[260px] flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
+                {KEYFRAME_MODEL_OPTIONS.map((option) => renderChoiceButton(
+                  keyframeWorkflowId === option.id,
+                  `${option.label} (${option.runtimeLabel})`,
+                  () => handleKeyframeWorkflowChange(option.id),
+                  option.helper,
+                  `easy-keyframe-review-route-${option.id}`
+                ))}
+              </div>
+            </div>
+            {keyframeReferenceMissing && (
+              <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100/90">
+                Qwen Image Edit needs a product or talent reference image before it can queue keyframes.
+              </div>
+            )}
+            {renderCustomKeyframeWorkflowPanel()}
           </div>
           {planShots.length === 0 ? (
             <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">Build the script plan first.</div>
@@ -1390,7 +1581,9 @@ export default function AdEasyMode({
                       <div className="text-sm font-semibold text-sf-text-primary">Shot {selectedShotIndex + 1}: {selectedShotRow.shot.id}</div>
                       <div className="text-[10px] text-sf-text-muted">{selectedShotRow.scene.id}</div>
                     </div>
-                    <span className="rounded-full border border-sf-dark-600 px-2 py-1 text-[10px] text-sf-text-muted">Nano Banana 2 keyframe</span>
+                    <span className="rounded-full border border-sf-dark-600 px-2 py-1 text-[10px] text-sf-text-muted">
+                      {selectedKeyframeWorkflow.label} keyframe
+                    </span>
                   </div>
                   <label className="mt-3 block text-xs text-sf-text-secondary">
                     <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Edit shot keyframe prompt</span>
@@ -1402,8 +1595,8 @@ export default function AdEasyMode({
                     />
                   </label>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <button type="button" disabled={isQueuingKeyframes || yoloDependencyCheckInProgress} onClick={() => { setKeyframeStatus(`Queued keyframe regeneration for Shot ${selectedShotIndex + 1}.`); void handleQueueYoloShotStoryboard(selectedShotRow.scene.id, selectedShotRow.shot.id, { resolutionOverride: outputResolution }) }} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover disabled:cursor-not-allowed disabled:opacity-50">Regenerate Selected Shot</button>
-                    <button type="button" disabled={isQueuingKeyframes || yoloDependencyCheckInProgress || planShots.length === 0} onClick={handleRegenerateAllKeyframes} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50">Regenerate All</button>
+                    <button type="button" disabled={isQueuingKeyframes || yoloDependencyCheckInProgress || keyframeReferenceMissing || customKeyframeNeedsSetup} onClick={() => { setKeyframeStatus(`Queued ${selectedKeyframeWorkflow.label} keyframe regeneration for Shot ${selectedShotIndex + 1}.`); void handleQueueYoloShotStoryboard(selectedShotRow.scene.id, selectedShotRow.shot.id, { resolutionOverride: outputResolution, productAssetIdOverride: productAssetId || '', modelAssetIdOverride: noVisibleTalent ? '' : (talentAssetId || ''), storyboardWorkflowIdOverride: selectedKeyframeWorkflow.workflowId }) }} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover disabled:cursor-not-allowed disabled:opacity-50">Regenerate Selected Shot</button>
+                    <button type="button" disabled={isQueuingKeyframes || yoloDependencyCheckInProgress || planShots.length === 0 || keyframeReferenceMissing || customKeyframeNeedsSetup} onClick={handleRegenerateAllKeyframes} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50">Regenerate All</button>
                     <button type="button" onClick={() => { setYoloTakesPerAngle(3); handleYoloShotTakesChange(selectedShotRow.scene.id, selectedShotRow.shot.id, 3); setKeyframeStatus('Variation mode set to 3 takes. Click regenerate to queue three seed variations for the selected shot.') }} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary">Make 3 Variations</button>
                     <span className="text-[10px] text-sf-text-muted">{keyframeStatus}</span>
                   </div>
@@ -1412,9 +1605,9 @@ export default function AdEasyMode({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <button type="button" onClick={() => setStep('script')} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary">Back</button>
                 <div className="flex gap-2">
-                  <button type="button" disabled={yoloDependencyCheckInProgress} onClick={() => { setKeyframeStatus('Queued keyframes for all planned shots.'); void handleQueueYoloStoryboards({ resolutionOverride: outputResolution }) }} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary disabled:opacity-50">Queue All Keyframes</button>
+                  <button type="button" disabled={yoloDependencyCheckInProgress || keyframeReferenceMissing || customKeyframeNeedsSetup} onClick={() => { setKeyframeStatus(`Queued ${selectedKeyframeWorkflow.label} keyframes for all planned shots.`); void handleQueueYoloStoryboards({ resolutionOverride: outputResolution, productAssetIdOverride: productAssetId || '', modelAssetIdOverride: noVisibleTalent ? '' : (talentAssetId || ''), storyboardWorkflowIdOverride: selectedKeyframeWorkflow.workflowId, sourceLabel: `Ad Easy Mode ${selectedKeyframeWorkflow.label} keyframe pass` }) }} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary disabled:opacity-50">Create Keyframes</button>
                   <button type="button" disabled={yoloStoryboardReadyCount === 0} onClick={() => setStep('videos')} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover disabled:cursor-not-allowed disabled:opacity-50">
-                    Next: Choose Video Model
+                    Next: Videos + Timeline
                   </button>
                 </div>
               </div>
@@ -1435,7 +1628,7 @@ export default function AdEasyMode({
             <p className="mt-1 text-xs text-sf-text-muted">Completed videos will appear here one by one. You can select a shot video, edit only its motion prompt, then regenerate just that clip.</p>
           </div>
           <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-800/40 px-3 py-2 text-xs text-sf-text-secondary">
-            {planShots.length} shots / {commercialLength}s / Nano Banana 2 keyframes / {selectedVideoWorkflow.label} video
+            {planShots.length} shots / {commercialLength}s / {selectedKeyframeWorkflow.label} keyframes / {selectedVideoWorkflow.label} video
           </div>
           <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-800/40 p-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1553,24 +1746,7 @@ export default function AdEasyMode({
           )}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <button type="button" onClick={() => setStep('keyframes')} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary">Back</button>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setStep('done')} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover">Approve Videos and Finish</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {step === 'done' && (
-        <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/60 p-4 space-y-3">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">Complete</div>
-            <h2 className="mt-1 text-lg font-semibold text-sf-text-primary">Your ad is complete.</h2>
-            <p className="mt-1 text-xs text-sf-text-muted">You can still return to Keyframes or Videos to regenerate individual shots.</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => setStep('keyframes')} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary">Open Keyframes</button>
-            <button type="button" onClick={() => setStep('videos')} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary">Open Videos</button>
-            <button type="button" onClick={() => setStep('brief')} className="rounded-lg bg-sf-accent px-3 py-2 text-xs text-white hover:bg-sf-accent-hover">Start Another Easy Ad</button>
+            <button type="button" onClick={() => setStep('setup')} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary">Start Another Ad</button>
           </div>
         </div>
       )}

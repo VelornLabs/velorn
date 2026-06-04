@@ -527,7 +527,7 @@ function App() {
             src={comfyIframeUrl}
             title="ComfyUI"
             className="flex-1 w-full min-h-0 border-0"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           />
         </div>
         {/* Generate tab – keep mounted so queue/progress survives tab switches */}

@@ -440,6 +440,11 @@
                 href="https://github.com/JaimeIsMe/comfystudio/releases"
               >Download for Mac</a>
               <a
+                id="download-linux-button"
+                class="button"
+                href="https://github.com/JaimeIsMe/comfystudio/releases"
+              >Download for Linux</a>
+              <a
                 id="releases-button"
                 class="button"
                 href="https://github.com/JaimeIsMe/comfystudio/releases"
@@ -450,7 +455,7 @@
               <a class="button" href="https://x.com/comfystudiopro" target="_blank" rel="noreferrer">Follow on X</a>
             </div>
             <p id="download-note" class="cta-note">
-              Windows and macOS downloads are available now.
+              Windows, macOS, and Linux downloads are available now.
               Grab alternate builds from <a href="https://github.com/JaimeIsMe/comfystudio/releases" target="_blank" rel="noreferrer">All releases</a>.
             </p>
           </div>
@@ -718,9 +723,10 @@
 
         const windowsDownloadButton = document.getElementById('download-windows-button')
         const macDownloadButton = document.getElementById('download-mac-button')
+        const linuxDownloadButton = document.getElementById('download-linux-button')
         const downloadNote = document.getElementById('download-note')
 
-        if (!windowsDownloadButton || !macDownloadButton || !downloadNote) return
+        if (!windowsDownloadButton || !macDownloadButton || !linuxDownloadButton || !downloadNote) return
 
         const platformSource = [
           navigator.userAgentData?.platform,
@@ -741,10 +747,15 @@
           macIntelUrl = releasesUrl,
           macArmAvailable = false,
           macIntelAvailable = false,
+          linuxAppImageUrl = releasesUrl,
+          linuxDebUrl = releasesUrl,
+          linuxAppImageAvailable = false,
+          linuxDebAvailable = false,
         }) {
           const versionHtml = version ? ` <strong>v${version}</strong>` : ''
           const allReleasesLink = `<a href="${releasesUrl}" target="_blank" rel="noreferrer">All releases</a>`
           const hasMacBuild = macArmAvailable || macIntelAvailable
+          const hasLinuxBuild = linuxAppImageAvailable || linuxDebAvailable
 
           windowsDownloadButton.href = installerUrl
           windowsDownloadButton.textContent = 'Download for Windows'
@@ -771,9 +782,17 @@
           macDownloadButton.textContent = macButtonText
           macDownloadButton.setAttribute('aria-label', macAriaLabel)
 
+          const linuxButtonUrl = linuxAppImageAvailable ? linuxAppImageUrl : releasesUrl
+          linuxDownloadButton.href = linuxButtonUrl
+          linuxDownloadButton.textContent = linuxAppImageAvailable ? 'Download for Linux' : 'Linux releases'
+          linuxDownloadButton.setAttribute(
+            'aria-label',
+            version ? `Download ComfyStudio ${version} Linux AppImage` : 'Download ComfyStudio Linux AppImage'
+          )
+
           if (isWindows) {
             if (directAvailable) {
-              downloadNote.innerHTML = `Windows x64 installer for${versionHtml}. Need the portable build or a Mac download? Grab it from ${allReleasesLink}.`
+              downloadNote.innerHTML = `Windows x64 installer for${versionHtml}. Need the portable build, Mac, or Linux? Grab it from ${allReleasesLink}.`
             } else {
               downloadNote.innerHTML = `Windows x64 installer available now. If direct download lookup fails, browse ${allReleasesLink}.`
             }
@@ -782,12 +801,12 @@
 
           if (isMac) {
             if (macArmAvailable) {
-              downloadNote.innerHTML = `macOS Apple Silicon download for${versionHtml}. Using an older Intel Mac? Grab that build from ${allReleasesLink}.`
+              downloadNote.innerHTML = `macOS Apple Silicon download for${versionHtml}. Using an older Intel Mac or need Linux? Grab alternate builds from ${allReleasesLink}.`
               return
             }
 
             if (hasMacBuild) {
-              downloadNote.innerHTML = `macOS builds are available now${version ? ` as <strong>v${version}</strong>` : ''}. Apple Silicon is the default. Need Intel instead? Use ${allReleasesLink}.`
+              downloadNote.innerHTML = `macOS builds are available now${version ? ` as <strong>v${version}</strong>` : ''}. Apple Silicon is the default. Need Intel or Linux instead? Use ${allReleasesLink}.`
               return
             }
 
@@ -796,11 +815,21 @@
           }
 
           if (isLinux) {
+            if (linuxAppImageAvailable) {
+              downloadNote.innerHTML = `Linux AppImage download for${versionHtml}. Need the .deb package${linuxDebAvailable ? '' : ' when available'} or another platform? Grab it from ${allReleasesLink}.`
+              return
+            }
+
+            if (hasLinuxBuild) {
+              downloadNote.innerHTML = `Linux builds are available now${version ? ` as <strong>v${version}</strong>` : ''}. Browse ${allReleasesLink} for the package you need.`
+              return
+            }
+
             downloadNote.innerHTML = `Windows x64 and macOS builds are available now${version ? ` as <strong>v${version}</strong>` : ''}. Linux builds are not published yet, but you can still browse ${allReleasesLink}.`
             return
           }
 
-          downloadNote.innerHTML = `Windows x64 and macOS builds are available now${version ? ` as <strong>v${version}</strong>` : ''}. Need another build? Keep an eye on ${allReleasesLink}.`
+          downloadNote.innerHTML = `Windows x64, macOS, and Linux builds are available now${version ? ` as <strong>v${version}</strong>` : ''}. Need another build? Check ${allReleasesLink}.`
         }
 
         function deriveVersion(tagName = '', assetName = '') {
@@ -818,9 +847,11 @@
           const portableAsset = assets.find((asset) => /(?:windows-portable|portable)-x64\.exe$/i.test(asset?.name || ''))
           const macArmAsset = assets.find((asset) => /(?:-mac-)?arm64\.dmg$/i.test(asset?.name || ''))
           const macIntelAsset = assets.find((asset) => /(?:-mac-)?x64\.dmg$/i.test(asset?.name || ''))
+          const linuxAppImageAsset = assets.find((asset) => /linux-x86_64\.AppImage$/i.test(asset?.name || ''))
+          const linuxDebAsset = assets.find((asset) => /linux-amd64\.deb$/i.test(asset?.name || ''))
           const version = deriveVersion(
             release?.tag_name,
-            installerAsset?.name || portableAsset?.name || macArmAsset?.name || macIntelAsset?.name
+            installerAsset?.name || portableAsset?.name || macArmAsset?.name || macIntelAsset?.name || linuxAppImageAsset?.name || linuxDebAsset?.name
           )
 
           setDownloadCopy({
@@ -832,6 +863,10 @@
             macIntelUrl: macIntelAsset?.browser_download_url || releasesUrl,
             macArmAvailable: Boolean(macArmAsset?.browser_download_url),
             macIntelAvailable: Boolean(macIntelAsset?.browser_download_url),
+            linuxAppImageUrl: linuxAppImageAsset?.browser_download_url || releasesUrl,
+            linuxDebUrl: linuxDebAsset?.browser_download_url || releasesUrl,
+            linuxAppImageAvailable: Boolean(linuxAppImageAsset?.browser_download_url),
+            linuxDebAvailable: Boolean(linuxDebAsset?.browser_download_url),
           })
         }
 

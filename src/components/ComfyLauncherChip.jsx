@@ -28,6 +28,7 @@ import {
   refreshComfyLauncher,
   fetchComfyLauncherLogsTail,
   openComfyLauncherLogFile,
+  pickComfyLauncherMacApp,
   pickComfyLauncherScript,
   detectComfyLauncherCandidates,
   updateComfyLauncherConfig,
@@ -167,9 +168,15 @@ function ComfyLauncherChip() {
   }, [open])
 
   const stateStyle = STATE_STYLES[state.state] || STATE_STYLES.unknown
+  const isMacPlatform = window?.electronAPI?.platform === 'darwin'
+  const launcherMode = config.launcherMode === 'mac-app' ? 'mac-app' : 'script'
 
   const summary = useMemo(() => {
     if (!available) return 'Launcher unavailable (not Electron).'
+    if (state.state === 'running' && state.ownership === 'app') {
+      const uptime = formatUptime(state.uptimeMs || Math.max(0, Date.now() - state.startedAt))
+      return `Running via ComfyUI.app${uptime ? ` - up ${uptime}` : ''}`
+    }
     if (state.state === 'running' && state.ownership === 'ours') {
       const uptime = formatUptime(state.uptimeMs || Math.max(0, Date.now() - state.startedAt))
       return `Running • pid ${state.pid ?? '?'}${uptime ? ` • up ${uptime}` : ''}`
@@ -208,23 +215,32 @@ function ComfyLauncherChip() {
   const handlePickLauncher = async () => {
     const result = await pickComfyLauncherScript()
     if (result?.success && result.filePath) {
-      setConfig((prev) => ({ ...prev, launcherScript: result.filePath }))
+      setConfig((prev) => ({ ...prev, launcherMode: 'script', launcherScript: result.filePath }))
+    }
+  }
+
+  const handlePickMacApp = async () => {
+    const result = await pickComfyLauncherMacApp()
+    if (result?.success && result.filePath) {
+      setConfig((prev) => ({ ...prev, launcherMode: 'mac-app', macAppPath: result.filePath }))
     }
   }
 
   const handleUseCandidate = async (candidate) => {
     if (!candidate?.path) return
-    await updateComfyLauncherConfig({ launcherScript: candidate.path })
-    setConfig((prev) => ({ ...prev, launcherScript: candidate.path }))
+    await updateComfyLauncherConfig({ launcherMode: 'script', launcherScript: candidate.path })
+    setConfig((prev) => ({ ...prev, launcherMode: 'script', launcherScript: candidate.path }))
   }
 
   const handleOpenLogFile = async () => {
     await openComfyLauncherLogFile()
   }
 
-  const canStart = (state.state === 'idle' || state.state === 'stopped' || state.state === 'crashed' || state.state === 'unknown') && !!config.launcherScript
-  const canStop = state.state === 'running' && state.ownership === 'ours'
-  const canRestart = state.state === 'running' && state.ownership === 'ours'
+  const hasLauncherTarget = launcherMode === 'mac-app' ? Boolean(config.macAppPath) : Boolean(config.launcherScript)
+  const canControlMacApp = isMacPlatform && launcherMode === 'mac-app' && state.ownership === 'app'
+  const canStart = (state.state === 'idle' || state.state === 'stopped' || state.state === 'crashed' || state.state === 'unknown') && hasLauncherTarget
+  const canStop = state.state === 'running' && (state.ownership === 'ours' || canControlMacApp)
+  const canRestart = state.state === 'running' && (state.ownership === 'ours' || canControlMacApp)
 
   if (!available) return null
 
@@ -365,6 +381,67 @@ function ComfyLauncherChip() {
             )}
           </div>
 
+          {isMacPlatform && (
+            <div className="px-3.5 py-3 space-y-2 border-b border-sf-dark-700">
+              <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold">Launcher mode</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => { void updateComfyLauncherConfig({ launcherMode: 'mac-app' }); setConfig((prev) => ({ ...prev, launcherMode: 'mac-app' })) }}
+                  className={`text-left px-2 py-1.5 rounded border text-[11px] transition-colors ${launcherMode === 'mac-app'
+                    ? 'bg-sf-accent/20 border-sf-accent/40 text-sf-text-primary'
+                    : 'bg-sf-dark-800 border-sf-dark-700 hover:bg-sf-dark-700 text-sf-text-primary'
+                  }`}
+                >
+                  ComfyUI.app
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void updateComfyLauncherConfig({ launcherMode: 'script' }); setConfig((prev) => ({ ...prev, launcherMode: 'script' })) }}
+                  className={`text-left px-2 py-1.5 rounded border text-[11px] transition-colors ${launcherMode === 'script'
+                    ? 'bg-sf-accent/20 border-sf-accent/40 text-sf-text-primary'
+                    : 'bg-sf-dark-800 border-sf-dark-700 hover:bg-sf-dark-700 text-sf-text-primary'
+                  }`}
+                >
+                  Script
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isMacPlatform && launcherMode === 'mac-app' && (
+            <div className="px-3.5 py-3 space-y-2 border-b border-sf-dark-700">
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold">ComfyUI.app</div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => { void updateComfyLauncherConfig({ launcherMode: 'mac-app', macAppPath: '/Applications/ComfyUI.app' }); setConfig((prev) => ({ ...prev, launcherMode: 'mac-app', macAppPath: '/Applications/ComfyUI.app' })) }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded bg-sf-dark-800 hover:bg-sf-dark-700 text-[10px] text-sf-text-primary"
+                  >
+                    Default
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePickMacApp}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded bg-sf-dark-800 hover:bg-sf-dark-700 text-[10px] text-sf-text-primary"
+                    title="Pick ComfyUI.app"
+                  >
+                    <FolderOpen className="w-3 h-3" />
+                    Browse
+                  </button>
+                </div>
+              </div>
+              <div className="text-[11px] text-sf-text-primary truncate" title={config.macAppPath}>
+                {config.macAppPath || (
+                  <span className="italic text-sf-text-muted">No app configured. Pick ComfyUI.app to open it from ComfyStudio.</span>
+                )}
+              </div>
+              <div className="text-[10px] text-sf-text-muted">ComfyStudio opens the Mac app and waits for the configured endpoint.</div>
+            </div>
+          )}
+
+          {!(isMacPlatform && launcherMode === 'mac-app') && (
           <div className="px-3.5 py-3 space-y-2 border-b border-sf-dark-700">
             <div className="flex items-center justify-between">
               <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold">Launcher script</div>
@@ -413,6 +490,7 @@ function ComfyLauncherChip() {
               </div>
             )}
           </div>
+          )}
 
           <div className="px-3.5 py-2.5">
             <div className="flex items-center justify-between mb-1.5">
