@@ -134,6 +134,16 @@ const MUSIC_VIDEO_TIMELINE_ASSEMBLY_MODE = 'music-video-easy-mode'
 
 export const isSyncLockedClip = (clip) => clip?.lockMode === 'sync' && clip?.syncLock?.mode === 'sync'
 
+// A track tagged as the dedicated captions track (a normal video track with a
+// role marker). Only caption clips may live on it.
+export const isCaptionsTrack = (track) => track?.role === 'captions'
+// A caption overlay clip — tagged on creation, or inferred from its asset.
+export const isCaptionClip = (clip) => Boolean(
+  clip?.metadata?.captionScope
+  || clip?.overlayKind === 'captions'
+  || clip?.captionScope
+)
+
 const normalizeMusicVideoShotType = (value = '') => String(value || '').trim().toLowerCase()
 
 const isMusicVideoSyncAsset = (asset = null) => {
@@ -1556,9 +1566,13 @@ export const useTimelineStore = create(
     const fps = state.timelineFps || 24
     const isVideoTrack = track.type === 'video'
     const isAudioTrack = track.type === 'audio'
+    const captionsTrack = isCaptionsTrack(track)
     const matchesTrack = (t) =>
-      (isVideoTrack && (t.type === 'video' || t.type === 'image' || t.type === 'text' || t.type === 'adjustment')) ||
-      (isAudioTrack && t.type === 'audio')
+      // The captions track accepts only caption clips; nothing else can paste in.
+      (captionsTrack ? isCaptionClip(t) : (
+        (isVideoTrack && (t.type === 'video' || t.type === 'image' || t.type === 'text' || t.type === 'adjustment')) ||
+        (isAudioTrack && t.type === 'audio')
+      ))
 
     const toPaste = state.copiedClips.filter(matchesTrack).sort((a, b) => (a.relativeStart ?? 0) - (b.relativeStart ?? 0))
     if (toPaste.length === 0) return
@@ -1782,7 +1796,14 @@ export const useTimelineStore = create(
     const state = get()
     const clip = state.clips.find(c => c.id === clipId)
     if (!clip) return
-    
+
+    // The captions track only holds caption clips — block moving anything else
+    // onto it (caption clips can still move freely on/off it).
+    if (newTrackId !== clip.trackId) {
+      const destTrack = state.tracks.find(t => t.id === newTrackId)
+      if (isCaptionsTrack(destTrack) && !isCaptionClip(clip)) return
+    }
+
     // History for interactive drags is captured by the UI gesture start.
     // Keep this mutation history-neutral to avoid no-op undo states.
     
@@ -4417,6 +4438,12 @@ export const useTimelineStore = create(
       muted: false,
       locked: false,
       visible: true
+    }
+    // Optional role marker (e.g. 'captions') — the track still behaves like a
+    // normal track of its type; the role just lets callers find/reuse it and
+    // restrict what clips may live on it.
+    if (typeof options?.role === 'string' && options.role) {
+      newTrack.role = options.role
     }
     if (type === 'audio') {
       newTrack.channels = options.channels === 'mono' ? 'mono' : 'stereo'

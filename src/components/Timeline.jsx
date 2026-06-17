@@ -748,9 +748,11 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   const timelineHistoryLastChangedAt = useTimelineStore((state) => state.historyLastChangedAt)
   const timelineIsPlaying = useTimelineStore((state) => state.isPlaying)
   const preferredVideoTrack = useMemo(() => {
-    const activeVideoTrack = tracks.find((track) => track.id === activeTrackId && track.type === 'video')
+    // Never default new text/adjustment clips onto the captions track — it only
+    // holds captions. (An active non-captions video track still wins.)
+    const activeVideoTrack = tracks.find((track) => track.id === activeTrackId && track.type === 'video' && track.role !== 'captions')
     if (activeVideoTrack) return activeVideoTrack
-    return tracks.find((track) => track.type === 'video') || null
+    return tracks.find((track) => track.type === 'video' && track.role !== 'captions') || null
   }, [tracks, activeTrackId])
   const addTextClipAtPlayhead = useCallback((options = {}) => {
     const targetTrack = preferredVideoTrack
@@ -1364,9 +1366,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     })
   }
 
-  // After the user has generated a caption overlay for the timeline, insert a
-  // brand-new video track above everything else and drop the overlay at t=0
-  // for the full program duration. Also removes any prior timeline-caption
+  // After the user has generated a caption overlay for the timeline, drop the
+  // overlay onto the dedicated captions track (reused across regenerations, so
+  // we never pile up empty tracks). Also removes any prior timeline-caption
   // overlay (clip + asset) so we don't stack overlapping transcriptions.
   const handlePlaceTimelineCaptionOnTimeline = async (captionAsset) => {
     if (!captionAsset) return
@@ -1386,10 +1388,20 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       try { assetsState.removeAsset(id) } catch (_) { /* best-effort cleanup */ }
     })
 
-    // Fresh top-of-stack video track. addTrack('video') already prepends to
-    // the video track list, so new tracks appear visually above existing ones.
-    const newTrack = state.addTrack('video')
-    if (!newTrack) return
+    // Reuse the dedicated captions track if it exists; otherwise create one at
+    // the top (a normal video track tagged role: 'captions'). The user can move,
+    // hide, lock, or delete it like any track — it just only holds captions.
+    let captionsTrack = state.tracks.find((t) => t.role === 'captions')
+    if (!captionsTrack) {
+      captionsTrack = state.addTrack('video', { role: 'captions', name: 'Captions' })
+    }
+    if (!captionsTrack) return
+
+    // Clear anything still on the captions track (e.g. a leftover overlay), then
+    // drop the fresh caption clip at t=0 for the full program.
+    useTimelineStore.getState().clips
+      .filter((c) => c.trackId === captionsTrack.id)
+      .forEach((c) => useTimelineStore.getState().removeClip(c.id))
 
     const programDuration = Math.max(
       Number(captionAsset.duration) || 0,
@@ -1397,10 +1409,11 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       1
     )
 
-    state.addClip(newTrack.id, captionAsset, 0, state.timelineFps, {
+    useTimelineStore.getState().addClip(captionsTrack.id, captionAsset, 0, useTimelineStore.getState().timelineFps, {
       duration: programDuration,
       trimStart: 0,
       trimEnd: programDuration,
+      metadata: { captionScope: 'timeline' },
     })
   }
 
@@ -2919,6 +2932,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     if (!asset || !track) return false
     const isVideoAsset = asset.type === 'video' || asset.type === 'image'
     const isVideoTrack = track.type === 'video'
+    // The dedicated captions track only accepts caption overlay assets.
+    const assetIsCaption = !!(asset.settings?.captionScope || asset.settings?.overlayKind === 'captions' || asset.settings?.source === 'captions')
+    if (track.role === 'captions') return assetIsCaption
     return (isVideoAsset && isVideoTrack) || (!isVideoAsset && !isVideoTrack)
   }
 
