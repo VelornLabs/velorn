@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Copy, Film, Loader2, Palette, RefreshCw, RotateCcw, Sparkles, Type, Wand2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Check, Copy, Film, Loader2, Palette, Pause, Play, RefreshCw, RotateCcw, Sparkles, Type, Wand2, X } from 'lucide-react'
 import {
   CAPTION_PRESETS,
   DEFAULT_CAPTION_PRESET_ID,
@@ -324,6 +324,15 @@ function CaptionWorkspace({
   // Preview-only TikTok chrome overlay to gauge caption placement vs platform UI.
   const [showTikTokOverlay, setShowTikTokOverlay] = useState(false)
 
+  // Live animated preview: drives the same renderer at ~60fps so the caption
+  // motion/timing can be watched in-window without a full render + timeline trip.
+  const previewCanvasRef = useRef(null)
+  const overlayCanvasRef = useRef(null)
+  const previewTimeRef = useRef(1.2)
+  const rafRef = useRef(0)
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false)
+  const [scrubDisplay, setScrubDisplay] = useState(1.2)
+
   const SUBTITLE_POSITION_OPTIONS = useMemo(() => [
     { id: 'action-safe', label: 'Action Safe' },
     { id: 'title-safe', label: 'Title Safe' },
@@ -392,63 +401,102 @@ function CaptionWorkspace({
     fps: Math.max(12, Math.round(Number(timelineSize?.fps) || Number(asset?.fps) || 24)),
   }), [asset?.fps, timelineSize])
 
-  // Aspect-correct positioning preview: a representative caption rendered at the
-  // project's real aspect ratio, composited over a still frame of the actual
-  // footage (when available). This is the "is it placed right?" check.
-  const positioningPreviewUrl = useMemo(() => {
-    if (typeof document === 'undefined' || !renderPreset) return null
-    void bgVersion // re-run when a new background frame is captured
-
+  // Preview canvas size at the project aspect ratio (longest edge ~480px).
+  const previewDims = useMemo(() => {
     const projW = renderSettings.width
     const projH = renderSettings.height
     const longEdge = 480
     const scale = longEdge / Math.max(projW, projH)
-    const pw = Math.max(120, Math.round(projW * scale))
-    const ph = Math.max(120, Math.round(projH * scale))
+    return {
+      w: Math.max(120, Math.round(projW * scale)),
+      h: Math.max(120, Math.round(projH * scale)),
+    }
+  }, [renderSettings])
 
-    const canvas = document.createElement('canvas')
-    canvas.width = pw
-    canvas.height = ph
+  // Total timeline the preview plays over: the real cues' span, or the sample.
+  const previewDuration = useMemo(() => {
+    const maxEnd = (draft.cues || []).reduce((m, c) => Math.max(m, Number(c?.end) || 0), 0)
+    return maxEnd > 0.4 ? maxEnd : 2.6
+  }, [draft.cues])
+
+  // Cues fed to the preview, each carrying the current global style overrides.
+  const previewCues = useMemo(() => {
+    const base = (draft.cues && draft.cues.length)
+      ? draft.cues
+      : [{ id: 'preview-sample', start: 0, end: 2.4, text: renderPreset?.sampleText || 'your caption here' }]
+    return base.map((c) => ({ ...c, globalOverrides: previewGlobalOverrides }))
+  }, [draft.cues, renderPreset, previewGlobalOverrides])
+
+  // Draw one preview frame: footage (or gradient) behind, caption overlay on top.
+  // freeze = settled still (no entrance fade) so paused/scrubbed frames never blank.
+  const drawPreview = useCallback((timeSec, freeze) => {
+    const canvas = previewCanvasRef.current
+    if (!canvas || !renderPreset) return
+    const { w, h } = previewDims
+    if (canvas.width !== w) canvas.width = w
+    if (canvas.height !== h) canvas.height = h
     const ctx = canvas.getContext('2d')
-    if (!ctx) return null
+    if (!ctx) return
 
     if (bgCanvasRef.current) {
-      drawCover(ctx, bgCanvasRef.current, pw, ph)
+      drawCover(ctx, bgCanvasRef.current, w, h)
     } else {
-      // Mid-tone gradient (not near-black) so a dark subtitle pill / shadow is
-      // still visible in the preview when there's no footage frame behind it.
-      const gradient = ctx.createLinearGradient(0, 0, 0, ph)
+      const gradient = ctx.createLinearGradient(0, 0, 0, h)
       gradient.addColorStop(0, '#6b7280')
       gradient.addColorStop(1, '#374151')
       ctx.fillStyle = gradient
-      ctx.fillRect(0, 0, pw, ph)
+      ctx.fillRect(0, 0, w, h)
     }
 
-    const overlay = document.createElement('canvas')
-    overlay.width = pw
-    overlay.height = ph
+    let overlay = overlayCanvasRef.current
+    if (!overlay) {
+      overlay = document.createElement('canvas')
+      overlayCanvasRef.current = overlay
+    }
+    if (overlay.width !== w) overlay.width = w
+    if (overlay.height !== h) overlay.height = h
     const octx = overlay.getContext('2d')
     if (octx) {
-      const sampleText = String(draft.cues?.[0]?.text || renderPreset.sampleText || 'Your caption appears here').trim()
       renderCaptionFrame({
         ctx: octx,
-        width: pw,
-        height: ph,
+        width: w,
+        height: h,
         preset: renderPreset,
-        cues: [{ id: 'positioning-preview', start: 0, end: 2.4, text: sampleText, globalOverrides: previewGlobalOverrides }],
-        time: 1.2,
-        freeze: true,
+        cues: previewCues,
+        time: timeSec,
+        freeze,
         transparent: true,
       })
       ctx.drawImage(overlay, 0, 0)
     }
+  }, [previewDims, renderPreset, previewCues])
 
-    try {
-      return canvas.toDataURL('image/png')
-    } catch (_) {
-      return null
+  // Redraw a settled still whenever paused (style/cue/footage changes, scrubbing).
+  useEffect(() => {
+    if (isPreviewPlaying) return
+    drawPreview(previewTimeRef.current, true)
+  }, [isPreviewPlaying, drawPreview, bgVersion])
+
+  // Playback loop: advance time with the real clock and draw full-animation frames.
+  useEffect(() => {
+    if (!isPreviewPlaying || !isOpen) return
+    if (previewTimeRef.current >= previewDuration - 0.01) previewTimeRef.current = 0
+    let last = performance.now()
+    let acc = 0
+    const tick = (ts) => {
+      const dt = (ts - last) / 1000
+      last = ts
+      let nt = previewTimeRef.current + dt
+      if (nt >= previewDuration) nt = 0
+      previewTimeRef.current = nt
+      drawPreview(nt, false)
+      acc += dt
+      if (acc >= 0.1) { acc = 0; setScrubDisplay(nt) }
+      rafRef.current = requestAnimationFrame(tick)
     }
-  }, [renderPreset, previewGlobalOverrides, renderSettings, draft.cues, bgVersion])
+    rafRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafRef.current)
+  }, [isPreviewPlaying, isOpen, previewDuration, drawPreview])
 
   useEffect(() => {
     if (!isOpen || !asset) return
@@ -468,6 +516,9 @@ function CaptionWorkspace({
     setTextColor(null)
     setGlobalTextStyle(nextPreset?.defaultTextStyle || (nextPreset?.traditional ? 'background' : 'plain'))
     setSubtitlePosition(nextPreset?.subtitlePosition || 'action-safe')
+    setIsPreviewPlaying(false)
+    previewTimeRef.current = 1.2
+    setScrubDisplay(1.2)
     setDraft(createEmptyDraft(asset))
 
     // Timeline scope has no per-asset sidecar. Restore the session cache so the
@@ -1037,21 +1088,57 @@ function CaptionWorkspace({
                 </div>
               </div>
               <div className="flex items-center justify-center rounded-xl bg-black border border-sf-dark-700 overflow-hidden" style={{ maxHeight: 380 }}>
-                {positioningPreviewUrl ? (
-                  <div className="relative" style={{ maxHeight: 380, maxWidth: '100%' }}>
-                    <img
-                      src={positioningPreviewUrl}
-                      alt="Caption positioning preview"
-                      className="block"
-                      style={{ maxHeight: 380, maxWidth: '100%' }}
-                    />
-                    {showTikTokOverlay && (
-                      <TikTokGuideOverlay w={renderSettings.width} h={renderSettings.height} />
-                    )}
-                  </div>
-                ) : (
-                  <div className="py-12 text-xs text-sf-text-muted">Preview unavailable.</div>
-                )}
+                <div className="relative" style={{ maxHeight: 380, maxWidth: '100%' }}>
+                  <canvas
+                    ref={previewCanvasRef}
+                    className="block"
+                    style={{ maxHeight: 380, maxWidth: '100%' }}
+                  />
+                  {showTikTokOverlay && (
+                    <TikTokGuideOverlay w={renderSettings.width} h={renderSettings.height} />
+                  )}
+                </div>
+              </div>
+
+              {/* Play / scrub controls for the live animated preview */}
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsPreviewPlaying((p) => {
+                      const next = !p
+                      if (next && previewTimeRef.current >= previewDuration - 0.01) {
+                        previewTimeRef.current = 0
+                        setScrubDisplay(0)
+                      }
+                      return next
+                    })
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-sf-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-sf-accent/90"
+                  title="Play the caption animation in this window"
+                >
+                  {isPreviewPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  {isPreviewPlaying ? 'Pause' : 'Play'}
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={previewDuration}
+                  step={0.01}
+                  value={Math.min(scrubDisplay, previewDuration)}
+                  onChange={(e) => {
+                    const t = Number(e.target.value)
+                    previewTimeRef.current = t
+                    setScrubDisplay(t)
+                    if (isPreviewPlaying) setIsPreviewPlaying(false)
+                    else drawPreview(t, true)
+                  }}
+                  className="flex-1 accent-sf-accent"
+                  aria-label="Preview scrubber"
+                />
+                <span className="text-[10px] text-sf-text-muted font-mono w-16 text-right">
+                  {scrubDisplay.toFixed(1)}s / {previewDuration.toFixed(1)}s
+                </span>
               </div>
               {showTikTokOverlay && (
                 <div className="mt-2 text-[10px] text-sf-text-muted">
