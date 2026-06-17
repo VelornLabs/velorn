@@ -1336,6 +1336,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       if (!clip) continue
       const asset = getAssetById(clip.assetId)
       if (!asset || asset.type !== 'video' || !asset.url) continue
+      // Skip caption / overlay layers (incl. the timeline caption track being
+      // replaced) — we want the footage underneath them, not the overlay.
+      if (asset.settings?.captionScope || asset.settings?.overlayKind === 'captions' || asset.settings?.source === 'captions') continue
       const trimStart = Number(clip.trimStart) || 0
       const timeScale = clip.sourceTimeScale || (clip.timelineFps && clip.sourceFps
         ? clip.timelineFps / clip.sourceFps
