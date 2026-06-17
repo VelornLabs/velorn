@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Copy, Film, Loader2, Palette, Pause, Play, RefreshCw, RotateCcw, Sparkles, Type, Wand2, X } from 'lucide-react'
+import { Check, Copy, Loader2, Pause, Play, RefreshCw, RotateCcw, Sparkles, Wand2, X } from 'lucide-react'
 import {
   CAPTION_PRESETS,
   DEFAULT_CAPTION_PRESET_ID,
@@ -922,8 +922,7 @@ function CaptionWorkspace({
       <div className="w-full max-w-7xl max-h-[92vh] overflow-hidden rounded-2xl border border-sf-dark-700 bg-sf-dark-950 shadow-[0_30px_60px_rgba(0,0,0,0.35)]">
         <div className="flex items-center justify-between border-b border-sf-dark-700 px-5 py-4">
           <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
-              <Type className="w-4 h-4 text-sf-accent" />
+            <div className="text-sm font-semibold text-sf-text-primary">
               Add Captions
             </div>
             <div className="text-xs text-sf-text-muted mt-1">
@@ -947,8 +946,7 @@ function CaptionWorkspace({
             <section className="rounded-2xl border border-sf-dark-700 bg-sf-dark-900/60 p-4">
               <div className="flex items-center justify-between gap-3 mb-3">
                 <div>
-                  <div className="flex items-center gap-2 text-sm font-medium text-sf-text-primary">
-                    <Film className="w-4 h-4 text-sf-blue" />
+                  <div className="text-sm font-medium text-sf-text-primary">
                     {isTimelineScope ? 'Timeline Audio' : 'Source Video'}
                   </div>
                   <div className="text-xs text-sf-text-muted mt-1">
@@ -973,41 +971,42 @@ function CaptionWorkspace({
                     : (isTimelineScope ? 'Transcribe timeline' : 'Transcribe audio')}
                 </button>
               </div>
-              <div className="aspect-video rounded-xl overflow-hidden bg-black border border-sf-dark-700">
-                {isTimelineScope ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-center px-6">
-                    <Film className="w-7 h-7 text-sf-text-muted" />
-                    <div className="text-sm text-sf-text-primary font-medium">
-                      Captioning the edited timeline
+              {isTimelineScope ? (
+                <div className="flex items-center gap-3 rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-sf-text-primary">Edited timeline</div>
+                    <div className="text-[11px] text-sf-text-muted truncate">
+                      {draft.cues.length > 0
+                        ? `${draft.cues.length} cues transcribed`
+                        : 'Mixed program audio, transcribed with Qwen3-ASR'}
                     </div>
-                    <div className="text-[11px] text-sf-text-muted max-w-sm">
-                      ComfyStudio will mix the video &amp; audio clips you&apos;ve placed
-                      on the timeline, send that audio to Qwen3-ASR, and then drop
-                      the animated overlay onto a brand-new track above your edit.
+                  </div>
+                  {asset?.duration ? (
+                    <div className="ml-auto flex-shrink-0 text-right">
+                      <div className="text-[9px] uppercase tracking-[0.12em] text-sf-text-muted">Length</div>
+                      <div className="text-sm font-mono text-sf-text-primary">{formatSeconds(asset.duration)}</div>
                     </div>
-                    {asset?.duration ? (
-                      <div className="text-[11px] text-sf-text-muted">
-                        Program length: <span className="text-sf-text-primary">{formatSeconds(asset.duration)}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : asset.url ? (
-                  <video
-                    src={asset.url}
-                    controls
-                    className="w-full h-full object-contain bg-black"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-sm text-sf-text-muted">
-                    Preview unavailable for this asset.
-                  </div>
-                )}
-              </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="aspect-video rounded-xl overflow-hidden bg-black border border-sf-dark-700">
+                  {asset.url ? (
+                    <video
+                      src={asset.url}
+                      controls
+                      className="w-full h-full object-contain bg-black"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-sm text-sf-text-muted">
+                      Preview unavailable for this asset.
+                    </div>
+                  )}
+                </div>
+              )}
             </section>
 
             <section className="rounded-2xl border border-sf-dark-700 bg-sf-dark-900/60 p-4">
-              <div className="flex items-center gap-2 text-sm font-medium text-sf-text-primary mb-3">
-                <Sparkles className="w-4 h-4 text-sf-accent" />
+              <div className="text-sm font-medium text-sf-text-primary mb-3">
                 Style Presets
               </div>
               <div className="space-y-2">
@@ -1157,7 +1156,6 @@ function CaptionWorkspace({
 
               <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-950/40 px-3 py-3 space-y-3">
                 <ColorField
-                  icon={Type}
                   label="Text color"
                   hint="Base color for the words."
                   value={effectiveTextColor}
@@ -1167,7 +1165,6 @@ function CaptionWorkspace({
                 />
                 {!selectedPreset?.traditional && selectedPreset?.accentCustomizable && (
                   <ColorField
-                    icon={Palette}
                     label="Accent color"
                     hint="The word currently being spoken."
                     value={accentColor}
