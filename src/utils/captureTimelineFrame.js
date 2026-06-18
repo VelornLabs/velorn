@@ -222,20 +222,33 @@ export async function loadClipSourceAtTime(clip, asset, time) {
   if (!clip || !asset) return null
   try {
     if (clip.type === 'image') {
-      const src = encodeFileUrl(asset.url)
+      const src = asset.url
       if (!src) return null
+      let playableSrc = encodeFileUrl(src)
+      let blobUrl = null
+      if (src.startsWith('file://') || src.startsWith('blob:')) {
+        try {
+          const resp = await fetch(src)
+          if (resp.ok) {
+            const blob = await resp.blob()
+            blobUrl = URL.createObjectURL(blob)
+            playableSrc = blobUrl
+          }
+        } catch (_) { /* fall through to encoded file:// */ }
+      }
       const img = await new Promise((resolve, reject) => {
         const el = new Image()
-        el.crossOrigin = 'anonymous'
         el.onload = () => resolve(el)
         el.onerror = () => reject(new Error('image load failed'))
-        el.src = src
+        el.src = playableSrc
       })
       return {
         element: img,
         width: img.naturalWidth || img.width,
         height: img.naturalHeight || img.height,
-        cleanup: () => {},
+        cleanup: () => {
+          if (blobUrl) try { URL.revokeObjectURL(blobUrl) } catch (_) { /* ignore */ }
+        },
       }
     }
 
@@ -243,13 +256,33 @@ export async function loadClipSourceAtTime(clip, asset, time) {
       const src = asset.url
       if (!src) return null
       const sourceTime = getSourceTimeForClip(clip, time)
-      // file:// URLs from Electron's getFileUrlDirect are NOT URL-encoded,
-      // so a filename with non-ASCII characters (e.g. "▶️_00007.mp4")
-      // produces a src the <video> element can't decode — onerror fires
-      // with no further detail. Encode the path components before setting src.
-      const safeSrc = encodeFileUrl(src)
+      // Percent-encoding the file:// URL helps for paths with non-ASCII
+      // characters but Chromium can still refuse to load them (the issue
+      // is opaque — onerror just says "video decode failed" with no
+      // network/decoder code). Fetch the file into a Blob and create a
+      // blob: URL — that always works regardless of filename characters,
+      // CORS policy, or path encoding. The cost is one in-memory copy of
+      // the file per capture, which is fine for gap fill (one-off).
+      let playableSrc = encodeFileUrl(src)
+      let blobUrl = null
+      if (src.startsWith('file://') || src.startsWith('blob:')) {
+        try {
+          const resp = await fetch(src)
+          if (resp.ok) {
+            const blob = await resp.blob()
+            blobUrl = URL.createObjectURL(blob)
+            playableSrc = blobUrl
+            console.log('[loadClipSourceAtTime] video using blob URL', {
+              size: blob.size,
+              mime: blob.type,
+            })
+          }
+        } catch (err) {
+          console.log('[loadClipSourceAtTime] blob fallback fetch failed, using encoded src', err?.message || err)
+        }
+      }
       console.log('[loadClipSourceAtTime] video', {
-        srcPrefix: String(safeSrc).slice(0, 80),
+        srcPrefix: String(playableSrc).slice(0, 80),
         sourceTime,
         duration: clip.duration,
         timelineFps: clip.timelineFps,
@@ -257,32 +290,37 @@ export async function loadClipSourceAtTime(clip, asset, time) {
         trimEnd: clip.trimEnd,
       })
       const video = document.createElement('video')
-      video.crossOrigin = 'anonymous'
       video.muted = true
       video.preload = 'auto'
-      video.src = safeSrc
-      const result = await new Promise((resolve, reject) => {
-        let settled = false
-        const finish = (ok, err) => {
-          if (settled) return
-          settled = true
-          ok ? resolve() : reject(err)
-        }
-        video.onloadedmetadata = () => {
-          try {
-            video.currentTime = Math.min(sourceTime, Math.max(0, (video.duration || 0) - 0.01))
-          } catch (err) {
-            finish(false, err)
+      video.src = playableSrc
+      try {
+        await new Promise((resolve, reject) => {
+          let settled = false
+          const finish = (ok, err) => {
+            if (settled) return
+            settled = true
+            ok ? resolve() : reject(err)
           }
-        }
-        video.onseeked = () => finish(true)
-        video.onerror = () => finish(false, new Error('video decode failed'))
-        // Hard ceiling so a hung load never stalls a save.
-        setTimeout(() => finish(false, new Error('video seek timeout')), 4000)
-      }).catch((err) => {
-        console.log('[loadClipSourceAtTime] video load failed', err?.message || err)
+          video.onloadedmetadata = () => {
+            try {
+              video.currentTime = Math.min(sourceTime, Math.max(0, (video.duration || 0) - 0.01))
+            } catch (err) {
+              finish(false, err)
+            }
+          }
+          video.onseeked = () => finish(true)
+          video.onerror = () => {
+            const code = video.error?.code
+            console.log('[loadClipSourceAtTime] video.onerror', { code, message: video.error?.message })
+            finish(false, new Error('video decode failed'))
+          }
+          setTimeout(() => finish(false, new Error('video seek timeout')), 8000)
+        })
+      } catch (err) {
+        console.log('[loadClipSourceAtTime] video load failed', err?.message || err, { code: video.error?.code })
+        if (blobUrl) try { URL.revokeObjectURL(blobUrl) } catch (_) { /* ignore */ }
         throw err
-      })
+      }
       console.log('[loadClipSourceAtTime] video ok', { videoWidth: video.videoWidth, videoHeight: video.videoHeight })
       return {
         element: video,
@@ -290,6 +328,7 @@ export async function loadClipSourceAtTime(clip, asset, time) {
         height: video.videoHeight,
         cleanup: () => {
           try { video.removeAttribute('src'); video.load() } catch (_) { /* ignore */ }
+          if (blobUrl) try { URL.revokeObjectURL(blobUrl) } catch (_) { /* ignore */ }
         },
       }
     }
