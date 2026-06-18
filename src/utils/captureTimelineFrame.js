@@ -257,3 +257,101 @@ export async function loadClipSourceAtTime(clip, asset, time) {
     return null
   }
 }
+
+/**
+ * Capture a single frame from a SINGLE clip at a given timeline time.
+ *
+ * Unlike captureTimelineFrameAt (which composites the full timeline),
+ * this only loads the named clip's source and draws it to the canvas.
+ * Use this for FLF2V gap-fill where we want one frame from the clip
+ * immediately before / after the gap.
+ *
+ * @param {object} clip   Clip record (with type, startTime, assetId, ...)
+ * @param {object} asset  Asset record (with url)
+ * @param {number} time   Timeline time to seek to (seconds)
+ * @returns Promise<{ blobUrl, file } | null>
+ */
+export async function captureSingleClipFrame(clip, asset, time) {
+  if (!clip || !asset?.url) return null
+  try {
+    const projectState = useProjectStore.getState?.()
+    const settings = projectState?.getCurrentTimelineSettings?.()
+      || projectState?.currentProject?.settings
+      || {}
+    const width = Math.max(16, Math.min(7680, Number(settings.width) || 1920))
+    const height = Math.max(16, Math.min(4320, Number(settings.height) || 1080))
+
+    const loaded = await loadClipSourceAtTime(clip, asset, time)
+    if (!loaded?.element) return null
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d', { alpha: false })
+      if (!ctx) return null
+      ctx.fillStyle = '#000000'
+      ctx.fillRect(0, 0, width, height)
+      ctx.drawImage(loaded.element, 0, 0, width, height)
+      const blob = await new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/png'))
+      if (!blob) return null
+      const file = new File([blob], `gapfill_frame_${Date.now()}.png`, { type: 'image/png' })
+      const blobUrl = URL.createObjectURL(blob)
+      return { blobUrl, file }
+    } finally {
+      try { loaded.cleanup?.() } catch (_) { /* ignore */ }
+    }
+  } catch (err) {
+    console.warn('[captureSingleClipFrame] failed:', err?.message || err)
+    return null
+  }
+}
+
+/**
+ * Capture the last frame of the before-clip and the first frame of the
+ * after-clip for an FLF2V gap fill.
+ *
+ * Each capture seeks STRICTLY INSIDE the source clip's [start, start+duration]
+ * range, so we never depend on getActiveClipsAtTime returning the clip at
+ * a point past its edge (the bug that broke gap #2 fill: the composite
+ * renderTimelineCompositeStill returned false because no clip was active
+ * at firstFrameTime = gap.endTime + eps).
+ *
+ * @param {object} beforeClip  { clip, track } — clip immediately before the gap
+ * @param {object} afterClip   { clip, track } — clip immediately after the gap
+ * @returns Promise<{ start: {blobUrl, file} | null, end: {blobUrl, file} | null }>
+ */
+export async function captureGapBoundaryFrames(beforeClip, afterClip) {
+  const fps = Math.max(
+    1,
+    Number(beforeClip?.clip?.timelineFps) || Number(afterClip?.clip?.timelineFps) || 24
+  )
+  const eps = 1 / fps
+
+  let startResult = null
+  let endResult = null
+
+  if (beforeClip?.clip) {
+    const assetsState = useAssetsStore.getState()
+    const asset = assetsState?.getAssetById?.(beforeClip.clip.assetId)
+    if (asset?.url) {
+      const start = Number(beforeClip.clip.startTime) || 0
+      const dur = Number(beforeClip.clip.duration) || 0
+      // Seek to last frame (start + duration - eps), but never before start.
+      const t = Math.max(start + eps, start + dur - eps)
+      startResult = await captureSingleClipFrame(beforeClip.clip, asset, t)
+    }
+  }
+
+  if (afterClip?.clip) {
+    const assetsState = useAssetsStore.getState()
+    const asset = assetsState?.getAssetById?.(afterClip.clip.assetId)
+    if (asset?.url) {
+      const start = Number(afterClip.clip.startTime) || 0
+      // Seek to first frame after the clip's start edge.
+      const t = start + eps
+      endResult = await captureSingleClipFrame(afterClip.clip, asset, t)
+    }
+  }
+
+  return { start: startResult, end: endResult }
+}

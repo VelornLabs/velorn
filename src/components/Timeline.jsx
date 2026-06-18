@@ -39,7 +39,7 @@ import {
 } from '../services/editorHotkeys'
 import MasterAudioMeter from './AudioMeter'
 import { useFrameForAIStore } from '../stores/frameForAIStore'
-import { captureTimelineFrameAt } from '../utils/captureTimelineFrame'
+import { captureGapBoundaryFrames, captureTimelineFrameAt, getTopmostVideoOrImageClipAtTime } from '../utils/captureTimelineFrame'
 
 const TRANSITION_DEFAULT_DURATION_KEY = 'comfystudio-transition-default-duration-frames'
 const DEFAULT_WAVEFORM_SAMPLES = 8192
@@ -964,20 +964,44 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     console.log('[FillGap FLF2V] starting for gap', { start: gap.startTime, end: gap.endTime, trackId: gap.trackId })
     setGapFillBusy(true)
     try {
-      const fps = Number(timelineFps) > 0 ? Number(timelineFps) : 24
-      const EPS = 1 / fps
-      const lastFrameTime = Math.max(0, gap.startTime - EPS)
-      const firstFrameTime = gap.endTime + EPS
-      const [startResult, endResult] = await Promise.all([
-        captureTimelineFrameAt(lastFrameTime),
-        captureTimelineFrameAt(firstFrameTime),
-      ])
+      // Find the before / after clips on the same track. We can't use
+      // captureTimelineFrameAt (composite renderer) here because the time
+      // one frame past the gap's edge lands outside the clip range and
+      // getActiveClipsAtTime returns empty there, making the composite
+      // renderer bail. Instead, load each neighbor clip's source directly
+      // and seek to a frame STRICTLY inside its [start, start+duration]
+      // range — robust against edge cases.
+      const allClips = useTimelineStore.getState().clips || []
+      const trackClips = allClips
+        .filter((c) => c.trackId === gap.trackId)
+        .sort((a, b) => a.startTime - b.startTime)
+      const beforeClipEntry = [...trackClips].reverse().find(
+        (c) => (c.startTime + (c.duration || 0)) <= gap.startTime + 0.001
+      )
+      const afterClipEntry = trackClips.find(
+        (c) => (c.startTime || 0) >= gap.endTime - 0.001
+      )
+      const beforeNeighbor = beforeClipEntry
+        ? { clip: beforeClipEntry, track: { id: beforeClipEntry.trackId, type: 'video' } }
+        : null
+      const afterNeighbor = afterClipEntry
+        ? { clip: afterClipEntry, track: { id: afterClipEntry.trackId, type: 'video' } }
+        : null
+      if (!beforeNeighbor || !afterNeighbor) {
+        console.warn('[FillGap FLF2V] could not locate before/after neighbors on track', {
+          trackId: gap.trackId,
+          beforeClip: !!beforeClipEntry,
+          afterClip: !!afterClipEntry,
+        })
+        return
+      }
+      const { start: startResult, end: endResult } = await captureGapBoundaryFrames(beforeNeighbor, afterNeighbor)
       if (!startResult || !endResult) {
         console.warn('[FillGap FLF2V] Failed to capture one or both gap boundary frames', {
-          lastFrameTime,
-          firstFrameTime,
           startResult: !!startResult,
           endResult: !!endResult,
+          beforeClipId: beforeNeighbor.clip.id,
+          afterClipId: afterNeighbor.clip.id,
         })
         return
       }
