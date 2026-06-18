@@ -92,6 +92,19 @@ export default function Flf2vDraftCard({
     pollStopRef.current = true
   }, [])
 
+  // Reset per-job UI state whenever a fresh frameForAI payload arrives
+  // (e.g. user right-clicks a second gap after a successful first fill).
+  // Without this the card kept the previous run's stage/lastResult/error
+  // and the second attempt looked like a no-op.
+  useEffect(() => {
+    setStage(null)
+    setErrorMessage(null)
+    setProgressPct(0)
+    setLastResult(null)
+    // Also drop the cached busy guard so a leftover true doesn't lock out
+    // the new run (pollStopRef guards the in-flight poll loop, not the UI).
+  }, [frameForAI?.startFrame?.blobUrl, frameForAI?.endFrame?.blobUrl])
+
   function handleSelectProfile(profile) {
     setActiveProfile(profile)
     if (profile.id.startsWith('imported:')) {
