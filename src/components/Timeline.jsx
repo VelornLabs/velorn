@@ -627,6 +627,10 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   // Gap context menu state (for the "Fill Gap (FLF2V)" action on the
   // empty space between two clips). Mirrors clipContextMenu shape: { x, y, gap }.
   const [gapContextMenu, setGapContextMenu] = useState(null) // { x, y, gap }
+  // Mirror of gapContextMenu the handler reads from, so it always sees the
+  // latest value regardless of when its useCallback closure was created.
+  const gapContextMenuStateRef = useRef(null)
+  useEffect(() => { gapContextMenuStateRef.current = gapContextMenu }, [gapContextMenu])
   const [gapFillBusy, setGapFillBusy] = useState(false)
   const gapContextMenuRef = useRef(null)
   const gapContextMenuAnchor = useMemo(
@@ -943,10 +947,21 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   }, [gapContextMenu])
 
   const handleFillGapFlf2v = useCallback(async () => {
-    if (gapFillBusy) return
-    const menuState = gapContextMenu
+    // Always read menuState from a state-ref so we can't be running a stale
+    // closure (this used to capture gapContextMenu directly, which left the
+    // second gap's click reading the previous gap or null after a render
+    // hiccup — gapContextMenuRef points at the DOM node, not the state).
+    const menuState = gapContextMenuStateRef.current
     const gap = menuState?.gap
-    if (!gap) return
+    if (gapFillBusy) {
+      console.log('[FillGap FLF2V] click ignored — already running')
+      return
+    }
+    if (!gap) {
+      console.warn('[FillGap FLF2V] click with no gap in context menu', { menuState })
+      return
+    }
+    console.log('[FillGap FLF2V] starting for gap', { start: gap.startTime, end: gap.endTime, trackId: gap.trackId })
     setGapFillBusy(true)
     try {
       const fps = Number(timelineFps) > 0 ? Number(timelineFps) : 24
@@ -958,7 +973,12 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         captureTimelineFrameAt(firstFrameTime),
       ])
       if (!startResult || !endResult) {
-        console.warn('[FillGap FLF2V] Failed to capture one or both gap boundary frames')
+        console.warn('[FillGap FLF2V] Failed to capture one or both gap boundary frames', {
+          lastFrameTime,
+          firstFrameTime,
+          startResult: !!startResult,
+          endResult: !!endResult,
+        })
         return
       }
       useFrameForAIStore.getState().setFrame({
@@ -978,7 +998,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       setGapFillBusy(false)
       setGapContextMenu(null)
     }
-  }, [gapContextMenu, gapFillBusy, timelineFps])
+  }, [gapFillBusy, timelineFps])
   const clipContextSelectionIds = useMemo(() => (
     clipContextMenu ? selectedClipIds : []
   ), [clipContextMenu, selectedClipIds])
