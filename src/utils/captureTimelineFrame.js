@@ -10,6 +10,31 @@ import {
 } from '../services/exporter'
 
 /**
+ * Encode a file:// URL so the <video> / <img> element can decode it.
+ *
+ * Electron's getFileUrlDirect returns the absolute path with literal
+ * characters — a filename like `▶️_00007.mp4` produces a src the browser
+ * rejects with no further error detail (just "video decode failed").
+ * We percent-encode every path segment after the leading `file://` so
+ * the URL is safe to set on a media element.
+ */
+export function encodeFileUrl(url) {
+  if (!url || typeof url !== 'string') return url
+  if (!url.startsWith('file://')) return url
+  // Strip the prefix, split on /, encode each segment, re-join.
+  // file:///path/to/file → prefix = 'file:///', rest = ['path','to','file']
+  const rest = url.slice('file://'.length)
+  const parts = rest.split('/').map((seg) => {
+    try {
+      return encodeURIComponent(decodeURIComponent(seg))
+    } catch (_) {
+      return seg
+    }
+  })
+  return 'file://' + parts.join('/')
+}
+
+/**
  * Get the topmost video or image clip at the given time (for capture).
  * Returns { clip, track } or null.
  */
@@ -197,7 +222,7 @@ export async function loadClipSourceAtTime(clip, asset, time) {
   if (!clip || !asset) return null
   try {
     if (clip.type === 'image') {
-      const src = asset.url
+      const src = encodeFileUrl(asset.url)
       if (!src) return null
       const img = await new Promise((resolve, reject) => {
         const el = new Image()
@@ -218,12 +243,25 @@ export async function loadClipSourceAtTime(clip, asset, time) {
       const src = asset.url
       if (!src) return null
       const sourceTime = getSourceTimeForClip(clip, time)
+      // file:// URLs from Electron's getFileUrlDirect are NOT URL-encoded,
+      // so a filename with non-ASCII characters (e.g. "▶️_00007.mp4")
+      // produces a src the <video> element can't decode — onerror fires
+      // with no further detail. Encode the path components before setting src.
+      const safeSrc = encodeFileUrl(src)
+      console.log('[loadClipSourceAtTime] video', {
+        srcPrefix: String(safeSrc).slice(0, 80),
+        sourceTime,
+        duration: clip.duration,
+        timelineFps: clip.timelineFps,
+        trimStart: clip.trimStart,
+        trimEnd: clip.trimEnd,
+      })
       const video = document.createElement('video')
       video.crossOrigin = 'anonymous'
       video.muted = true
       video.preload = 'auto'
-      video.src = src
-      await new Promise((resolve, reject) => {
+      video.src = safeSrc
+      const result = await new Promise((resolve, reject) => {
         let settled = false
         const finish = (ok, err) => {
           if (settled) return
@@ -241,7 +279,11 @@ export async function loadClipSourceAtTime(clip, asset, time) {
         video.onerror = () => finish(false, new Error('video decode failed'))
         // Hard ceiling so a hung load never stalls a save.
         setTimeout(() => finish(false, new Error('video seek timeout')), 4000)
+      }).catch((err) => {
+        console.log('[loadClipSourceAtTime] video load failed', err?.message || err)
+        throw err
       })
+      console.log('[loadClipSourceAtTime] video ok', { videoWidth: video.videoWidth, videoHeight: video.videoHeight })
       return {
         element: video,
         width: video.videoWidth,
@@ -273,6 +315,12 @@ export async function loadClipSourceAtTime(clip, asset, time) {
  */
 export async function captureSingleClipFrame(clip, asset, time) {
   if (!clip || !asset?.url) return null
+  console.log('[captureSingleClipFrame] starting', {
+    clipType: clip.type,
+    clipId: clip?.id,
+    time,
+    urlPrefix: String(asset.url).slice(0, 80),
+  })
   try {
     const projectState = useProjectStore.getState?.()
     const settings = projectState?.getCurrentTimelineSettings?.()
@@ -281,7 +329,14 @@ export async function captureSingleClipFrame(clip, asset, time) {
     const width = Math.max(16, Math.min(7680, Number(settings.width) || 1920))
     const height = Math.max(16, Math.min(4320, Number(settings.height) || 1080))
 
-    const loaded = await loadClipSourceAtTime(clip, asset, time)
+    let loaded
+    try {
+      loaded = await loadClipSourceAtTime(clip, asset, time)
+    } catch (innerErr) {
+      console.log('[captureSingleClipFrame] loadClipSourceAtTime threw', innerErr?.message || innerErr)
+      throw innerErr
+    }
+    console.log('[captureSingleClipFrame] loaded', { hasLoaded: !!loaded, hasElement: !!(loaded && loaded.element) })
     if (!loaded?.element) return null
     try {
       const canvas = document.createElement('canvas')
@@ -333,24 +388,46 @@ export async function captureGapBoundaryFrames(beforeClip, afterClip) {
   if (beforeClip?.clip) {
     const assetsState = useAssetsStore.getState()
     const asset = assetsState?.getAssetById?.(beforeClip.clip.assetId)
+    console.log('[FillGap FLF2V] before-clip capture', {
+      clipId: beforeClip.clip.id,
+      assetId: beforeClip.clip.assetId,
+      hasAsset: !!asset,
+      hasUrl: !!asset?.url,
+      start: beforeClip.clip.startTime,
+      duration: beforeClip.clip.duration,
+    })
     if (asset?.url) {
       const start = Number(beforeClip.clip.startTime) || 0
       const dur = Number(beforeClip.clip.duration) || 0
       // Seek to last frame (start + duration - eps), but never before start.
       const t = Math.max(start + eps, start + dur - eps)
       startResult = await captureSingleClipFrame(beforeClip.clip, asset, t)
+      console.log('[FillGap FLF2V] before-clip capture result', { ok: !!startResult, t })
     }
+  } else {
+    console.log('[FillGap FLF2V] no before-clip entry')
   }
 
   if (afterClip?.clip) {
     const assetsState = useAssetsStore.getState()
     const asset = assetsState?.getAssetById?.(afterClip.clip.assetId)
+    console.log('[FillGap FLF2V] after-clip capture', {
+      clipId: afterClip.clip.id,
+      assetId: afterClip.clip.assetId,
+      hasAsset: !!asset,
+      hasUrl: !!asset?.url,
+      start: afterClip.clip.startTime,
+      duration: afterClip.clip.duration,
+    })
     if (asset?.url) {
       const start = Number(afterClip.clip.startTime) || 0
       // Seek to first frame after the clip's start edge.
       const t = start + eps
       endResult = await captureSingleClipFrame(afterClip.clip, asset, t)
+      console.log('[FillGap FLF2V] after-clip capture result', { ok: !!endResult, t })
     }
+  } else {
+    console.log('[FillGap FLF2V] no after-clip entry')
   }
 
   return { start: startResult, end: endResult }
