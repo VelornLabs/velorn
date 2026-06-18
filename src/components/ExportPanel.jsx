@@ -124,6 +124,8 @@ const createDefaultExportSettings = (filename) => ({
   audioBitrateKbps: 192,
   audioSampleRate: 44100,
   audioChannels: 2,
+  normalizeAudio: false,
+  loudnessTarget: -14,
   useProxyMedia: false,
   useDirectFramePipe: true,
 })
@@ -824,6 +826,8 @@ function ExportPanel() {
       audioBitrateKbps: Number(jobSettings.audioBitrateKbps),
       audioSampleRate: Number(jobSettings.audioSampleRate),
       audioChannels: Number(jobSettings.audioChannels),
+      normalizeAudio: jobSettings.includeAudio && !!jobSettings.normalizeAudio,
+      loudnessTarget: Number(jobSettings.loudnessTarget) || -14,
       useCachedRenders: false,
       useProxyMedia: jobSettings.useProxyMedia,
       fastSeek: false,
@@ -1408,6 +1412,35 @@ function ExportPanel() {
                         ))}
                       </select>
                     </div>
+
+                    <div className="col-span-2">
+                      <button
+                        onClick={() => handleSettingChange('normalizeAudio', !settings.normalizeAudio)}
+                        className={`px-2 py-1 text-xs rounded border transition-colors ${
+                          settings.normalizeAudio
+                            ? 'bg-sf-accent text-white border-sf-accent'
+                            : 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600'
+                        }`}
+                      >
+                        Normalize Loudness
+                      </button>
+                    </div>
+
+                    {settings.normalizeAudio ? (
+                      <div className="col-span-2">
+                        <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">Loudness Target</label>
+                        <select
+                          value={settings.loudnessTarget}
+                          onChange={(e) => handleSettingChange('loudnessTarget', Number(e.target.value))}
+                          className="mt-1 w-full bg-sf-dark-800 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                        >
+                          <option value={-14}>Social / Streaming (-14 LUFS)</option>
+                          <option value={-16}>Podcast / Web (-16 LUFS)</option>
+                          <option value={-23}>Broadcast (-23 LUFS)</option>
+                        </select>
+                        <div className="mt-1 text-[10px] text-sf-text-muted">EBU R128 loudness, true peak -1.5 dB.</div>
+                      </div>
+                    ) : null}
                   </>
                 ) : (
                   <div className="col-span-2 text-[10px] text-sf-text-muted">

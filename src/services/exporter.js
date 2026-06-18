@@ -774,6 +774,8 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     audioBitrateKbps = 192,
     audioSampleRate = DEFAULT_SAMPLE_RATE,
     audioChannels = 2,
+    normalizeAudio = false,
+    loudnessTarget = -14,
     useCachedRenders = true,
     useProxyMedia = false,
     fastSeek = true,
@@ -1894,6 +1896,8 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         audioCodec,
         audioBitrateKbps,
         audioSampleRate,
+        normalizeAudio,
+        loudnessTarget,
       })
       if (!muxResult?.success) {
         throw new Error(muxResult?.error || 'Failed to mux audio onto fast-pipe export.')
@@ -1925,6 +1929,8 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       keyframeInterval,
       audioBitrateKbps,
       audioSampleRate,
+      normalizeAudio,
+      loudnessTarget,
     })
   }
   

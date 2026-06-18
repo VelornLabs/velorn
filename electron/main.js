@@ -4232,7 +4232,17 @@ function appendExportVideoEncoderArgs(args, options = {}) {
   }
 
   if (keyframeInterval && Number(keyframeInterval) > 0) {
-    args.push('-g', String(keyframeInterval), '-keyint_min', String(keyframeInterval))
+    let gop = Math.round(Number(keyframeInterval))
+    // NVENC refuses to initialize unless GOP length > B-frames + 1. With a small
+    // keyframe interval and the default B-frame count this aborts the whole
+    // export, so cap B-frames to fit (and floor the GOP at 2).
+    const usesNvenc = encoderUsed === 'hevc_nvenc' || encoderUsed === 'h264_nvenc'
+    if (usesNvenc) {
+      gop = Math.max(2, gop)
+      const bframes = Math.max(0, Math.min(3, gop - 2))
+      args.push('-bf', String(bframes))
+    }
+    args.push('-g', String(gop), '-keyint_min', String(gop))
   }
 
   if (format === 'mp4') {
@@ -4248,7 +4258,17 @@ function appendExportAudioEncoderArgs(args, options = {}) {
     audioCodec = 'aac',
     audioBitrateKbps = 192,
     audioSampleRate = 44100,
+    normalizeAudio = false,
+    loudnessTarget = -14,
   } = options
+
+  // EBU R128 loudness normalization to a consistent integrated loudness, so
+  // exports land at an appropriate, platform-friendly level. -14 LUFS is the
+  // common social/streaming target; clamped to a sane range.
+  if (normalizeAudio) {
+    const target = Math.max(-30, Math.min(-9, Math.round(Number(loudnessTarget) || -14)))
+    args.push('-af', `loudnorm=I=${target}:TP=-1.5:LRA=11`)
+  }
 
   const useOpus = format === 'webm' || audioCodec === 'opus'
   args.push('-c:a', useOpus ? 'libopus' : 'aac')
@@ -4292,7 +4312,11 @@ ipcMain.handle('export:encodeVideo', async (event, options = {}) => {
   const encoderUsed = appendExportVideoEncoderArgs(args, options)
 
   if (audioPath) {
-    appendExportAudioEncoderArgs(args, { format, audioCodec, audioBitrateKbps, audioSampleRate })
+    appendExportAudioEncoderArgs(args, {
+      format, audioCodec, audioBitrateKbps, audioSampleRate,
+      normalizeAudio: options.normalizeAudio,
+      loudnessTarget: options.loudnessTarget,
+    })
   }
 
   args.push(outputPath)
@@ -4502,7 +4526,11 @@ ipcMain.handle('export:muxAudioVideo', async (event, options = {}) => {
   args.push('-map', '0:v:0')
   if (audioPath) {
     args.push('-map', '1:a:0', '-c:v', 'copy')
-    appendExportAudioEncoderArgs(args, { format, audioCodec, audioBitrateKbps, audioSampleRate })
+    appendExportAudioEncoderArgs(args, {
+      format, audioCodec, audioBitrateKbps, audioSampleRate,
+      normalizeAudio: options.normalizeAudio,
+      loudnessTarget: options.loudnessTarget,
+    })
   } else {
     args.push('-c:v', 'copy')
   }
