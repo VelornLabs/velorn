@@ -71,6 +71,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<{success: boolean, data?: ArrayBuffer, error?: string}>}
    */
   readFileAsBuffer: (filePath) => ipcRenderer.invoke('fs:readFileAsBuffer', filePath),
+
+  /**
+   * Extract a single frame from a video file via ffmpeg-static. Returns
+   * PNG bytes as an ArrayBuffer in { success, data } or { success: false, error }.
+   * Used as a fallback when the renderer's <video> element can't decode
+   * the file (e.g. HEVC on Linux Chromium).
+   * @param {{filePath: string, timeSeconds?: number, width?: number, height?: number}} opts
+   * @returns {Promise<{success: boolean, data?: ArrayBuffer, error?: string}>}
+   */
+  extractVideoFrame: (opts) => ipcRenderer.invoke('media:extractFrame', opts),
   
   /**
    * Write a file

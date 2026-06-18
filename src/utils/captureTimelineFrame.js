@@ -35,6 +35,21 @@ export function encodeFileUrl(url) {
 }
 
 /**
+ * Convert a file:// URL back to an absolute filesystem path.
+ * Inverse of encodeFileUrl — used so we can hand a real path to
+ * ffmpeg-static via IPC for HEVC/other-codec fallback.
+ */
+export function filePathFromFileUrl(url) {
+  if (!url || typeof url !== 'string') return null
+  if (!url.startsWith('file://')) return null
+  const rest = url.slice('file://'.length)
+  // Decode each segment (inverse of encodeFileUrl's split+encodeURIComponent)
+  return '/' + rest.split('/').map((seg) => {
+    try { return decodeURIComponent(seg) } catch (_) { return seg }
+  }).join('/')
+}
+
+/**
  * Get the topmost video or image clip at the given time (for capture).
  * Returns { clip, track } or null.
  */
@@ -319,6 +334,53 @@ export async function loadClipSourceAtTime(clip, asset, time) {
       } catch (err) {
         console.log('[loadClipSourceAtTime] video load failed', err?.message || err, { code: video.error?.code })
         if (blobUrl) try { URL.revokeObjectURL(blobUrl) } catch (_) { /* ignore */ }
+
+        // Fallback: if the renderer can't decode the file (Chromium has no
+        // H.265/HEVC decoder on Linux), use ffmpeg-static via the main
+        // process to extract a single frame as PNG. Works for any codec.
+        if (video.error?.code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */
+            || video.error?.code === 3 /* MEDIA_ERR_DECODE */
+            || /DEMUXER_ERROR|no supported streams/i.test(video.error?.message || '')) {
+          const filePath = src.startsWith('file://') ? filePathFromFileUrl(src) : null
+          if (filePath && window.electronAPI?.extractVideoFrame) {
+            console.log('[loadClipSourceAtTime] falling back to ffmpeg IPC', { filePath, sourceTime })
+            try {
+              const projectState = useProjectStore.getState?.()
+              const settings = projectState?.getCurrentTimelineSettings?.()
+                || projectState?.currentProject?.settings || {}
+              const width = Math.max(16, Math.min(7680, Number(settings.width) || 1920))
+              const height = Math.max(16, Math.min(4320, Number(settings.height) || 1080))
+              const ipcResult = await window.electronAPI.extractVideoFrame({
+                filePath,
+                timeSeconds: sourceTime,
+                width,
+                height,
+              })
+              if (ipcResult?.success && ipcResult.data) {
+                const pngBlob = new Blob([ipcResult.data], { type: 'image/png' })
+                const pngUrl = URL.createObjectURL(pngBlob)
+                const img = await new Promise((resolve, reject) => {
+                  const el = new Image()
+                  el.onload = () => resolve(el)
+                  el.onerror = () => reject(new Error('ffmpeg frame load failed'))
+                  el.src = pngUrl
+                })
+                console.log('[loadClipSourceAtTime] ffmpeg fallback ok', {
+                  width: img.naturalWidth, height: img.naturalHeight,
+                })
+                return {
+                  element: img,
+                  width: img.naturalWidth,
+                  height: img.naturalHeight,
+                  cleanup: () => { try { URL.revokeObjectURL(pngUrl) } catch (_) {} },
+                }
+              }
+              console.log('[loadClipSourceAtTime] ffmpeg IPC failed', ipcResult?.error)
+            } catch (ffErr) {
+              console.log('[loadClipSourceAtTime] ffmpeg fallback error', ffErr?.message || ffErr)
+            }
+          }
+        }
         throw err
       }
       console.log('[loadClipSourceAtTime] video ok', { videoWidth: video.videoWidth, videoHeight: video.videoHeight })
