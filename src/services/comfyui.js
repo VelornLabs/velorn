@@ -1427,6 +1427,74 @@ export function modifyWAN22Workflow(workflow, options = {}) {
 }
 
 /**
+ * Workflow modifier for WAN 2.2 14B First-Last-Frame-to-Video.
+ *
+ * Mirrors modifyWAN22Workflow but the central node is WanFirstLastFrameToVideo
+ * (which takes `start_image` and `end_image` as two io.Image inputs) and the
+ * input images come from the two LoadImage nodes `97` (start) and `971` (end).
+ *
+ * `startImageFilename` / `endImageFilename` should be the filenames returned
+ * by comfyui.uploadFile() — ComfyUI then resolves them to actual inputs.
+ */
+export function modifyWan22FLF2VWorkflow(workflow, options = {}) {
+  const {
+    prompt = '',
+    negativePrompt = '',
+    startImageFilename = '',
+    endImageFilename = '',
+    width = 800,
+    height = 1424,
+    frames = 81,
+    fps = 16,
+    seed = Math.floor(Math.random() * 1000000000000),
+    filenamePrefix = 'video/ComfyStudio_wan22_flf2v',
+  } = options
+
+  const modified = JSON.parse(JSON.stringify(workflow))
+
+  // Positive prompt (node 93)
+  if (modified['93']) {
+    modified['93'].inputs.text = prompt
+  }
+  // Negative prompt (node 89)
+  if (modified['89']) {
+    modified['89'].inputs.text = negativePrompt
+  }
+  // Start frame input (LoadImage node 97)
+  if (modified['97']) {
+    if (startImageFilename) modified['97'].inputs.image = startImageFilename
+  }
+  // End frame input (LoadImage node 971)
+  if (modified['971']) {
+    if (endImageFilename) modified['971'].inputs.image = endImageFilename
+  }
+  // Resolution + frame count (node 98 - WanFirstLastFrameToVideo)
+  if (modified['98']) {
+    modified['98'].inputs.width = width
+    modified['98'].inputs.height = height
+    modified['98'].inputs.length = frames
+  }
+  // FPS (node 94 - CreateVideo)
+  if (modified['94']) {
+    modified['94'].inputs.fps = fps
+  }
+  // Seed (node 86 - KSamplerAdvanced 1st pass)
+  if (modified['86']) {
+    modified['86'].inputs.noise_seed = seed
+  }
+  // Seed (node 85 - KSamplerAdvanced 2nd pass)
+  if (modified['85']) {
+    modified['85'].inputs.noise_seed = seed
+  }
+  // Output prefix (node 108)
+  if (modified['108']) {
+    modified['108'].inputs.filename_prefix = filenamePrefix
+  }
+
+  return modified
+}
+
+/**
  * Workflow modifier for LTX 2.3 Image-to-Video
  */
 export function modifyLTX23I2VWorkflow(workflow, options = {}) {

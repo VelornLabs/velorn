@@ -38,6 +38,8 @@ import {
   matchEditorHotkey,
 } from '../services/editorHotkeys'
 import MasterAudioMeter from './AudioMeter'
+import { useFrameForAIStore } from '../stores/frameForAIStore'
+import { captureTimelineFrameAt } from '../utils/captureTimelineFrame'
 
 const TRANSITION_DEFAULT_DURATION_KEY = 'comfystudio-transition-default-duration-frames'
 const DEFAULT_WAVEFORM_SAMPLES = 8192
@@ -621,6 +623,20 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     clipContextMenuAnchor,
     clipContextMenuRef,
   )
+
+  // Gap context menu state (for the "Fill Gap (FLF2V)" action on the
+  // empty space between two clips). Mirrors clipContextMenu shape: { x, y, gap }.
+  const [gapContextMenu, setGapContextMenu] = useState(null) // { x, y, gap }
+  const [gapFillBusy, setGapFillBusy] = useState(false)
+  const gapContextMenuRef = useRef(null)
+  const gapContextMenuAnchor = useMemo(
+    () => (gapContextMenu ? { x: gapContextMenu.x, y: gapContextMenu.y } : null),
+    [gapContextMenu?.x, gapContextMenu?.y]
+  )
+  const gapContextMenuPosition = useViewportClampedPosition(
+    gapContextMenuAnchor,
+    gapContextMenuRef,
+  )
   
   // Track rename state
   const [renamingTrackId, setRenamingTrackId] = useState(null)
@@ -887,7 +903,82 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     e.preventDefault()
     e.stopPropagation()
     selectGap(gap)
+    // Open the gap context menu so the user can launch "Fill Gap (FLF2V)".
+    setGapContextMenu({ x: e.clientX, y: e.clientY, gap })
   }, [getTimeFromMouseEvent, getTrackGapAtTime, selectGap])
+
+  // Determine whether the gap has a usable video/image neighbor on each side
+  // (an audio-only gap should not show the Fill Gap action).
+  const isGapFillable = useCallback((gap) => {
+    if (!gap) return false
+    const trackClips = clips
+      .filter((clip) => clip.trackId === gap.trackId)
+      .sort((a, b) => a.startTime - b.startTime)
+    const beforeClip = [...trackClips].reverse().find((c) => (c.startTime + c.duration) <= gap.startTime + 0.001)
+    const afterClip = trackClips.find((c) => c.startTime >= gap.endTime - 0.001)
+    const isVisual = (clip) => clip && (clip.type === 'video' || clip.type === 'image')
+    return isVisual(beforeClip) && isVisual(afterClip)
+  }, [clips])
+
+  // Click-outside / Escape dismisses the gap context menu. We listen in the
+  // capture phase for the same reason as the clip context menu: nested
+  // handlers may call e.stopPropagation().
+  useEffect(() => {
+    if (!gapContextMenu) return
+    const handleClick = (e) => {
+      if (gapContextMenuRef.current && gapContextMenuRef.current.contains(e.target)) {
+        return
+      }
+      setGapContextMenu(null)
+    }
+    const handleEscape = (e) => {
+      if (e.key === 'Escape') setGapContextMenu(null)
+    }
+    window.addEventListener('click', handleClick, true)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('click', handleClick, true)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [gapContextMenu])
+
+  const handleFillGapFlf2v = useCallback(async () => {
+    if (gapFillBusy) return
+    const menuState = gapContextMenu
+    const gap = menuState?.gap
+    if (!gap) return
+    setGapFillBusy(true)
+    try {
+      const fps = Number(timelineFps) > 0 ? Number(timelineFps) : 24
+      const EPS = 1 / fps
+      const lastFrameTime = Math.max(0, gap.startTime - EPS)
+      const firstFrameTime = gap.endTime + EPS
+      const [startResult, endResult] = await Promise.all([
+        captureTimelineFrameAt(lastFrameTime),
+        captureTimelineFrameAt(firstFrameTime),
+      ])
+      if (!startResult || !endResult) {
+        console.warn('[FillGap FLF2V] Failed to capture one or both gap boundary frames')
+        return
+      }
+      useFrameForAIStore.getState().setFrame({
+        mode: 'flf2v',
+        startFrame: { blobUrl: startResult.blobUrl, file: startResult.file },
+        endFrame: { blobUrl: endResult.blobUrl, file: endResult.file },
+        targetDurationSeconds: Math.max(0, gap.endTime - gap.startTime),
+        targetTrackId: gap.trackId,
+        targetGapStartTime: gap.startTime,
+      })
+      // Switch the right panel to Generate so the user can review the
+      // pre-populated form and start the run.
+      window.dispatchEvent(new CustomEvent('comfystudio-open-generate-with-frame'))
+    } catch (err) {
+      console.error('[FillGap FLF2V] unexpected error:', err)
+    } finally {
+      setGapFillBusy(false)
+      setGapContextMenu(null)
+    }
+  }, [gapContextMenu, gapFillBusy, timelineFps])
   const clipContextSelectionIds = useMemo(() => (
     clipContextMenu ? selectedClipIds : []
   ), [clipContextMenu, selectedClipIds])
@@ -6633,6 +6724,56 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
             className="w-full px-3 py-1.5 text-left text-xs text-sf-error hover:bg-sf-error/20 flex items-center gap-2 transition-colors"
           >
             <span>{rippleEditMode ? (clipContextSelectionIds.length > 1 ? `Ripple Delete ${clipContextSelectionIds.length} clips` : 'Ripple Delete') : (clipContextSelectionIds.length > 1 ? `Delete ${clipContextSelectionIds.length} clips` : 'Delete')}</span>
+            <span className="ml-auto text-sf-text-muted text-[10px]">Del</span>
+          </button>
+        </div>
+      )}
+
+      {/* Gap context menu (right-click on empty space between two clips).
+          Same portal/fixed-position pattern as clipContextMenu. */}
+      {gapContextMenu && (
+        <div
+          ref={gapContextMenuRef}
+          className="fixed z-50 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl py-1 min-w-[200px]"
+          style={{
+            left: `${gapContextMenuPosition.x}px`,
+            top: `${gapContextMenuPosition.y}px`,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-[10px] text-sf-text-muted uppercase tracking-wider border-b border-sf-dark-600">
+            Gap · {Math.max(0, (gapContextMenu.gap?.endTime || 0) - (gapContextMenu.gap?.startTime || 0)).toFixed(2)}s
+          </div>
+          {isGapFillable(gapContextMenu.gap) ? (
+            <button
+              onClick={handleFillGapFlf2v}
+              disabled={gapFillBusy}
+              className="w-full px-3 py-2 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Capture the last frame of the clip before the gap and the first frame of the clip after, then send both to Generate with the WAN 2.2 First/Last Frame to Video workflow pre-selected."
+            >
+              {gapFillBusy ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Sparkles className="w-3 h-3" />
+              )}
+              <span>Fill Gap (FLF2V)</span>
+            </button>
+          ) : (
+            <div className="px-3 py-2 text-[10px] text-sf-text-muted">
+              Fill Gap is only available when both neighbors are video or image clips.
+            </div>
+          )}
+          <div className="h-px bg-sf-dark-600 my-1" />
+          <button
+            onClick={() => {
+              const gap = gapContextMenu.gap
+              setGapContextMenu(null)
+              if (gap) rippleDeleteSelectedGap()
+            }}
+            className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors"
+            title="Select this gap and use the existing ripple delete action"
+          >
+            <span>Ripple-delete gap</span>
             <span className="ml-auto text-sf-text-muted text-[10px]">Del</span>
           </button>
         </div>

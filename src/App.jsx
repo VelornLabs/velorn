@@ -230,6 +230,17 @@ function App() {
     return () => window.removeEventListener('comfystudio-open-generate-tab', handler)
   }, [])
 
+  // Generic tab switcher — components can request a specific main tab by
+  // dispatching `comfystudio-switch-tab` with `{ detail: { tab: '<name>' } }`.
+  useEffect(() => {
+    const handler = (e) => {
+      const tab = e?.detail?.tab
+      if (typeof tab === 'string') setMainTab(tab)
+    }
+    window.addEventListener('comfystudio-switch-tab', handler)
+    return () => window.removeEventListener('comfystudio-switch-tab', handler)
+  }, [])
+
   // Allow Generate tab to open ComfyUI directly (used for workflow import guidance).
   useEffect(() => {
     const handler = () => {

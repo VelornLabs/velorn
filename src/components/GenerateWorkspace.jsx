@@ -14,6 +14,7 @@ import MusicVideoEasyMode from './generate/MusicVideoEasyMode'
 import ShortFilmEasyMode from './generate/ShortFilmEasyMode'
 import WorkflowBrowser from './generate/WorkflowBrowser'
 import WorkflowDetail from './generate/WorkflowDetail'
+import Flf2vDraftCard from './Flf2vDraftCard'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
 import useComfyUI from '../hooks/useComfyUI'
 import useAssetsStore from '../stores/assetsStore'
@@ -3505,14 +3506,30 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const showComfyGatingBanner = !isConnected && (launcherIsBooting || launcherWaitingForExternal || launcherCanAutoStart)
   const allowQueueWhileWaiting = !isConnected && (launcherIsBooting || launcherCanAutoStart || launcherWaitingForExternal)
 
-  // When opened with timeline frame, switch to video i2v and use that frame as input
+  // When opened with a timeline frame, switch to the matching video workflow
+  // and pre-populate the form so the user only has to review and hit Run.
+  //   - Single-frame payloads (mode 'extend' / 'keyframe') target the
+  //     existing wan22-i2v workflow; the frame is uploaded on Run.
+  //   - Two-frame payloads (mode 'flf2v') come from the timeline "Fill Gap"
+  //     action. We DO NOT pre-select a workflow from the catalog — the FLF2V
+  //     pipeline ships its own bundled workflow JSON that the dedicated
+  //     <Flf2vDraftCard /> (rendered below) submits directly to ComfyUI on
+  //     Queue. This keeps the Fill Gap flow self-contained: no catalog state
+  //     cascade, no route flips, no form-field stitching.
   useEffect(() => {
-    if (frameForAI) {
+    if (!frameForAI) return
+    if (frameForAI.mode === 'flf2v') {
+      // Just make sure the top-level category is video so the right-side
+      // "Workflow Info" panel doesn't look out of place. The card itself
+      // is independent of category/workflow selection.
       setCategory('video')
-      setWorkflowId('wan22-i2v')
       setFormError(null)
+      return
     }
-  }, [frameForAI?.blobUrl])
+    setCategory('video')
+    setWorkflowId('wan22-i2v')
+    setFormError(null)
+  }, [frameForAI?.blobUrl, frameForAI?.mode])
 
   // Restore selected asset from ID when assets are available
   useEffect(() => {
@@ -11133,6 +11150,75 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     })
   }, [])
 
+  // Splice a freshly-generated FLF2V video into the original timeline gap.
+  //
+  // This is invoked from the queue run path after `saveGenerationResult` has
+  // imported the new video into the project assets. We only splice when the
+  // job was launched from the timeline "Fill Gap (FLF2V)" action — the
+  // presence of a `flf2v`-mode frame on the frameForAIStore records both the
+  // target track/time and the requested gap duration. We clear the store
+  // entry once we splice (or once we give up) so the blob URLs are released.
+  //
+  // Edge cases handled:
+  //  - No imported video: log a warning, leave the gap, clear the store.
+  //  - Target track missing: log a warning, append the clip to the active
+  //    video track at the playhead instead, clear the store.
+  //  - Generated clip's natural duration does not match the gap: we insert
+  //    the clip at the gap's startTime. The store's `resolveOverlaps` will
+  //    then shift any neighbor to make room if the generated clip is longer
+  //    than the gap. We surface a toast so the user knows the gap is not
+  //    perfectly filled.
+  const maybeInsertWan22Flf2vIntoGap = useCallback((jobRecord, importedAssetsList) => {
+    const frame = useFrameForAIStore.getState().frame
+    if (!frame || frame.mode !== 'flf2v') return
+
+    const gap = {
+      trackId: frame.targetTrackId,
+      startTime: Number(frame.targetGapStartTime),
+      endTime: Number(frame.targetGapStartTime) + Number(frame.targetDurationSeconds || 0),
+    }
+
+    const newVideoAsset = (importedAssetsList || []).find((asset) => asset?.type === 'video' && asset?.url)
+    if (!newVideoAsset) {
+      addComfyLog('warn', 'Fill Gap (FLF2V): no generated video was imported — gap was not replaced.')
+      useFrameForAIStore.getState().clearFrame()
+      return
+    }
+
+    const tracksState = useTimelineStore.getState()
+    const targetTrack = tracksState.tracks.find((track) => track?.id === gap.trackId && track.type === 'video')
+    if (!targetTrack) {
+      addComfyLog('warn', `Fill Gap (FLF2V): target track ${gap.trackId || '(none)'} not found. Appending video to first video track.`)
+    }
+    const trackIdToUse = targetTrack ? targetTrack.id : (tracksState.tracks.find((track) => track?.type === 'video') || {}).id
+    if (!trackIdToUse) {
+      addComfyLog('error', 'Fill Gap (FLF2V): no video track available — gap was not replaced.')
+      useFrameForAIStore.getState().clearFrame()
+      return
+    }
+
+    const fps = tracksState.timelineFps || jobRecord?.fps || 24
+    const insertedClip = tracksState.addClip(trackIdToUse, newVideoAsset, gap.startTime, fps, {
+      enabled: true,
+      selectAfterAdd: false,
+      resolveOverlaps: true,
+    })
+
+    if (!insertedClip) {
+      addComfyLog('error', 'Fill Gap (FLF2V): failed to insert the generated clip — gap was not replaced.')
+    } else {
+      const generatedDuration = Number(newVideoAsset.duration || newVideoAsset.settings?.duration || insertedClip.duration || 0)
+      const targetDuration = Number(frame.targetDurationSeconds || 0)
+      if (targetDuration > 0 && generatedDuration > 0) {
+        const diff = generatedDuration - targetDuration
+        if (Math.abs(diff) > 0.05) {
+          addComfyLog('status', `Fill Gap (FLF2V): generated clip duration (${generatedDuration.toFixed(2)}s) does not match the gap (${targetDuration.toFixed(2)}s); ${diff > 0 ? 'neighbors shifted' : 'residual gap left'}.`)
+        }
+      }
+    }
+    useFrameForAIStore.getState().clearFrame()
+  }, [addComfyLog])
+
   const handleCreateAngleSheetForJob = useCallback(async (job) => {
     if (!job || !Array.isArray(job.resultAssetIds) || job.resultAssetIds.length === 0) return
     const targetProjectHandle = job?.originProject?.handle || currentProjectHandle
@@ -11333,6 +11419,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         isSingleVideoWorkflowId(job.workflowId) ||
         job.workflowId === 'ltx23-t2v' ||
         job.workflowId === 'wan22-t2v' ||
+        job.workflowId === 'wan22-flf2v' ||
         job.workflowId === 'seedance2-t2v' ||
         job.workflowId === 'seedance2-flf2v' ||
         job.workflowId === 'seedance2-r2v' ||
@@ -11404,6 +11491,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           }
           importedAssets = await maybeFinalizePeopleWizardJob(job, importedAssets)
           rememberLatestWorkflowPreview(job, importedAssets)
+          // If this job was launched from the timeline "Fill Gap (FLF2V)"
+          // action, splice the newly generated video into the original gap
+          // (replacing the gap exactly) instead of leaving it as a
+          // append-only asset.
+          if (job.workflowId === 'wan22-flf2v') {
+            maybeInsertWan22Flf2vIntoGap(job, importedAssets)
+          }
           updateJob(job.id, {
             status: 'done',
             progress: 100,
@@ -11977,6 +12071,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         }
         importedAssets = await maybeFinalizePeopleWizardJob(job, importedAssets)
         rememberLatestWorkflowPreview(job, importedAssets)
+        // If this job was launched from the timeline "Fill Gap (FLF2V)"
+        // action, splice the newly generated video into the original gap
+        // (replacing the gap exactly) instead of leaving it as a
+        // append-only asset.
+        if (job.workflowId === 'wan22-flf2v') {
+          maybeInsertWan22Flf2vIntoGap(job, importedAssets)
+        }
         updateJob(job.id, {
           status: 'done',
           progress: 100,
@@ -12002,7 +12103,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     } finally {
       await finalizeStoryboardPdfBatchForJob(job, importedAssets)
     }
-  }, [assets, currentProjectHandle, updateJob, saveGenerationResult, pollForResult, addComfyLog, finalizeStoryboardPdfBatchForJob, rememberLatestWorkflowPreview])
+  }, [assets, currentProjectHandle, updateJob, saveGenerationResult, pollForResult, addComfyLog, finalizeStoryboardPdfBatchForJob, rememberLatestWorkflowPreview, maybeInsertWan22Flf2vIntoGap])
 
   const processQueue = useCallback(async () => {
     if (processingRef.current) return
@@ -12327,8 +12428,17 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         {/* Center: Settings - extra left padding in yolo mode when sidebar visible to center content with header tabs */}
         <div className={`flex-1 min-w-0 overflow-auto px-5 py-4 ${generationMode === 'yolo' && !rightSidebarCollapsed ? 'pl-40' : ''}`}>
           <div className={`mx-auto w-full space-y-4 ${generationMode === 'yolo' ? 'max-w-6xl' : 'max-w-5xl'}`}>
-            {/* Timeline frame from editor (Extend with AI / Starting keyframe for AI) */}
-            {frameForAI && generationMode === 'single' && (
+            {/* Fill Gap (FLF2V) action card — self-contained, does NOT
+                depend on the catalog workflow state. */}
+            {frameForAI && generationMode === 'single' && frameForAI.mode === 'flf2v' && (
+              <Flf2vDraftCard
+                frameForAI={frameForAI}
+                timelineFps={timelineFps}
+                currentResolution={resolution}
+                onClear={clearFrameForAI}
+              />
+            )}
+            {frameForAI && generationMode === 'single' && frameForAI.mode !== 'flf2v' && (
               <div className="p-3 rounded-lg border border-sf-accent/40 bg-sf-accent/5">
                 <div className="flex items-start gap-3">
                   <div className="w-24 h-14 flex-shrink-0 rounded overflow-hidden bg-sf-dark-800 border border-sf-dark-600">

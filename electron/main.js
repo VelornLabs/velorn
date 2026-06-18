@@ -2291,35 +2291,20 @@ async function createWindow() {
     const ownsRunning = state.ownership === 'ours' && (state.state === 'running' || state.state === 'starting')
     if (!ownsRunning) return
 
+    // User preference: always leave ComfyUI running on quit. No prompt,
+    // no shutdown — just detach ownership so the next ComfyStudio launch
+    // can re-attach to it without a cold boot.
     event.preventDefault()
+    launcherQuitConfirmed = true
     try {
-      const choice = await dialog.showMessageBox(mainWindow, {
-        type: 'question',
-        buttons: ['Stop ComfyUI & quit', 'Leave ComfyUI running', 'Cancel'],
-        defaultId: 0,
-        cancelId: 2,
-        title: 'Quit ComfyStudio?',
-        message: 'ComfyUI is still running.',
-        detail: 'ComfyStudio started ComfyUI. Choose what happens to it when you quit.\n\n• Stop ComfyUI & quit — shuts down ComfyUI and cancels any in-flight generation jobs.\n• Leave ComfyUI running — ComfyStudio will quit but ComfyUI stays up. Handy when you\'re just relaunching ComfyStudio and don\'t want to wait for ComfyUI to boot again.',
-      })
-      if (choice.response === 2) return
-      launcherQuitConfirmed = true
-      try {
-        if (choice.response === 1) {
-          await comfyLauncher.detach()
-        } else {
-          await comfyLauncher.shutdown({ confirmStop: true })
-        }
-      } catch (error) {
-        console.warn('[comfyLauncher] shutdown/detach during close failed:', error?.message || error)
-      }
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.close()
-      } else {
-        app.quit()
-      }
+      await comfyLauncher.detach()
     } catch (error) {
-      console.warn('[comfyLauncher] close handler error:', error?.message || error)
+      console.warn('[comfyLauncher] detach during close failed:', error?.message || error)
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.close()
+    } else {
+      app.quit()
     }
   })
 
@@ -4700,29 +4685,16 @@ app.on('before-quit', async (event) => {
   const ownsRunning = state.ownership === 'ours' && (state.state === 'running' || state.state === 'starting')
   if (!ownsRunning) return
 
+  // User preference: always leave ComfyUI running on quit. No prompt,
+  // no shutdown — just detach ownership so the next ComfyStudio launch
+  // can re-attach to it without a cold boot.
   event.preventDefault()
-  try {
-    const choice = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : null, {
-      type: 'question',
-      buttons: ['Stop ComfyUI & quit', 'Leave ComfyUI running', 'Cancel'],
-      defaultId: 0,
-      cancelId: 2,
-      title: 'Quit ComfyStudio?',
-      message: 'ComfyUI is still running.',
-      detail: 'ComfyStudio started ComfyUI. Choose what happens to it when you quit.\n\n• Stop ComfyUI & quit — shuts down ComfyUI and cancels any in-flight generation jobs.\n• Leave ComfyUI running — ComfyStudio will quit but ComfyUI stays up. Handy when you\'re just relaunching ComfyStudio and don\'t want to wait for ComfyUI to boot again.',
-    })
-    if (choice.response === 2) {
-      return
-    }
-    if (choice.response === 1) {
-      await comfyLauncher.detach()
-    } else {
-      await comfyLauncher.shutdown({ confirmStop: true })
-    }
-  } catch (error) {
-    console.warn('[comfyLauncher] before-quit shutdown error:', error?.message || error)
-  }
   launcherQuitConfirmed = true
+  try {
+    await comfyLauncher.detach()
+  } catch (error) {
+    console.warn('[comfyLauncher] detach during before-quit failed:', error?.message || error)
+  }
   app.quit()
 })
 
