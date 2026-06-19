@@ -53,14 +53,19 @@ export default function Flf2vDraftCard({
   const projectFps = Number.isFinite(Number(timelineFps)) && Number(timelineFps) > 0
     ? Number(timelineFps)
     : 24
-  const projectWidth = Number(currentResolution?.width) || 1280
-  const projectHeight = Number(currentResolution?.height) || 720
+  // Prefer the source clips' native dimensions over project resolution so
+  // the generated video matches what's actually on screen in the gap.
+  const sourceWidth = Number(frameForAI?.sourceWidth) || null
+  const sourceHeight = Number(frameForAI?.sourceHeight) || null
+  const fallbackWidth = Number(currentResolution?.width) || 1280
+  const fallbackHeight = Number(currentResolution?.height) || 720
   const gapDuration = Math.max(0, Number(frameForAI?.targetDurationSeconds) || 0)
 
-  // Form state — defaults come from the project (resolution / fps / gap
-  // duration). User can override any of them before queuing.
-  const [width, setWidth] = useState(alignDim(projectWidth))
-  const [height, setHeight] = useState(alignDim(projectHeight))
+  // Form state — defaults come from the source clips when available, then
+  // project resolution, then 1280×720. User can override any of them
+  // before queuing.
+  const [width, setWidth] = useState(alignDim(sourceWidth || fallbackWidth))
+  const [height, setHeight] = useState(alignDim(sourceHeight || fallbackHeight))
   const [fps, setFps] = useState(projectFps)
   const [duration, setDuration] = useState(round2(gapDuration || 2.5))
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT)
@@ -101,6 +106,13 @@ export default function Flf2vDraftCard({
     setErrorMessage(null)
     setProgressPct(0)
     setLastResult(null)
+    // If the new gap has its own source dimensions, snap width/height to
+    // them so the form reflects the next clip pair instead of the previous
+    // run's overrides.
+    if (frameForAI?.sourceWidth && frameForAI?.sourceHeight) {
+      setWidth(alignDim(Number(frameForAI.sourceWidth)))
+      setHeight(alignDim(Number(frameForAI.sourceHeight)))
+    }
     // Also drop the cached busy guard so a leftover true doesn't lock out
     // the new run (pollStopRef guards the in-flight poll loop, not the UI).
   }, [frameForAI?.startFrame?.blobUrl, frameForAI?.endFrame?.blobUrl])

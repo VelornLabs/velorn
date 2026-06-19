@@ -455,7 +455,15 @@ export async function captureSingleClipFrame(clip, asset, time) {
       if (!blob) return null
       const file = new File([blob], `gapfill_frame_${Date.now()}.png`, { type: 'image/png' })
       const blobUrl = URL.createObjectURL(blob)
-      return { blobUrl, file }
+      // Surface the source's native dimensions so the FLF2V draft card can
+      // pre-fill width/height from the actual neighbor clips instead of
+      // defaulting to the project resolution.
+      return {
+        blobUrl,
+        file,
+        width: loaded.width || null,
+        height: loaded.height || null,
+      }
     } finally {
       try { loaded.cleanup?.() } catch (_) { /* ignore */ }
     }

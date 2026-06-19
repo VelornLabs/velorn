@@ -1005,6 +1005,11 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         })
         return
       }
+      // Prefer the source frame's native dimensions over project resolution.
+      // If the before / after clips disagree, fall back to whichever one
+      // reported a value (they almost always match for a coherent edit).
+      const sourceWidth = startResult.width || endResult.width || null
+      const sourceHeight = startResult.height || endResult.height || null
       useFrameForAIStore.getState().setFrame({
         mode: 'flf2v',
         startFrame: { blobUrl: startResult.blobUrl, file: startResult.file },
@@ -1012,6 +1017,8 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         targetDurationSeconds: Math.max(0, gap.endTime - gap.startTime),
         targetTrackId: gap.trackId,
         targetGapStartTime: gap.startTime,
+        sourceWidth,
+        sourceHeight,
       })
       // Switch the right panel to Generate so the user can review the
       // pre-populated form and start the run.
