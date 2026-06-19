@@ -2292,6 +2292,22 @@ async function createWindow() {
     if (!ownsRunning) return
 
     event.preventDefault()
+    // When the user has turned off "Stop ComfyUI when ComfyStudio quits",
+    // skip the dialog and just detach so ComfyUI keeps running.
+    if (cachedLauncherConfig.stopOnQuit === false) {
+      launcherQuitConfirmed = true
+      try {
+        await comfyLauncher.detach()
+      } catch (error) {
+        console.warn('[comfyLauncher] detach during close failed:', error?.message || error)
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.close()
+      } else {
+        app.quit()
+      }
+      return
+    }
     try {
       const choice = await dialog.showMessageBox(mainWindow, {
         type: 'question',
@@ -4742,6 +4758,18 @@ app.on('before-quit', async (event) => {
   if (!ownsRunning) return
 
   event.preventDefault()
+  // When the user has turned off "Stop ComfyUI when ComfyStudio quits",
+  // skip the dialog and just detach so ComfyUI keeps running.
+  if (cachedLauncherConfig.stopOnQuit === false) {
+    try {
+      await comfyLauncher.detach()
+    } catch (error) {
+      console.warn('[comfyLauncher] detach during before-quit failed:', error?.message || error)
+    }
+    launcherQuitConfirmed = true
+    app.quit()
+    return
+  }
   try {
     const choice = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : null, {
       type: 'question',
