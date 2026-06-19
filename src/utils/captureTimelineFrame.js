@@ -341,7 +341,10 @@ export async function loadClipSourceAtTime(clip, asset, time) {
         if (video.error?.code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */
             || video.error?.code === 3 /* MEDIA_ERR_DECODE */
             || /DEMUXER_ERROR|no supported streams/i.test(video.error?.message || '')) {
-          const filePath = src.startsWith('file://') ? filePathFromFileUrl(src) : null
+          // The asset URL is usually blob:file:///... (timeline stores it as a
+          // blob), so filePathFromFileUrl won't match — use absolutePath instead.
+          let filePath = src.startsWith('file://') ? filePathFromFileUrl(src) : null
+          if (!filePath && asset.absolutePath) filePath = asset.absolutePath
           if (filePath && window.electronAPI?.extractVideoFrame) {
             console.log('[loadClipSourceAtTime] falling back to ffmpeg IPC', { filePath, sourceTime })
             try {
