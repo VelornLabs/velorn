@@ -385,7 +385,7 @@ export default function Flf2vDraftCard({
               max={30}
               disabled={busy}
             />
-            <div className="flex items-end gap-1.5">
+            <div className="flex items-end">
               <button
                 type="button"
                 onClick={() => {
@@ -396,34 +396,11 @@ export default function Flf2vDraftCard({
                 }}
                 disabled={busy}
                 title="Reset form values to project defaults"
-                className="flex-1 px-2 py-1 rounded bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary text-[11px] disabled:opacity-50"
+                className="w-full px-2 py-1 rounded bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary text-[11px] disabled:opacity-50"
               >
                 Use project defaults
               </button>
-              <button
-                type="button"
-                onClick={handleSavePromptsToWorkflow}
-                disabled={busy || !activeProfile}
-                title="Save current prompt + negative prompt as the new defaults for this workflow profile"
-                className="px-2 py-1 rounded bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary text-[11px] disabled:opacity-50 flex items-center gap-1"
-              >
-                <BookmarkPlus className="w-3 h-3" />
-                Save to workflow
-              </button>
             </div>
-            {(promptsSavedAt || loadProfilePromptOverrides(activeProfile?.id)) && (
-              <div className="-mt-2 col-span-3 flex items-center justify-end gap-2 text-[10px] text-sf-text-muted">
-                <span>Custom prompts saved for this workflow.</span>
-                <button
-                  type="button"
-                  onClick={handleResetPromptsToDefaults}
-                  disabled={busy}
-                  className="underline hover:text-sf-text-primary disabled:opacity-50"
-                >
-                  reset
-                </button>
-              </div>
-            )}
           </div>
 
           {errorMessage && (
@@ -450,7 +427,30 @@ export default function Flf2vDraftCard({
             >
               Clear
             </button>
-            <div className="ml-auto relative">
+            <button
+              type="button"
+              onClick={handleSavePromptsToWorkflow}
+              disabled={busy || !activeProfile}
+              title={loadProfilePromptOverrides(activeProfile?.id)
+                ? 'Custom prompts saved — click to overwrite with current values'
+                : 'Save current prompt + negative prompt as the new defaults for this workflow profile'}
+              className="ml-auto px-2 py-1 rounded text-[11px] bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary transition-colors disabled:opacity-50 flex items-center gap-1.5"
+            >
+              <BookmarkPlus className="w-3 h-3" />
+              Save to workflow
+            </button>
+            {(promptsSavedAt || loadProfilePromptOverrides(activeProfile?.id)) && (
+              <button
+                type="button"
+                onClick={handleResetPromptsToDefaults}
+                disabled={busy}
+                title="Clear saved overrides and revert prompts to module defaults"
+                className="px-2 py-1 rounded text-[10px] text-sf-text-muted hover:text-sf-text-primary underline disabled:opacity-50"
+              >
+                reset
+              </button>
+            )}
+            <div className="relative">
               <button
                 ref={workflowBtnRef}
                 type="button"
