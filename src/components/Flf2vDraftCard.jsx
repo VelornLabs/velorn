@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Sparkles, Loader2, Workflow } from 'lucide-react'
+import { Sparkles, Loader2, Workflow, BookmarkPlus } from 'lucide-react'
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
@@ -10,6 +10,8 @@ import {
   BUNDLED_FLF2V_PROFILES,
   loadSelectedProfileId,
   saveSelectedProfileId,
+  loadProfilePromptOverrides,
+  saveProfilePromptOverrides,
 } from '../services/builtinWorkflows/flf2vProfiles'
 import Flf2vWorkflowPicker from './Flf2vWorkflowPicker'
 
@@ -70,6 +72,7 @@ export default function Flf2vDraftCard({
   const [duration, setDuration] = useState(round2(gapDuration || 2.5))
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT)
   const [negativePrompt, setNegativePrompt] = useState(NEGATIVE_PROMPT_DEFAULT)
+  const [promptsSavedAt, setPromptsSavedAt] = useState(null) // last time user saved to workflow
   const [seed, setSeed] = useState(() => randomSeed())
   const [busy, setBusy] = useState(false)
   const [stage, setStage] = useState(null) // 'uploading' | 'queued' | 'running' | 'saving' | 'done' | 'error'
@@ -96,6 +99,20 @@ export default function Flf2vDraftCard({
   useEffect(() => () => {
     pollStopRef.current = true
   }, [])
+
+  // On initial mount and whenever the active profile changes, swap the
+  // form prompts to whatever the user previously saved for that profile.
+  // Without this, the module-level constants win on first paint and a
+  // saved override only takes effect after a profile re-selection.
+  useEffect(() => {
+    const id = activeProfile?.id
+    if (!id) return
+    const overrides = loadProfilePromptOverrides(id)
+    setPrompt(overrides?.prompt ?? DEFAULT_PROMPT)
+    setNegativePrompt(overrides?.negativePrompt ?? NEGATIVE_PROMPT_DEFAULT)
+    setPromptsSavedAt(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProfile?.id])
 
   // Reset per-job UI state whenever a fresh frameForAI payload arrives
   // (e.g. user right-clicks a second gap after a successful first fill).
@@ -125,6 +142,28 @@ export default function Flf2vDraftCard({
     } else {
       saveSelectedProfileId({ kind: 'bundled', id: profile.id })
     }
+    // Swap the form prompts to whatever the user previously saved for this
+    // profile (or fall back to module defaults if none). The current edits
+    // are intentionally NOT carried over — switching workflows discards
+    // unsaved prompt edits, matching how the form resets width/height on a
+    // new gap.
+    const overrides = loadProfilePromptOverrides(profile.id)
+    setPrompt(overrides?.prompt ?? DEFAULT_PROMPT)
+    setNegativePrompt(overrides?.negativePrompt ?? NEGATIVE_PROMPT_DEFAULT)
+    setPromptsSavedAt(null)
+  }
+
+  function handleSavePromptsToWorkflow() {
+    if (!activeProfile) return
+    saveProfilePromptOverrides(activeProfile.id, { prompt, negativePrompt })
+    setPromptsSavedAt(Date.now())
+  }
+
+  function handleResetPromptsToDefaults() {
+    setPrompt(DEFAULT_PROMPT)
+    setNegativePrompt(NEGATIVE_PROMPT_DEFAULT)
+    if (activeProfile) saveProfilePromptOverrides(activeProfile.id, {})
+    setPromptsSavedAt(null)
   }
 
   // Wan length = N*4 + 1, computed from the form's duration × fps.
@@ -346,7 +385,7 @@ export default function Flf2vDraftCard({
               max={30}
               disabled={busy}
             />
-            <div className="flex items-end">
+            <div className="flex items-end gap-1.5">
               <button
                 type="button"
                 onClick={() => {
@@ -357,11 +396,34 @@ export default function Flf2vDraftCard({
                 }}
                 disabled={busy}
                 title="Reset form values to project defaults"
-                className="w-full px-2 py-1 rounded bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary text-[11px] disabled:opacity-50"
+                className="flex-1 px-2 py-1 rounded bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary text-[11px] disabled:opacity-50"
               >
                 Use project defaults
               </button>
+              <button
+                type="button"
+                onClick={handleSavePromptsToWorkflow}
+                disabled={busy || !activeProfile}
+                title="Save current prompt + negative prompt as the new defaults for this workflow profile"
+                className="px-2 py-1 rounded bg-sf-dark-700 hover:bg-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary text-[11px] disabled:opacity-50 flex items-center gap-1"
+              >
+                <BookmarkPlus className="w-3 h-3" />
+                Save to workflow
+              </button>
             </div>
+            {(promptsSavedAt || loadProfilePromptOverrides(activeProfile?.id)) && (
+              <div className="-mt-2 col-span-3 flex items-center justify-end gap-2 text-[10px] text-sf-text-muted">
+                <span>Custom prompts saved for this workflow.</span>
+                <button
+                  type="button"
+                  onClick={handleResetPromptsToDefaults}
+                  disabled={busy}
+                  className="underline hover:text-sf-text-primary disabled:opacity-50"
+                >
+                  reset
+                </button>
+              </div>
+            )}
           </div>
 
           {errorMessage && (

@@ -210,6 +210,56 @@ export function saveSelectedProfileId(record) {
   } catch (_) { /* ignore quota errors */ }
 }
 
+// --- Per-profile prompt overrides -----------------------------------------
+// Lets the user save their modified prompt + negative prompt as the new
+// defaults for a given workflow profile (bundled or imported). Keyed by
+// profile id; survives restarts. Clear with clearProfilePromptOverrides().
+
+const LS_PROMPT_OVERRIDES_KEY = 'comfystudio.flf2v.promptOverrides'
+
+function readOverridesMap() {
+  try {
+    const raw = localStorage.getItem(LS_PROMPT_OVERRIDES_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+export function loadProfilePromptOverrides(profileId) {
+  if (!profileId) return null
+  const map = readOverridesMap()
+  return map[profileId] || null
+}
+
+export function saveProfilePromptOverrides(profileId, { prompt, negativePrompt } = {}) {
+  if (!profileId) return
+  const map = readOverridesMap()
+  if (prompt == null && negativePrompt == null) {
+    delete map[profileId]
+  } else {
+    map[profileId] = {
+      prompt: typeof prompt === 'string' ? prompt : '',
+      negativePrompt: typeof negativePrompt === 'string' ? negativePrompt : '',
+    }
+  }
+  try {
+    localStorage.setItem(LS_PROMPT_OVERRIDES_KEY, JSON.stringify(map))
+  } catch (_) { /* ignore quota errors */ }
+}
+
+export function clearProfilePromptOverrides(profileId) {
+  if (!profileId) return
+  const map = readOverridesMap()
+  if (!(profileId in map)) return
+  delete map[profileId]
+  try {
+    localStorage.setItem(LS_PROMPT_OVERRIDES_KEY, JSON.stringify(map))
+  } catch (_) { /* ignore quota errors */ }
+}
+
 // Find a profile by id. For 'imported:*' ids, callers must look the
 // imported profile up themselves — this only resolves bundled ids.
 export function getBundledProfile(id) {
