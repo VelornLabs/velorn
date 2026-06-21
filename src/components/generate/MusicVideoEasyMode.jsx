@@ -654,6 +654,7 @@ export default function MusicVideoEasyMode({
       role: String(entry?.role || 'lead'),
       assetPrefix: normalizeCastSlug(entry?.slug || entry?.label || entry?.assetId || 'person') || 'person',
       assetId: entry?.assetId || '',
+      sheetAssetId: entry?.assetId || '',
       imagePrompt: String(entryAsset?.name || entry?.label || 'Portrait of a character').trim() || 'Portrait of a character',
       imageSize: 'hd',
       imageOrientation: 'portrait',
@@ -682,6 +683,10 @@ export default function MusicVideoEasyMode({
     if (!peopleWizard?.assetId) return null
     return imageAssets.find((asset) => asset?.id === peopleWizard.assetId) || null
   }, [imageAssets, peopleWizard?.assetId])
+  const peopleWizardSelectedSheetAsset = useMemo(() => {
+    if (!peopleWizard?.sheetAssetId) return null
+    return imageAssets.find((asset) => asset?.id === peopleWizard.sheetAssetId) || null
+  }, [imageAssets, peopleWizard?.sheetAssetId])
   const peopleWizardGeneratedImageAsset = useMemo(() => {
     if (!peopleWizard?.sessionId) return null
     const matches = imageAssets.filter((asset) => asset?.peopleWizard?.wizardId === peopleWizard.sessionId && asset?.peopleWizard?.stage === 'image')
@@ -1610,7 +1615,15 @@ export default function MusicVideoEasyMode({
   const handlePeopleWizardSelectAsset = (assetId) => {
     updatePeopleWizard({
       assetId: assetId || '',
+      sheetAssetId: '',
       step: 'image',
+    })
+  }
+
+  const handlePeopleWizardSelectSheetAsset = (assetId) => {
+    updatePeopleWizard({
+      sheetAssetId: assetId || '',
+      step: 'sheet',
     })
   }
 
@@ -1639,6 +1652,7 @@ export default function MusicVideoEasyMode({
     updatePeopleWizard({
       step: 'image',
       imageJobId: job.id,
+      sheetAssetId: '',
     })
   }
 
@@ -1673,6 +1687,7 @@ export default function MusicVideoEasyMode({
     updatePeopleWizard({
       step: 'sheet',
       sheetJobId: job.id,
+      sheetAssetId: '',
     })
   }
 
@@ -1681,7 +1696,7 @@ export default function MusicVideoEasyMode({
     const trimmedName = String(peopleWizard.name || '').trim()
     const normalizedSlug = normalizeCastSlug(String(peopleWizard.slug || '').trim())
     const finalAssetId = peopleWizard.step === 'sheet'
-      ? peopleWizardSheetAsset?.id || ''
+      ? peopleWizardSelectedSheetAsset?.id || peopleWizardSheetAsset?.id || ''
       : peopleWizard.step === 'image'
         ? peopleWizardGeneratedImageAsset?.id || ''
       : peopleWizardSelectedAsset?.id || peopleWizardSheetAsset?.id || peopleWizardGeneratedImageAsset?.id || ''
@@ -1996,23 +2011,24 @@ export default function MusicVideoEasyMode({
     const trimmedName = String(peopleWizard.name || '').trim()
     const normalizedSlug = normalizeCastSlug(String(peopleWizard.slug || '').trim())
     const selectedPreviewAsset = wizardStep === 'sheet'
-      ? peopleWizardSheetAsset || peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset || null
+      ? peopleWizardSelectedSheetAsset || peopleWizardSheetAsset || peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset || null
       : wizardStep === 'image'
         ? peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset || null
         : peopleWizardSelectedAsset || null
     const peopleWizardSaveAssetId = wizardStep === 'sheet'
-      ? peopleWizardSheetAsset?.id || ''
+      ? peopleWizardSelectedSheetAsset?.id || peopleWizardSheetAsset?.id || ''
       : wizardStep === 'image'
         ? peopleWizardGeneratedImageAsset?.id || peopleWizardSelectedAsset?.id || ''
         : ''
     const canContinueToImageStep = Boolean(trimmedName && normalizedSlug)
-    const canEnterSheetStep = Boolean(peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset)
+    const hasSheetReference = Boolean(peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset)
+    const canEnterSheetStep = canContinueToImageStep
     const canSavePeopleWizard = Boolean(trimmedName && normalizedSlug && peopleWizardSaveAssetId && !peopleWizardActiveJob)
     const previewTitle = selectedPreviewAsset?.name || 'Preview'
     const wizardStages = [
       { id: 'person', label: '1', title: 'Person data', helper: 'Name, slug, and role.' },
       { id: 'image', label: '2', title: 'Image', helper: 'Create or pick a portrait.', disabled: !canContinueToImageStep },
-      { id: 'sheet', label: '3', title: 'Character sheet', helper: 'Generate the full sheet.', disabled: !canEnterSheetStep },
+      { id: 'sheet', label: '3', title: 'Character sheet', helper: 'Generate or choose a sheet.', disabled: !canEnterSheetStep },
     ]
     const previewJob = peopleWizardActiveJob
       && (
@@ -2317,14 +2333,36 @@ export default function MusicVideoEasyMode({
               {wizardStep === 'sheet' && (
                 <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4 space-y-3">
                   <div>
-                    <div className="text-sm font-semibold text-sf-text-primary">3. Character sheet creation</div>
+                    <div className="text-sm font-semibold text-sf-text-primary">3. Character sheet</div>
                     <p className="mt-1 text-xs text-sf-text-secondary">
-                      Use the selected or generated image as the reference, then turn it into a multi-angle character sheet.
+                      Use a finished character sheet you already made, or generate a new one from the portrait/reference image.
                     </p>
                   </div>
                   <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3 text-xs text-sf-text-secondary">
                     <div><span className="text-sf-text-muted">Reference:</span> {peopleWizardGeneratedImageAsset?.name || peopleWizardSelectedAsset?.name || 'No reference selected yet'}</div>
+                    <div><span className="text-sf-text-muted">Existing sheet:</span> {peopleWizardSelectedSheetAsset?.name || 'No finished sheet selected yet'}</div>
                     <div><span className="text-sf-text-muted">Sheet workflow:</span> Multiple Angles (Characters)</div>
+                  </div>
+                  <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-3 space-y-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
+                      <ImageIcon className="h-4 w-4 text-sf-accent" />
+                      Use existing character sheet
+                    </div>
+                    <select
+                      value={peopleWizard.sheetAssetId || ''}
+                      onChange={(event) => handlePeopleWizardSelectSheetAsset(event.target.value || '')}
+                      className="w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                    >
+                      <option value="">Select finished character sheet</option>
+                      {imageAssets.map((asset) => (
+                        <option key={asset.id} value={asset.id}>{asset.name || asset.id}</option>
+                      ))}
+                    </select>
+                    <div className="text-[11px] text-sf-text-muted">
+                      {peopleWizardSelectedSheetAsset
+                        ? `Selected sheet: ${peopleWizardSelectedSheetAsset.name || peopleWizardSelectedSheetAsset.id}`
+                        : 'Pick a finished multi-angle sheet from this project, then save the person.'}
+                    </div>
                   </div>
                   <div className="grid gap-3 md:grid-cols-[1fr_auto]">
                     <div>
@@ -2350,7 +2388,7 @@ export default function MusicVideoEasyMode({
                     <button
                       type="button"
                       onClick={handlePeopleWizardCreateSheet}
-                      disabled={!peopleWizardGenerationEnabled || Boolean(peopleWizardActiveJob) || !canEnterSheetStep}
+                      disabled={!peopleWizardGenerationEnabled || Boolean(peopleWizardActiveJob) || !hasSheetReference}
                       className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {peopleWizardActiveJob && peopleWizardActiveJob.workflowId === 'multi-angles' ? 'Generating…' : 'Generate sheet'}

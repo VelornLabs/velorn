@@ -4014,15 +4014,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const activeWorkflowBrowserMode = generationMode === 'yolo' ? 'create' : 'generate'
   const visibleWorkflowManifests = useMemo(() => (
     GENERATE_WORKFLOW_CATALOG.filter((workflow) => (
-      workflow.mode === activeWorkflowBrowserMode
+      !workflow.hidden
+        && workflow.mode === activeWorkflowBrowserMode
         && (activeWorkflowBrowserMode === 'create'
           ? workflow.route === 'local'
           : workflow.route === workflowRoute)
     ))
   ), [activeWorkflowBrowserMode, workflowRoute])
   const selectedWorkflowManifest = useMemo(() => (
-    GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.id === selectedWorkflowManifestId)
-      || getWorkflowManifestByWorkflowId(workflowId)
+    GENERATE_WORKFLOW_CATALOG.find((workflow) => !workflow.hidden && workflow.id === selectedWorkflowManifestId)
+      || (() => {
+        const manifest = getWorkflowManifestByWorkflowId(workflowId)
+        return manifest?.hidden ? null : manifest
+      })()
       || visibleWorkflowManifests[0]
       || null
   ), [selectedWorkflowManifestId, visibleWorkflowManifests, workflowId])
@@ -12636,16 +12640,22 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           })
           break
         case 'nano-banana-2':
-        case 'nano-banana-pro': // legacy id support
+        case 'nano-banana-pro': { // legacy id support
+          const nanoReferenceImages = [
+            uploadedFilename,
+            assetFieldFilenames.referenceImage1,
+            assetFieldFilenames.referenceImage2,
+          ].map((name) => String(name || '').trim()).filter(Boolean)
           modifiedWorkflow = modifyNanoBanana2Workflow(workflowJson, {
             prompt: job.prompt,
             seed: job.seed,
             width: job.resolution?.width,
             height: job.resolution?.height,
-            referenceImages: referenceFilenames,
+            referenceImages: nanoReferenceImages.length > 0 ? nanoReferenceImages : referenceFilenames,
             filenamePrefix: peopleWizardImagePrefix || outputPrefix || 'image/nano_banana_2',
           })
           break
+        }
         case 'gpt-image-2-t2i':
           modifiedWorkflow = modifyOpenAIGPTImage2Workflow(workflowJson, {
             prompt: job.prompt,

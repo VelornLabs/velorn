@@ -612,11 +612,11 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     cover: cover('nano-banana-2.webp'),
     badge: 'Cloud',
     runtimeLabel: 'Requires API key',
-    needsImage: false,
+    needsImage: true,
     outputType: 'image',
-    fields: imageFields,
+    fields: imageEditFields,
     runnable: true,
-    tags: ['google', 'nano banana', 'image'],
+    tags: ['google', 'nano banana', 'image', 'image edit', 'reference'],
   },
   {
     id: 'gpt-image-2-t2i',
@@ -848,6 +848,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     outputType: 'video',
     fields: utilityFields,
     runnable: false,
+    hidden: true,
     tags: ['ad', 'product', 'create', 'easy mode'],
   },
   {
