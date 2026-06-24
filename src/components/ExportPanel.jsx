@@ -4,6 +4,7 @@ import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/proj
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import exportTimeline from '../services/exporter'
+import buildFcpXml from '../services/fcpxmlExporter'
 
 const EXPORT_SETTINGS_STORAGE_PREFIX = 'comfystudio-export-settings-v1'
 
@@ -283,12 +284,30 @@ function saveExportSettings(storageKey, settings) {
   }
 }
 
+function isAbsoluteFilePath(filePath) {
+  const value = String(filePath || '')
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('/') || value.startsWith('\\\\')
+}
+
+function sanitizeExportBaseName(value) {
+  return String(value || 'ComfyStudio_Timeline')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    || 'ComfyStudio_Timeline'
+}
+
 function ExportPanel() {
-  const { currentProject, currentProjectHandle, getCurrentTimelineSettings } = useProjectStore()
+  const { currentProject, currentProjectHandle, currentTimelineId, getCurrentTimelineSettings } = useProjectStore()
   const { duration, inPoint, outPoint, getTimelineEndTime, selectedClipIds, clips, transitions, tracks } = useTimelineStore()
   const { assets } = useAssetsStore()
   
   const projectName = currentProject?.name || 'Untitled'
+  const currentTimeline = useMemo(() => (
+    currentProject?.timelines?.find((timeline) => timeline.id === currentTimelineId) || null
+  ), [currentProject?.timelines, currentTimelineId])
   const defaultFilename = `${projectName}_export`
   const defaultSettings = useMemo(() => createDefaultExportSettings(defaultFilename), [defaultFilename])
   const settingsStorageKey = useMemo(
@@ -305,6 +324,7 @@ function ExportPanel() {
   const [exportResult, setExportResult] = useState(null)
   const [etaSeconds, setEtaSeconds] = useState(null)
   const [renderFps, setRenderFps] = useState(null)
+  const [isXmlExporting, setIsXmlExporting] = useState(false)
   const exportStartRef = useRef(null)
   const renderStartRef = useRef(null)
   const [nvencStatus, setNvencStatus] = useState({
@@ -923,6 +943,95 @@ function ExportPanel() {
       setIsExporting(false)
     }
   }
+
+  const handleExportFcpXml = async () => {
+    if (isExporting || queueRunning || isXmlExporting) return
+    if (!window.electronAPI?.writeFile || !window.electronAPI?.saveFileDialog || !window.electronAPI?.pathJoin) {
+      setExportError('FCPXML export is only available in the desktop app.')
+      return
+    }
+    if (typeof currentProjectHandle !== 'string') {
+      setExportError('Open a saved project before exporting FCPXML.')
+      return
+    }
+
+    setIsXmlExporting(true)
+    setExportError(null)
+    setExportResult(null)
+    setExportProgress(0)
+    setEtaSeconds(null)
+    setRenderFps(null)
+    setExportStatus('Preparing FCPXML...')
+
+    try {
+      const projectPath = currentProjectHandle
+      const resolvedAssets = await Promise.all((assets || []).map(async (asset) => {
+        if (!asset?.path) return { ...asset, absolutePath: '' }
+        const absolutePath = isAbsoluteFilePath(asset.path)
+          ? asset.path
+          : await window.electronAPI.pathJoin(projectPath, asset.path)
+        return {
+          ...asset,
+          absolutePath,
+          hasAudio: asset.hasAudio ?? asset.settings?.hasAudio,
+        }
+      }))
+      const exportableAssetIds = new Set(resolvedAssets.filter((asset) => asset.absolutePath).map((asset) => asset.id))
+      const exportableClipCount = (clips || []).filter((clip) => (
+        clip?.enabled !== false
+        && ['video', 'audio', 'image'].includes(clip?.type)
+        && exportableAssetIds.has(clip.assetId)
+      )).length
+      if (exportableClipCount === 0) {
+        throw new Error('No media clips with project file paths are available for FCPXML export.')
+      }
+
+      const timelineSettings = getCurrentTimelineSettings() || { width: 1920, height: 1080, fps: 24 }
+      const timelineName = currentTimeline?.name || 'Timeline'
+      const xml = buildFcpXml({
+        projectName,
+        timelineName,
+        timelineSettings,
+        timeline: {
+          clips,
+          tracks,
+          transitions,
+          duration: getTimelineEndTime?.() || duration,
+          timelineFps: timelineSettings.fps,
+        },
+        assets: resolvedAssets,
+      })
+
+      const outputFolder = await window.electronAPI.pathJoin(projectPath, 'renders')
+      await window.electronAPI.createDirectory(outputFolder)
+      const defaultPath = await window.electronAPI.pathJoin(
+        outputFolder,
+        `${sanitizeExportBaseName(`${projectName}_${timelineName}`)}.fcpxml`
+      )
+      const outputPath = await window.electronAPI.saveFileDialog({
+        title: 'Export FCPXML',
+        defaultPath,
+        filters: [{ name: 'Final Cut Pro XML', extensions: ['fcpxml'] }],
+      })
+      if (!outputPath) {
+        setExportStatus('FCPXML export cancelled')
+        return
+      }
+
+      const writeResult = await window.electronAPI.writeFile(outputPath, xml, { encoding: 'utf8' })
+      if (!writeResult?.success) {
+        throw new Error(writeResult?.error || 'Failed to write FCPXML file.')
+      }
+
+      setExportResult({ outputPath, encoderUsed: 'FCPXML', clipCount: exportableClipCount })
+      setExportStatus(`FCPXML export complete (${exportableClipCount} clips)`)
+    } catch (err) {
+      setExportError(err?.message || 'FCPXML export failed')
+      setExportStatus('FCPXML export failed')
+    } finally {
+      setIsXmlExporting(false)
+    }
+  }
   
   return (
     <div className="flex-1 min-h-0 flex flex-col min-w-0 overflow-hidden bg-sf-dark-950">
@@ -1471,6 +1580,19 @@ function ExportPanel() {
             >
               <Play className="w-3 h-3" />
               {isExporting ? 'Exporting...' : (queueRunning ? 'Queue Running' : 'Start Export')}
+            </button>
+            <button
+              onClick={handleExportFcpXml}
+              disabled={isExporting || queueRunning || isXmlExporting}
+              className={`px-3 py-1.5 text-xs rounded border flex items-center gap-1.5 transition-colors ${
+                isExporting || queueRunning || isXmlExporting
+                  ? 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600 cursor-not-allowed'
+                  : 'bg-sf-dark-800 text-sf-text-primary border-sf-dark-600 hover:border-sf-accent hover:text-white'
+              }`}
+              title="Export the current timeline as FCPXML for Resolve, Final Cut, or Premiere interchange"
+            >
+              <Download className="w-3 h-3" />
+              {isXmlExporting ? 'Exporting XML...' : 'Export FCPXML'}
             </button>
           </div>
 
