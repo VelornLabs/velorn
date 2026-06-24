@@ -514,6 +514,8 @@ export default function MusicVideoEasyMode({
   handleYoloMusicCastLabelChange,
   handleYoloMusicCastRoleChange,
   handleYoloMusicCastNotesChange,
+  handleImportYoloMusicCastImage,
+  yoloMusicCastImageImporting = false,
   queuePeopleWizardJob,
   canUsePeopleWizardGeneration = false,
   yoloMusicKeyframeWorkflowId = 'nano-banana-2',
@@ -577,6 +579,7 @@ export default function MusicVideoEasyMode({
   const [runtimeImageDimensions, setRuntimeImageDimensions] = useState({})
   const [advancedAudioOpen, setAdvancedAudioOpen] = useState(false)
   const [briefStatus, setBriefStatus] = useState('')
+  const [peopleStatus, setPeopleStatus] = useState('')
   const [parseStatus, setParseStatus] = useState('')
   const [keyframeStatus, setKeyframeStatus] = useState('')
   const [videoStatus, setVideoStatus] = useState('')
@@ -1612,6 +1615,15 @@ export default function MusicVideoEasyMode({
     openPeopleWizard(entry)
   }
 
+  const handleImportCastReferenceImage = async () => {
+    if (!handleImportYoloMusicCastImage || yoloMusicCastImageImporting) return
+    setPeopleStatus('')
+    const importedAsset = await handleImportYoloMusicCastImage()
+    if (importedAsset) {
+      setPeopleStatus(`Imported ${importedAsset.name || 'reference image'} and added it to the cast.`)
+    }
+  }
+
   const handlePeopleWizardFieldChange = (field, value) => {
     updatePeopleWizard({ [field]: value })
   }
@@ -2525,20 +2537,37 @@ export default function MusicVideoEasyMode({
               {plural(yoloMusicResolvedCast.length, 'resolved person', 'resolved people')}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => handleOpenPeopleWizard(null)}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90"
-          >
-            <UserPlus className="h-4 w-4" />
-            Add Person
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleImportCastReferenceImage}
+              disabled={!handleImportYoloMusicCastImage || yoloMusicCastImageImporting}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+              title="Import an existing portrait, character sheet, or reference image into the cast."
+            >
+              {yoloMusicCastImageImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {yoloMusicCastImageImporting ? 'Importing' : 'Import Image'}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleOpenPeopleWizard(null)}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90"
+            >
+              <UserPlus className="h-4 w-4" />
+              Create Person
+            </button>
+          </div>
         </div>
 
         <div className="mt-4 space-y-3">
+          {peopleStatus && (
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+              {peopleStatus}
+            </div>
+          )}
           {(yoloMusicCast || []).length === 0 && (
             <div className="rounded-lg border border-dashed border-sf-dark-600 px-3 py-6 text-center text-xs text-sf-text-muted">
-              Add at least one person if the video has lip-sync performance shots.
+              Import an existing image or create a person if the video has lip-sync performance shots.
             </div>
           )}
           {(yoloMusicCast || []).map((entry, index) => {
