@@ -3601,6 +3601,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const [formErrorCopyStatus, setFormErrorCopyStatus] = useState('')
   const [creatingStoryboardPdf, setCreatingStoryboardPdf] = useState(false)
   const [yoloMusicAudioImporting, setYoloMusicAudioImporting] = useState(false)
+  const [yoloMusicCastImageImporting, setYoloMusicCastImageImporting] = useState(false)
   const [yoloMusicTranscribingSrt, setYoloMusicTranscribingSrt] = useState(false)
   const [yoloMusicTranscriptionStatus, setYoloMusicTranscriptionStatus] = useState('')
   const [confirmDialog, setConfirmDialog] = useState(null) // { title, message, confirmLabel, cancelLabel, tone }
@@ -4545,6 +4546,103 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     currentProjectHandle,
     saveProject,
     yoloMusicAudioImporting,
+  ])
+  const handleImportYoloMusicCastImage = useCallback(async () => {
+    if (yoloMusicCastImageImporting) return null
+    if (!currentProjectHandle) {
+      setFormError('Open or create a project first so ComfyStudio can import the reference image.')
+      addComfyLog('error', 'Cast reference import requires an open project folder.')
+      return null
+    }
+
+    let selectedFile = null
+    try {
+      if (isElectron() && window.electronAPI?.selectFile) {
+        selectedFile = await window.electronAPI.selectFile({
+          title: 'Select cast reference image',
+          filters: [
+            { name: 'Image Files', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff'] },
+            { name: 'All Files', extensions: ['*'] },
+          ],
+        })
+      } else {
+        selectedFile = await new Promise((resolve) => {
+          const input = document.createElement('input')
+          input.type = 'file'
+          input.accept = 'image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff'
+          input.onchange = () => resolve(input.files?.[0] || null)
+          input.click()
+        })
+      }
+    } catch (error) {
+      const message = error?.message || 'Unknown file picker error'
+      setFormError(`Could not open reference image picker: ${message}`)
+      addComfyLog('error', `Could not open reference image picker: ${message}`)
+      return null
+    }
+    if (!selectedFile) return null
+    if (typeof selectedFile !== 'string' && selectedFile.type && !String(selectedFile.type).startsWith('image/')) {
+      const message = 'Only image files can be used as cast references.'
+      setFormError(message)
+      addComfyLog('error', message)
+      return null
+    }
+
+    setFormError(null)
+    setYoloMusicCastImageImporting(true)
+
+    try {
+      const assetInfo = await importAsset(currentProjectHandle, selectedFile, 'images')
+      const sessionUrl = typeof selectedFile !== 'string'
+        ? URL.createObjectURL(selectedFile)
+        : assetInfo.path
+          ? await getProjectFileUrl(currentProjectHandle, assetInfo.path)
+          : null
+      const newAsset = addAsset({
+        ...assetInfo,
+        type: 'image',
+        url: sessionUrl || assetInfo.url || '',
+        isImported: true,
+        settings: {
+          ...(assetInfo.settings || {}),
+          width: assetInfo.width,
+          height: assetInfo.height,
+        },
+      })
+      if (!newAsset) throw new Error('Could not register imported image.')
+
+      const rawName = String(newAsset.name || assetInfo.name || 'Cast reference')
+      const displayName = rawName.replace(/\.[a-z0-9]{1,8}$/i, '').replace(/[_-]+/g, ' ').trim() || 'Cast reference'
+      const slug = normalizeCastSlug(displayName) || `person_${Date.now()}`
+      setYoloMusicCast((prev) => {
+        const list = Array.isArray(prev) ? [...prev] : []
+        list.push({
+          id: `cast-${Date.now()}-${list.length}`,
+          slug,
+          label: displayName,
+          assetId: newAsset.id,
+          role: list.length === 0 ? 'lead' : 'co_lead',
+          notes: '',
+        })
+        return list
+      })
+      await saveProject?.()
+      addComfyLog('status', `Imported cast reference image: ${newAsset.name || displayName}`)
+      return newAsset
+    } catch (error) {
+      const message = error?.message || 'Unknown import error'
+      setFormError(`Could not import cast reference image: ${message}`)
+      addComfyLog('error', `Could not import cast reference image: ${message}`)
+      return null
+    } finally {
+      setYoloMusicCastImageImporting(false)
+    }
+  }, [
+    addAsset,
+    addComfyLog,
+    currentProjectHandle,
+    saveProject,
+    yoloMusicCastImageImporting,
   ])
   const createYoloMusicCustomKeyframeStarter = useCallback(async () => {
     const starter = {
@@ -13781,6 +13879,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     handleYoloMusicCastLabelChange={handleYoloMusicCastLabelChange}
                     handleYoloMusicCastRoleChange={handleYoloMusicCastRoleChange}
                     handleYoloMusicCastNotesChange={handleYoloMusicCastNotesChange}
+                    handleImportYoloMusicCastImage={handleImportYoloMusicCastImage}
+                    yoloMusicCastImageImporting={yoloMusicCastImageImporting}
                     queuePeopleWizardJob={queuePeopleWizardJob}
                     canUsePeopleWizardGeneration={Boolean(BUILTIN_WORKFLOW_PATHS['z-image-turbo'] && BUILTIN_WORKFLOW_PATHS['multi-angles'])}
                     generationQueue={generationQueue}
