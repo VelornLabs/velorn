@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   CheckCircle2,
   Clipboard,
+  Edit3,
   FileText,
   Film,
   Image as ImageIcon,
@@ -63,6 +64,19 @@ const VOICE_WORKFLOW_OPTIONS = [
     label: 'Speech to Speech',
     helper: 'Use a guide performance and convert it into the cast voice.',
   },
+]
+
+const ELEVENLABS_VOICE_OPTIONS = [
+  'Jessica (female, american)',
+  'Laura (female, american)',
+  'Sarah (female, american)',
+  'River (non-binary, american)',
+  'Roger (male, american)',
+  'Callum (male, american)',
+  'Eric (male, american)',
+  'Liam (male, american)',
+  'George (male, british)',
+  'Charlie (male, australian)',
 ]
 
 const DEFAULT_SCREENPLAY = `INT. ROADSIDE MOTEL ROOM - NIGHT
@@ -264,7 +278,92 @@ function buttonClass(selected) {
     : 'border-sf-dark-600 bg-sf-dark-900 text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary'
 }
 
+function hasNoDialogueInstruction(screenplay = '') {
+  const text = String(screenplay || '').toLowerCase()
+  return /\b(?:absolutely\s+)?no\s+(?:spoken\s+)?dialogue\b/.test(text)
+    || /\bwithout\s+(?:any\s+)?(?:spoken\s+)?dialogue\b/.test(text)
+    || /\bno\s+spoken\s+lines?\b/.test(text)
+    || /\bsilent\s+film\b/.test(text)
+}
+
+function compactShotText(value = '', maxLength = 900) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}...`
+}
+
+function parseShotDuration(value = '', fallback = 5) {
+  const match = String(value || '').match(/\b(?:duration|length)\s*:\s*(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)?\b/i)
+  const parsed = match ? Number(match[1]) : Number(fallback)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(1, Math.min(30, Math.round(parsed)))
+}
+
+function inferShotType(title = '', body = '') {
+  const text = `${title} ${body}`.toLowerCase()
+  if (/\b(drone|aerial|establishing|wide|epic)\b/.test(text)) return 'wide'
+  if (/\b(close-up|close up|portrait|detail)\b/.test(text)) return 'close-up'
+  if (/\b(insert|details?)\b/.test(text)) return 'insert'
+  if (/\b(cutaway|environment|waterfall|temple|bridge)\b/.test(text)) return 'cutaway'
+  if (/\b(dance|celebration|children|running|action)\b/.test(text)) return 'action'
+  return 'shot'
+}
+
+function parseExplicitShotList(screenplay, { locations = [] } = {}) {
+  const lines = String(screenplay || '').split(/\r?\n/)
+  const blocks = []
+  let current = null
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || '').trim()
+    const headingMatch = line.match(/^SHOT\s+([0-9]+|[A-Z]+)\s*(?:[-:.)]|\u2013|\u2014)+\s*(.*?)\s*$/i)
+    if (headingMatch) {
+      if (current) blocks.push(current)
+      current = {
+        title: headingMatch[2] || `Shot ${blocks.length + 1}`,
+        lines: [],
+      }
+      continue
+    }
+    if (current) current.lines.push(line)
+  }
+  if (current) blocks.push(current)
+
+  if (blocks.length === 0) return null
+
+  const primaryLocation = locations[0] || normalizeLocations(DEFAULT_LOCATIONS)[0]
+
+  return blocks.map((block, index) => {
+    const bodyLines = block.lines.map((line) => line.trim()).filter(Boolean)
+    const bodyText = bodyLines.join(' ')
+    const cameraLine = bodyLines.find((line) => /^(?:camera|camera movement)\s*:/i.test(line)) || ''
+    const visualLines = bodyLines.filter((line) => !/^(?:camera|camera movement|duration|length)\s*:/i.test(line))
+    const visualText = visualLines.join(' ')
+    const title = compactShotText(block.title || `Shot ${index + 1}`, 120)
+    const keyframe = compactShotText([title, visualText].filter(Boolean).join('. '))
+    const motion = compactShotText([
+      cameraLine.replace(/^(?:camera|camera movement)\s*:\s*/i, ''),
+      visualText,
+    ].filter(Boolean).join(' '))
+
+    return {
+      id: `shot-${String(index + 1).padStart(3, '0')}`,
+      scene: 'Provided shot list',
+      title,
+      type: inferShotType(title, bodyText),
+      locationSlug: primaryLocation.slug,
+      characterSlug: '',
+      dialogueId: '',
+      keyframe: keyframe || `${title}, cinematic production still.`,
+      motion: motion || `${title}, cinematic motion matching the provided shot list.`,
+      duration: parseShotDuration(bodyText, 5),
+    }
+  })
+}
+
 function parseDialogueLines(screenplay, characters) {
+  if (hasNoDialogueInstruction(screenplay)) return []
+
   const lines = String(screenplay || '').split(/\r?\n/)
   const characterByName = new Map()
   for (const character of characters) {
@@ -279,10 +378,11 @@ function parseDialogueLines(screenplay, characters) {
     if (colonMatch) {
       const speakerText = colonMatch[1].trim()
       const character = characterByName.get(speakerText.toLowerCase())
+      if (!character) continue
       result.push({
         id: `dialogue-${result.length + 1}`,
-        speaker: character?.name || speakerText,
-        slug: character?.slug || speakerText.toLowerCase().replace(/[^a-z0-9_]+/g, '_'),
+        speaker: character.name,
+        slug: character.slug,
         text: colonMatch[2].trim(),
       })
       continue
@@ -314,6 +414,11 @@ function parseDialogueLines(screenplay, characters) {
 }
 
 function createShotPlan({ screenplay, characters, locations, runtimeSeconds }) {
+  const explicitShotList = parseExplicitShotList(screenplay, { locations })
+  if (Array.isArray(explicitShotList) && explicitShotList.length > 0) {
+    return explicitShotList
+  }
+
   const dialogueLines = parseDialogueLines(screenplay, characters)
   const primaryLocation = locations[0] || normalizeLocations(DEFAULT_LOCATIONS)[0]
   const hallwayLocation = locations[1] || primaryLocation
@@ -508,6 +613,7 @@ export default function ShortFilmEasyMode({
   const [videoStatus, setVideoStatus] = useState('')
   const [selectedVideoShotId, setSelectedVideoShotId] = useState('')
   const [videoPromptOverrides, setVideoPromptOverrides] = useState({})
+  const [editingShotId, setEditingShotId] = useState('')
 
   const imageAssets = useMemo(
     () => assets.filter((asset) => asset?.type === 'image'),
@@ -704,7 +810,21 @@ export default function ShortFilmEasyMode({
       runtimeSeconds: draft.runtimeSeconds,
     })
     setShotPlan(nextPlan)
-    updateDraft({ step: 'shotPlan' })
+    updateDraft({ step: dialogueLines.length > 0 ? 'voices' : 'shotPlan' })
+  }
+
+  const clearShotPlan = () => {
+    setShotPlan([])
+    setEditingShotId('')
+    setSelectedVideoShotId('')
+  }
+
+  const updateShotPlanShot = (shotId, patch) => {
+    const normalizedShotId = String(shotId || '')
+    if (!normalizedShotId) return
+    setShotPlan((prev) => prev.map((shot) => (
+      shot.id === normalizedShotId ? { ...shot, ...patch } : shot
+    )))
   }
 
   const queueVoices = async () => {
@@ -1010,7 +1130,7 @@ export default function ShortFilmEasyMode({
           return (
             <div key={character.id} className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/80 p-4">
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <FieldLabel>Character</FieldLabel>
                   <input
                     value={character.name}
@@ -1055,7 +1175,7 @@ export default function ShortFilmEasyMode({
                   className="mt-1 w-full resize-none rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
                 />
               </div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-[0.8fr_1.2fr]">
+              <div className="mt-3 space-y-3">
                 <ReferencePreview asset={refAsset} />
                 <div>
                   <FieldLabel>Face / wardrobe reference</FieldLabel>
@@ -1065,15 +1185,22 @@ export default function ShortFilmEasyMode({
                     assets={imageAssets}
                     placeholder="Choose character image"
                   />
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
                     <div>
                       <FieldLabel>Voice preset</FieldLabel>
-                      <input
+                      <select
                         value={character.voicePreset}
                         onChange={(event) => updateCharacter(character.id, { voicePreset: event.target.value })}
                         className="mt-1 w-full rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                      />
-                      <p className="mt-1 text-[10px] text-sf-text-muted">Use the ElevenLabs selector name, e.g. Roger (male, american).</p>
+                      >
+                        {character.voicePreset && !ELEVENLABS_VOICE_OPTIONS.includes(character.voicePreset) && (
+                          <option value={character.voicePreset}>{character.voicePreset}</option>
+                        )}
+                        {ELEVENLABS_VOICE_OPTIONS.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[10px] text-sf-text-muted">Matches the bundled ElevenLabs voice selector.</p>
                     </div>
                     <div>
                       <FieldLabel>Voice notes</FieldLabel>
@@ -1344,14 +1471,25 @@ export default function ShortFilmEasyMode({
             This is the script as a production checklist: wides, close-ups, reactions, inserts, and cutaways.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={generateShotPlan}
-          className="inline-flex items-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white hover:bg-sf-accent/90"
-        >
-          <Wand2 className="h-4 w-4" />
-          Refresh Plan
-        </button>
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={clearShotPlan}
+            disabled={shotPlan.length === 0}
+            className="inline-flex items-center gap-2 rounded-lg border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs font-semibold text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Trash2 className="h-4 w-4" />
+            Clear Plan
+          </button>
+          <button
+            type="button"
+            onClick={generateShotPlan}
+            className="inline-flex items-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white hover:bg-sf-accent/90"
+          >
+            <Wand2 className="h-4 w-4" />
+            Rebuild From Script
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-3">
@@ -1369,11 +1507,12 @@ export default function ShortFilmEasyMode({
           const location = locations.find((entry) => entry.slug === shot.locationSlug)
           const character = characters.find((entry) => entry.slug === shot.characterSlug)
           const dialogue = dialogueLines.find((entry) => entry.id === shot.dialogueId)
+          const isEditing = editingShotId === shot.id
           return (
             <div key={shot.id} className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/80 p-4">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <div className="text-[10px] uppercase tracking-wide text-sf-text-muted">Shot {index + 1} · {shot.scene}</div>
+                  <div className="text-[10px] uppercase tracking-wide text-sf-text-muted">Shot {index + 1} / {shot.scene}</div>
                   <h3 className="mt-1 font-semibold text-sf-text-primary">{shot.title}</h3>
                   <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
                     <span className="rounded-full border border-sf-dark-600 px-2 py-0.5 text-sf-text-muted">{shot.type}</span>
@@ -1384,11 +1523,106 @@ export default function ShortFilmEasyMode({
                 </div>
                 <button
                   type="button"
-                  className="rounded-lg border border-sf-dark-700 px-3 py-1.5 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary"
+                  onClick={() => setEditingShotId(isEditing ? '' : shot.id)}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-sf-dark-700 px-3 py-1.5 text-xs text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary"
                 >
-                  Edit
+                  <Edit3 className="h-3.5 w-3.5" />
+                  {isEditing ? 'Done' : 'Edit'}
                 </button>
               </div>
+              {isEditing && (
+                <div className="mt-4 border-t border-sf-dark-700 pt-4">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <label className="block">
+                      <FieldLabel>Shot title</FieldLabel>
+                      <input
+                        value={shot.title || ''}
+                        onChange={(event) => updateShotPlanShot(shot.id, { title: event.target.value })}
+                        className="mt-1 w-full rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      />
+                    </label>
+                    <label className="block">
+                      <FieldLabel>Shot type</FieldLabel>
+                      <input
+                        value={shot.type || ''}
+                        onChange={(event) => updateShotPlanShot(shot.id, { type: event.target.value })}
+                        className="mt-1 w-full rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      />
+                    </label>
+                    <label className="block">
+                      <FieldLabel>Duration</FieldLabel>
+                      <input
+                        type="number"
+                        min="1"
+                        max="30"
+                        value={shot.duration || 4}
+                        onChange={(event) => updateShotPlanShot(shot.id, { duration: Math.max(1, Math.min(30, Number(event.target.value) || 1)) })}
+                        className="mt-1 w-full rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      />
+                    </label>
+                    <label className="block">
+                      <FieldLabel>Location</FieldLabel>
+                      <select
+                        value={shot.locationSlug || ''}
+                        onChange={(event) => updateShotPlanShot(shot.id, { locationSlug: event.target.value })}
+                        className="mt-1 w-full rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      >
+                        {locations.map((entry) => (
+                          <option key={entry.slug} value={entry.slug}>{entry.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <label className="block">
+                      <FieldLabel>Character reference</FieldLabel>
+                      <select
+                        value={shot.characterSlug || ''}
+                        onChange={(event) => updateShotPlanShot(shot.id, { characterSlug: event.target.value })}
+                        className="mt-1 w-full rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      >
+                        <option value="">No specific character</option>
+                        {characters.map((entry) => (
+                          <option key={entry.slug} value={entry.slug}>{entry.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <FieldLabel>Dialogue audio</FieldLabel>
+                      <select
+                        value={shot.dialogueId || ''}
+                        onChange={(event) => updateShotPlanShot(shot.id, { dialogueId: event.target.value })}
+                        className="mt-1 w-full rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                      >
+                        <option value="">No dialogue audio</option>
+                        {dialogueLines.map((line) => (
+                          <option key={line.id} value={line.id}>{line.speaker}: {line.text}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                    <label className="block">
+                      <FieldLabel>Keyframe prompt</FieldLabel>
+                      <textarea
+                        value={shot.keyframe || ''}
+                        onChange={(event) => updateShotPlanShot(shot.id, { keyframe: event.target.value })}
+                        rows={5}
+                        className="mt-1 w-full resize-y rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs leading-relaxed text-sf-text-primary outline-none focus:border-sf-accent"
+                      />
+                    </label>
+                    <label className="block">
+                      <FieldLabel>Motion prompt</FieldLabel>
+                      <textarea
+                        value={shot.motion || ''}
+                        onChange={(event) => updateShotPlanShot(shot.id, { motion: event.target.value })}
+                        rows={5}
+                        className="mt-1 w-full resize-y rounded-lg border border-sf-dark-700 bg-sf-dark-950 px-3 py-2 text-xs leading-relaxed text-sf-text-primary outline-none focus:border-sf-accent"
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
               {dialogue && <p className="mt-3 text-xs text-sf-text-secondary">Dialogue audio: "{dialogue.text}"</p>}
               <div className="mt-3 grid gap-3 lg:grid-cols-2">
                 <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950 p-3">
