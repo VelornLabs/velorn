@@ -32,6 +32,14 @@ If you add or change a built-in workflow:
 4. Run `npm run starter-pack:build`.
 5. Review the generated files under `docs/workflow-starter-pack/`.
 
+## Contributor License Agreement
+
+Before opening a pull request, read `CONTRIBUTOR_LICENSE_AGREEMENT.md`.
+
+By submitting a pull request, you confirm that you have the right to contribute the change and that you agree to the Contributor License Agreement. The pull request template includes a checkbox for this confirmation.
+
+If you are contributing on behalf of an employer, client, school, or other organization, make sure you have permission before submitting the contribution.
+
 ## Pull Request Guidelines
 
 - Explain the user problem first, then the implementation.
