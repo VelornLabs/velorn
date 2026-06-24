@@ -3730,16 +3730,26 @@ export default function MusicVideoEasyMode({
       : null
     const previewShot = previewShotRow?.shot || null
     const hasImageBeat = previewShot && Object.prototype.hasOwnProperty.call(previewShot, 'imageBeat')
-    const previewPrompt = editableKeyframePrompt
-      ? String(hasImageBeat ? previewShot.imageBeat : (previewShot?.beat || previewShot?.referenceImagePrompt || mediaPreview.prompt || ''))
+    const previewPromptFallback = editableKeyframePrompt
+      ? String(hasImageBeat ? previewShot.imageBeat : (previewShot?.beat || previewShot?.referenceImagePrompt || ''))
       : editableVideoPrompt
-        ? String(previewShot?.videoBeat || previewShot?.beat || previewShot?.shotPrompt || mediaPreview.prompt || '')
-        : String(mediaPreview.prompt || '')
-    const previewRunDisabled = !previewShotRow || (editableKeyframePrompt ? singleKeyframeActionDisabled : singleVideoActionDisabled)
+        ? String(previewShot?.videoBeat || previewShot?.beat || previewShot?.shotPrompt || '')
+        : ''
+    const previewPrompt = String(mediaPreview.prompt ?? previewPromptFallback)
+    const previewPromptEmpty = editablePreviewPrompt && !previewPrompt.trim()
+    const previewRunDisabled = !previewShotRow || previewPromptEmpty || (editableKeyframePrompt ? singleKeyframeActionDisabled : singleVideoActionDisabled)
     const previewPromptLabel = editableKeyframePrompt ? 'Keyframe prompt' : 'Video motion prompt'
     const previewWorkflowLabel = editableKeyframePrompt ? selectedKeyframeWorkflowLabel : selectedVideoWorkflowLabel
     const previewStatusSetter = editableKeyframePrompt ? setKeyframeStatus : setVideoStatus
     const previewCopiedMessage = `Shot ${previewShotIndex + 1} ${editableKeyframePrompt ? 'keyframe' : 'video'} prompt copied.`
+    const previewKindLabel = editableKeyframePrompt ? 'keyframe' : 'video'
+    const previewActionLabel = editableKeyframePrompt ? 'Regenerate Keyframe' : 'Regenerate Video'
+    const previewActionBusy = (editableKeyframePrompt ? isQueuingKeyframes : isQueuingVideos) && selectedShotIndex === previewShotIndex
+    const previewActionTitle = previewRunDisabled
+      ? previewPromptEmpty
+        ? `Add a ${previewKindLabel} prompt before regenerating.`
+        : `${editableKeyframePrompt ? 'Keyframes' : 'Videos'} cannot be queued right now.`
+      : `Regenerate this ${previewKindLabel} with ${previewWorkflowLabel}.`
 
     return (
       <div
@@ -3825,19 +3835,20 @@ export default function MusicVideoEasyMode({
                       }}
                       disabled={previewRunDisabled}
                       className="inline-flex shrink-0 items-center gap-1 rounded-md border border-sf-accent/50 bg-sf-accent/10 px-2 py-1 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-900/60 disabled:text-sf-text-muted"
-                      title={previewRunDisabled ? `${editableKeyframePrompt ? 'Keyframes' : 'Videos'} cannot be queued right now.` : `Generate this ${editableKeyframePrompt ? 'keyframe' : 'video'} with ${previewWorkflowLabel}`}
+                      title={previewActionTitle}
                     >
-                      {(editableKeyframePrompt ? isQueuingKeyframes : isQueuingVideos) && selectedShotIndex === previewShotIndex
+                      {previewActionBusy
                         ? <Loader2 className="h-3 w-3 animate-spin" />
                         : editableKeyframePrompt
                           ? <Wand2 className="h-3 w-3" />
                           : <Play className="h-3 w-3" />}
-                      Run With {previewWorkflowLabel}
+                      {previewActionLabel}
                     </button>
                   </div>
                 </div>
                 <textarea
                   value={previewPrompt}
+                  aria-label={`Edit ${previewKindLabel} prompt`}
                   onChange={(event) => {
                     const nextPrompt = event.target.value
                     setMediaPreview((current) => current ? { ...current, prompt: nextPrompt } : current)
