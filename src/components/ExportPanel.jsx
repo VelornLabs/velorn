@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Download, Plus, Trash2, Play, Settings, Film, Clock, RotateCcw } from 'lucide-react'
+import { Download, Upload, Plus, Trash2, Play, Settings, Film, Clock, RotateCcw } from 'lucide-react'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import exportTimeline from '../services/exporter'
 import buildFcpXml from '../services/fcpxmlExporter'
+import parseFcpXml from '../services/fcpxmlImporter'
+import { importAsset } from '../services/fileSystem'
 
 const EXPORT_SETTINGS_STORAGE_PREFIX = 'comfystudio-export-settings-v1'
 
@@ -299,10 +301,24 @@ function sanitizeExportBaseName(value) {
     || 'ComfyStudio_Timeline'
 }
 
+function getFcpXmlImportCategory(resource, mediaType) {
+  if (mediaType === 'image' || resource?.kind === 'image') return 'images'
+  if (mediaType === 'audio' || resource?.kind === 'audio') return 'audio'
+  return 'video'
+}
+
 function ExportPanel() {
-  const { currentProject, currentProjectHandle, currentTimelineId, getCurrentTimelineSettings } = useProjectStore()
+  const {
+    currentProject,
+    currentProjectHandle,
+    currentTimelineId,
+    getCurrentTimelineSettings,
+    createTimeline,
+    switchTimeline,
+    saveProject,
+  } = useProjectStore()
   const { duration, inPoint, outPoint, getTimelineEndTime, selectedClipIds, clips, transitions, tracks } = useTimelineStore()
-  const { assets } = useAssetsStore()
+  const { assets, addAsset } = useAssetsStore()
   
   const projectName = currentProject?.name || 'Untitled'
   const currentTimeline = useMemo(() => (
@@ -325,6 +341,7 @@ function ExportPanel() {
   const [etaSeconds, setEtaSeconds] = useState(null)
   const [renderFps, setRenderFps] = useState(null)
   const [isXmlExporting, setIsXmlExporting] = useState(false)
+  const [isXmlImporting, setIsXmlImporting] = useState(false)
   const exportStartRef = useRef(null)
   const renderStartRef = useRef(null)
   const [nvencStatus, setNvencStatus] = useState({
@@ -1032,6 +1049,196 @@ function ExportPanel() {
       setIsXmlExporting(false)
     }
   }
+
+  const handleImportFcpXml = async () => {
+    if (isExporting || queueRunning || isXmlExporting || isXmlImporting) return
+    if (!window.electronAPI?.selectFile || !window.electronAPI?.readFile || !window.electronAPI?.exists) {
+      setExportError('FCPXML import is only available in the desktop app.')
+      return
+    }
+    if (typeof currentProjectHandle !== 'string') {
+      setExportError('Open a saved project before importing FCPXML.')
+      return
+    }
+
+    setIsXmlImporting(true)
+    setExportError(null)
+    setExportResult(null)
+    setExportProgress(0)
+    setEtaSeconds(null)
+    setRenderFps(null)
+    setExportStatus('Choosing FCPXML...')
+
+    try {
+      const filePath = await window.electronAPI.selectFile({
+        title: 'Import FCPXML',
+        filters: [
+          { name: 'Final Cut Pro XML', extensions: ['fcpxml', 'xml'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      })
+      if (!filePath) {
+        setExportStatus('FCPXML import cancelled')
+        return
+      }
+
+      setExportStatus('Reading FCPXML...')
+      const readResult = await window.electronAPI.readFile(filePath, { encoding: 'utf8' })
+      if (!readResult?.success) {
+        throw new Error(readResult?.error || 'Could not read FCPXML file.')
+      }
+
+      const fileBaseName = window.electronAPI.pathBasename
+        ? await window.electronAPI.pathBasename(filePath, '.fcpxml')
+        : 'Imported FCPXML'
+      const importPlan = parseFcpXml(readResult.data, {
+        name: `Imported ${fileBaseName || 'FCPXML'}`,
+      })
+      if (!importPlan.clips.length) {
+        throw new Error('No supported media clips were found in this FCPXML.')
+      }
+
+      setExportStatus('Importing referenced media...')
+      const resourcesById = new Map((importPlan.assets || []).map((resource) => [resource.id, resource]))
+      const warnings = [...(importPlan.warnings || [])]
+      const importedAssetsByResourceId = new Map()
+      const assetNeeds = new Map()
+
+      for (const clip of importPlan.clips) {
+        const resource = resourcesById.get(clip.resourceId)
+        if (!resource) continue
+        if (clip.mediaType === 'audio' && resource.kind === 'video') {
+          warnings.push(`Skipped audio-only clip "${clip.name}" from video source "${resource.name}".`)
+          continue
+        }
+        if (!resource.sourcePath) {
+          warnings.push(`Skipped "${resource.name}" because the FCPXML media path is missing.`)
+          continue
+        }
+        if (!assetNeeds.has(resource.id)) {
+          assetNeeds.set(resource.id, {
+            resource,
+            category: getFcpXmlImportCategory(resource, clip.mediaType),
+          })
+        }
+      }
+
+      for (const { resource, category } of assetNeeds.values()) {
+        const exists = await window.electronAPI.exists(resource.sourcePath)
+        if (!exists) {
+          warnings.push(`Skipped "${resource.name}" because the media file was not found: ${resource.sourcePath}`)
+          continue
+        }
+        const assetInfo = await importAsset(currentProjectHandle, resource.sourcePath, category)
+        const importedAsset = addAsset({
+          ...assetInfo,
+          name: resource.name || assetInfo.name,
+          settings: {
+            ...(assetInfo.settings || {}),
+            importedFromFcpXml: {
+              resourceId: resource.id,
+              originalPath: resource.sourcePath,
+            },
+          },
+        })
+        importedAssetsByResourceId.set(resource.id, importedAsset)
+      }
+
+      if (importedAssetsByResourceId.size === 0) {
+        throw new Error('No referenced media files could be imported. Check that the FCPXML media paths still exist on this machine.')
+      }
+
+      setExportStatus('Creating imported timeline...')
+      const newTimeline = createTimeline({
+        name: importPlan.name,
+        width: importPlan.settings.width,
+        height: importPlan.settings.height,
+        fps: importPlan.settings.fps,
+      })
+      if (!newTimeline?.id) {
+        throw new Error('Could not create a timeline for the FCPXML import.')
+      }
+      await switchTimeline(newTimeline.id)
+
+      const timelineApi = useTimelineStore.getState()
+      const latestAssets = useAssetsStore.getState().assets || []
+      timelineApi.loadFromProject({
+        ...newTimeline,
+        width: importPlan.settings.width,
+        height: importPlan.settings.height,
+        fps: importPlan.settings.fps,
+        duration: importPlan.duration,
+        tracks: importPlan.tracks,
+        clips: [],
+        transitions: [],
+        markers: [],
+        clipCounter: 1,
+        transitionCounter: 1,
+        markerCounter: 1,
+      }, latestAssets, importPlan.settings.fps)
+
+      let addedClipCount = 0
+      let skippedClipCount = 0
+      for (const clip of importPlan.clips) {
+        const resource = resourcesById.get(clip.resourceId)
+        if (clip.mediaType === 'audio' && resource?.kind === 'video') {
+          skippedClipCount += 1
+          continue
+        }
+        const importedAsset = importedAssetsByResourceId.get(clip.resourceId)
+        if (!importedAsset || !clip.trackId) {
+          skippedClipCount += 1
+          continue
+        }
+        const addedClip = useTimelineStore.getState().addClip(
+          clip.trackId,
+          importedAsset,
+          clip.startTime,
+          importPlan.settings.fps,
+          {
+            duration: clip.duration,
+            trimStart: clip.trimStart,
+            trimEnd: clip.trimStart + clip.duration,
+            resolveOverlaps: false,
+            saveHistory: false,
+            selectAfterAdd: false,
+            metadata: {
+              importedFromFcpXml: {
+                originalClipId: clip.id,
+                resourceId: clip.resourceId,
+                lane: clip.lane,
+                mediaType: clip.mediaType,
+              },
+            },
+          }
+        )
+        if (addedClip) {
+          addedClipCount += 1
+        } else {
+          skippedClipCount += 1
+        }
+      }
+
+      if (addedClipCount === 0) {
+        throw new Error('No FCPXML clips could be placed on the imported timeline.')
+      }
+
+      await saveProject?.()
+      const warningSuffix = warnings.length || skippedClipCount
+        ? ` (${warnings.length + skippedClipCount} skipped/warnings)`
+        : ''
+      setExportResult({ outputPath: filePath, encoderUsed: 'FCPXML Import', clipCount: addedClipCount })
+      setExportStatus(`FCPXML import complete: ${addedClipCount} clips${warningSuffix}`)
+      if (warnings.length) {
+        console.warn('[FCPXML Import]', warnings)
+      }
+    } catch (err) {
+      setExportError(err?.message || 'FCPXML import failed')
+      setExportStatus('FCPXML import failed')
+    } finally {
+      setIsXmlImporting(false)
+    }
+  }
   
   return (
     <div className="flex-1 min-h-0 flex flex-col min-w-0 overflow-hidden bg-sf-dark-950">
@@ -1571,9 +1778,9 @@ function ExportPanel() {
             </button>
             <button
               onClick={handleStartExport}
-              disabled={isExporting || queueRunning}
+              disabled={isExporting || queueRunning || isXmlImporting}
               className={`px-3 py-1.5 text-xs rounded border flex items-center gap-1.5 transition-colors ${
-                isExporting || queueRunning
+                isExporting || queueRunning || isXmlImporting
                   ? 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600 cursor-not-allowed'
                   : 'bg-sf-accent text-white border-sf-accent hover:bg-sf-accent-hover'
               }`}
@@ -1583,9 +1790,9 @@ function ExportPanel() {
             </button>
             <button
               onClick={handleExportFcpXml}
-              disabled={isExporting || queueRunning || isXmlExporting}
+              disabled={isExporting || queueRunning || isXmlExporting || isXmlImporting}
               className={`px-3 py-1.5 text-xs rounded border flex items-center gap-1.5 transition-colors ${
-                isExporting || queueRunning || isXmlExporting
+                isExporting || queueRunning || isXmlExporting || isXmlImporting
                   ? 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600 cursor-not-allowed'
                   : 'bg-sf-dark-800 text-sf-text-primary border-sf-dark-600 hover:border-sf-accent hover:text-white'
               }`}
@@ -1593,6 +1800,19 @@ function ExportPanel() {
             >
               <Download className="w-3 h-3" />
               {isXmlExporting ? 'Exporting XML...' : 'Export FCPXML'}
+            </button>
+            <button
+              onClick={handleImportFcpXml}
+              disabled={isExporting || queueRunning || isXmlExporting || isXmlImporting}
+              className={`px-3 py-1.5 text-xs rounded border flex items-center gap-1.5 transition-colors ${
+                isExporting || queueRunning || isXmlExporting || isXmlImporting
+                  ? 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600 cursor-not-allowed'
+                  : 'bg-sf-dark-800 text-sf-text-primary border-sf-dark-600 hover:border-sf-accent hover:text-white'
+              }`}
+              title="Import an FCPXML as a new ComfyStudio timeline"
+            >
+              <Upload className="w-3 h-3" />
+              {isXmlImporting ? 'Importing XML...' : 'Import FCPXML'}
             </button>
           </div>
 
