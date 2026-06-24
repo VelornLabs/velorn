@@ -102,7 +102,7 @@ function buildTrackLaneMaps(tracks = []) {
   const visibleVideoTracks = tracks.filter((track) => track?.type === 'video' && track.visible !== false)
   const audibleAudioTracks = tracks.filter((track) => track?.type === 'audio' && track.muted !== true)
   return {
-    video: new Map(visibleVideoTracks.map((track, index) => [track.id, index + 1])),
+    video: new Map(visibleVideoTracks.map((track, index) => [track.id, visibleVideoTracks.length - index])),
     audio: new Map(audibleAudioTracks.map((track, index) => [track.id, -(index + 1)])),
   }
 }
@@ -116,37 +116,49 @@ function shouldExportClip(clip, track, asset) {
   return safeNumber(clip.duration, 0) > 0
 }
 
+function getClipMediaRole(clip, track, asset) {
+  if (track?.type === 'audio' || clip?.type === 'audio') return 'audio'
+  if (clip?.type === 'image' || asset?.type === 'image') return 'image'
+  return 'video'
+}
+
+function getResourceKey(asset, mediaRole) {
+  return `${asset.id}:${mediaRole}`
+}
+
 function buildResourceEntries(exportClips, timebase, formatId) {
-  const seenAssets = new Map()
+  const seenResources = new Map()
   const entries = []
 
   for (const item of exportClips) {
     const asset = item.asset
-    if (seenAssets.has(asset.id)) {
-      item.resourceId = seenAssets.get(asset.id)
+    const resourceKey = getResourceKey(asset, item.mediaRole)
+    if (seenResources.has(resourceKey)) {
+      item.resourceId = seenResources.get(resourceKey)
       continue
     }
 
-    const resourceId = `r${seenAssets.size + 2}`
-    seenAssets.set(asset.id, resourceId)
+    const resourceId = `r${seenResources.size + 2}`
+    seenResources.set(resourceKey, resourceId)
     item.resourceId = resourceId
 
-    const isImage = asset.type === 'image'
-    const isAudio = asset.type === 'audio'
+    const isImage = item.mediaRole === 'image'
+    const isAudio = item.mediaRole === 'audio'
+    const isVideoOnly = item.mediaRole === 'video'
     const mediaDurationFrames = Math.max(
       ...exportClips
-        .filter((entry) => entry.asset.id === asset.id)
+        .filter((entry) => getResourceKey(entry.asset, entry.mediaRole) === resourceKey)
         .map((entry) => getAssetMediaDuration(asset, entry.clip, timebase))
     )
     const attrs = [
       `id="${resourceId}"`,
       `name="${escapeXml(sanitizeName(asset.name, 'Media'))}"`,
-      `uid="${escapeXml(asset.id)}"`,
+      `uid="${escapeXml(`${asset.id}-${item.mediaRole}`)}"`,
       `src="${escapeXml(filePathToFileUri(asset.absolutePath))}"`,
       'start="0s"',
       `duration="${formatFrames(mediaDurationFrames, timebase)}"`,
       `hasVideo="${isAudio ? '0' : '1'}"`,
-      `hasAudio="${isImage ? '0' : (asset.hasAudio === false ? '0' : '1')}"`,
+      `hasAudio="${isImage || isVideoOnly ? '0' : (asset.hasAudio === false ? '0' : '1')}"`,
     ]
     if (!isAudio) attrs.push(`format="${formatId}"`)
     entries.push(`    <asset ${attrs.join(' ')}/>`)
@@ -162,7 +174,7 @@ function buildClipElement(item, timebase) {
   const sourceStart = Math.max(0, safeNumber(clip.trimStart, 0))
   const sourceStartFrames = secondsToFrames(sourceStart, timebase)
   const name = sanitizeName(clip.name || asset.name, 'Clip')
-  const audioAttrs = asset.type !== 'image' && asset.hasAudio !== false
+  const audioAttrs = item.mediaRole === 'audio' && asset.hasAudio !== false
     ? ' audioRole="dialogue"'
     : ''
   const enabledAttr = clip.enabled === false ? ' enabled="0"' : ''
@@ -201,6 +213,7 @@ export function buildFcpXml({
     .map((entry) => ({
       ...entry,
       lane: getClipLane(entry.clip, entry.track, trackLaneMaps),
+      mediaRole: getClipMediaRole(entry.clip, entry.track, entry.asset),
     }))
     .sort((a, b) => (
       safeNumber(a.clip.startTime, 0) - safeNumber(b.clip.startTime, 0)
