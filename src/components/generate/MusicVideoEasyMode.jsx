@@ -320,17 +320,21 @@ function getAssetUrl(asset) {
   return asset?.url || asset?.thumbnailUrl || asset?.proxyUrl || asset?.path || ''
 }
 
-function ShotVideoPreview({ hasVideo, keyframeUrl, placeholderLabel = "Needs keyframe" }) {
-  if (keyframeUrl) {
-    return <img src={keyframeUrl} alt="" className="h-full w-full object-cover opacity-70" loading="lazy" decoding="async" />
+function ShotVideoPreview({ videoUrl, keyframeUrl, placeholderLabel = "Needs keyframe" }) {
+  if (videoUrl) {
+    return (
+      <video
+        src={videoUrl}
+        className="h-full w-full object-cover opacity-80"
+        muted
+        playsInline
+        preload="metadata"
+      />
+    )
   }
 
-  if (hasVideo) {
-    return (
-      <div className="flex h-full w-full items-center justify-center bg-sf-dark-800 text-sf-text-muted">
-        <Play className="h-5 w-5 opacity-70" />
-      </div>
-    )
+  if (keyframeUrl) {
+    return <img src={keyframeUrl} alt="" className="h-full w-full object-cover opacity-70" loading="lazy" decoding="async" />
   }
 
   return <span className="flex h-full w-full items-center justify-center text-[10px] text-sf-text-muted">{placeholderLabel}</span>
@@ -549,6 +553,7 @@ export default function MusicVideoEasyMode({
   handleQueueYoloShotStoryboard,
   handleQueueYoloShotStoryboards,
   handleReplaceYoloMusicKeyframe,
+  handleReplaceYoloMusicVideo,
   handleQueueYoloVideos,
   handleQueueYoloShotVideo,
   handleQueueYoloShotVideos,
@@ -591,8 +596,12 @@ export default function MusicVideoEasyMode({
   const [replaceKeyframeTarget, setReplaceKeyframeTarget] = useState(null)
   const [replacementAssetId, setReplacementAssetId] = useState('')
   const [replacementBusy, setReplacementBusy] = useState(false)
+  const [replaceVideoTarget, setReplaceVideoTarget] = useState(null)
+  const [videoReplacementAssetId, setVideoReplacementAssetId] = useState('')
+  const [videoReplacementBusy, setVideoReplacementBusy] = useState(false)
   const [peopleWizard, setPeopleWizard] = useState(null)
   const replacementFileInputRef = useRef(null)
+  const videoReplacementFileInputRef = useRef(null)
 
   const peopleWizardGenerationEnabled = Boolean(canUsePeopleWizardGeneration && BUILTIN_WORKFLOW_PATHS['z-image-turbo'] && BUILTIN_WORKFLOW_PATHS['multi-angles'])
 
@@ -639,6 +648,15 @@ export default function MusicVideoEasyMode({
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [replaceKeyframeTarget])
+
+  useEffect(() => {
+    if (!replaceVideoTarget) return
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setReplaceVideoTarget(null)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [replaceVideoTarget])
 
   const closePeopleWizard = () => setPeopleWizard(null)
   const handlePeopleWizardBackdropClick = (event) => {
@@ -928,6 +946,7 @@ export default function MusicVideoEasyMode({
   const singleKeyframeActionDisabled = isQueuingKeyframes || yoloDependencyCheckInProgress || !customKeyframeReady || yoloActivePlanIsStale
   const singleVideoActionDisabled = isQueuingVideos || yoloDependencyCheckInProgress || !customVideoReady
   const replaceKeyframeActionDisabled = replacementBusy || !handleReplaceYoloMusicKeyframe || yoloActivePlanIsStale || plannedShotCount === 0
+  const replaceVideoActionDisabled = videoReplacementBusy || !handleReplaceYoloMusicVideo || yoloActivePlanIsStale || plannedShotCount === 0
   const canOpenCustomKeyframeWorkflow = !customKeyframeWorkflowLoaded || Boolean(customKeyframeValidation.ok)
   const canOpenCustomVideoWorkflow = !customVideoWorkflowLoaded || Boolean(customVideoValidation.ok)
   const replacementImageAssets = useMemo(() => (
@@ -944,6 +963,21 @@ export default function MusicVideoEasyMode({
   const selectedReplacementAsset = useMemo(
     () => replacementImageAssets.find((asset) => asset?.id === replacementAssetId) || null,
     [replacementAssetId, replacementImageAssets]
+  )
+  const replacementVideoAssets = useMemo(() => (
+    (assets || [])
+      .filter((asset) => {
+        if (asset?.type !== 'video') return false
+        const mime = String(asset?.mimeType || '').toLowerCase()
+        const name = [asset?.name, asset?.path, asset?.url].filter(Boolean).join(' ').toLowerCase()
+        if (mime && !mime.startsWith('video/')) return false
+        return /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(name) || mime.startsWith('video/')
+      })
+      .sort((a, b) => new Date(b?.createdAt || b?.imported || 0).getTime() - new Date(a?.createdAt || a?.imported || 0).getTime())
+  ), [assets])
+  const selectedVideoReplacementAsset = useMemo(
+    () => replacementVideoAssets.find((asset) => asset?.id === videoReplacementAssetId) || null,
+    [videoReplacementAssetId, replacementVideoAssets]
   )
 
   useEffect(() => {
@@ -1179,6 +1213,91 @@ export default function MusicVideoEasyMode({
     >
       {isQueuingVideos && selectedShotIndex === index ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
       Run
+    </button>
+  )
+
+  const openReplaceVideoDialog = (row, index) => {
+    if (!row || replaceVideoActionDisabled) return
+    const variant = getVariantForShot(row.scene.id, row.shot.id)
+    if (!variant?.key) {
+      setVideoStatus('Parse the director script before replacing a video for this shot.')
+      return
+    }
+    const existingAsset = getVideoAssetForVariant(variant)
+    setSelectedShotIndex(index)
+    setSelectedShotIndexes([index])
+    setSelectionAnchorIndex(index)
+    setMediaPreview(null)
+    setReplaceVideoTarget({
+      sceneId: row.scene.id,
+      shotId: row.shot.id,
+      shotIndex: index,
+      workflowId: selectedVideoWorkflowId,
+      label: `Shot ${index + 1}: ${row.shot.scriptShotLabel || row.scene.label || row.shot.id}`,
+      existingAssetId: existingAsset?.id || '',
+    })
+    setVideoReplacementAssetId('')
+  }
+
+  const closeReplaceVideoDialog = () => {
+    if (videoReplacementBusy) return
+    setReplaceVideoTarget(null)
+    setVideoReplacementAssetId('')
+    if (videoReplacementFileInputRef.current) videoReplacementFileInputRef.current.value = ''
+  }
+
+  const replaceVideoWithPayload = async (payload) => {
+    if (!replaceVideoTarget || videoReplacementBusy || !handleReplaceYoloMusicVideo) return
+    setVideoReplacementBusy(true)
+    setVideoStatus(`Replacing video for Shot ${replaceVideoTarget.shotIndex + 1}...`)
+    try {
+      const replacement = await handleReplaceYoloMusicVideo({
+        sceneId: replaceVideoTarget.sceneId,
+        shotId: replaceVideoTarget.shotId,
+        workflowId: replaceVideoTarget.workflowId || selectedVideoWorkflowId,
+        ...payload,
+      })
+      if (replacement) {
+        setVideoStatus(`Replaced video for Shot ${replaceVideoTarget.shotIndex + 1}. Assemble Timeline will use the new clip.`)
+        setReplaceVideoTarget(null)
+        setVideoReplacementAssetId('')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Could not replace video.')
+      setVideoStatus(`Could not replace video: ${message}`)
+    } finally {
+      setVideoReplacementBusy(false)
+      if (videoReplacementFileInputRef.current) videoReplacementFileInputRef.current.value = ''
+    }
+  }
+
+  const handleUseSelectedVideoReplacementAsset = () => {
+    if (!videoReplacementAssetId) {
+      setVideoStatus('Choose a video asset to use as the replacement clip.')
+      return
+    }
+    void replaceVideoWithPayload({ assetId: videoReplacementAssetId })
+  }
+
+  const handleVideoReplacementFileChange = (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    void replaceVideoWithPayload({ file })
+  }
+
+  const renderReplaceVideoButton = (row, index, label = 'Replace') => (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        openReplaceVideoDialog(row, index)
+      }}
+      disabled={replaceVideoActionDisabled || !row}
+      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-sf-dark-600 bg-sf-dark-900/85 px-2 py-1 text-[10px] font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+      title={replaceVideoActionDisabled ? 'Videos cannot be replaced right now.' : 'Replace this shot video with a project/imported video'}
+    >
+      <Upload className="h-3 w-3" />
+      {label}
     </button>
   )
 
@@ -3458,7 +3577,7 @@ export default function MusicVideoEasyMode({
                         ? 'bg-red-950/30'
                         : 'bg-sf-dark-800'
                   }`}>
-                    <ShotVideoPreview hasVideo={Boolean(videoUrl)} keyframeUrl={keyframeUrl} />
+                    <ShotVideoPreview videoUrl={videoUrl} keyframeUrl={keyframeUrl} />
                     {cardState.state === 'generating' && (
                       <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/10 to-transparent" />
                     )}
@@ -3493,6 +3612,7 @@ export default function MusicVideoEasyMode({
                       <div className="min-w-0 text-xs font-semibold text-sf-text-primary">Shot {index + 1}: {shot.scriptShotLabel || scene.label || shot.id}</div>
                       <div className="flex shrink-0 items-center gap-1">
                         {renderVideoRunButton({ scene, shot }, index)}
+                        {renderReplaceVideoButton({ scene, shot }, index)}
                         {renderCopyPromptButton(videoPrompt, `Shot ${index + 1} video prompt copied.`, setVideoStatus)}
                       </div>
                     </div>
@@ -3530,17 +3650,30 @@ export default function MusicVideoEasyMode({
                       {[selectedVideoWorkflowLabel, outputResolutionLabel, `${videoFps} fps`, getCoverageLabel(selectedShotRow.scene, selectedShotRow.shot)].filter(Boolean).join(' / ')}
                     </div>
                   </div>
-                <button
-                  type="button"
-                  onClick={handleRegenerateSelectedVideo}
-                  disabled={singleVideoActionDisabled}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                    {hasMultipleSelectedShots
-                      ? `Run ${selectedShotCount} Selected With ${selectedVideoWorkflowLabel}`
-                      : `Run Selected With ${selectedVideoWorkflowLabel}`}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleRegenerateSelectedVideo}
+                      disabled={singleVideoActionDisabled}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                      {hasMultipleSelectedShots
+                        ? `Run ${selectedShotCount} Selected With ${selectedVideoWorkflowLabel}`
+                        : `Run Selected With ${selectedVideoWorkflowLabel}`}
+                    </button>
+                    {!hasMultipleSelectedShots && (
+                      <button
+                        type="button"
+                        onClick={() => openReplaceVideoDialog(selectedShotRow, selectedShotIndex)}
+                        disabled={replaceVideoActionDisabled}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-sf-dark-600 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Upload className="h-4 w-4" />
+                        Replace Video
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="mt-3 grid gap-3 lg:grid-cols-2">
                   <div>
@@ -3831,6 +3964,107 @@ export default function MusicVideoEasyMode({
     )
   }
 
+  const renderReplaceVideoModal = () => {
+    if (!replaceVideoTarget) return null
+    const selectedAssetUrl = getAssetUrl(selectedVideoReplacementAsset)
+
+    return (
+      <div
+        className="fixed inset-0 z-50 overflow-y-auto bg-black/80 px-4 py-6 backdrop-blur-sm"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Replace video"
+        onClick={closeReplaceVideoDialog}
+      >
+        <div className="flex min-h-full items-center justify-center">
+          <div
+            className="w-[94vw] max-w-2xl rounded-lg border border-sf-dark-600 bg-sf-dark-950 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-sf-dark-700 px-4 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-sf-text-primary">Replace video</div>
+                <div className="mt-1 truncate text-[10px] text-sf-text-muted">{replaceVideoTarget.label}</div>
+              </div>
+              <button
+                type="button"
+                onClick={closeReplaceVideoDialog}
+                disabled={videoReplacementBusy}
+                className="rounded-md p-1.5 text-sf-text-muted transition-colors hover:bg-sf-dark-800 hover:text-sf-text-primary focus:outline-none focus:ring-2 focus:ring-sf-accent disabled:cursor-not-allowed disabled:opacity-50"
+                title="Close"
+                aria-label="Close replace video"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-4">
+              <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-3">
+                <div className="text-xs font-semibold text-sf-text-primary">Import a new video</div>
+                <p className="mt-1 text-[11px] leading-5 text-sf-text-secondary">
+                  The imported clip becomes the ready video for this shot. Existing videos stay untouched.
+                </p>
+                <input
+                  ref={videoReplacementFileInputRef}
+                  type="file"
+                  accept="video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi"
+                  className="hidden"
+                  onChange={handleVideoReplacementFileChange}
+                />
+                <button
+                  type="button"
+                  onClick={() => videoReplacementFileInputRef.current?.click()}
+                  disabled={videoReplacementBusy}
+                  className="mt-3 inline-flex items-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {videoReplacementBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                  Import Video
+                </button>
+              </div>
+
+              <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-3">
+                <div className="text-xs font-semibold text-sf-text-primary">Use an existing project video</div>
+                <div className="mt-3 grid gap-3 md:grid-cols-[1fr_160px] md:items-start">
+                  <div className="space-y-3">
+                    <select
+                      value={videoReplacementAssetId}
+                      onChange={(event) => setVideoReplacementAssetId(event.target.value)}
+                      disabled={videoReplacementBusy || replacementVideoAssets.length === 0}
+                      className="w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="">{replacementVideoAssets.length === 0 ? 'No video assets found' : 'Choose video...'}</option>
+                      {replacementVideoAssets.map((asset) => (
+                        <option key={asset.id} value={asset.id}>
+                          {asset.name || asset.path || asset.id}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleUseSelectedVideoReplacementAsset}
+                      disabled={videoReplacementBusy || !videoReplacementAssetId}
+                      className="inline-flex items-center gap-2 rounded-lg border border-sf-dark-600 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {videoReplacementBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Film className="h-3.5 w-3.5" />}
+                      Use Selected Video
+                    </button>
+                  </div>
+                  <div className="flex h-24 items-center justify-center overflow-hidden rounded-lg border border-sf-dark-700 bg-sf-dark-950">
+                    {selectedAssetUrl ? (
+                      <video src={selectedAssetUrl} className="h-full w-full object-cover" muted playsInline />
+                    ) : (
+                      <Film className="h-5 w-5 text-sf-text-muted" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const stepRenderer = {
     song: renderSongStep,
     people: renderPeopleStep,
@@ -3875,6 +4109,7 @@ export default function MusicVideoEasyMode({
       </div>
       {renderMediaPreviewModal()}
       {renderReplaceKeyframeModal()}
+      {renderReplaceVideoModal()}
     </>
   )
 }

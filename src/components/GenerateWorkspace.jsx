@@ -1849,6 +1849,12 @@ function getAdVideoVariantWorkflowKey(variantKey, workflowId) {
   return key && workflow ? `${key}::${workflow}` : ''
 }
 
+function getMusicVideoVariantWorkflowKey(variantKey, workflowId) {
+  const key = String(variantKey || '').trim()
+  const workflow = String(workflowId || '').trim()
+  return key && workflow ? `${key}::${workflow}` : ''
+}
+
 function buildGeneratedEditTimelineName(prefix, detail = '') {
   const safePrefix = String(prefix || 'Generated Edit').replace(/\s+/g, ' ').trim()
   const safeDetail = String(detail || '')
@@ -8609,6 +8615,152 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     yoloQueueVariants,
   ])
 
+  const handleReplaceYoloMusicVideo = useCallback(async ({ sceneId, shotId, assetId = '', file = null, workflowId = '' } = {}) => {
+    if (!isYoloMusicMode) return null
+    const variant = (yoloQueueVariants || []).find((entry) => (
+      String(entry?.sceneId || '') === String(sceneId || '') &&
+      String(entry?.shotId || '') === String(shotId || '')
+    ))
+    if (!variant?.key) {
+      const message = 'Parse the music video script before replacing a video.'
+      setFormError(message)
+      throw new Error(message)
+    }
+    if (!currentProjectHandle) {
+      const message = 'Open a project folder before replacing a video.'
+      setFormError(message)
+      throw new Error(message)
+    }
+
+    const sourceAsset = assetId ? assets.find((asset) => asset?.id === assetId) || null : null
+    if (!file && !sourceAsset) {
+      const message = 'Choose a video asset or import a video file first.'
+      setFormError(message)
+      throw new Error(message)
+    }
+    if (sourceAsset && sourceAsset.type !== 'video') {
+      const message = 'Only video assets can replace Step 5 videos.'
+      setFormError(message)
+      throw new Error(message)
+    }
+    if (file && file.type && !String(file.type).startsWith('video/')) {
+      const message = 'Only video files can replace Step 5 videos.'
+      setFormError(message)
+      throw new Error(message)
+    }
+
+    try {
+      let assetInfo = {}
+      let assetUrl = ''
+      let sourceName = ''
+      let sourceIsStoredFile = false
+
+      if (file) {
+        assetInfo = await importAsset(currentProjectHandle, file, 'video')
+        assetUrl = URL.createObjectURL(file)
+        sourceName = file.name || assetInfo.name || 'Imported video'
+        sourceIsStoredFile = true
+      } else if (sourceAsset) {
+        sourceName = sourceAsset.name || sourceAsset.path || sourceAsset.id || 'Project video'
+        sourceIsStoredFile = Boolean(sourceAsset.isImported || sourceAsset.path || sourceAsset.absolutePath)
+        assetInfo = {
+          path: sourceAsset.path || undefined,
+          absolutePath: sourceAsset.absolutePath || undefined,
+          size: sourceAsset.size,
+          mimeType: sourceAsset.mimeType,
+          duration: sourceAsset.duration ?? sourceAsset.settings?.duration,
+          width: sourceAsset.width ?? sourceAsset.settings?.width,
+          height: sourceAsset.height ?? sourceAsset.settings?.height,
+          fps: sourceAsset.fps ?? sourceAsset.settings?.fps,
+          hasAudio: sourceAsset.hasAudio,
+          audioEnabled: sourceAsset.audioEnabled,
+          videoCodec: sourceAsset.videoCodec,
+          audioCodec: sourceAsset.audioCodec,
+        }
+        assetUrl = sourceAsset.url || sourceAsset.thumbnailUrl || sourceAsset.proxyUrl || ''
+        if (!assetUrl && sourceAsset.path) {
+          assetUrl = await getProjectFileUrl(currentProjectHandle, sourceAsset.path)
+        }
+      }
+
+      if (!assetUrl && !assetInfo.path && !assetInfo.absolutePath) {
+        throw new Error('Could not resolve the replacement video file.')
+      }
+
+      const effectiveWorkflowId = String(workflowId || yoloDefaultVideoWorkflowId || MUSIC_VIDEO_SHOT_WORKFLOW_ID).trim()
+      const directorMeta = {
+        mode: 'music',
+        stage: 'video',
+        workflowId: effectiveWorkflowId,
+        key: getMusicVideoVariantWorkflowKey(variant.key, effectiveWorkflowId),
+        variantKey: variant.key,
+        sceneId: variant.sceneId,
+        shotId: variant.shotId,
+        angle: variant.angle,
+        take: variant.take,
+        durationSeconds: variant.durationSeconds,
+        profile: yoloMusicQualityProfile,
+        pass: (variant?.pass && typeof variant.pass === 'object') ? variant.pass : null,
+        coverage: (variant?.coverage && typeof variant.coverage === 'object') ? variant.coverage : null,
+        manualReplacement: {
+          source: file ? 'upload' : 'asset',
+          sourceAssetId: sourceAsset?.id || null,
+          sourceName,
+        },
+      }
+      const folderName = buildDirectorGeneratedFolderName(directorMeta, directorMeta.workflowId, 'video') || 'MVC Videos'
+      const folderId = ensureAssetFolderPath(['Generated', folderName])
+      const baseName = buildDirectorAssetDisplayName(directorMeta, directorMeta.workflowId) || 'MVC_video'
+      const replacementName = `${baseName}_manual`
+      const prompt = String(variant.videoPrompt || variant.prompt || '').trim()
+      const addedAsset = addAsset({
+        ...assetInfo,
+        name: replacementName,
+        type: 'video',
+        url: assetUrl || assetInfo.url || '',
+        prompt,
+        isImported: sourceIsStoredFile,
+        yolo: directorMeta,
+        folderId,
+        settings: {
+          ...(sourceAsset?.settings || {}),
+          ...(assetInfo.settings || {}),
+          duration: assetInfo.duration ?? sourceAsset?.duration ?? sourceAsset?.settings?.duration,
+          fps: assetInfo.fps ?? sourceAsset?.fps ?? sourceAsset?.settings?.fps ?? yoloVideoFps,
+          width: assetInfo.width ?? sourceAsset?.width ?? sourceAsset?.settings?.width,
+          height: assetInfo.height ?? sourceAsset?.height ?? sourceAsset?.settings?.height,
+          manualVideoReplacement: true,
+          sourceAssetId: sourceAsset?.id || undefined,
+          sourceAssetName: sourceName || undefined,
+        },
+        hasAudio: assetInfo.hasAudio ?? sourceAsset?.hasAudio,
+        audioEnabled: assetInfo.audioEnabled ?? sourceAsset?.audioEnabled,
+        videoCodec: assetInfo.videoCodec ?? sourceAsset?.videoCodec,
+        audioCodec: assetInfo.audioCodec ?? sourceAsset?.audioCodec,
+      })
+      await saveProject?.()
+      setFormError(null)
+      addComfyLog('ok', `Replaced video for ${variant.shotId || variant.key} with ${sourceName || 'video'}.`)
+      return addedAsset
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || 'Failed to replace video')
+      setFormError(message)
+      addComfyLog('error', `Video replacement failed: ${message}`)
+      throw error
+    }
+  }, [
+    addAsset,
+    addComfyLog,
+    assets,
+    currentProjectHandle,
+    isYoloMusicMode,
+    saveProject,
+    yoloDefaultVideoWorkflowId,
+    yoloMusicQualityProfile,
+    yoloQueueVariants,
+    yoloVideoFps,
+  ])
+
   const handleYoloShotVideoBeatChange = useCallback((sceneId, shotId, value) => {
     updateYoloShot(sceneId, shotId, (shot) => ({
       ...shot,
@@ -13895,6 +14047,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     handleQueueYoloShotStoryboard={handleQueueYoloShotStoryboard}
                     handleQueueYoloShotStoryboards={handleQueueYoloShotStoryboards}
                     handleReplaceYoloMusicKeyframe={handleReplaceYoloMusicKeyframe}
+                    handleReplaceYoloMusicVideo={handleReplaceYoloMusicVideo}
                     handleQueueYoloVideos={handleQueueYoloVideos}
                     handleQueueYoloShotVideo={handleQueueYoloShotVideo}
                     handleQueueYoloShotVideos={handleQueueYoloShotVideos}
