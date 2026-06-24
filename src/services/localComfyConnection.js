@@ -246,6 +246,40 @@ export async function checkLocalComfyConnection(options = {}) {
   }
 
   const config = buildConnection(normalizedPort)
+
+  if (typeof window !== 'undefined' && window?.electronAPI?.checkLocalComfyConnection) {
+    try {
+      const result = await window.electronAPI.checkLocalComfyConnection({
+        port: config.port,
+        timeoutMs,
+      })
+      if (result?.ok) {
+        return {
+          ok: true,
+          status: result.status,
+          httpBase: result.httpBase || config.httpBase,
+          port: result.port || config.port,
+          source: 'electron-main',
+        }
+      }
+      const status = Number(result?.status) || null
+      return {
+        ok: false,
+        status,
+        httpBase: result?.httpBase || config.httpBase,
+        port: result?.port || config.port,
+        source: 'electron-main',
+        error: status
+          ? `ComfyUI returned HTTP ${status}.`
+          : result?.timedOut
+            ? `Timed out connecting to ${config.httpBase}.`
+            : `Could not connect to ${config.httpBase}: ${result?.error || 'Unknown error'}`,
+      }
+    } catch {
+      // Fall back to renderer fetch so browser/dev builds still get a result.
+    }
+  }
+
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
   const timer = setTimeout(() => {
     if (controller) controller.abort()
@@ -268,7 +302,9 @@ export async function checkLocalComfyConnection(options = {}) {
       status: response.status,
       httpBase: config.httpBase,
       port: config.port,
-      error: `ComfyUI returned HTTP ${response.status}.`,
+      error: response.status === 403
+        ? 'ComfyUI returned HTTP 403. If this is a standalone ComfyUI session, launch it with --enable-cors-header * or use ComfyStudio’s built-in launcher.'
+        : `ComfyUI returned HTTP ${response.status}.`,
     }
   } catch (err) {
     const isTimeout = err?.name === 'AbortError'

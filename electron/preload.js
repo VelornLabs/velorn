@@ -348,6 +348,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Workflow Setup Manager
   // ============================================
 
+  checkLocalComfyConnection: (payload = {}) => ipcRenderer.invoke('comfyui:checkLocalConnection', payload),
   loadComfyUiWorkflowGraph: (payload = {}) => ipcRenderer.invoke('comfyui:loadWorkflowGraph', payload),
   getComfyCloudCreditBalance: () => ipcRenderer.invoke('comfyui:getCloudCreditBalance'),
   validateWorkflowSetupRoot: (rootPath) => ipcRenderer.invoke('workflowSetup:validateRoot', rootPath),

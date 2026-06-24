@@ -1813,20 +1813,34 @@ async function resolveLocalComfyPort() {
   }
 }
 
-async function checkComfyUIRunning(portOverride = null) {
+async function checkComfyUIRunning(portOverride = null, timeoutMs = COMFYUI_CHECK_MS) {
   const port = sanitizeLocalComfyPort(portOverride) || await resolveLocalComfyPort()
+  const timeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Number(timeoutMs)
+    : COMFYUI_CHECK_MS
   const healthUrl = `http://127.0.0.1:${port}/system_stats`
   return new Promise((resolve) => {
-    const req = http.get(healthUrl, (res) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
       resolve({
-        ok: res.statusCode === 200 || (res.statusCode >= 200 && res.statusCode < 400),
         port,
+        httpBase: `http://127.0.0.1:${port}`,
+        ...result,
+      })
+    }
+    const req = http.get(healthUrl, (res) => {
+      res.resume()
+      finish({
+        ok: res.statusCode === 200 || (res.statusCode >= 200 && res.statusCode < 400),
+        status: res.statusCode || 0,
       })
     })
-    req.on('error', () => resolve({ ok: false, port }))
-    req.setTimeout(COMFYUI_CHECK_MS, () => {
+    req.on('error', (error) => finish({ ok: false, error: error?.message || 'Connection failed.' }))
+    req.setTimeout(timeout, () => {
       req.destroy()
-      resolve({ ok: false, port })
+      finish({ ok: false, timedOut: true, error: 'Connection timed out.' })
     })
   })
 }
@@ -3389,6 +3403,15 @@ ipcMain.handle('comfyLauncher:connectExternal', async () => {
     return { success: true, state: comfyLauncher.getState() }
   } catch (error) {
     return { success: false, error: error?.message || String(error) }
+  }
+})
+
+ipcMain.handle('comfyui:checkLocalConnection', async (_event, payload = {}) => {
+  try {
+    const result = await checkComfyUIRunning(payload?.port, payload?.timeoutMs)
+    return { success: true, ...result }
+  } catch (error) {
+    return { success: false, ok: false, error: error?.message || String(error) }
   }
 })
 
