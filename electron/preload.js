@@ -115,13 +115,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Export worker (run export in separate window so main UI stays responsive)
   runExportInWorker: (payload) => ipcRenderer.invoke('export:runInWorker', payload),
   onExportProgress: (cb) => {
-    ipcRenderer.on('export:progress', (_, data) => cb(data))
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('export:progress', listener)
+    return () => ipcRenderer.removeListener('export:progress', listener)
   },
   onExportComplete: (cb) => {
-    ipcRenderer.on('export:complete', (_, data) => cb(data))
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('export:complete', listener)
+    return () => ipcRenderer.removeListener('export:complete', listener)
   },
   onExportError: (cb) => {
-    ipcRenderer.on('export:error', (_, err) => cb(err))
+    const listener = (_, err) => cb(err)
+    ipcRenderer.on('export:error', listener)
+    return () => ipcRenderer.removeListener('export:error', listener)
   },
   onExportJob: (cb) => {
     ipcRenderer.once('export:job', (_, job) => cb(job))
@@ -317,6 +323,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<string>}
    */
   getFileUrlDirect: (filePath) => ipcRenderer.invoke('media:getFileUrlDirect', filePath),
+  createImageThumbnail: (options) => ipcRenderer.invoke('media:createImageThumbnail', options),
 
   // ============================================
   // App Settings (persistent storage in userData)

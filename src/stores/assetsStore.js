@@ -2,10 +2,12 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { PLAYBACK_CACHE_VERSION } from '../services/playbackCache'
 
+const Z_IMAGE_TURBO_PREFIX = 'z_image_turbo_'
 const SPRITE_GENERATION_CONCURRENCY = 2
 let activeSpriteGenerationCount = 0
 const pendingSpriteGenerationQueue = []
 let posterProjectSaveTimer = null
+const pendingAssetUrlLoads = new Map()
 
 const runWithSpriteGenerationSlot = async (task) => {
   if (activeSpriteGenerationCount >= SPRITE_GENERATION_CONCURRENCY) {
@@ -39,11 +41,94 @@ const queueProjectPosterSave = (projectPath, delayMs = 1200) => {
     }
   }, delayMs)
 }
+const isLegacyDirectorZImageAsset = (asset) => {
+  if (!asset || asset.type !== 'image') return false
+  if (asset?.yolo?.stage !== 'storyboard') return false
+  const pathValue = asset.path || asset.absolutePath || ''
+  const fileName = pathValue.replace(/\\/g, '/').split('/').pop() || ''
+  return fileName.startsWith(Z_IMAGE_TURBO_PREFIX)
+}
 
+const sanitizeAssetFileName = (name) => {
+  const safeName = String(name || '')
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  return safeName || `keyframe_${Date.now()}`
+}
+
+const replacePathBasename = (pathValue, nextBaseName) => {
+  if (!pathValue) return pathValue
+  const normalized = String(pathValue).replace(/\\/g, '/')
+  const index = normalized.lastIndexOf('/')
+  return index >= 0 ? `${normalized.slice(0, index + 1)}${nextBaseName}` : nextBaseName
+}
+
+const buildLegacyDirectorZImageRepair = async (asset, projectHandle, resolvedAbsolutePath = null) => {
+  if (!isLegacyDirectorZImageAsset(asset)) return null
+  if (!window.electronAPI?.pathJoin || !window.electronAPI?.exists) return null
+
+  const sourceAbsolutePath = resolvedAbsolutePath || asset.absolutePath || (
+    asset.path ? await window.electronAPI.pathJoin(projectHandle, asset.path) : null
+  )
+  if (!sourceAbsolutePath) return null
+
+  const originalBaseName = asset.path || asset.absolutePath || sourceAbsolutePath
+  const originalFileName = originalBaseName.replace(/\\/g, '/').split('/').pop() || ''
+  const originalExtMatch = originalFileName.match(/\.[^.]+$/)
+  const extension = originalExtMatch?.[0] || '.png'
+  const targetFileName = `${sanitizeAssetFileName(asset.name)}${extension}`
+  const nextRelativePath = asset.path
+    ? replacePathBasename(asset.path, targetFileName)
+    : `assets/images/${targetFileName}`
+  const nextAbsolutePath = await window.electronAPI.pathJoin(projectHandle, nextRelativePath)
+
+  const sourceExists = await window.electronAPI.exists(sourceAbsolutePath)
+  const targetExists = await window.electronAPI.exists(nextAbsolutePath)
+
+  if (!sourceExists && targetExists) {
+    return {
+      asset: {
+        ...asset,
+        path: nextRelativePath,
+        absolutePath: nextAbsolutePath,
+      },
+      absolutePath: nextAbsolutePath,
+      renamed: false,
+      recoveredExisting: true,
+    }
+  }
+
+  if (!sourceExists || targetExists || sourceAbsolutePath === nextAbsolutePath) {
+    return null
+  }
+
+  if (!window.electronAPI?.moveFile) return null
+
+  const result = await window.electronAPI.moveFile(sourceAbsolutePath, nextAbsolutePath)
+  if (!result?.success) {
+    console.warn(`[Assets] Could not rename legacy Director keyframe ${originalFileName}:`, result?.error)
+    return null
+  }
+
+  return {
+    asset: {
+      ...asset,
+      path: nextRelativePath,
+      absolutePath: nextAbsolutePath,
+    },
+    absolutePath: nextAbsolutePath,
+    renamed: true,
+    recoveredExisting: false,
+  }
+}
 /**
  * Store for managing generated and imported assets
  * Persisted to localStorage for data survival across refreshes
- * 
+ *
  * Asset structure:
  * {
  *   id: string,
@@ -59,7 +144,7 @@ const queueProjectPosterSave = (projectPath, delayMs = 1200) => {
  *   mimeType: string,
  *   size: number,
  *   folderId: string | null (folder organization),
- *   
+ *
  *   // Mask-specific fields:
  *   sourceAssetId: string (for masks - the asset the mask was generated from),
  *   frameCount: number (for video masks - number of PNG frames),
@@ -71,16 +156,18 @@ export const useAssetsStore = create(
     (set, get) => ({
   // All assets (AI-generated + imported)
   assets: [],
-  
+
   // Folders for organizing assets
   folders: [],
-  
+
   // Currently selected asset for preview
   currentPreview: null,
-  
+
   // Counter for auto-naming
   assetCounter: 1,
   folderCounter: 1,
+  // Current project handle/path for lazy file URL resolution.
+  projectHandle: null,
 
   // Transient project/media preparation progress for heavy project opens.
   mediaPreparation: {
@@ -111,19 +198,19 @@ export const useAssetsStore = create(
       },
     })
   },
-  
+
   // Video playback state (shared between PreviewPanel and TransportControls)
   videoRef: null,
   isPlaying: false,
   currentTime: 0,
   duration: 0,
   volume: 0.75,
-  
+
   // Register video element ref
   registerVideoRef: (ref) => {
     set({ videoRef: ref })
   },
-  
+
   // Playback controls
   setIsPlaying: (playing) => set({ isPlaying: playing }),
   setCurrentTime: (time) => set({ currentTime: time }),
@@ -135,7 +222,7 @@ export const useAssetsStore = create(
     }
     set({ volume: vol })
   },
-  
+
   togglePlay: () => {
     const { videoRef, isPlaying, currentPreview } = get()
     if (videoRef) {
@@ -150,7 +237,7 @@ export const useAssetsStore = create(
       set({ isPlaying: !isPlaying })
     }
   },
-  
+
   seekTo: (time) => {
     const { videoRef, duration } = get()
     const clampedTime = Math.max(0, Math.min(duration, time))
@@ -160,7 +247,7 @@ export const useAssetsStore = create(
     // Always update currentTime state (needed for masks and other non-video assets)
     set({ currentTime: clampedTime })
   },
-  
+
   skip: (seconds) => {
     const { videoRef, currentTime, duration } = get()
     if (videoRef) {
@@ -169,7 +256,7 @@ export const useAssetsStore = create(
       set({ currentTime: newTime })
     }
   },
-  
+
   /**
    * Generate a name from prompt text
    */
@@ -182,11 +269,11 @@ export const useAssetsStore = create(
       .slice(0, 4)
       .join('_')
       .substring(0, 30)
-    
+
     set({ assetCounter: counter + 1 })
     return `${words}_${String(counter).padStart(3, '0')}`
   },
-  
+
   /**
    * Add a new generated asset
    */
@@ -204,47 +291,47 @@ export const useAssetsStore = create(
       createdAt: new Date().toISOString(),
       ...asset
     }
-    
+
     set((state) => ({
       assets: [newAsset, ...state.assets],
       currentPreview: newAsset // Auto-preview new assets
     }))
-    
+
     return newAsset
   },
-  
+
   /**
    * Set the current preview
    * Also resets playback state for the new asset
    */
   setPreview: (asset) => {
-    set({ 
-      currentPreview: asset, 
+    set({
+      currentPreview: asset,
       previewMode: 'asset',
       isPlaying: false,  // Don't auto-play, let user control
       currentTime: 0,    // Reset to start
     })
   },
-  
+
   /**
    * Preview mode: 'asset' (single asset preview) or 'timeline' (playing timeline)
    */
   previewMode: 'asset',
-  
+
   /**
    * Set the preview mode explicitly
    */
   setPreviewMode: (mode) => {
     set({ previewMode: mode })
   },
-  
+
   /**
    * Clear the current preview
    */
   clearPreview: () => {
     set({ currentPreview: null })
   },
-  
+
   /**
    * Remove an asset
    */
@@ -254,16 +341,16 @@ export const useAssetsStore = create(
       currentPreview: state.currentPreview?.id === id ? null : state.currentPreview
     }))
   },
-  
+
   /**
    * Rename an asset
    */
   renameAsset: (id, newName) => {
     set((state) => ({
-      assets: state.assets.map(a => 
+      assets: state.assets.map(a =>
         a.id === id ? { ...a, name: newName } : a
       ),
-      currentPreview: state.currentPreview?.id === id 
+      currentPreview: state.currentPreview?.id === id
         ? { ...state.currentPreview, name: newName }
         : state.currentPreview
     }))
@@ -442,7 +529,7 @@ export const useAssetsStore = create(
         URL.revokeObjectURL(asset.url)
       }
     })
-    
+
     set({
       assets: [],
       folders: [],
@@ -487,49 +574,115 @@ export const useAssetsStore = create(
       },
     })
 
-    const fileSystemHelpers = await import('../services/fileSystem')
-    const { getProjectFileUrl, getAbsoluteFileUrl, isElectron: isElectronMode } = fileSystemHelpers
-
     // Load assets - URLs need to be regenerated for imported assets
-    const assetsWithUrls = new Array(sourceAssets.length)
+    const assetsWithUrls = []
     let loadedAssetCount = 0
 
-    const hydrateAsset = async (asset, index) => {
+    for (const asset of sourceAssets) {
       const needsUrlRefresh = asset?.url?.startsWith?.('blob:')
       const hasPath = !!asset?.path
       const hasAbsolutePath = !!asset?.absolutePath
 
-      if ((asset?.isImported || needsUrlRefresh || hasPath || hasAbsolutePath) && projectHandle) {
+      if ((asset.isImported || needsUrlRefresh || hasPath || hasAbsolutePath) && projectHandle) {
+        // For imported assets (or stale blob URLs), regenerate URL from file
         try {
+          const { getProjectFileUrl, getAbsoluteFileUrl, isElectron } = await import('../services/fileSystem')
           let url = null
-          if (isElectronMode() && hasAbsolutePath) {
+          if (isElectron() && hasAbsolutePath) {
             url = await getAbsoluteFileUrl(asset.absolutePath)
           } else if (hasPath) {
             url = await getProjectFileUrl(projectHandle, asset.path)
           }
-
+          // Regenerate playback cache URL if we have a cached transcode
+          let playbackCacheUrl = null
           let playbackCachePath = asset.playbackCachePath
           let playbackCacheStatus = asset.playbackCacheStatus
+          if (asset.playbackCachePath) {
+            try {
+              // Validate playback cache exists before generating a file:// URL.
+              // Missing cache files lead to networkState=3 and black flicker during playback.
+              let canUsePlaybackCache = true
+              if (
+                isElectron() &&
+                typeof projectHandle === 'string' &&
+                window.electronAPI?.pathJoin &&
+                window.electronAPI?.exists
+              ) {
+                const absolutePlaybackCachePath = await window.electronAPI.pathJoin(projectHandle, asset.playbackCachePath)
+                canUsePlaybackCache = await window.electronAPI.exists(absolutePlaybackCachePath)
+              }
 
-          assetsWithUrls[index] = {
+              if (canUsePlaybackCache) {
+                playbackCacheUrl = await getProjectFileUrl(projectHandle, asset.playbackCachePath)
+              } else {
+                playbackCachePath = null
+                playbackCacheStatus = 'failed'
+                console.warn(`[PlaybackCache] Missing cache file for ${asset.name}; falling back to source`, {
+                  assetId: asset.id,
+                  playbackCachePath: asset.playbackCachePath,
+                })
+              }
+            } catch (e) {
+              playbackCachePath = null
+              playbackCacheStatus = 'failed'
+              console.warn(`Could not load playback cache for ${asset.name}:`, e)
+            }
+          }
+          // Regenerate proxy URL (low-res NLE-style proxy) the same way.
+          // Kept separate from playbackCache so both tiers can coexist:
+          // proxy is strongly preferred for multi-layer preview, playback
+          // cache is used when proxy is missing/disabled.
+          let proxyUrl = null
+          let proxyPath = asset.proxyPath
+          let proxyStatus = asset.proxyStatus
+          if (asset.proxyPath) {
+            try {
+              let canUseProxy = true
+              if (
+                isElectron() &&
+                typeof projectHandle === 'string' &&
+                window.electronAPI?.pathJoin &&
+                window.electronAPI?.exists
+              ) {
+                const absoluteProxyPath = await window.electronAPI.pathJoin(projectHandle, asset.proxyPath)
+                canUseProxy = await window.electronAPI.exists(absoluteProxyPath)
+              }
+
+              if (canUseProxy) {
+                proxyUrl = await getProjectFileUrl(projectHandle, asset.proxyPath)
+              } else {
+                proxyPath = null
+                proxyStatus = 'failed'
+                console.warn(`[ProxyCache] Missing proxy file for ${asset.name}; falling back to source`, {
+                  assetId: asset.id,
+                  proxyPath: asset.proxyPath,
+                })
+              }
+            } catch (e) {
+              proxyPath = null
+              proxyStatus = 'failed'
+              console.warn(`Could not load proxy for ${asset.name}:`, e)
+            }
+          }
+          assetsWithUrls.push({
             ...asset,
             url,
             playbackCachePath: playbackCachePath ?? undefined,
             playbackCacheStatus,
-            playbackCacheUrl: undefined,
-            proxyPath: asset.proxyPath ?? undefined,
-            proxyStatus: asset.proxyStatus,
-            proxyUrl: undefined,
-            poster: asset.poster || undefined,
-          }
+            playbackCacheUrl: playbackCacheUrl ?? undefined,
+            proxyPath: proxyPath ?? undefined,
+            proxyStatus,
+            proxyUrl: proxyUrl ?? undefined,
+          })
         } catch (err) {
           console.warn(`Could not load asset ${asset.name}:`, err)
-          assetsWithUrls[index] = { ...asset, url: null }
+          // Keep asset but mark URL as null
+          assetsWithUrls.push({ ...asset, url: null })
         }
       } else {
-        assetsWithUrls[index] = asset
+        // For AI/external assets, keep the URL as-is (may need ComfyUI to be running)
+        assetsWithUrls.push(asset)
       }
-
       loadedAssetCount += 1
       set({
         mediaPreparation: {
@@ -543,20 +696,6 @@ export const useAssetsStore = create(
       })
     }
 
-    const concurrency = Math.max(1, Math.min(8, Math.floor(Number(sourceAssets.length > 120 ? 8 : 4))))
-    let cursor = 0
-    const worker = async () => {
-      while (cursor < sourceAssets.length) {
-        const index = cursor
-        cursor += 1
-        const asset = sourceAssets[index]
-        await hydrateAsset(asset, index)
-        await new Promise((resolve) => setTimeout(resolve, 0))
-      }
-    }
-
-    await Promise.all(Array.from({ length: Math.min(concurrency, sourceAssets.length) }, () => worker()))
-    
     const nextState = {
       assets: assetsWithUrls,
       assetCounter: (projectAssets?.length || 0) + 1,
@@ -599,10 +738,10 @@ export const useAssetsStore = create(
    */
   updateAssetUrl: (assetId, url) => {
     set((state) => ({
-      assets: state.assets.map(a => 
+      assets: state.assets.map(a =>
         a.id === assetId ? { ...a, url } : a
       ),
-      currentPreview: state.currentPreview?.id === assetId 
+      currentPreview: state.currentPreview?.id === assetId
         ? { ...state.currentPreview, url }
         : state.currentPreview
     }))
@@ -615,10 +754,10 @@ export const useAssetsStore = create(
    */
   updateAssetSprite: (assetId, spriteData) => {
     set((state) => ({
-      assets: state.assets.map(a => 
+      assets: state.assets.map(a =>
         a.id === assetId ? { ...a, sprite: spriteData } : a
       ),
-      currentPreview: state.currentPreview?.id === assetId 
+      currentPreview: state.currentPreview?.id === assetId
         ? { ...state.currentPreview, sprite: spriteData }
         : state.currentPreview
     }))
@@ -664,14 +803,14 @@ export const useAssetsStore = create(
 
     // Mark as generating
     set((state) => ({
-      assets: state.assets.map(a => 
+      assets: state.assets.map(a =>
         a.id === assetId ? { ...a, spriteGenerating: true } : a
       )
     }))
 
     try {
       const { generateThumbnailSprite, saveSpriteToProject } = await import('../services/thumbnailSprites')
-      
+
       // Generate sprite. This uses a hidden video element and canvas seeks,
       // so keep generation bounded across imports/manual actions.
       const result = await runWithSpriteGenerationSlot(() => generateThumbnailSprite(asset.url, asset.duration || 5))
@@ -693,10 +832,10 @@ export const useAssetsStore = create(
 
       // Update asset with sprite data
       get().updateAssetSprite(assetId, spriteData)
-      
+
       // Clear generating flag
       set((state) => ({
-        assets: state.assets.map(a => 
+        assets: state.assets.map(a =>
           a.id === assetId ? { ...a, spriteGenerating: false } : a
         )
       }))
@@ -705,14 +844,14 @@ export const useAssetsStore = create(
       return spriteData
     } catch (err) {
       console.error('Failed to generate sprite:', err)
-      
+
       // Clear generating flag
       set((state) => ({
-        assets: state.assets.map(a => 
+        assets: state.assets.map(a =>
           a.id === assetId ? { ...a, spriteGenerating: false } : a
         )
       }))
-      
+
       return null
     }
   },
@@ -856,7 +995,6 @@ export const useAssetsStore = create(
     const videoAssets = state.assets
       .filter((asset) => asset?.type === 'video' && (!targetIds || targetIds.has(asset.id)))
       .slice(0, limit || undefined)
-
     if (videoAssets.length === 0) {
       get().clearMediaPreparation()
       return
@@ -1163,14 +1301,14 @@ export const useAssetsStore = create(
    */
   regenerateImportedUrls: async (projectHandle) => {
     if (!projectHandle) return
-    
+
     const state = get()
     const assetsNeedingUrls = state.assets.filter(a => a.isImported && a.path && !a.url)
-    
+
     if (assetsNeedingUrls.length === 0) return
-    
+
     console.log(`Regenerating URLs for ${assetsNeedingUrls.length} imported assets...`)
-    
+
     for (const asset of assetsNeedingUrls) {
       try {
         const { getProjectFileUrl } = await import('../services/fileSystem')
@@ -1207,10 +1345,10 @@ export const useAssetsStore = create(
    */
   addMaskAsset: (maskData) => {
     console.log('addMaskAsset called with:', maskData)
-    
+
     const state = get()
     const counter = state.assetCounter
-    
+
     const newMask = {
       id: Date.now().toString(),
       createdAt: new Date().toISOString(),
@@ -1227,17 +1365,17 @@ export const useAssetsStore = create(
       folderId: maskData.folderId || null,
       isImported: false, // Masks are always AI-generated
     }
-    
+
     console.log('Creating mask asset:', newMask)
-    
+
     set((state) => ({
       assets: [newMask, ...state.assets],
       assetCounter: state.assetCounter + 1,
       currentPreview: newMask
     }))
-    
+
     console.log('Mask asset added to store')
-    
+
     return newMask
   }
     }),

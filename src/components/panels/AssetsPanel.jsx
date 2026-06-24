@@ -6,6 +6,7 @@ import useTimelineStore from '../../stores/timelineStore'
 import { importAsset, isElectron, writeGeneratedOverlayToProject, deleteProjectFile } from '../../services/fileSystem'
 import { enqueuePlaybackTranscode, generatePlaybackCachesForAllVideos, isPlaybackCacheableVideoAsset } from '../../services/playbackCache'
 import { enqueueProxyTranscode, isProxyPlaybackEnabled } from '../../services/proxyCache'
+import { getOrCreateImageThumbnail } from '../../services/imageThumbnailCache'
 import { unstitchSequenceAsset } from '../../services/comfyAutoImport'
 import { deleteSpriteFromProject } from '../../services/thumbnailSprites'
 import { deleteVideoPosterFromProject } from '../../services/thumbnailPosters'
@@ -55,6 +56,7 @@ const assetMatchesSearch = (asset, normalizedQuery) => {
 function VideoAssetThumbnail({
   asset,
   Icon,
+  projectHandle = null,
   isActive = true,
   onVisible = null,
   iconClassName = 'w-3.5 h-3.5 text-sf-text-muted',
@@ -64,11 +66,13 @@ function VideoAssetThumbnail({
   const containerRef = useRef(null)
   const [shouldLoad, setShouldLoad] = useState(false)
   const didNotifyVisibleRef = useRef(false)
+  const [thumbnailUrl, setThumbnailUrl] = useState(null)
 
   useEffect(() => {
     if (!isActive) {
       setShouldLoad(false)
       didNotifyVisibleRef.current = false
+      setThumbnailUrl(null)
       return undefined
     }
 
@@ -94,6 +98,29 @@ function VideoAssetThumbnail({
     onVisible(asset)
   }, [asset, onVisible, shouldLoad])
 
+  useEffect(() => {
+    let cancelled = false
+    if (!shouldLoad || asset?.type !== 'image') {
+      setThumbnailUrl(null)
+      return () => { cancelled = true }
+    }
+
+    const sourceReady = asset?.url || asset?.path || asset?.absolutePath || asset?.thumbnailUrl
+    if (!sourceReady) {
+      setThumbnailUrl(null)
+      return () => { cancelled = true }
+    }
+
+    getOrCreateImageThumbnail(projectHandle, asset, { width: 128, height: 128, quality: 78 })
+      .then((url) => {
+        if (!cancelled) setThumbnailUrl(url || asset?.url || asset?.thumbnailUrl || null)
+      })
+      .catch(() => {
+        if (!cancelled) setThumbnailUrl(asset?.url || asset?.thumbnailUrl || null)
+      })
+
+    return () => { cancelled = true }
+  }, [asset, projectHandle, shouldLoad])
   const fallback = Icon ? <Icon className={iconClassName} /> : null
   const poster = asset?.poster
   const sprite = asset?.sprite
@@ -125,8 +152,14 @@ function VideoAssetThumbnail({
           style={spriteStyle}
           aria-hidden="true"
         />
-      ) : shouldLoad && asset?.type === 'image' && asset?.url ? (
-        <img src={asset.url} alt={imageAlt} className={imageClassName} loading="lazy" decoding="async" />
+      ) : shouldLoad && asset?.type === 'image' && (thumbnailUrl || asset?.url || asset?.thumbnailUrl) ? (
+        <img
+          src={thumbnailUrl || asset.url || asset.thumbnailUrl}
+          alt={imageAlt}
+          className={imageClassName}
+          loading="lazy"
+          decoding="async"
+        />
       ) : fallback}
     </div>
   )
@@ -417,17 +450,9 @@ function AssetsPanel({ isActive = true }) {
           }
         }
         
-        // Auto-generate thumbnail sprites for videos in background
-        if (category === 'video' && assetInfo.duration > 0.5 && newAsset) {
-          const projectPath = typeof currentProjectHandle === 'string' ? currentProjectHandle : null
-          // Generate sprites asynchronously (don't await)
-          generateAssetSprite(newAsset.id, projectPath).catch(err => {
-            console.warn('Auto-sprite generation failed:', err)
-          })
-          generateAssetPoster(newAsset.id, projectPath).catch(err => {
-            console.warn('Auto-poster generation failed:', err)
-          })
-        }
+        // Thumbnails/sprites are now strictly on-demand.
+        // We keep the imported asset metadata only and let the
+        // visible timeline/asset card request optimized media when needed.
       } catch (err) {
         console.error(`Error importing ${file.name}:`, err)
       }
@@ -2229,6 +2254,7 @@ function AssetsPanel({ isActive = true }) {
                         key={asset.poster?.url || asset.sprite?.url || asset.id}
                         asset={asset}
                         Icon={Icon}
+                        projectHandle={currentProjectHandle}
                         isActive={isActive}
                         onVisible={(visibleAsset) => {
                           hydrateAssetBrowserMedia(visibleAsset.id, currentProjectHandle).catch((err) => {

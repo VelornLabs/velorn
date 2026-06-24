@@ -300,7 +300,6 @@ function App() {
     : 0
   const showMediaPreparation = Boolean(mediaPreparation?.active && mediaPreparationTotal > 0)
   const visibleDownloadProgressItems = downloadProgressItems.filter(Boolean)
-  
   // Initialize project store on mount
   useEffect(() => {
     initialize()
@@ -488,8 +487,7 @@ function App() {
           })}
         </div>
       )}
-      
-      {/* Main Content Area */}
+
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* ComfyUI tab – kept mounted when visible so iframe does not reload */}
         <div
@@ -529,7 +527,7 @@ function App() {
             src={comfyIframeUrl}
             title="ComfyUI"
             className="flex-1 w-full min-h-0 border-0"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           />
         </div>
         {/* Generate tab – keep mounted so queue/progress survives tab switches */}
@@ -640,7 +638,7 @@ function App() {
                 
                 {/* Center - Preview */}
                 <div className="flex-1 min-w-0">
-                  <PreviewPanel />
+                  <PreviewPanel isActive={mainTab === 'editor'} />
                 </div>
                 
                 {/* Resize Handle - Inspector (only when expanded) */}
@@ -724,6 +722,7 @@ function App() {
                 <div className="flex-1 min-h-0">
                   {bottomEditorView === 'timeline' ? (
                     <Timeline
+                      isActive={mainTab === 'editor'}
                       onOpenAudioGenerate={openAudioModal}
                       onActiveToolChange={handleActiveTimelineToolChange}
                     />

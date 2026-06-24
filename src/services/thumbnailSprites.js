@@ -28,6 +28,16 @@ const SPRITE_CONFIG = {
 
 const SPRITE_INDEX_FILE = 'sprite_index.json'
 
+function releaseVideoElement(video) {
+  if (!video) return
+  try { video.pause() } catch (_) {}
+  video.onloadedmetadata = null
+  video.onseeked = null
+  video.onerror = null
+  try { video.removeAttribute('src') } catch (_) {}
+  try { video.srcObject = null } catch (_) {}
+  try { video.load() } catch (_) {}
+}
 async function getThumbnailDirectory(projectPath) {
   const api = window.electronAPI
   return await api.pathJoin(projectPath, 'thumbnails')

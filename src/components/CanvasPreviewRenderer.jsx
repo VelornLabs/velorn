@@ -741,24 +741,51 @@ function CanvasPreviewRenderer({
     if (now - lastPreloadTimeRef.current < 250) return
     lastPreloadTimeRef.current = now
     const getAssetById = useAssetsStore.getState().getAssetById
+    const videoTrackIds = new Set(
+      state.tracks
+        .filter((track) => track.type === 'video' && track.enabled !== false)
+        .map((track) => track.id)
+    )
     const isForward = state.playbackRate >= 0
     const lookaheadEnd = time + (isForward ? PRELOAD_LOOKAHEAD : -PRELOAD_LOOKAHEAD)
-    const videoTrackIds = new Set(state.tracks.filter(t => t.type === 'video').map(t => t.id))
+    const nextByTrack = new Map()
+    const clipsToLoad = []
     state.clips.forEach((clip) => {
       if (!videoTrackIds.has(clip.trackId) || clip.type !== 'video' || clip.enabled === false) return
       const clipStart = Number(clip.startTime) || 0
       const clipDuration = Number(clip.duration) || 0
       const clipEnd = clipStart + clipDuration
-      const isActive = time >= clipStart && time < clipEnd
-      const isUpcoming = isForward
+      if (time >= clipStart && time < clipEnd) {
+        clipsToLoad.push(clip)
+        return
+      }
+      if (!state.isPlaying) return
+      const isCandidate = isForward
         ? clipStart > time && clipStart <= lookaheadEnd
         : clipEnd < time && clipEnd >= lookaheadEnd
-      if (!isActive && !isUpcoming) return
+      if (!isCandidate) return
+      const current = nextByTrack.get(clip.trackId)
+      if (!current) {
+        nextByTrack.set(clip.trackId, clip)
+        return
+      }
+      const currentStart = Number(current.startTime) || 0
+      const currentEnd = currentStart + (Number(current.duration) || 0)
+      if (isForward ? clipStart < currentStart : clipEnd > currentEnd) {
+        nextByTrack.set(clip.trackId, clip)
+      }
+    })
+    clipsToLoad.push(...nextByTrack.values())
+    clipsToLoad.forEach((clip) => {
       const url = resolvePreviewUrl(clip, getAssetById, state.useProxyPlaybackForAssets)
       if (!url) return
       const video = videoCache.getVideoElement({ ...clip, url }, true)
-      if (!video || video.readyState < 1 || isActive) return
-      const targetTimelineTime = isForward ? clipStart : clipEnd
+      if (!video || video.readyState < 1) return
+      const clipStart = Number(clip.startTime) || 0
+      const clipEnd = clipStart + (Number(clip.duration) || 0)
+      const targetTimelineTime = time >= clipStart && time < clipEnd
+        ? time
+        : isForward ? clipStart : clipEnd
       const targetTime = getClipPlaybackTimeAtTimeline(clip, targetTimelineTime)
       if (Math.abs((video.currentTime || 0) - targetTime) > 0.03) {
         video.currentTime = targetTime

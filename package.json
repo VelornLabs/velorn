@@ -13,7 +13,7 @@
     "electron:build": "npm run build && electron-builder",
     "electron:build:win": "npm run build && electron-builder --win",
     "electron:build:mac": "npm run build && electron-builder --mac",
-    "electron:build:linux": "npm run build && electron-builder --linux",
+    "electron:build:linux": "npm run build && electron-builder --linux AppImage",
     "electron:pack": "npm run build && electron-builder --dir",
     "angles:sheet": "node ./scripts/build-angle-sheet.mjs",
     "starter-pack:build": "node ./scripts/build-workflow-starter-pack.mjs",

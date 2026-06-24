@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import useProjectStore from '../../stores/projectStore'
+import { getOrCreateImageThumbnail } from '../../services/imageThumbnailCache'
 import {
   CheckCircle2,
   Clipboard,
@@ -320,9 +322,79 @@ function getAssetUrl(asset) {
   return asset?.url || asset?.thumbnailUrl || asset?.proxyUrl || asset?.path || ''
 }
 
-function ShotVideoPreview({ hasVideo, keyframeUrl, placeholderLabel = "Needs keyframe" }) {
-  if (keyframeUrl) {
-    return <img src={keyframeUrl} alt="" className="h-full w-full object-cover opacity-70" loading="lazy" decoding="async" />
+const LAZY_SHOT_PREVIEW_ROOT_MARGIN = '700px 0px'
+
+function LazyShotPreview({ children, placeholderLabel = 'Preview', enabled = true }) {
+  const ref = useRef(null)
+  const [shouldLoad, setShouldLoad] = useState(false)
+
+  useEffect(() => {
+    if (!enabled) {
+      setShouldLoad(false)
+      return undefined
+    }
+    if (shouldLoad) return undefined
+    const el = ref.current
+    if (!el) return undefined
+    if (typeof IntersectionObserver === 'undefined') {
+      setShouldLoad(true)
+      return undefined
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setShouldLoad(true)
+        observer.disconnect()
+      }
+    }, { root: null, rootMargin: LAZY_SHOT_PREVIEW_ROOT_MARGIN, threshold: 0.01 })
+
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [enabled, shouldLoad])
+
+  return (
+    <div ref={ref} className="h-full w-full">
+      {shouldLoad ? children : (
+        <span className="flex h-full w-full items-center justify-center text-[10px] text-sf-text-muted">{placeholderLabel}</span>
+      )}
+    </div>
+  )
+}
+
+function CachedShotImage({ asset, fallbackUrl, className, alt = '' }) {
+  const currentProjectHandle = useProjectStore((state) => state.currentProjectHandle)
+  const sourceUrl = getAssetUrl(asset) || fallbackUrl || ''
+  const [thumbnailUrl, setThumbnailUrl] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setThumbnailUrl(null)
+    if (!sourceUrl) return () => { cancelled = true }
+    getOrCreateImageThumbnail(currentProjectHandle, asset || { url: sourceUrl }, { width: 360, height: 204, quality: 78 })
+      .then((url) => {
+        if (!cancelled) setThumbnailUrl(url || sourceUrl)
+      })
+      .catch(() => {
+        if (!cancelled) setThumbnailUrl(sourceUrl)
+      })
+    return () => { cancelled = true }
+  }, [asset, currentProjectHandle, sourceUrl])
+
+  if (!sourceUrl) return null
+  if (!thumbnailUrl) {
+    return <span className="flex h-full w-full items-center justify-center text-[10px] text-sf-text-muted">Loading preview</span>
+  }
+  return <img src={thumbnailUrl} alt={alt} className={className} loading="lazy" decoding="async" />
+}
+
+function ShotVideoPreview({ hasVideo, keyframeAsset, placeholderLabel = "Needs keyframe", loadPreview = true }) {
+  const resolvedKeyframeUrl = getAssetUrl(keyframeAsset)
+  if (resolvedKeyframeUrl) {
+    return (
+      <LazyShotPreview placeholderLabel="Keyframe preview" enabled={loadPreview}>
+        <CachedShotImage asset={keyframeAsset} fallbackUrl={resolvedKeyframeUrl} className="h-full w-full object-cover opacity-70" />
+      </LazyShotPreview>
+    )
   }
 
   if (hasVideo) {
@@ -347,7 +419,6 @@ function inferPeopleWizardAssetPrefix(asset, fallbackValue = '') {
     .replace(/_(image|sheet)$/i, '')
   return normalizeCastSlug(baseName || fallbackValue || '')
 }
-
 function getVideoWorkflowScopedKey(variantKey, workflowId) {
   const key = String(variantKey || '').trim()
   const workflow = String(workflowId || '').trim()
@@ -592,6 +663,7 @@ export default function MusicVideoEasyMode({
   const replacementFileInputRef = useRef(null)
 
   const peopleWizardGenerationEnabled = Boolean(canUsePeopleWizardGeneration && BUILTIN_WORKFLOW_PATHS['z-image-turbo'] && BUILTIN_WORKFLOW_PATHS['multi-angles'])
+  const shouldLoadShotGridPreview = (index) => index < 24 || Math.abs(index - selectedShotIndex) <= 24
 
   useEffect(() => {
     if (!draftStorageKey || typeof localStorage === 'undefined') return
@@ -3011,12 +3083,9 @@ export default function MusicVideoEasyMode({
                         : 'bg-sf-dark-800'
                   }`}>
                     {url ? (
-                      <img
-                        src={url}
-                        alt=""
-                        className="h-full w-full object-cover"
-                        onLoad={(event) => rememberImageDimensions(asset, event.currentTarget)}
-                      />
+                      <LazyShotPreview placeholderLabel="Keyframe preview" enabled={shouldLoadShotGridPreview(index)}>
+                        <CachedShotImage asset={asset} className="h-full w-full object-cover" />
+                      </LazyShotPreview>
                     ) : (
                       <>
                         {cardState.state === 'generating' && (
@@ -3429,7 +3498,8 @@ export default function MusicVideoEasyMode({
                         ? 'bg-red-950/30'
                         : 'bg-sf-dark-800'
                   }`}>
-                    <ShotVideoPreview hasVideo={Boolean(videoUrl)} keyframeUrl={keyframeUrl} />
+                    <ShotVideoPreview hasVideo={Boolean(videoUrl)} keyframeAsset={keyframeAsset} loadPreview={shouldLoadShotGridPreview(index)} />
+                    <ShotVideoPreview hasVideo={Boolean(videoUrl)} keyframeAsset={keyframeAsset} loadPreview={shouldLoadShotGridPreview(index)} />
                     {cardState.state === 'generating' && (
                       <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/10 to-transparent" />
                     )}

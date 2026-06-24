@@ -60,13 +60,20 @@ export function useVideoPlayback() {
     if (now - lastPreloadTime.current < 500) return
     lastPreloadTime.current = now
     
-    // Preload clips that will be needed soon
-    videoCache.preloadUpcoming(clips, playheadPosition, playbackRate)
+    const enabledTrackIds = new Set(
+      tracks
+        .filter((track) => track.type === 'video' && track.enabled !== false)
+        .map((track) => track.id)
+    )
+    videoCache.preloadUpcoming(clips, playheadPosition, playbackRate, {
+      includeNext: isPlaying,
+      enabledTrackIds,
+    })
     
     // Update ready states
     const clipIds = clips.map(c => c.id)
     setReadyStates(videoCache.getReadyStates(clipIds))
-  }, [clips, playheadPosition, playbackRate])
+  }, [clips, playheadPosition, playbackRate, tracks, isPlaying])
 
   /**
    * Sync all visible videos to the current timeline position

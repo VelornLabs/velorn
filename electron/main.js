@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, screen, nativeImage } = require('electron')
 const crypto = require('crypto')
 const path = require('path')
 const os = require('os')
@@ -21,6 +21,15 @@ const {
 } = require('./comfyLauncher')
 
 const isDev = !app.isPackaged
+
+// Some Linux/Wayland stacks render a fully black Electron window with GPU
+// compositing enabled. Prefer the safer software path for packaged Linux apps.
+if (process.platform === 'linux') {
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu-compositing')
+  app.commandLine.appendSwitch('use-gl', 'angle')
+  app.commandLine.appendSwitch('use-angle', 'swiftshader-webgl')
+}
 
 // App icon (build/icon.png) – used for window and taskbar/dock
 const iconPath = path.join(__dirname, '..', 'build', 'icon.png')
@@ -63,6 +72,18 @@ let restoreFullscreenAfterMinimize = false
 let mainWindowStateSaveTimer = null
 const settingsPath = path.join(app.getPath('userData'), 'settings.json')
 let settingsWriteQueue = Promise.resolve()
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
+}
 
 function resolvePackagedBinaryPath(binaryPath) {
   if (!binaryPath || typeof binaryPath !== 'string') return binaryPath
@@ -299,15 +320,17 @@ async function saveMainWindowStateNow() {
   if (mainWindow.isMinimized()) return
 
   try {
-    const currentBounds = mainWindow.getBounds()
-    const normalBounds = sanitizeWindowBounds(mainWindow.getNormalBounds?.() || currentBounds)
+    const windowRef = mainWindow
+    const currentBounds = windowRef.getBounds()
+    const normalBounds = sanitizeWindowBounds(windowRef.getNormalBounds?.() || currentBounds)
     const display = screen.getDisplayMatching(currentBounds)
+    const isMaximized = windowRef.isMaximized()
     await writeSettingsRaw((settings) => ({
       ...settings,
       [MAIN_WINDOW_STATE_SETTING_KEY]: {
         bounds: normalBounds || sanitizeWindowBounds(currentBounds),
         displayId: display?.id ?? null,
-        isMaximized: mainWindow.isMaximized(),
+        isMaximized,
         updatedAt: new Date().toISOString(),
       },
     }))
@@ -2756,6 +2779,40 @@ ipcMain.handle('media:getFileUrlDirect', (event, filePath) => {
   return `file://${normalizedPath}`
 })
 
+ipcMain.handle('media:createImageThumbnail', async (event, { sourcePath, outputPath, width = 360, height = 204, quality = 78 } = {}) => {
+  try {
+    if (!sourcePath || !outputPath) {
+      return { success: false, error: 'Missing source or output path.' }
+    }
+    await fs.mkdir(path.dirname(outputPath), { recursive: true })
+    const sourceImage = nativeImage.createFromPath(sourcePath)
+    if (sourceImage.isEmpty()) {
+      return { success: false, error: 'Could not load source image.' }
+    }
+    const sourceSize = sourceImage.getSize()
+    const maxWidth = Math.max(1, Math.round(Number(width) || 360))
+    const maxHeight = Math.max(1, Math.round(Number(height) || 204))
+    const scale = Math.min(1, maxWidth / Math.max(1, sourceSize.width), maxHeight / Math.max(1, sourceSize.height))
+    const targetWidth = Math.max(1, Math.round(sourceSize.width * scale))
+    const targetHeight = Math.max(1, Math.round(sourceSize.height * scale))
+    const resized = scale < 1
+      ? sourceImage.resize({ width: targetWidth, height: targetHeight, quality: 'good' })
+      : sourceImage
+    const jpeg = resized.toJPEG(Math.max(1, Math.min(100, Math.round(Number(quality) || 78))))
+    await writeFileAtomic(outputPath, jpeg)
+    return {
+      success: true,
+      path: outputPath,
+      width: targetWidth,
+      height: targetHeight,
+      sourceWidth: sourceSize.width,
+      sourceHeight: sourceSize.height,
+    }
+  } catch (err) {
+    return { success: false, error: err?.message || String(err) }
+  }
+})
+
 ipcMain.handle('media:getVideoFps', async (event, filePath) => {
   if (!ffprobePath) {
     return { success: false, error: 'FFprobe binary not available.' }
@@ -3782,10 +3839,11 @@ ipcMain.handle('workflowSetup:install', async (event, payload = {}) => {
 // Export Operations
 // ============================================
 
-ipcMain.handle('export:runInWorker', async (event, payload) => {
+ipcMain.handle('export:runInWorker', async (event, payload = {}) => {
   if (exportWorkerWindow && !exportWorkerWindow.isDestroyed()) {
     return { success: false, error: 'Export already in progress' }
   }
+  const requestId = String(payload?.requestId || `export-${Date.now()}`)
   const workerUrl = isDev
     ? `http://127.0.0.1:5173?export=worker`
     : `file://${path.join(__dirname, '../dist/index.html')}?export=worker`
@@ -3806,9 +3864,12 @@ ipcMain.handle('export:runInWorker', async (event, payload) => {
   })
   const workerContents = exportWorkerWindow.webContents
   const forwardToMain = (channel, data) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(channel, data)
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      mainWindow.webContents.send(channel, { ...data, requestId })
+      return
     }
+    mainWindow.webContents.send(channel, { requestId, error: data })
   }
   const onProgress = (event, data) => {
     if (event.sender === workerContents) forwardToMain('export:progress', data)
@@ -3832,6 +3893,15 @@ ipcMain.handle('export:runInWorker', async (event, payload) => {
       }
     }
   }
+  const onWorkerReady = (event) => {
+    if (event.sender === workerContents) sendJob()
+  }
+  const cleanupExportWorkerListeners = () => {
+    ipcMain.removeListener('export:progress', onProgress)
+    ipcMain.removeListener('export:complete', onComplete)
+    ipcMain.removeListener('export:error', onError)
+    ipcMain.removeListener('export:workerReady', onWorkerReady)
+  }
   ipcMain.on('export:progress', onProgress)
   ipcMain.on('export:complete', onComplete)
   ipcMain.on('export:error', onError)
@@ -3840,15 +3910,9 @@ ipcMain.handle('export:runInWorker', async (event, payload) => {
       exportWorkerWindow.webContents.send('export:job', payload)
     }
   }
-  ipcMain.once('export:workerReady', (event) => {
-    if (event.sender === workerContents) sendJob()
-  })
+  ipcMain.on('export:workerReady', onWorkerReady)
   exportWorkerWindow.on('closed', () => {
-    ipcMain.removeListener('export:progress', onProgress)
-    ipcMain.removeListener('export:complete', onComplete)
-    ipcMain.removeListener('export:error', onError)
-  })
-  exportWorkerWindow.on('closed', () => {
+    cleanupExportWorkerListeners()
     exportWorkerWindow = null
   })
   await exportWorkerWindow.loadURL(workerUrl)
