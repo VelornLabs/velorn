@@ -3,6 +3,7 @@ import {
   X, Server, FolderOpen, Palette, Monitor, Save,
   HardDrive, Film, Keyboard, Wrench, Power,
   KeyRound, CheckCircle2, ExternalLink, Loader2, RefreshCcw,
+  Volume2, Play,
 } from 'lucide-react'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useTimelineStore from '../stores/timelineStore'
@@ -43,6 +44,13 @@ import {
   hasUsablePlaybackCache,
   isPlaybackCacheableVideoAsset,
 } from '../services/playbackCache'
+import {
+  GENERATION_COMPLETION_SOUND_CHANGED_EVENT,
+  GENERATION_COMPLETION_SOUND_OPTIONS,
+  getGenerationCompletionSoundSettings,
+  playGenerationCompletionSound,
+  setGenerationCompletionSoundSettings,
+} from '../services/generationCompletionSoundSettings'
 
 const AUTO_IMPORT_KEY = 'comfystudio-auto-import-comfy-outputs'
 const OUTPUT_DIRECTORY_SETTING_KEY = 'outputDirectory'
@@ -92,6 +100,12 @@ const SETTINGS_SECTIONS = [
     title: 'Appearance',
     icon: Palette,
     description: 'Pick the editor theme that best fits your workspace.',
+  },
+  {
+    id: 'notifications',
+    title: 'Notifications',
+    icon: Volume2,
+    description: 'Control completion sounds and lightweight app alerts.',
   },
   {
     id: 'hotkeys',
@@ -153,6 +167,9 @@ function GeneralTab({ initialSection = null }) {
   const [outputPath, setOutputPath] = useState('')
   const [workflowPath, setWorkflowPath] = useState('')
   const [activeThemeId, setActiveThemeId] = useState(() => getStoredThemeId())
+  const [generationCompletionSoundSettings, setGenerationCompletionSoundSettingsState] = useState(() => (
+    getGenerationCompletionSoundSettings()
+  ))
   const [pexelsApiKey, setPexelsApiKeyLocal] = useState('')
   const [comfyOrgApiKey, setComfyOrgApiKey] = useState('')
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false)
@@ -298,6 +315,14 @@ function GeneralTab({ initialSection = null }) {
     setActiveSection(resolveInitialSection(initialSection))
   }, [initialSection])
 
+  useEffect(() => {
+    const handler = (event) => {
+      setGenerationCompletionSoundSettingsState(event?.detail || getGenerationCompletionSoundSettings())
+    }
+    window.addEventListener(GENERATION_COMPLETION_SOUND_CHANGED_EVENT, handler)
+    return () => window.removeEventListener(GENERATION_COMPLETION_SOUND_CHANGED_EVENT, handler)
+  }, [])
+
   // Keep the Settings view in sync if the key is saved/cleared from any
   // other surface (Onboarding, Workflow Setup gallery, Generate tab).
   useEffect(() => {
@@ -314,6 +339,14 @@ function GeneralTab({ initialSection = null }) {
     try {
       localStorage.setItem(AUTO_IMPORT_KEY, String(next))
     } catch (_) {}
+  }
+
+  const handleGenerationCompletionSoundChange = (updates) => {
+    const next = setGenerationCompletionSoundSettings({
+      ...generationCompletionSoundSettings,
+      ...updates,
+    })
+    setGenerationCompletionSoundSettingsState(next)
   }
 
   const handleSavePexelsKey = () => {
@@ -947,6 +980,96 @@ function GeneralTab({ initialSection = null }) {
         </div>
       )
       break
+    case 'notifications': {
+      const soundEnabled = generationCompletionSoundSettings.enabled
+      const soundVolume = generationCompletionSoundSettings.volume
+      activeSectionContent = (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
+            <div>
+              <label className="text-sm text-sf-text-primary">Generation complete sound</label>
+              <p className="text-[10px] text-sf-text-muted">Play a short sound when the Generate queue finishes.</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={soundEnabled}
+              onClick={() => handleGenerationCompletionSoundChange({ enabled: !soundEnabled })}
+              className={`w-10 h-5 rounded-full transition-colors ${soundEnabled ? 'bg-sf-accent' : 'bg-sf-dark-600'}`}
+            >
+              <div className={`w-4 h-4 bg-white rounded-full transition-transform ${soundEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+            </button>
+          </div>
+
+          <div className={`rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3 ${soundEnabled ? '' : 'opacity-60'}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <label className="text-sm text-sf-text-primary">Volume</label>
+                <p className="text-[10px] text-sf-text-muted">0 is muted, 10 is loudest.</p>
+              </div>
+              <div className="rounded bg-sf-dark-800 px-2 py-1 text-xs text-sf-text-secondary">
+                {soundVolume === 0 ? 'Off' : `${soundVolume}/10`}
+              </div>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={10}
+              step={1}
+              value={soundVolume}
+              disabled={!soundEnabled}
+              onChange={(event) => handleGenerationCompletionSoundChange({ volume: Number(event.target.value) })}
+              className="mt-3 w-full accent-sf-accent disabled:cursor-not-allowed"
+            />
+          </div>
+
+          <div className={`rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3 ${soundEnabled ? '' : 'opacity-60'}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <label className="text-sm text-sf-text-primary">Sound</label>
+                <p className="text-[10px] text-sf-text-muted">Choose the completion sound style.</p>
+              </div>
+              <button
+                type="button"
+                disabled={!soundEnabled || soundVolume <= 0}
+                onClick={() => playGenerationCompletionSound(generationCompletionSoundSettings)}
+                className="inline-flex items-center gap-1.5 rounded bg-sf-dark-700 px-3 py-1.5 text-xs text-sf-text-secondary transition-colors hover:bg-sf-dark-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Play className="h-3.5 w-3.5" />
+                Preview
+              </button>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+              {GENERATION_COMPLETION_SOUND_OPTIONS.map((option) => {
+                const isSelected = option.id === generationCompletionSoundSettings.soundId
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => handleGenerationCompletionSoundChange({ soundId: option.id })}
+                    className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                      isSelected
+                        ? 'border-sf-accent bg-sf-accent/10'
+                        : 'border-sf-dark-700 bg-sf-dark-800 hover:bg-sf-dark-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-sf-text-primary">{option.label}</span>
+                      {isSelected && (
+                        <span className="text-[10px] text-sf-accent">Active</span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-[10px] text-sf-text-muted">{option.description}</p>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )
+      break
+    }
     case 'hotkeys':
       activeSectionContent = (
         <div className="space-y-5">

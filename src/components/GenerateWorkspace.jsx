@@ -26,6 +26,11 @@ import { BUILTIN_WORKFLOW_PATHS } from '../config/workflowRegistry'
 import { comfyui, validateCustomKeyframeWorkflow, validateCustomVideoWorkflow } from '../services/comfyui'
 import { markPromptHandledByApp } from '../services/comfyPromptGuard'
 import {
+  GENERATION_COMPLETION_SOUND_CHANGED_EVENT,
+  getGenerationCompletionSoundSettings,
+  playGenerationCompletionSound,
+} from '../services/generationCompletionSoundSettings'
+import {
   getProjectFileUrl,
   importAsset,
   isElectron,
@@ -3593,6 +3598,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
   // Generation queue state
   const [generationQueue, setGenerationQueue] = useState(() => loadPersistedGenerationQueue())
+  const [generationCompletionSoundSettings, setGenerationCompletionSoundSettingsState] = useState(() => (
+    getGenerationCompletionSoundSettings()
+  ))
   const [activeJobId, setActiveJobId] = useState(null)
   const processingRef = useRef(false)
   const queueRef = useRef([])
@@ -3600,6 +3608,10 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const queuePausedRef = useRef(false)
   const consecutiveRapidFailsRef = useRef(0)
   const lastJobFinishTimeRef = useRef(0)
+  const generationCompletionSoundSettingsRef = useRef(generationCompletionSoundSettings)
+  const queueCompletionSoundInitializedRef = useRef(false)
+  const previousNonTerminalQueueCountRef = useRef(0)
+  const lastQueueCompletionSoundSignatureRef = useRef('')
   const RAPID_FAIL_THRESHOLD_MS = 5000
   const MAX_CONSECUTIVE_RAPID_FAILS = 3
   const MIN_JOB_INTERVAL_MS = 2000
@@ -3931,6 +3943,58 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   // Keep queue ref in sync
   useEffect(() => {
     queueRef.current = generationQueue
+  }, [generationQueue])
+
+  useEffect(() => {
+    generationCompletionSoundSettingsRef.current = generationCompletionSoundSettings
+  }, [generationCompletionSoundSettings])
+
+  useEffect(() => {
+    const handleCompletionSoundSettingsChanged = (event) => {
+      const nextSettings = event?.detail || getGenerationCompletionSoundSettings()
+      generationCompletionSoundSettingsRef.current = nextSettings
+      setGenerationCompletionSoundSettingsState(nextSettings)
+    }
+
+    window.addEventListener(GENERATION_COMPLETION_SOUND_CHANGED_EVENT, handleCompletionSoundSettingsChanged)
+    return () => {
+      window.removeEventListener(GENERATION_COMPLETION_SOUND_CHANGED_EVENT, handleCompletionSoundSettingsChanged)
+    }
+  }, [])
+
+  useEffect(() => {
+    const nonTerminalCount = generationQueue.filter((job) => (
+      NON_TERMINAL_JOB_STATUSES.includes(job.status)
+    )).length
+    const terminalJobs = generationQueue.filter((job) => job.status === 'done' || job.status === 'error')
+    const terminalSignature = terminalJobs
+      .map((job) => [
+        job.id,
+        job.status,
+        Array.isArray(job.resultAssetIds) ? job.resultAssetIds.join(',') : '',
+        job.error || '',
+      ].join(':'))
+      .join('|')
+
+    if (!queueCompletionSoundInitializedRef.current) {
+      queueCompletionSoundInitializedRef.current = true
+      previousNonTerminalQueueCountRef.current = nonTerminalCount
+      lastQueueCompletionSoundSignatureRef.current = terminalSignature
+      return
+    }
+
+    if (
+      previousNonTerminalQueueCountRef.current > 0
+      && nonTerminalCount === 0
+      && terminalJobs.length > 0
+      && terminalSignature
+      && terminalSignature !== lastQueueCompletionSoundSignatureRef.current
+    ) {
+      playGenerationCompletionSound(generationCompletionSoundSettingsRef.current)
+      lastQueueCompletionSoundSignatureRef.current = terminalSignature
+    }
+
+    previousNonTerminalQueueCountRef.current = nonTerminalCount
   }, [generationQueue])
 
   useEffect(() => {
