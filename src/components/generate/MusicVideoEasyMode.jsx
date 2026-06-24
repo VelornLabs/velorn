@@ -490,6 +490,8 @@ export default function MusicVideoEasyMode({
   yoloMusicAsrLanguage = 'English',
   setYoloMusicAsrLanguage,
   yoloMusicAudioAsset,
+  yoloMusicStyleNotes = '',
+  setYoloMusicStyleNotes,
   yoloMusicTranscribingSrt,
   yoloMusicTranscriptionStatus,
   handleYoloMusicTranscribeSrt,
@@ -511,6 +513,7 @@ export default function MusicVideoEasyMode({
   handleYoloMusicCastSlugChange,
   handleYoloMusicCastLabelChange,
   handleYoloMusicCastRoleChange,
+  handleYoloMusicCastNotesChange,
   queuePeopleWizardJob,
   canUsePeopleWizardGeneration = false,
   yoloMusicKeyframeWorkflowId = 'nano-banana-2',
@@ -652,6 +655,7 @@ export default function MusicVideoEasyMode({
       name: String(entry?.label || ''),
       slug: String(entry?.slug || ''),
       role: String(entry?.role || 'lead'),
+      notes: String(entry?.notes || ''),
       assetPrefix: normalizeCastSlug(entry?.slug || entry?.label || entry?.assetId || 'person') || 'person',
       assetId: entry?.assetId || '',
       sheetAssetId: entry?.assetId || '',
@@ -1371,7 +1375,7 @@ export default function MusicVideoEasyMode({
     setParseStatus('')
     const nextPlan = handleBuildActiveYoloPlan({
       conceptOverride: '',
-      styleNotesOverride: '',
+      styleNotesOverride: yoloMusicStyleNotes,
     })
     const count = flattenPlanShots(nextPlan).length
     if (count > 0) {
@@ -1707,6 +1711,7 @@ export default function MusicVideoEasyMode({
       slug: normalizedSlug,
       assetId: finalAssetId,
       role: String(peopleWizard.role || 'lead'),
+      notes: String(peopleWizard.notes || '').trim().slice(0, 160),
     }
     setYoloMusicCast((prev) => {
       const list = Array.isArray(prev) ? [...prev] : []
@@ -1887,6 +1892,20 @@ export default function MusicVideoEasyMode({
             {yoloMusicAudioAssets.length === 0 && (
               <p className="mt-2 text-xs text-sf-text-muted">No audio assets in this project yet. Import song audio in Assets first.</p>
             )}
+          </div>
+
+          <div className="mt-4">
+            <FieldLabel>Song Style / Genre</FieldLabel>
+            <textarea
+              value={yoloMusicStyleNotes || ''}
+              onChange={(event) => setYoloMusicStyleNotes?.(event.target.value)}
+              rows={3}
+              className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent resize-y"
+              placeholder="e.g. symphonic metal, operatic female vocal, dark fantasy, huge drums, gothic cathedral atmosphere."
+            />
+            <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
+              Included in the copied Director Script brief so the LLM does not infer the visual style from lyrics alone.
+            </p>
           </div>
 
           <div className="mt-4 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3">
@@ -2184,6 +2203,19 @@ export default function MusicVideoEasyMode({
                       Used for the generated image and sheet file names.
                     </p>
                   </div>
+                  <div>
+                    <FieldLabel>Notes for Director Script</FieldLabel>
+                    <textarea
+                      value={peopleWizard.notes || ''}
+                      onChange={(event) => handlePeopleWizardFieldChange('notes', event.target.value)}
+                      rows={2}
+                      className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent resize-y"
+                      placeholder="Optional: female voice, harsh vocal, guitarist, never sings, lead performer energy."
+                    />
+                    <p className="mt-1 text-[10px] text-sf-text-muted">
+                      Included in the copied LLM brief so the script understands voice and performance context.
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -2438,6 +2470,9 @@ export default function MusicVideoEasyMode({
                 <div><span className="text-sf-text-muted">Name:</span> {peopleWizard.name || 'Untitled'}</div>
                 <div><span className="text-sf-text-muted">Slug:</span> {peopleWizard.slug || 'unset'}</div>
                 <div><span className="text-sf-text-muted">Role:</span> {peopleWizard.role || 'lead'}</div>
+                {String(peopleWizard.notes || '').trim() && (
+                  <div><span className="text-sf-text-muted">Notes:</span> {String(peopleWizard.notes || '').trim()}</div>
+                )}
                 <div><span className="text-sf-text-muted">Path:</span> {wizardStep}</div>
               </div>
             </div>
@@ -2563,6 +2598,16 @@ export default function MusicVideoEasyMode({
                   >
                     Remove
                   </button>
+                </div>
+                <div className="lg:col-span-5">
+                  <FieldLabel>Notes for Director Script</FieldLabel>
+                  <input
+                    type="text"
+                    value={entry?.notes || ''}
+                    onChange={(event) => handleYoloMusicCastNotesChange?.(entry.id, event.target.value)}
+                    placeholder="Optional: female voice, harsh vocal, guitarist, never sings"
+                    className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+                  />
                 </div>
               </div>
             )

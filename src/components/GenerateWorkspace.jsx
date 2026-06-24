@@ -1255,6 +1255,7 @@ function composeMusicShotVideoPrompt({
   lyricMoment = '',
   concept = '',
   styleNotes = '',
+  cameraDirection = '',
 }) {
   const shouldUseLyricCue = Boolean(shotTypeOption?.needsVocalAlignment)
   const lyricCue = shouldUseLyricCue ? String(lyricMoment || '')
@@ -1265,10 +1266,12 @@ function composeMusicShotVideoPrompt({
   const motion = String(motionPromptRaw || '').trim()
   const conceptLine = String(concept || '').trim()
   const styleLine = String(styleNotes || '').trim()
+  const cameraLine = String(cameraDirection || '').trim()
   const shotSuffix = String(shotTypeOption?.promptSuffix || '').trim()
 
   const parts = [
     motion,
+    cameraLine ? `Camera: ${cameraLine}.` : '',
     shotSuffix,
     lyricCue ? `The artist visibly sings this exact lyric phrase: "${lyricCue}".` : '',
     conceptLine ? `Concept: ${conceptLine}.` : '',
@@ -1294,10 +1297,12 @@ function composeMusicShotReferencePrompt({
   shotTypeOption = null,
   concept = '',
   styleNotes = '',
+  cameraDirection = '',
 }) {
   const keyframe = String(keyframePromptRaw || '').trim()
   const conceptLine = String(concept || '').trim()
   const styleLine = String(styleNotes || '').trim()
+  const cameraLine = String(cameraDirection || '').trim()
   const shotFocus = shotTypeOption?.id === 'b_roll'
     ? 'Environment / cutaway composition, no performer singing on camera.'
     : shotTypeOption?.id === 'performance_wide'
@@ -1306,6 +1311,7 @@ function composeMusicShotReferencePrompt({
 
   const parts = [
     keyframe,
+    cameraLine ? `Camera setup: ${cameraLine}.` : '',
     shotFocus,
     conceptLine ? `Concept: ${conceptLine}.` : '',
     styleLine ? `Style: ${styleLine}.` : '',
@@ -1583,12 +1589,14 @@ function buildMusicVideoPlanFromScript(options = {}) {
         lyricMoment: effectiveLyricMomentHint,
         concept,
         styleNotes,
+        cameraDirection: scriptShot.cameraDirection,
       })
       const referencePrompt = composeMusicShotReferencePrompt({
         keyframePromptRaw: scriptShot.keyframePromptRaw || scriptShot.imageBeat,
         shotTypeOption,
         concept,
         styleNotes,
+        cameraDirection: scriptShot.cameraDirection,
       })
 
       // Each script shot becomes its own scene with exactly one shot, because
@@ -2093,7 +2101,11 @@ function buildMusicVideoLLMPrompt(options = {}) {
   const songMeta = []
   if (songName) songMeta.push(`Song: ${songName}`)
   if (songDurationSeconds > 0) songMeta.push(`Song length: ${formatSecondsAsMMSS(songDurationSeconds)} (${songDurationSeconds.toFixed(1)}s)`)
-  songMeta.push(`Target music-video length: ~${targetDuration}s`)
+  if (songDurationSeconds > 0) {
+    songMeta.push(`Director script length: cover the full song through approximately ${formatSecondsAsMMSS(songDurationSeconds)} (${songDurationSeconds.toFixed(1)}s).`)
+  } else {
+    songMeta.push(`Target music-video length: ~${targetDuration}s (used because no song duration is available yet).`)
+  }
   sections.push(songMeta.join('\n'))
 
   // B-roll-only passes don't need the cast roster — there are no performers
@@ -2106,8 +2118,10 @@ function buildMusicVideoLLMPrompt(options = {}) {
       for (const c of cast) {
         const slug = c?.slug || ''
         const label = c?.label || slug || 'Artist'
-        const role = c?.role ? ` (${c.role})` : ''
-        castBlock.push(`  - ${slug}: ${label}${role}`)
+        const roleLabel = getMusicVideoCastRoleLabel(c?.role)
+        const role = roleLabel ? ` (${roleLabel})` : ''
+        const notes = String(c?.notes || c?.voiceNotes || '').trim()
+        castBlock.push(`  - ${slug}: ${label}${role}${notes ? ` — ${notes}` : ''}`)
       }
       castBlock.push('For duets, use "Artist: slug1, slug2". For the full cast, use "Artist: all".')
       sections.push(castBlock.join('\n'))
@@ -2120,7 +2134,7 @@ function buildMusicVideoLLMPrompt(options = {}) {
     sections.push(`Concept / story:\n${concept.trim()}`)
   }
   if (styleNotes.trim()) {
-    sections.push(`Style / look notes:\n${styleNotes.trim()}`)
+    sections.push(`Song style / visual look notes:\n${styleNotes.trim()}`)
   }
 
   if (lyricsIsTimed) {
@@ -2580,6 +2594,11 @@ function buildMusicVideoPassIntro(pass, variantDescriptor) {
     default:
       return 'You are a music video director. I need you to write a shot-by-shot director script for the song below.'
   }
+}
+
+function getMusicVideoCastRoleLabel(roleId = '') {
+  const role = MUSIC_VIDEO_CAST_ROLE_OPTIONS.find((option) => option.id === String(roleId || '').trim())
+  return role?.label || String(roleId || '').trim()
 }
 
 function buildMusicVideoPassRules(pass, variantDescriptor) {
@@ -3502,7 +3521,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const [yoloMusicArtistAssetId, setYoloMusicArtistAssetId] = useState(persistedState?.yoloMusicArtistAssetId ?? null)
   // Cast roster — an ordered list of named performers (singer, duet partner,
   // backing vocalist, band member...). Each entry is:
-  //   { id, slug, label, assetId, role }
+  //   { id, slug, label, assetId, role, notes }
   // Scripts reference cast members via `Artist: rose`, `Artist: both`, or
   // lyric `[Rose]` / `[Rose, Jake]` tag lines. When a shot can't resolve an
   // explicit name, it falls back to cast[0] (the "default lead").
@@ -3515,6 +3534,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         label: String(entry?.label || '').trim(),
         assetId: entry?.assetId ?? null,
         role: String(entry?.role || 'lead'),
+        notes: String(entry?.notes || '').trim(),
       }))
       .filter((entry) => entry.assetId || entry.label || entry.slug)
   })
@@ -4426,6 +4446,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     const settingsD = Number(yoloMusicAudioAsset?.settings?.duration)
     return Number.isFinite(settingsD) && settingsD > 0 ? settingsD : 0
   }, [yoloMusicAudioAsset])
+  const yoloMusicBriefStyleNotes = useMemo(() => {
+    const manual = String(yoloMusicStyleNotes || '').trim()
+    if (manual) return manual
+    const assetStyle = String(
+      yoloMusicAudioAsset?.settings?.musicTags
+      || yoloMusicAudioAsset?.musicTags
+      || yoloMusicAudioAsset?.prompt
+      || ''
+    ).trim()
+    const currentTags = String(musicTags || '').trim()
+    const inferred = assetStyle || currentTags
+    return inferred ? `Song style / genre tags: ${inferred}` : ''
+  }, [musicTags, yoloMusicAudioAsset, yoloMusicStyleNotes])
   // Single-source-of-truth parse of the user-pasted Lyrics field. The field
   // auto-detects whether the paste is plain text, SRT, or LRC. When the
   // format is 'srt' or 'lrc', we consider the lyrics "timed" and the
@@ -5606,6 +5639,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           label,
           assetId: asset.id,
           role: entry?.role || 'lead',
+          notes: String(entry?.notes || '').trim(),
         }
       })
       .filter(Boolean)
@@ -5748,6 +5782,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       label: 'Artist',
       assetId: yoloMusicArtistAssetId,
       role: 'lead',
+      notes: '',
     }])
   }, [assets, yoloMusicArtistAssetId, yoloMusicCast])
   const yoloAdReferenceStyleNotes = useMemo(() => buildAdReferenceStyleNotes({
@@ -8534,6 +8569,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         label: '',
         assetId: null,
         role: next.length === 0 ? 'lead' : 'co_lead',
+        notes: '',
       })
       return next
     })
@@ -8574,6 +8610,11 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       entry?.id === castId ? { ...entry, role } : entry
     )))
   }, [])
+  const handleYoloMusicCastNotesChange = useCallback((castId, notes) => {
+    setYoloMusicCast((prev) => (prev || []).map((entry) => (
+      entry?.id === castId ? { ...entry, notes: String(notes || '').slice(0, 160) } : entry
+    )))
+  }, [])
 
   /**
    * Build the LLM prompt for a given pass configuration using the current
@@ -8586,7 +8627,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       songDurationSeconds: yoloMusicSongDurationSeconds,
       targetDuration: yoloMusicTargetDuration,
       concept: yoloMusicConcept,
-      styleNotes: yoloMusicStyleNotes,
+      styleNotes: yoloMusicBriefStyleNotes,
       lyrics: yoloMusicLyrics,
       cast: yoloMusicResolvedCast,
       pass: passType,
@@ -8598,7 +8639,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     yoloMusicSongDurationSeconds,
     yoloMusicTargetDuration,
     yoloMusicConcept,
-    yoloMusicStyleNotes,
+    yoloMusicBriefStyleNotes,
     yoloMusicLyrics,
     yoloMusicResolvedCast,
     yoloMusicScript,
@@ -8609,6 +8650,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       songName: yoloMusicAudioAsset?.name || '',
       songDurationSeconds: yoloMusicSongDurationSeconds,
       targetDuration: yoloMusicTargetDuration,
+      concept: yoloMusicConcept,
+      styleNotes: yoloMusicBriefStyleNotes,
       lyrics: yoloMusicLyrics,
       cast: yoloMusicResolvedCast,
       coveragePlan: options.coveragePlan || null,
@@ -8621,6 +8664,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     yoloMusicAudioAsset?.name,
     yoloMusicSongDurationSeconds,
     yoloMusicTargetDuration,
+    yoloMusicConcept,
+    yoloMusicBriefStyleNotes,
     yoloMusicLyrics,
     yoloMusicResolvedCast,
   ])
@@ -11840,7 +11885,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           yolo: directorMeta || undefined,
           shortFilm: shortFilmMeta || undefined,
           folderId: generatedAudioFolderId,
-          settings: { duration: job?.musicDuration, bpm: job?.bpm, keyscale: job?.keyscale, voice: shortFilmMeta?.voicePreset || job?.elevenLabsTts?.voice }
+          settings: { duration: job?.musicDuration, bpm: job?.bpm, keyscale: job?.keyscale, musicTags: jobTags || undefined, voice: shortFilmMeta?.voicePreset || job?.elevenLabsTts?.voice }
         }, generatedAudioFolderPath)
         if (newAsset) importedAssets.push(newAsset)
         didImportAny = true
@@ -11856,7 +11901,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           yolo: directorMeta || undefined,
           shortFilm: shortFilmMeta || undefined,
           folderId: generatedAudioFolderId,
-          settings: { duration: job?.musicDuration, bpm: job?.bpm },
+          settings: { duration: job?.musicDuration, bpm: job?.bpm, musicTags: jobTags || undefined },
         })
         if (fallbackAsset) importedAssets.push(fallbackAsset)
         didImportAny = true
@@ -13663,6 +13708,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     yoloMusicAsrLanguage={yoloMusicAsrLanguage}
                     setYoloMusicAsrLanguage={setYoloMusicAsrLanguage}
                     yoloMusicAudioAsset={yoloMusicAudioAsset}
+                    yoloMusicStyleNotes={yoloMusicStyleNotes}
+                    setYoloMusicStyleNotes={setYoloMusicStyleNotes}
                     yoloMusicTranscribingSrt={yoloMusicTranscribingSrt}
                     yoloMusicTranscriptionStatus={yoloMusicTranscriptionStatus}
                     handleYoloMusicTranscribeSrt={handleYoloMusicTranscribeSrt}
@@ -13704,6 +13751,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     handleYoloMusicCastSlugChange={handleYoloMusicCastSlugChange}
                     handleYoloMusicCastLabelChange={handleYoloMusicCastLabelChange}
                     handleYoloMusicCastRoleChange={handleYoloMusicCastRoleChange}
+                    handleYoloMusicCastNotesChange={handleYoloMusicCastNotesChange}
                     queuePeopleWizardJob={queuePeopleWizardJob}
                     canUsePeopleWizardGeneration={Boolean(BUILTIN_WORKFLOW_PATHS['z-image-turbo'] && BUILTIN_WORKFLOW_PATHS['multi-angles'])}
                     generationQueue={generationQueue}
@@ -13993,7 +14041,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                             />
                           </div>
                           <div>
-                            <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">Style / Look Notes (optional)</label>
+                            <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">Song Style / Look Notes (optional)</label>
                             <textarea
                               value={yoloMusicStyleNotes}
                               onChange={e => setYoloMusicStyleNotes(e.target.value)}
@@ -14107,6 +14155,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                                         <X className="h-3 w-3" />
                                       </button>
                                     </div>
+                                    <input
+                                      type="text"
+                                      value={entry?.notes || ''}
+                                      onChange={(e) => handleYoloMusicCastNotesChange(entry.id, e.target.value)}
+                                      placeholder="Optional notes for the LLM brief, e.g. female voice, harsh vocal, guitarist, never sings"
+                                      className="mt-1.5 w-full bg-sf-dark-900 border border-sf-dark-600 rounded px-2 py-1 text-[11px] text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                                    />
                                     {isDefault && (
                                       <div className="mt-1 text-[10px] text-sf-text-muted">
                                         Default lead — used when a shot has no <span className="font-mono">Artist:</span> override and the matched lyric line has no <span className="font-mono">[Name]</span> tag.
@@ -14182,7 +14237,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                                         songDurationSeconds: yoloMusicSongDurationSeconds,
                                         targetDuration: yoloMusicTargetDuration,
                                         concept: yoloMusicConcept,
-                                        styleNotes: yoloMusicStyleNotes,
+                                        styleNotes: yoloMusicBriefStyleNotes,
                                         lyrics: yoloMusicLyrics,
                                         cast: yoloMusicResolvedCast,
                                       })
