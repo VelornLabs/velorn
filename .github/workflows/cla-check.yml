@@ -1,0 +1,25 @@
+name: CLA Check
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  cla:
+    name: Contributor License Agreement
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require CLA checkbox
+        run: |
+          body="$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH")"
+          if printf '%s\n' "$body" | grep -Eiq '[-*] \[[xX]\] I have read and agree to the Contributor License Agreement'; then
+            echo "CLA confirmation found."
+          else
+            echo "Missing CLA confirmation."
+            echo "Please check the Contributor License Agreement box in the pull request template."
+            exit 1
+          fi
