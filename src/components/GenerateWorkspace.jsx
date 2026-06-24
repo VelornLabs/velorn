@@ -1308,6 +1308,9 @@ function composeMusicShotReferencePrompt({
     : shotTypeOption?.id === 'performance_wide'
       ? 'Artist visible in a wider framing, natural body posture, readable expression.'
       : 'Artist visible with a readable face, natural performance posture.'
+  const continuityFocus = shotTypeOption?.id === 'b_roll'
+    ? 'Maintain consistent environment, lighting, art direction, and key props across adjacent shots.'
+    : 'Maintain consistent subject identity and wardrobe across the video.'
 
   const parts = [
     keyframe,
@@ -1316,7 +1319,7 @@ function composeMusicShotReferencePrompt({
     conceptLine ? `Concept: ${conceptLine}.` : '',
     styleLine ? `Style: ${styleLine}.` : '',
     'Render one cinematic keyframe still, no collage, no split screen, no multiple panels.',
-    'Maintain consistent subject identity and wardrobe across the video.',
+    continuityFocus,
   ].filter(Boolean)
   return parts.join(' ')
 }
@@ -9549,13 +9552,31 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       ...yoloMusicResolvedCast.map((entry) => entry?.assetId),
       yoloMusicArtistAsset?.id,
     ])
+    const getMusicVariantShotTypeOption = (variant) => {
+      const rawShotType = String(variant?.musicShotType || variant?.shotType || '').trim()
+      const resolvedShotType = resolveMusicVideoShotTypeFromText(rawShotType)
+      if (resolvedShotType) return getMusicVideoShotTypeOption(resolvedShotType)
+      const coverageText = [
+        variant?.coverage?.type,
+        variant?.coverage?.label,
+      ].filter(Boolean).join(' ')
+      if (/\b(?:b[_\s-]?roll|cutaway|environment|detail|insert)\b/i.test(coverageText)) {
+        return getMusicVideoShotTypeOption('b_roll')
+      }
+      // Legacy persisted plans may not have musicShotType; preserve their old
+      // performance-oriented behavior instead of silently dropping references.
+      return getMusicVideoShotTypeOption('performance')
+    }
+    const shouldUseDefaultMusicPerformerReference = (variant) => (
+      Boolean(getMusicVariantShotTypeOption(variant)?.needsVocalAlignment)
+    )
     const resolveQwenMusicStoryboardReferences = (variant) => {
       const resolvedArtistAssetIds = Array.isArray(variant?.resolvedArtistAssetIds)
         ? variant.resolvedArtistAssetIds.filter(Boolean)
         : []
       const primaryAssetId = findExistingMusicImageAssetId([
         ...resolvedArtistAssetIds,
-        defaultMusicReferenceAssetId,
+        ...(shouldUseDefaultMusicPerformerReference(variant) ? [defaultMusicReferenceAssetId] : []),
       ])
       const secondaryAssetId = findExistingMusicImageAssetId(
         resolvedArtistAssetIds.filter((assetId) => assetId !== primaryAssetId)
@@ -9563,11 +9584,18 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       return { primaryAssetId, secondaryAssetId }
     }
     if (usesReferenceMusicStoryboardWorkflow) {
-      const missingReference = variantsToQueue.some((variant) => (
+      const missingReferenceVariants = variantsToQueue.filter((variant) => (
         !resolveQwenMusicStoryboardReferences(variant).primaryAssetId
       ))
-      if (missingReference) {
-        setFormError(`${usesCustomMusicStoryboardWorkflow ? 'Custom keyframe workflows' : 'Qwen Image Edit'} need a cast/reference image. Add at least one person in the Music Video People step, or switch keyframes to Nano Banana 2.`)
+      if (missingReferenceVariants.length > 0) {
+        const missingBrollCount = missingReferenceVariants
+          .filter((variant) => !shouldUseDefaultMusicPerformerReference(variant))
+          .length
+        const workflowName = usesCustomMusicStoryboardWorkflow ? 'Custom keyframe workflows' : 'Qwen Image Edit'
+        const message = missingBrollCount > 0
+          ? `${workflowName} needs an input image. ${missingBrollCount} b-roll/cutaway shot${missingBrollCount === 1 ? '' : 's'} will not borrow the default character reference, so switch keyframes to Nano Banana 2 for prompt-only b-roll or regenerate those shots with an explicit environment/reference image.`
+          : `${workflowName} need a cast/reference image. Add at least one person in the Music Video People step, or switch keyframes to Nano Banana 2.`
+        setFormError(message)
         return 0
       }
     }
@@ -9607,6 +9635,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       const qwenMusicReferences = usesReferenceMusicStoryboardWorkflow
         ? resolveQwenMusicStoryboardReferences(variant)
         : { primaryAssetId: null, secondaryAssetId: null }
+      const shouldUseDefaultMusicReference = shouldUseDefaultMusicPerformerReference(variant)
       const usesNanoBananaMusicOverride = isYoloMusicMode &&
         ['nano-banana-2', 'nano-banana-pro'].includes(effectiveStoryboardWorkflowId) &&
         Boolean(variant?.nanoBananaReferenceOverride?.enabled)
@@ -9621,7 +9650,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             ? qwenMusicReferences.primaryAssetId
             : usesNanoBananaMusicOverride
               ? (nanoBananaOverrideAssetIds[0] || null)
-            : (variant.resolvedArtistAssetIds?.[0] || yoloMusicArtistAsset?.id || null)
+            : (variant.resolvedArtistAssetIds?.[0] || (shouldUseDefaultMusicReference ? yoloMusicArtistAsset?.id : null) || null)
         )
         : null
       const musicReferenceAssetId2 = isYoloMusicMode

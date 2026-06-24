@@ -727,6 +727,7 @@ export function flattenYoloPlanVariants(plan = []) {
             textOverlay,
             endCard,
             dialogue,
+            musicShotType: sanitizeSnippet(shot?.musicShotType || '', 60),
             // Music-video-only pass-throughs. Unset for ads. The queue code
             // reads resolvedArtistAssetIds (ordered list of up to 2 cast asset
             // ids) in music mode to override the default-artist reference.
