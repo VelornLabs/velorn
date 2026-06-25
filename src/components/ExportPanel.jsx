@@ -303,7 +303,7 @@ function sanitizeExportBaseName(value) {
 
 function getFcpXmlImportCategory(resource, mediaType) {
   if (mediaType === 'image' || resource?.kind === 'image') return 'images'
-  if (mediaType === 'audio' || resource?.kind === 'audio') return 'audio'
+  if (resource?.kind === 'audio' || (mediaType === 'audio' && resource?.kind !== 'video')) return 'audio'
   return 'video'
 }
 
@@ -1107,10 +1107,6 @@ function ExportPanel() {
       for (const clip of importPlan.clips) {
         const resource = resourcesById.get(clip.resourceId)
         if (!resource) continue
-        if (clip.mediaType === 'audio' && resource.kind === 'video') {
-          warnings.push(`Skipped audio-only clip "${clip.name}" from video source "${resource.name}".`)
-          continue
-        }
         if (!resource.sourcePath) {
           warnings.push(`Skipped "${resource.name}" because the FCPXML media path is missing.`)
           continue
@@ -1187,18 +1183,17 @@ function ExportPanel() {
       let skippedClipCount = 0
       for (const clip of importPlan.clips) {
         const resource = resourcesById.get(clip.resourceId)
-        if (clip.mediaType === 'audio' && resource?.kind === 'video') {
-          skippedClipCount += 1
-          continue
-        }
         const importedAsset = importedAssetsByResourceId.get(clip.resourceId)
         if (!importedAsset || !clip.trackId) {
           skippedClipCount += 1
           continue
         }
+        const timelineAsset = clip.mediaType === 'audio' && importedAsset.type === 'video'
+          ? { ...importedAsset, type: 'audio' }
+          : importedAsset
         const addedClip = useTimelineStore.getState().addClip(
           clip.trackId,
-          importedAsset,
+          timelineAsset,
           clip.startTime,
           importPlan.settings.fps,
           {
@@ -1208,12 +1203,14 @@ function ExportPanel() {
             resolveOverlaps: false,
             saveHistory: false,
             selectAfterAdd: false,
+            ...(clip.linkGroupId ? { linkGroupId: clip.linkGroupId } : {}),
             metadata: {
               importedFromFcpXml: {
                 originalClipId: clip.id,
                 resourceId: clip.resourceId,
                 lane: clip.lane,
                 mediaType: clip.mediaType,
+                hasEmbeddedAudio: !!clip.hasEmbeddedAudio,
               },
             },
           }

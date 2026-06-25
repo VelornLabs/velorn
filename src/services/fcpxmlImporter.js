@@ -181,6 +181,20 @@ function getSequenceInfo(doc, formatMap) {
 function collectMediaClips(root, assetMap, warnings) {
   const clips = []
 
+  const addMediaClip = (clip) => {
+    clips.push(clip)
+
+    if (clip.mediaType === 'video' && clip.hasEmbeddedAudio) {
+      clips.push({
+        ...clip,
+        id: `${clip.id}-audio`,
+        name: `${clip.name} Audio`,
+        mediaType: 'audio',
+        lane: -1,
+      })
+    }
+  }
+
   const walk = (node, parentOffset = 0) => {
     for (const child of getDirectChildren(node)) {
       const tagName = getLocalName(child)
@@ -197,8 +211,12 @@ function collectMediaClips(root, assetMap, warnings) {
           const mediaType = inferClipMediaType(child, resource, lane)
           const duration = parseFcpXmlTime(child.getAttribute('duration'), resource.duration || 1)
           const sourceStart = Math.max(0, parseFcpXmlTime(child.getAttribute('start'), resource.start || 0) - (resource.start || 0))
-          clips.push({
-            id: `fcpxml-clip-${clips.length + 1}`,
+          const clipNumber = clips.length + 1
+          const linkGroupId = mediaType === 'video' && resource.hasAudio
+            ? `fcpxml-link-${clipNumber}`
+            : null
+          addMediaClip({
+            id: `fcpxml-clip-${clipNumber}`,
             name: sanitizeName(child.getAttribute('name'), resource.name),
             resourceId: ref,
             mediaType,
@@ -207,6 +225,8 @@ function collectMediaClips(root, assetMap, warnings) {
             duration: Math.max(1 / DEFAULT_FPS, duration),
             trimStart: sourceStart,
             sourceDuration: resource.duration || 0,
+            hasEmbeddedAudio: mediaType === 'video' && resource.hasAudio,
+            ...(linkGroupId ? { linkGroupId } : {}),
           })
           continue
         }
