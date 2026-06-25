@@ -922,7 +922,7 @@ function GeneralTab({ initialSection = null }) {
               <div className="min-w-0">
                 <div className="text-sm font-medium text-sf-text-primary">ComfyStudio MCP server</div>
                 <p className="mt-1 text-[11px] text-sf-text-muted">
-                  Local read-only access for AI agents. Agents can inspect the open project, current timeline, assets, generation status, and music-video workflow state.
+                  Local read-only access for AI agents. Agents can inspect the open project, analyze timeline health, and summarize assets, generation status, and music-video workflow state.
                 </p>
               </div>
               <span className={`inline-flex flex-shrink-0 items-center gap-1.5 rounded px-2 py-1 text-[10px] font-medium ${
@@ -995,7 +995,7 @@ function GeneralTab({ initialSection = null }) {
           <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
             <div className="text-xs font-semibold text-sf-text-primary">Available tools</div>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-sf-text-secondary">
-              {['get_project', 'get_timeline', 'get_assets', 'get_generation_status', 'get_music_video_status'].map((tool) => (
+              {['get_project', 'get_timeline', 'get_assets', 'get_generation_status', 'get_music_video_status', 'analyze_timeline'].map((tool) => (
                 <span key={tool} className="rounded bg-sf-dark-800 px-2 py-1">{tool}</span>
               ))}
             </div>
