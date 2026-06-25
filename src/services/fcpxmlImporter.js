@@ -34,6 +34,12 @@ function parseNumberList(value) {
     .filter((entry) => Number.isFinite(entry))
 }
 
+function fcpxmlPositionToPixels(value, sequenceHeight) {
+  const height = Number(sequenceHeight)
+  if (!Number.isFinite(value) || !Number.isFinite(height) || height <= 0) return value
+  return Math.round(value * height) / 100
+}
+
 function getAssetSource(assetElement) {
   const directSrc = assetElement.getAttribute('src')
   if (directSrc) return directSrc
@@ -43,15 +49,15 @@ function getAssetSource(assetElement) {
   return originalMedia?.getAttribute('src') || mediaReps[0]?.getAttribute('src') || ''
 }
 
-function parseStaticTransform(element) {
+function parseStaticTransform(element, sequenceInfo) {
   const transformElement = Array.from(element.getElementsByTagName('adjust-transform') || [])[0]
   if (!transformElement) return null
 
   const transform = {}
   const position = parseNumberList(transformElement.getAttribute('position'))
   if (position.length >= 2) {
-    transform.positionX = position[0]
-    transform.positionY = position[1]
+    transform.positionX = fcpxmlPositionToPixels(position[0], sequenceInfo?.height)
+    transform.positionY = fcpxmlPositionToPixels(position[1], sequenceInfo?.height)
   }
 
   const scale = parseNumberList(transformElement.getAttribute('scale'))
@@ -214,7 +220,7 @@ function getSequenceInfo(doc, formatMap) {
   }
 }
 
-function collectMediaClips(root, assetMap, warnings) {
+function collectMediaClips(root, assetMap, sequenceInfo, warnings) {
   const clips = []
 
   const addMediaClip = (clip) => {
@@ -247,7 +253,7 @@ function collectMediaClips(root, assetMap, warnings) {
           const mediaType = inferClipMediaType(child, resource, lane)
           const duration = parseFcpXmlTime(child.getAttribute('duration'), resource.duration || 1)
           const sourceStart = Math.max(0, parseFcpXmlTime(child.getAttribute('start'), resource.start || 0) - (resource.start || 0))
-          const transform = parseStaticTransform(child)
+          const transform = parseStaticTransform(child, sequenceInfo)
           const clipNumber = clips.length + 1
           const linkGroupId = mediaType === 'video' && resource.hasAudio
             ? `fcpxml-link-${clipNumber}`
@@ -336,7 +342,7 @@ export function parseFcpXml(xmlText, options = {}) {
   }
 
   const spine = sequenceInfo.sequence.getElementsByTagName('spine')?.[0] || sequenceInfo.sequence
-  const rawClips = collectMediaClips(spine, assetMap, warnings)
+  const rawClips = collectMediaClips(spine, assetMap, sequenceInfo, warnings)
   const shouldApplyTcStart = sequenceInfo.tcStart > 0
     && rawClips.length > 0
     && rawClips.every((clip) => clip.startTime >= sequenceInfo.tcStart)
