@@ -345,6 +345,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteSetting: (key) => ipcRenderer.invoke('settings:delete', key),
 
   // ============================================
+  // MCP Server
+  // ============================================
+
+  mcp: {
+    getStatus: () => ipcRenderer.invoke('mcp:getStatus'),
+    updateSnapshot: (snapshot) => ipcRenderer.invoke('mcp:updateSnapshot', snapshot),
+  },
+
+  // ============================================
   // Workflow Setup Manager
   // ============================================
 

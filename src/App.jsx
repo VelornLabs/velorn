@@ -32,6 +32,7 @@ import {
 } from './services/localComfyConnection'
 import { startComfyLauncherEventBridge } from './services/comfyLauncherEventBridge'
 import { startComfyAutoImport } from './services/comfyAutoImport'
+import { startMcpSnapshotPublisher } from './services/mcpSnapshot'
 
 function formatDownloadBytes(bytes) {
   const numeric = Math.max(0, Number(bytes) || 0)
@@ -132,6 +133,11 @@ function App() {
   // kind of information they'd see in the native ComfyUI terminal window.
   useEffect(() => {
     const stop = startComfyLauncherEventBridge()
+    return () => { try { stop?.() } catch (_) { /* ignore */ } }
+  }, [])
+
+  useEffect(() => {
+    const stop = startMcpSnapshotPublisher()
     return () => { try { stop?.() } catch (_) { /* ignore */ } }
   }, [])
 

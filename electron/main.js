@@ -19,6 +19,10 @@ const {
   LAUNCHER_SETTING_KEY,
   safeCloneConfig: safeCloneLauncherConfig,
 } = require('./comfyLauncher')
+const {
+  DEFAULT_MCP_PORT,
+  createComfyStudioMcpServer,
+} = require('./mcpServer')
 
 const isDev = !app.isPackaged
 
@@ -55,6 +59,7 @@ const MODEL_SEARCH_KEY_ALIASES = Object.freeze({
 let mainWindow = null
 let splashWindow = null
 let exportWorkerWindow = null
+let mcpServer = null
 let downloadSaveDialogHandlerInstalled = false
 let downloadCounter = 0
 const activeDownloads = new Map()
@@ -3331,6 +3336,31 @@ ipcMain.handle('settings:delete', async (event, key) => {
 })
 
 // ============================================
+// MCP Server IPC
+// ============================================
+
+ipcMain.handle('mcp:getStatus', async () => {
+  return mcpServer?.getStatus?.() || {
+    running: false,
+    port: DEFAULT_MCP_PORT,
+    url: `http://127.0.0.1:${DEFAULT_MCP_PORT}/mcp`,
+    error: 'MCP server has not started.',
+    toolCount: 0,
+    lastSnapshotAt: null,
+    hasProject: false,
+  }
+})
+
+ipcMain.handle('mcp:updateSnapshot', async (_event, snapshot = null) => {
+  try {
+    const ok = mcpServer?.updateSnapshot?.(snapshot)
+    return { success: Boolean(ok) }
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) }
+  }
+})
+
+// ============================================
 // ComfyUI Launcher IPC
 // ============================================
 
@@ -4769,6 +4799,17 @@ ipcMain.handle('export:checkNvenc', async () => {
 
 app.whenReady().then(() => {
   registerFileProtocol()
+  mcpServer = createComfyStudioMcpServer({
+    port: DEFAULT_MCP_PORT,
+    version: app.getVersion(),
+  })
+  mcpServer.start()
+    .then((status) => {
+      console.log(`[MCP] ComfyStudio MCP server running at ${status.url}`)
+    })
+    .catch((error) => {
+      console.warn('[MCP] server failed to start:', error?.message || error)
+    })
   initComfyLauncher()
     .then(() => maybeAutoStartComfyLauncher())
     .catch((error) => {
@@ -4838,6 +4879,14 @@ app.on('before-quit', async (event) => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
+  }
+})
+
+app.on('will-quit', () => {
+  if (mcpServer) {
+    mcpServer.stop().catch((error) => {
+      console.warn('[MCP] server shutdown error:', error?.message || error)
+    })
   }
 })
 
