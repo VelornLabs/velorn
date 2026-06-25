@@ -225,6 +225,45 @@ function countBy(items = [], getKey) {
   }, {})
 }
 
+function pluralize(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function joinHumanList(items = []) {
+  const cleanItems = items.filter(Boolean)
+  if (cleanItems.length === 0) return ''
+  if (cleanItems.length === 1) return cleanItems[0]
+  if (cleanItems.length === 2) return `${cleanItems[0]} and ${cleanItems[1]}`
+  return `${cleanItems.slice(0, -1).join(', ')}, and ${cleanItems[cleanItems.length - 1]}`
+}
+
+function describeFindingCodes(findings = [], severity = null) {
+  const labels = {
+    missing_asset: ['missing asset', 'missing assets'],
+    invalid_clip_start: ['invalid clip start', 'invalid clip starts'],
+    invalid_clip_duration: ['invalid clip duration', 'invalid clip durations'],
+    tiny_clip: ['tiny clip', 'tiny clips'],
+    clip_without_asset: ['clip without an asset', 'clips without assets'],
+    missing_track: ['clip on a missing track', 'clips on missing tracks'],
+    invalid_trim_range: ['invalid trim range', 'invalid trim ranges'],
+    tiny_track_gap: ['tiny gap', 'tiny gaps'],
+    track_overlap: ['clip overlap', 'clip overlaps'],
+    hidden_track_with_clips: ['hidden track with clips', 'hidden tracks with clips'],
+    disabled_clip: ['disabled clip', 'disabled clips'],
+    muted_audio_track_with_clips: ['muted audio track with clips', 'muted audio tracks with clips'],
+    locked_track_with_clips: ['locked track with clips', 'locked tracks with clips'],
+    speed_changed_clip: ['speed-changed clip', 'speed-changed clips'],
+  }
+  const matching = severity ? findings.filter((finding) => finding.severity === severity) : findings
+  const counts = countBy(matching, (finding) => finding.code)
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([code, count]) => {
+      const [singular, plural] = labels[code] || [code.replace(/_/g, ' '), `${code.replace(/_/g, ' ')} items`]
+      return pluralize(count, singular, plural)
+    })
+}
+
 function rankFindings(findings = []) {
   const rank = { error: 0, warning: 1, info: 2 }
   return [...findings].sort((a, b) => {
@@ -477,9 +516,21 @@ function analyzeTimeline(snapshot, args = {}) {
     : `Timeline "${timelineName}" looks structurally healthy: ${clips.length} clips across ${tracks.length} tracks, with no blocking issues or warnings detected.`
 
   const suggestedNextActions = []
-  if (missingAssetClips.length > 0) suggestedNextActions.push('Relink or replace clips that reference missing assets before exporting.')
-  if (tinyClips.length > 0) suggestedNextActions.push('Review tiny clips or sliver gaps, because very short durations can cause export edge cases.')
-  if (severityCounts.warning > 0 && suggestedNextActions.length === 0) suggestedNextActions.push('Review warnings before final export.')
+  const errorDetails = describeFindingCodes(rankedFindings, 'error')
+  const warningDetails = describeFindingCodes(rankedFindings, 'warning')
+  const infoDetails = describeFindingCodes(rankedFindings, 'info')
+  if (severityCounts.error > 0) {
+    suggestedNextActions.push(`Fix ${pluralize(severityCounts.error, 'blocking issue')} before exporting: ${joinHumanList(errorDetails)}.`)
+  }
+  if (severityCounts.warning > 0) {
+    suggestedNextActions.push(`Review ${pluralize(severityCounts.warning, 'warning')} before export: ${joinHumanList(warningDetails)}.`)
+  }
+  if (severityCounts.error === 0 && missingAssetClips.length === 0) {
+    suggestedNextActions.push('No missing media or blocking timeline issues were detected.')
+  }
+  if (severityCounts.info > 0 && infoDetails.length > 0) {
+    suggestedNextActions.push(`Informational notes: ${joinHumanList(infoDetails)}.`)
+  }
   if (suggestedNextActions.length === 0) suggestedNextActions.push('No immediate timeline cleanup is required based on this read-only analysis.')
 
   return {
