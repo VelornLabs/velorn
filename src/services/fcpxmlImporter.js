@@ -26,6 +26,15 @@ function getFirstElementByTagName(doc, tagName) {
   return doc.getElementsByTagName(tagName)?.[0] || null
 }
 
+function getAssetSource(assetElement) {
+  const directSrc = assetElement.getAttribute('src')
+  if (directSrc) return directSrc
+
+  const mediaReps = Array.from(assetElement.getElementsByTagName('media-rep') || [])
+  const originalMedia = mediaReps.find((entry) => entry.getAttribute('kind') === 'original-media')
+  return originalMedia?.getAttribute('src') || mediaReps[0]?.getAttribute('src') || ''
+}
+
 function parseXml(xmlText) {
   if (typeof DOMParser === 'undefined') {
     throw new Error('FCPXML import needs the desktop app browser parser.')
@@ -134,11 +143,12 @@ function getResourceMaps(doc) {
   for (const asset of Array.from(doc.getElementsByTagName('asset') || [])) {
     const id = asset.getAttribute('id')
     if (!id) continue
-    const sourcePath = fileUriToPath(asset.getAttribute('src'))
+    const src = getAssetSource(asset)
+    const sourcePath = fileUriToPath(src)
     const resource = {
       id,
       name: sanitizeName(asset.getAttribute('name'), sourcePath ? sourcePath.split(/[\\/]/).pop() : 'Media'),
-      src: asset.getAttribute('src') || '',
+      src,
       sourcePath,
       duration: parseFcpXmlTime(asset.getAttribute('duration'), 0),
       start: parseFcpXmlTime(asset.getAttribute('start'), 0),
