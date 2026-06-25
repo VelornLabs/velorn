@@ -3,7 +3,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import useAssetsStore from '../../stores/assetsStore'
 import useProjectStore from '../../stores/projectStore'
 import useTimelineStore from '../../stores/timelineStore'
-import { importAsset, isElectron, writeGeneratedOverlayToProject, deleteProjectFile } from '../../services/fileSystem'
+import { getAbsoluteFileUrl, importAsset, isElectron, writeGeneratedOverlayToProject, deleteProjectFile } from '../../services/fileSystem'
+import parseFcpXml from '../../services/fcpxmlImporter'
 import { enqueuePlaybackTranscode, generatePlaybackCachesForAllVideos, isPlaybackCacheableVideoAsset } from '../../services/playbackCache'
 import { enqueueProxyTranscode, isProxyPlaybackEnabled } from '../../services/proxyCache'
 import { unstitchSequenceAsset } from '../../services/comfyAutoImport'
@@ -32,6 +33,12 @@ const FOLDER_TILE_ICON_SIZES = {
   large: 'w-20 h-20',
 }
 let transparentAssetDragImage = null
+
+function getFcpXmlImportCategory(resource, mediaType) {
+  if (mediaType === 'image' || resource?.kind === 'image') return 'images'
+  if (resource?.kind === 'audio' || (mediaType === 'audio' && resource?.kind !== 'video')) return 'audio'
+  return 'video'
+}
 
 const getTransparentAssetDragImage = () => {
   if (transparentAssetDragImage) return transparentAssetDragImage
@@ -334,7 +341,7 @@ function AssetsPanel({ isActive = true }) {
     hydrateAssetBrowserMedia,
     setAssetAudioEnabled,
   } = useAssetsStore()
-  const { currentProject, currentProjectHandle, currentTimelineId, switchTimeline, renameTimeline, setTimelineColor, moveTimelineToFolder, duplicateTimeline, deleteTimeline, getCurrentTimelineSettings } = useProjectStore()
+  const { currentProject, currentProjectHandle, currentTimelineId, createTimeline, switchTimeline, saveProject, renameTimeline, setTimelineColor, moveTimelineToFolder, duplicateTimeline, deleteTimeline, getCurrentTimelineSettings } = useProjectStore()
   const { isPlaying: timelineIsPlaying, togglePlay: timelineTogglePlay, removeAudioClipsForAsset, clearSelection: clearTimelineSelection } = useTimelineStore()
   
   // Load thumbnail size from localStorage
@@ -441,6 +448,214 @@ function AssetsPanel({ isActive = true }) {
     const files = Array.from(e.target.files || [])
     handleImport(files)
     e.target.value = ''
+  }
+
+  const handleImportFcpXml = async () => {
+    setContextMenu(null)
+    if (isImporting) return
+
+    const api = window.electronAPI
+    if (!api?.selectFile || !api?.readFile || !api?.exists) {
+      window.alert?.('FCPXML import is only available in the desktop app.')
+      return
+    }
+    if (typeof currentProjectHandle !== 'string') {
+      window.alert?.('Open a saved project before importing FCPXML.')
+      return
+    }
+
+    setIsImporting(true)
+    try {
+      const filePath = await api.selectFile({
+        title: 'Import FCPXML',
+        filters: [
+          { name: 'Final Cut Pro XML', extensions: ['fcpxml', 'fcpxmld', 'xml'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      })
+      if (!filePath) return
+
+      const readResult = await api.readFile(filePath, { encoding: 'utf8' })
+      if (!readResult?.success) {
+        throw new Error(readResult?.error || 'Could not read FCPXML file.')
+      }
+
+      const selectedFileName = api.pathBasename
+        ? await api.pathBasename(filePath)
+        : 'Imported FCPXML'
+      const fileBaseName = String(selectedFileName || 'FCPXML').replace(/\.(fcpxml|fcpxmld|xml)$/i, '')
+      const importPlan = parseFcpXml(readResult.data, {
+        name: `Imported ${fileBaseName || 'FCPXML'}`,
+      })
+      if (!importPlan.clips.length) {
+        throw new Error('No supported media clips were found in this FCPXML.')
+      }
+
+      const resourcesById = new Map((importPlan.assets || []).map((resource) => [resource.id, resource]))
+      const warnings = [...(importPlan.warnings || [])]
+      const importedAssetsByResourceId = new Map()
+      const importedVideoAssets = []
+      const assetNeeds = new Map()
+
+      for (const clip of importPlan.clips) {
+        const resource = resourcesById.get(clip.resourceId)
+        if (!resource) continue
+        if (!resource.sourcePath) {
+          warnings.push(`Skipped "${resource.name}" because the FCPXML media path is missing.`)
+          continue
+        }
+        if (!assetNeeds.has(resource.id)) {
+          assetNeeds.set(resource.id, {
+            resource,
+            category: getFcpXmlImportCategory(resource, clip.mediaType),
+          })
+        }
+      }
+
+      for (const { resource, category } of assetNeeds.values()) {
+        const exists = await api.exists(resource.sourcePath)
+        if (!exists) {
+          warnings.push(`Skipped "${resource.name}" because the media file was not found: ${resource.sourcePath}`)
+          continue
+        }
+
+        const assetInfo = await importAsset(currentProjectHandle, resource.sourcePath, category)
+        const assetUrl = assetInfo.absolutePath
+          ? await getAbsoluteFileUrl(assetInfo.absolutePath)
+          : assetInfo.url
+        const importedAsset = addAsset({
+          ...assetInfo,
+          url: assetUrl || assetInfo.url || null,
+          name: resource.name || assetInfo.name,
+          folderId: currentFolderId,
+          settings: {
+            ...(assetInfo.settings || {}),
+            duration: assetInfo.duration ?? assetInfo.settings?.duration,
+            fps: assetInfo.fps ?? assetInfo.settings?.fps,
+            importedFromFcpXml: {
+              resourceId: resource.id,
+              originalPath: resource.sourcePath,
+            },
+          },
+        })
+        importedAssetsByResourceId.set(resource.id, importedAsset)
+        if (category === 'video') importedVideoAssets.push(importedAsset)
+      }
+
+      if (importedAssetsByResourceId.size === 0) {
+        throw new Error('No referenced media files could be imported. Check that the FCPXML media paths still exist on this machine.')
+      }
+
+      const newTimeline = createTimeline({
+        name: importPlan.name,
+        width: importPlan.settings.width,
+        height: importPlan.settings.height,
+        fps: importPlan.settings.fps,
+        folderId: currentFolderId,
+      })
+      if (!newTimeline?.id) {
+        throw new Error('Could not create a timeline for the FCPXML import.')
+      }
+
+      await switchTimeline(newTimeline.id)
+
+      const timelineApi = useTimelineStore.getState()
+      const latestAssets = useAssetsStore.getState().assets || []
+      timelineApi.loadFromProject({
+        ...newTimeline,
+        width: importPlan.settings.width,
+        height: importPlan.settings.height,
+        fps: importPlan.settings.fps,
+        duration: importPlan.duration,
+        tracks: importPlan.tracks,
+        clips: [],
+        transitions: [],
+        markers: [],
+        clipCounter: 1,
+        transitionCounter: 1,
+        markerCounter: 1,
+      }, latestAssets, importPlan.settings.fps)
+
+      let addedClipCount = 0
+      let skippedClipCount = 0
+      for (const clip of importPlan.clips) {
+        const importedAsset = importedAssetsByResourceId.get(clip.resourceId)
+        if (!importedAsset || !clip.trackId) {
+          skippedClipCount += 1
+          continue
+        }
+        const timelineAsset = clip.mediaType === 'audio' && importedAsset.type === 'video'
+          ? { ...importedAsset, type: 'audio' }
+          : importedAsset
+        const addedClip = useTimelineStore.getState().addClip(
+          clip.trackId,
+          timelineAsset,
+          clip.startTime,
+          importPlan.settings.fps,
+          {
+            duration: clip.duration,
+            trimStart: clip.trimStart,
+            trimEnd: clip.trimStart + clip.duration,
+            resolveOverlaps: false,
+            saveHistory: false,
+            selectAfterAdd: false,
+            ...(clip.transform && clip.mediaType !== 'audio' ? { transform: clip.transform } : {}),
+            ...(clip.linkGroupId ? { linkGroupId: clip.linkGroupId } : {}),
+            metadata: {
+              importedFromFcpXml: {
+                originalClipId: clip.id,
+                resourceId: clip.resourceId,
+                lane: clip.lane,
+                mediaType: clip.mediaType,
+                hasEmbeddedAudio: !!clip.hasEmbeddedAudio,
+                hasStaticTransform: !!clip.transform && clip.mediaType !== 'audio',
+              },
+            },
+          }
+        )
+        if (addedClip) {
+          addedClipCount += 1
+        } else {
+          skippedClipCount += 1
+        }
+      }
+
+      if (addedClipCount === 0) {
+        throw new Error('No FCPXML clips could be placed on the imported timeline.')
+      }
+
+      await saveProject?.()
+      setSelectedAssetIds([])
+      setSelectedSequenceId(newTimeline.id)
+      setPreviewMode('timeline')
+
+      for (const videoAsset of importedVideoAssets) {
+        if (isElectron() && currentProjectHandle && videoAsset?.absolutePath) {
+          enqueuePlaybackTranscode(currentProjectHandle, videoAsset.id, videoAsset.absolutePath).catch(() => {})
+          if (isProxyPlaybackEnabled()) {
+            enqueueProxyTranscode(currentProjectHandle, videoAsset.id, videoAsset.absolutePath).catch(() => {})
+          }
+        }
+        if (videoAsset?.duration > 0.5) {
+          const projectPath = typeof currentProjectHandle === 'string' ? currentProjectHandle : null
+          generateAssetSprite(videoAsset.id, projectPath).catch(err => {
+            console.warn('Auto-sprite generation failed:', err)
+          })
+          generateAssetPoster(videoAsset.id, projectPath).catch(err => {
+            console.warn('Auto-poster generation failed:', err)
+          })
+        }
+      }
+
+      if (warnings.length || skippedClipCount) {
+        console.warn('[FCPXML Import]', { warnings, skippedClipCount })
+      }
+    } catch (err) {
+      console.error('FCPXML import failed:', err)
+      window.alert?.(err?.message || 'FCPXML import failed')
+    } finally {
+      setIsImporting(false)
+    }
   }
   
   // Handle drag and drop
@@ -2479,11 +2694,23 @@ function AssetsPanel({ isActive = true }) {
               </button>
               <button
                 onClick={handleEmptyMenuImport}
-                disabled={!currentProjectHandle}
+                disabled={!currentProjectHandle || isImporting}
                 className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Upload className="w-3 h-3 text-sf-accent" />
                 Import
+              </button>
+              <button
+                onClick={handleImportFcpXml}
+                disabled={!currentProjectHandle || isImporting}
+                className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isImporting ? (
+                  <Loader2 className="w-3 h-3 text-sf-accent animate-spin" />
+                ) : (
+                  <FileVideo className="w-3 h-3 text-sf-accent" />
+                )}
+                Import FCPXML...
               </button>
               <div className="border-t border-sf-dark-600 my-1" />
               <div className="px-2 py-1 text-[10px] text-sf-text-muted uppercase tracking-wider">Create overlay</div>

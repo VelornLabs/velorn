@@ -26,6 +26,14 @@ function getFirstElementByTagName(doc, tagName) {
   return doc.getElementsByTagName(tagName)?.[0] || null
 }
 
+function parseNumberList(value) {
+  return String(value || '')
+    .trim()
+    .split(/\s+/)
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isFinite(entry))
+}
+
 function getAssetSource(assetElement) {
   const directSrc = assetElement.getAttribute('src')
   if (directSrc) return directSrc
@@ -33,6 +41,34 @@ function getAssetSource(assetElement) {
   const mediaReps = Array.from(assetElement.getElementsByTagName('media-rep') || [])
   const originalMedia = mediaReps.find((entry) => entry.getAttribute('kind') === 'original-media')
   return originalMedia?.getAttribute('src') || mediaReps[0]?.getAttribute('src') || ''
+}
+
+function parseStaticTransform(element) {
+  const transformElement = Array.from(element.getElementsByTagName('adjust-transform') || [])[0]
+  if (!transformElement) return null
+
+  const transform = {}
+  const position = parseNumberList(transformElement.getAttribute('position'))
+  if (position.length >= 2) {
+    transform.positionX = position[0]
+    transform.positionY = position[1]
+  }
+
+  const scale = parseNumberList(transformElement.getAttribute('scale'))
+  if (scale.length >= 1) {
+    const scaleX = scale[0]
+    const scaleY = scale.length >= 2 ? scale[1] : scaleX
+    transform.scaleX = Math.round(scaleX * 1000) / 10
+    transform.scaleY = Math.round(scaleY * 1000) / 10
+    transform.scaleLinked = Math.abs(scaleX - scaleY) < 0.0001
+  }
+
+  const rotation = Number(transformElement.getAttribute('rotation'))
+  if (Number.isFinite(rotation)) {
+    transform.rotation = rotation
+  }
+
+  return Object.keys(transform).length > 0 ? transform : null
 }
 
 function parseXml(xmlText) {
@@ -211,6 +247,7 @@ function collectMediaClips(root, assetMap, warnings) {
           const mediaType = inferClipMediaType(child, resource, lane)
           const duration = parseFcpXmlTime(child.getAttribute('duration'), resource.duration || 1)
           const sourceStart = Math.max(0, parseFcpXmlTime(child.getAttribute('start'), resource.start || 0) - (resource.start || 0))
+          const transform = parseStaticTransform(child)
           const clipNumber = clips.length + 1
           const linkGroupId = mediaType === 'video' && resource.hasAudio
             ? `fcpxml-link-${clipNumber}`
@@ -226,6 +263,7 @@ function collectMediaClips(root, assetMap, warnings) {
             trimStart: sourceStart,
             sourceDuration: resource.duration || 0,
             hasEmbeddedAudio: mediaType === 'video' && resource.hasAudio,
+            ...(transform && (mediaType === 'video' || mediaType === 'image') ? { transform } : {}),
             ...(linkGroupId ? { linkGroupId } : {}),
           })
           continue
