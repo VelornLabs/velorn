@@ -6,7 +6,7 @@ import useAssetsStore from '../stores/assetsStore'
 import exportTimeline from '../services/exporter'
 import buildFcpXml from '../services/fcpxmlExporter'
 import parseFcpXml from '../services/fcpxmlImporter'
-import { importAsset } from '../services/fileSystem'
+import { getAbsoluteFileUrl, importAsset } from '../services/fileSystem'
 
 const EXPORT_SETTINGS_STORAGE_PREFIX = 'comfystudio-export-settings-v1'
 
@@ -1130,11 +1130,17 @@ function ExportPanel() {
           continue
         }
         const assetInfo = await importAsset(currentProjectHandle, resource.sourcePath, category)
+        const assetUrl = assetInfo.absolutePath
+          ? await getAbsoluteFileUrl(assetInfo.absolutePath)
+          : assetInfo.url
         const importedAsset = addAsset({
           ...assetInfo,
+          url: assetUrl || assetInfo.url || null,
           name: resource.name || assetInfo.name,
           settings: {
             ...(assetInfo.settings || {}),
+            duration: assetInfo.duration ?? assetInfo.settings?.duration,
+            fps: assetInfo.fps ?? assetInfo.settings?.fps,
             importedFromFcpXml: {
               resourceId: resource.id,
               originalPath: resource.sourcePath,
