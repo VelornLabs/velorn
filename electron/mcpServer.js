@@ -253,6 +253,14 @@ function describeFindingCodes(findings = [], severity = null) {
     muted_audio_track_with_clips: ['muted audio track with clips', 'muted audio tracks with clips'],
     locked_track_with_clips: ['locked track with clips', 'locked tracks with clips'],
     speed_changed_clip: ['speed-changed clip', 'speed-changed clips'],
+    failed_music_assets: ['failed music-video asset', 'failed music-video assets'],
+    active_music_jobs: ['active music-video job', 'active music-video jobs'],
+    shots_with_keyframes_no_video: ['shot with keyframes but no video', 'shots with keyframes but no videos'],
+    shots_with_videos_no_keyframes: ['shot with video but no keyframe', 'shots with videos but no keyframes'],
+    unassembled_music_videos: ['unassembled music-video video', 'unassembled music-video videos'],
+    duplicate_video_variants: ['duplicate video variant', 'duplicate video variants'],
+    shots_with_multiple_videos: ['shot with multiple videos', 'shots with multiple videos'],
+    manual_replacements: ['manual replacement', 'manual replacements'],
   }
   const matching = severity ? findings.filter((finding) => finding.severity === severity) : findings
   const counts = countBy(matching, (finding) => finding.code)
@@ -271,6 +279,328 @@ function rankFindings(findings = []) {
     if (severityDelta !== 0) return severityDelta
     return String(a.code || '').localeCompare(String(b.code || ''))
   })
+}
+
+function getMusicYolo(asset) {
+  return asset?.yolo || asset?.settings?.yolo || null
+}
+
+function isMusicVideoAsset(asset) {
+  const yolo = getMusicYolo(asset)
+  return Boolean(yolo?.mode === 'music' || yolo?.workflow === 'music-video' || yolo?.musicVideo)
+}
+
+function getMusicAssetStage(asset) {
+  const yolo = getMusicYolo(asset) || {}
+  if (yolo.stage) return String(yolo.stage)
+  if (asset?.type === 'image') return 'storyboard'
+  if (asset?.type === 'video') return 'video'
+  return String(asset?.type || 'unknown')
+}
+
+function getMusicShotId(assetOrYolo) {
+  const yolo = assetOrYolo?.yolo || assetOrYolo?.settings?.yolo || assetOrYolo || {}
+  return String(yolo.shotId || yolo.shot_id || '').trim()
+}
+
+function getMusicVariantKey(assetOrYolo) {
+  const yolo = assetOrYolo?.yolo || assetOrYolo?.settings?.yolo || assetOrYolo || {}
+  return String(yolo.variantKey || yolo.key || '').trim()
+}
+
+function musicAssetRef(asset) {
+  const yolo = getMusicYolo(asset) || {}
+  return {
+    id: asset?.id,
+    name: asset?.name,
+    type: asset?.type,
+    stage: getMusicAssetStage(asset),
+    status: asset?.generationStatus || asset?.status || 'none',
+    shotId: getMusicShotId(yolo),
+    variantKey: getMusicVariantKey(yolo),
+    workflowId: yolo.workflowId || asset?.workflowId || asset?.settings?.workflowId || '',
+    coverage: yolo.coverage?.label || yolo.coverage?.type || '',
+    manualReplacement: Boolean(yolo.manualReplacement),
+    createdAt: asset?.createdAt || asset?.imported || null,
+    error: asset?.error || asset?.generationError || asset?.settings?.error || '',
+  }
+}
+
+function analyzeMusicVideoWorkflow(snapshot, args = {}) {
+  const assets = Array.isArray(snapshot?.assets) ? snapshot.assets : []
+  const timeline = snapshot?.currentTimeline || null
+  const clips = Array.isArray(timeline?.clips) ? timeline.clips : []
+  const maxFindings = clampLimit(args.maxFindings, 75, 250)
+  const musicAssets = assets.filter(isMusicVideoAsset)
+  const musicAssetIds = new Set(musicAssets.map((asset) => asset?.id).filter(Boolean))
+  const timelineAssetIds = new Set(clips.map((clip) => clip?.assetId).filter(Boolean))
+  const activeStates = new Set(['queued', 'generating', 'downloading', 'encoding', 'running'])
+  const failedStates = new Set(['failed', 'error'])
+  const findings = []
+
+  if (musicAssets.length === 0) {
+    return {
+      summary: 'No music-video workflow assets were detected in the open project.',
+      project: {
+        name: snapshot?.project?.name || '',
+        path: snapshot?.project?.path || '',
+      },
+      health: { status: 'no_music_video_assets', severityCounts: { error: 0, warning: 0, info: 1 } },
+      findings: [{
+        severity: 'info',
+        code: 'no_music_video_assets',
+        message: 'This project does not currently expose music-video assets through the MCP snapshot.',
+      }],
+      suggestedNextActions: ['Open or generate a music-video project, then run this analysis again.'],
+      generatedAt: new Date().toISOString(),
+    }
+  }
+
+  const byStage = countBy(musicAssets, getMusicAssetStage)
+  const byWorkflow = countBy(musicAssets, (asset) => musicAssetRef(asset).workflowId || getMusicAssetStage(asset))
+  const byCoverage = countBy(musicAssets, (asset) => musicAssetRef(asset).coverage || 'uncategorized')
+  const shotsById = new Map()
+  const variantsByKey = new Map()
+  const failedAssets = []
+  const activeAssets = []
+  const manualReplacementAssets = []
+  const unassembledVideos = []
+
+  const ensureShot = (shotId) => {
+    const key = shotId || 'unknown'
+    if (!shotsById.has(key)) {
+      shotsById.set(key, {
+        shotId: key,
+        assetCount: 0,
+        storyboardCount: 0,
+        videoCount: 0,
+        failedCount: 0,
+        activeCount: 0,
+        assembledClipCount: 0,
+        syncLockedClipCount: 0,
+        manualReplacementCount: 0,
+        workflows: {},
+        coverage: {},
+        variants: {},
+      })
+    }
+    return shotsById.get(key)
+  }
+
+  for (const asset of musicAssets) {
+    const ref = musicAssetRef(asset)
+    const status = String(ref.status || '').toLowerCase()
+    const shot = ensureShot(ref.shotId || ref.variantKey || 'unknown')
+    shot.assetCount += 1
+    if (ref.stage === 'storyboard') shot.storyboardCount += 1
+    if (ref.stage === 'video') shot.videoCount += 1
+    if (activeStates.has(status)) {
+      shot.activeCount += 1
+      activeAssets.push(ref)
+    }
+    if (failedStates.has(status) || ref.error) {
+      shot.failedCount += 1
+      failedAssets.push(ref)
+    }
+    if (ref.manualReplacement) {
+      shot.manualReplacementCount += 1
+      manualReplacementAssets.push(ref)
+    }
+    if (ref.workflowId) shot.workflows[ref.workflowId] = (shot.workflows[ref.workflowId] || 0) + 1
+    if (ref.coverage) shot.coverage[ref.coverage] = (shot.coverage[ref.coverage] || 0) + 1
+    if (ref.variantKey) {
+      shot.variants[ref.variantKey] = (shot.variants[ref.variantKey] || 0) + 1
+      if (!variantsByKey.has(ref.variantKey)) {
+        variantsByKey.set(ref.variantKey, {
+          variantKey: ref.variantKey,
+          shotId: ref.shotId,
+          storyboardCount: 0,
+          videoCount: 0,
+          activeCount: 0,
+          failedCount: 0,
+          assembledClipCount: 0,
+          workflows: {},
+        })
+      }
+      const variant = variantsByKey.get(ref.variantKey)
+      if (ref.stage === 'storyboard') variant.storyboardCount += 1
+      if (ref.stage === 'video') variant.videoCount += 1
+      if (activeStates.has(status)) variant.activeCount += 1
+      if (failedStates.has(status) || ref.error) variant.failedCount += 1
+      if (ref.workflowId) variant.workflows[ref.workflowId] = (variant.workflows[ref.workflowId] || 0) + 1
+    }
+
+    if (ref.stage === 'video' && asset?.id && !timelineAssetIds.has(asset.id)) unassembledVideos.push(ref)
+  }
+
+  const assembledClips = clips.filter((clip) => clip?.metadata?.musicVideoAssembly || musicAssetIds.has(clip?.assetId))
+  const syncLockedClips = clips.filter((clip) => clip?.lockMode === 'sync' || clip?.syncLock?.mode === 'sync')
+  for (const clip of assembledClips) {
+    const shotId = String(
+      clip?.metadata?.musicVideoAssembly?.shotId
+      || clip?.syncLock?.shotId
+      || ''
+    ).trim()
+    const variantKey = String(
+      clip?.metadata?.musicVideoAssembly?.variantKey
+      || clip?.syncLock?.variantKey
+      || ''
+    ).trim()
+    if (shotId) ensureShot(shotId).assembledClipCount += 1
+    if (variantKey && variantsByKey.has(variantKey)) variantsByKey.get(variantKey).assembledClipCount += 1
+  }
+  for (const clip of syncLockedClips) {
+    const shotId = String(clip?.syncLock?.shotId || clip?.metadata?.musicVideoAssembly?.shotId || '').trim()
+    if (shotId) ensureShot(shotId).syncLockedClipCount += 1
+  }
+
+  const shots = Array.from(shotsById.values())
+    .filter((shot) => shot.shotId !== 'unknown')
+    .sort((a, b) => a.shotId.localeCompare(b.shotId, undefined, { numeric: true }))
+  const variants = Array.from(variantsByKey.values())
+  const shotsWithKeyframesNoVideo = shots.filter((shot) => shot.storyboardCount > 0 && shot.videoCount === 0)
+  const shotsWithVideosNoKeyframes = shots.filter((shot) => shot.videoCount > 0 && shot.storyboardCount === 0)
+  const shotsWithMultipleVideos = shots.filter((shot) => shot.videoCount > 1)
+  const variantsWithMultipleVideos = variants.filter((variant) => variant.videoCount > 1)
+
+  if (failedAssets.length > 0) {
+    addFinding(findings, {
+      severity: 'error',
+      code: 'failed_music_assets',
+      message: `${pluralize(failedAssets.length, 'music-video asset')} failed or contains an error.`,
+      assets: failedAssets.slice(0, 25),
+    })
+  }
+  if (activeAssets.length > 0) {
+    addFinding(findings, {
+      severity: 'info',
+      code: 'active_music_jobs',
+      message: `${pluralize(activeAssets.length, 'music-video asset')} still appears active.`,
+      assets: activeAssets.slice(0, 25),
+    })
+  }
+  if (shotsWithKeyframesNoVideo.length > 0) {
+    addFinding(findings, {
+      severity: 'warning',
+      code: 'shots_with_keyframes_no_video',
+      message: `${pluralize(shotsWithKeyframesNoVideo.length, 'shot')} has keyframes but no detected video asset.`,
+      shots: shotsWithKeyframesNoVideo.slice(0, 25).map((shot) => shot.shotId),
+    })
+  }
+  if (shotsWithVideosNoKeyframes.length > 0) {
+    addFinding(findings, {
+      severity: 'info',
+      code: 'shots_with_videos_no_keyframes',
+      message: `${pluralize(shotsWithVideosNoKeyframes.length, 'shot')} has video assets but no detected keyframe asset.`,
+      shots: shotsWithVideosNoKeyframes.slice(0, 25).map((shot) => shot.shotId),
+    })
+  }
+  if (unassembledVideos.length > 0) {
+    addFinding(findings, {
+      severity: 'info',
+      code: 'unassembled_music_videos',
+      message: `${pluralize(unassembledVideos.length, 'music-video video')} exists in assets but is not currently used by a timeline clip.`,
+      assets: unassembledVideos.slice(0, 25),
+    })
+  }
+  if (variantsWithMultipleVideos.length > 0) {
+    addFinding(findings, {
+      severity: 'info',
+      code: 'duplicate_video_variants',
+      message: `${pluralize(variantsWithMultipleVideos.length, 'variant')} has multiple video assets, usually from reruns or replacements.`,
+      variants: variantsWithMultipleVideos.slice(0, 25),
+    })
+  } else if (shotsWithMultipleVideos.length > 0) {
+    addFinding(findings, {
+      severity: 'info',
+      code: 'shots_with_multiple_videos',
+      message: `${pluralize(shotsWithMultipleVideos.length, 'shot')} has multiple video assets, usually from alternate passes or reruns.`,
+      shots: shotsWithMultipleVideos.slice(0, 25).map((shot) => shot.shotId),
+    })
+  }
+  if (manualReplacementAssets.length > 0) {
+    addFinding(findings, {
+      severity: 'info',
+      code: 'manual_replacements',
+      message: `${pluralize(manualReplacementAssets.length, 'music-video asset')} came from manual replacement/import.`,
+      assets: manualReplacementAssets.slice(0, 25),
+    })
+  }
+
+  const rankedFindings = rankFindings(findings)
+  const limitedFindings = rankedFindings.slice(0, maxFindings)
+  const severityCounts = rankedFindings.reduce((counts, finding) => {
+    counts[finding.severity] = (counts[finding.severity] || 0) + 1
+    return counts
+  }, { error: 0, warning: 0, info: 0 })
+  const status = severityCounts.error > 0
+    ? 'needs_attention'
+    : severityCounts.warning > 0
+      ? 'review_recommended'
+      : 'looks_good'
+  const summary = `Music-video workflow has ${musicAssets.length} music assets across ${pluralize(shots.length, 'detected shot')}: ${pluralize(byStage.storyboard || 0, 'keyframe/storyboard')} and ${pluralize(byStage.video || 0, 'video')}. ${pluralize(assembledClips.length, 'timeline clip')} ${assembledClips.length === 1 ? 'uses' : 'use'} music-video assets, with ${pluralize(syncLockedClips.length, 'sync-locked clip')}. Found ${severityCounts.error} blocking issue(s), ${severityCounts.warning} warning(s), and ${severityCounts.info} note(s).`
+  const warningDetails = describeFindingCodes(rankedFindings, 'warning')
+  const errorDetails = describeFindingCodes(rankedFindings, 'error')
+  const infoDetails = describeFindingCodes(rankedFindings, 'info')
+  const suggestedNextActions = []
+  if (severityCounts.error > 0) suggestedNextActions.push(`Fix ${pluralize(severityCounts.error, 'blocking issue')}: ${joinHumanList(errorDetails)}.`)
+  if (shotsWithKeyframesNoVideo.length > 0) suggestedNextActions.push(`Queue or import videos for ${pluralize(shotsWithKeyframesNoVideo.length, 'shot')} that already have keyframes.`)
+  if (severityCounts.warning > 0 && shotsWithKeyframesNoVideo.length === 0) suggestedNextActions.push(`Review ${pluralize(severityCounts.warning, 'warning')}: ${joinHumanList(warningDetails)}.`)
+  if (unassembledVideos.length > 0) suggestedNextActions.push(`${pluralize(unassembledVideos.length, 'video')} ${unassembledVideos.length === 1 ? 'exists' : 'exist'} outside the current timeline; assemble or ignore ${unassembledVideos.length === 1 ? 'it' : 'them'} depending on the edit.`)
+  if (suggestedNextActions.length === 0) suggestedNextActions.push('Music-video workflow state looks ready based on the current assets and timeline.')
+  if (severityCounts.info > 0 && infoDetails.length > 0) suggestedNextActions.push(`Notes: ${joinHumanList(infoDetails)}.`)
+
+  return {
+    summary,
+    project: {
+      name: snapshot?.project?.name || '',
+      path: snapshot?.project?.path || '',
+    },
+    currentTimeline: timeline ? {
+      id: timeline.id,
+      name: timeline.name,
+      duration: roundTime(timeline.duration),
+      clipCount: clips.length,
+    } : null,
+    health: {
+      status,
+      severityCounts,
+      findingCount: rankedFindings.length,
+      returnedFindingCount: limitedFindings.length,
+      findingLimitApplied: rankedFindings.length > limitedFindings.length,
+    },
+    metrics: {
+      musicAssetCount: musicAssets.length,
+      detectedShotCount: shots.length,
+      detectedVariantCount: variants.length,
+      assetsByStage: byStage,
+      assetsByWorkflow: byWorkflow,
+      assetsByCoverage: byCoverage,
+      assembledClipCount: assembledClips.length,
+      syncLockedClipCount: syncLockedClips.length,
+      failedAssetCount: failedAssets.length,
+      activeAssetCount: activeAssets.length,
+      manualReplacementCount: manualReplacementAssets.length,
+      unassembledVideoCount: unassembledVideos.length,
+      shotsWithKeyframesNoVideoCount: shotsWithKeyframesNoVideo.length,
+      shotsWithVideosNoKeyframesCount: shotsWithVideosNoKeyframes.length,
+      duplicateVideoVariantCount: variantsWithMultipleVideos.length,
+    },
+    findings: limitedFindings,
+    notableShots: {
+      keyframesNoVideo: shotsWithKeyframesNoVideo.slice(0, 25),
+      videosNoKeyframes: shotsWithVideosNoKeyframes.slice(0, 25),
+      multipleVideos: shotsWithMultipleVideos.slice(0, 25),
+    },
+    notableAssets: {
+      failed: failedAssets.slice(0, 25),
+      active: activeAssets.slice(0, 25),
+      unassembledVideos: unassembledVideos.slice(0, 25),
+      manualReplacements: manualReplacementAssets.slice(0, 25),
+    },
+    suggestedNextActions,
+    generatedAt: new Date().toISOString(),
+  }
 }
 
 function analyzeTimeline(snapshot, args = {}) {
@@ -647,6 +977,16 @@ function createToolDefinitions() {
         },
       },
     },
+    {
+      name: 'analyze_music_video_workflow',
+      description: 'Return an AI-friendly read-only health report for the music-video workflow, including generated keyframes/videos, failed or active jobs, assembled clips, sync locks, reruns/replacements, and next actions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          maxFindings: { type: 'integer', description: 'Maximum findings to return. Defaults to 75.' },
+        },
+      },
+    },
   ]
 }
 
@@ -915,6 +1255,8 @@ class ComfyStudioMcpServer {
         return textResult(summarizeMusicVideoWorkflow(snapshot))
       case 'analyze_timeline':
         return textResult(analyzeTimeline(snapshot, args))
+      case 'analyze_music_video_workflow':
+        return textResult(analyzeMusicVideoWorkflow(snapshot, args))
       default:
         return errorResult(`Unknown tool: ${name}`)
     }

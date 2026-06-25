@@ -995,7 +995,7 @@ function GeneralTab({ initialSection = null }) {
           <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
             <div className="text-xs font-semibold text-sf-text-primary">Available tools</div>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-sf-text-secondary">
-              {['get_project', 'get_timeline', 'get_assets', 'get_generation_status', 'get_music_video_status', 'analyze_timeline'].map((tool) => (
+              {['get_project', 'get_timeline', 'get_assets', 'get_generation_status', 'get_music_video_status', 'analyze_timeline', 'analyze_music_video_workflow'].map((tool) => (
                 <span key={tool} className="rounded bg-sf-dark-800 px-2 py-1">{tool}</span>
               ))}
             </div>
