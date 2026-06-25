@@ -72,6 +72,18 @@ function filePathToFileUri(filePath) {
   return `file://${encodeURI(withLeadingSlash).replace(/#/g, '%23')}`
 }
 
+function formatNumber(value, precision = 4) {
+  const parsed = safeNumber(value, 0)
+  const rounded = Math.round(parsed * (10 ** precision)) / (10 ** precision)
+  return String(Object.is(rounded, -0) ? 0 : rounded)
+}
+
+function pixelsToFcpXmlPosition(value, sequenceHeight) {
+  const height = safeNumber(sequenceHeight, 0)
+  if (height <= 0) return safeNumber(value, 0)
+  return (safeNumber(value, 0) * 100) / height
+}
+
 function getClipTimeScale(clip) {
   const sourceTimeScale = safeNumber(clip?.sourceTimeScale, 0)
   const fpsScale = clip?.timelineFps && clip?.sourceFps
@@ -167,7 +179,29 @@ function buildResourceEntries(exportClips, timebase, formatId) {
   return entries
 }
 
-function buildClipElement(item, timebase) {
+function buildAdjustTransformElement(clip, timelineHeight) {
+  const transform = clip?.transform || {}
+  const positionX = safeNumber(transform.positionX, 0)
+  const positionY = safeNumber(transform.positionY, 0)
+  const scaleX = safeNumber(transform.scaleX, 100)
+  const scaleY = safeNumber(transform.scaleY, scaleX)
+  const rotation = safeNumber(transform.rotation, 0)
+  const hasPosition = Math.abs(positionX) > 0.0001 || Math.abs(positionY) > 0.0001
+  const hasScale = Math.abs(scaleX - 100) > 0.0001 || Math.abs(scaleY - 100) > 0.0001
+  const hasRotation = Math.abs(rotation) > 0.0001
+
+  if (!hasPosition && !hasScale && !hasRotation) return ''
+
+  const attrs = [
+    'anchor="0 0"',
+    `scale="${formatNumber(scaleX / 100)} ${formatNumber(scaleY / 100)}"`,
+    `position="${formatNumber(pixelsToFcpXmlPosition(positionX, timelineHeight))} ${formatNumber(pixelsToFcpXmlPosition(positionY, timelineHeight))}"`,
+  ]
+  if (hasRotation) attrs.push(`rotation="${formatNumber(rotation)}"`)
+  return `        <adjust-transform ${attrs.join(' ')}/>`
+}
+
+function buildClipElement(item, timebase, timelineHeight) {
   const { clip, asset, track, resourceId, lane } = item
   const durationFrames = Math.max(secondsToFrames(clip.duration, timebase), 1)
   const startFrames = secondsToFrames(clip.startTime, timebase)
@@ -180,11 +214,18 @@ function buildClipElement(item, timebase) {
   const enabledAttr = clip.enabled === false ? ' enabled="0"' : ''
   const laneAttr = lane ? ` lane="${lane}"` : ''
   const note = `comfystudio:clipId=${clip.id};assetId=${asset.id};trackId=${track?.id || 'unknown'}`
-  return [
+  const adjustTransform = item.mediaRole === 'video' || item.mediaRole === 'image'
+    ? buildAdjustTransformElement(clip, timelineHeight)
+    : ''
+  const lines = [
     `      <asset-clip name="${escapeXml(name)}" ref="${resourceId}" offset="${formatFrames(startFrames, timebase)}" start="${formatFrames(sourceStartFrames, timebase)}" duration="${formatFrames(durationFrames, timebase)}"${laneAttr}${audioAttrs}${enabledAttr}>`,
     `        <note>${escapeXml(note)}</note>`,
+  ]
+  if (adjustTransform) lines.push(adjustTransform)
+  lines.push(
     '      </asset-clip>',
-  ].join('\n')
+  )
+  return lines.join('\n')
 }
 
 export function buildFcpXml({
@@ -230,7 +271,7 @@ export function buildFcpXml({
     `    <format id="${formatId}" name="ComfyStudio ${width}x${height} ${timebase.fps}fps" frameDuration="${timebase.frameDuration}" width="${width}" height="${height}" colorSpace="1-1-1 (Rec. 709)"/>`,
     ...buildResourceEntries(exportClips, timebase, formatId),
   ]
-  const clipElements = exportClips.map((item) => buildClipElement(item, timebase))
+  const clipElements = exportClips.map((item) => buildClipElement(item, timebase, height))
   const safeProjectId = sanitizeId(projectName, 'comfystudio_project')
 
   return [

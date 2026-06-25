@@ -300,7 +300,12 @@ function sanitizeExportBaseName(value) {
 }
 
 function ExportPanel() {
-  const { currentProject, currentProjectHandle, currentTimelineId, getCurrentTimelineSettings } = useProjectStore()
+  const {
+    currentProject,
+    currentProjectHandle,
+    currentTimelineId,
+    getCurrentTimelineSettings,
+  } = useProjectStore()
   const { duration, inPoint, outPoint, getTimelineEndTime, selectedClipIds, clips, transitions, tracks } = useTimelineStore()
   const { assets } = useAssetsStore()
   
@@ -1032,7 +1037,7 @@ function ExportPanel() {
       setIsXmlExporting(false)
     }
   }
-  
+
   return (
     <div className="flex-1 min-h-0 flex flex-col min-w-0 overflow-hidden bg-sf-dark-950">
       {/* Header */}

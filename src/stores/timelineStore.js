@@ -995,6 +995,10 @@ export const useTimelineStore = create(
       asset?.settings?.defaultTransform
       && typeof asset.settings.defaultTransform === 'object'
     ) ? asset.settings.defaultTransform : null
+    const optionTransform = (
+      options?.transform
+      && typeof options.transform === 'object'
+    ) ? options.transform : null
     const isGeneratedOverlay = isImage && Boolean(asset?.settings?.overlayKind)
     let defaultDuration = isImage ? 5 : sourceDuration // Keep video/audio duration in real seconds
     if (isGeneratedOverlay) {
@@ -1067,7 +1071,8 @@ export const useTimelineStore = create(
       transform: {
         ...createDefaultClipTransform(),
         ...(assetDefaultTransform || {}),
-        blendMode: assetDefaultTransform?.blendMode ?? 'normal',
+        ...(optionTransform || {}),
+        blendMode: optionTransform?.blendMode ?? assetDefaultTransform?.blendMode ?? 'normal',
       },
     }, fps), fps)
     
