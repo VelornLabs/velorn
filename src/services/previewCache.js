@@ -121,6 +121,22 @@ function buildClipSignature(clip) {
         : [],
     }
     : null
+  const keyframes = clip.keyframes && typeof clip.keyframes === 'object'
+    ? Object.fromEntries(
+      Object.entries(clip.keyframes)
+        .filter(([, frames]) => Array.isArray(frames) && frames.length > 0)
+        .map(([property, frames]) => [
+          property,
+          frames.map((keyframe) => ({
+            time: roundNumber(keyframe.time),
+            value: typeof keyframe.value === 'number'
+              ? roundNumber(keyframe.value)
+              : sanitizeText(String(keyframe.value ?? ''), 120),
+            easing: keyframe.easing || null,
+          })),
+        ])
+    )
+    : null
 
   return {
     id: clip.id || null,
@@ -162,6 +178,7 @@ function buildClipSignature(clip) {
       : null,
     effects,
     textProperties,
+    keyframes,
   }
 }
 

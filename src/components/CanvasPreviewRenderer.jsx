@@ -558,7 +558,7 @@ function CanvasPreviewRenderer({
       applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
       applyClipCrop(offCtx, rect, clipTransform)
       applyTransitionClip(offCtx, rect, transitionStyle)
-      drawText(offCtx, rect, clip, 1)
+      drawText(offCtx, rect, clip, 1, clipTime)
       offCtx.restore()
     } else {
       const clipUrl = resolvePreviewUrl(clip, getAssetById, state.useProxyPlaybackForAssets)

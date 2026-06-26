@@ -110,6 +110,45 @@ const MAX_PROJECT_AUTOSAVE_SNAPSHOTS = 10
 
 const padNumber = (value, length = 2) => String(value).padStart(length, '0')
 
+const buildDuplicateProjectName = (sourceName, copyIndex = 1) => {
+  const cleanName = String(sourceName || 'Project').trim() || 'Project'
+  return copyIndex <= 1 ? `${cleanName} copy` : `${cleanName} copy ${copyIndex}`
+}
+
+const remapDuplicatedProjectPath = (value, sourceRoot, targetRoot) => {
+  if (typeof value !== 'string' || !value) return value
+  const source = String(sourceRoot || '').replace(/\\/g, '/').replace(/\/+$/g, '')
+  const target = String(targetRoot || '').replace(/\\/g, '/').replace(/\/+$/g, '')
+  if (!source || !target) return value
+
+  const normalizedValue = value.replace(/\\/g, '/')
+  const normalizedValueLower = normalizedValue.toLowerCase()
+  const sourceLower = source.toLowerCase()
+  if (normalizedValueLower !== sourceLower && !normalizedValueLower.startsWith(`${sourceLower}/`)) {
+    return value
+  }
+
+  const suffix = normalizedValue.slice(source.length)
+  const remapped = `${target}${suffix}`
+  return value.includes('\\') ? remapped.replace(/\//g, '\\') : remapped
+}
+
+const remapDuplicatedProjectPaths = (value, sourceRoot, targetRoot) => {
+  if (typeof value === 'string') return remapDuplicatedProjectPath(value, sourceRoot, targetRoot)
+  if (Array.isArray(value)) {
+    return value.map((item) => remapDuplicatedProjectPaths(item, sourceRoot, targetRoot))
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        remapDuplicatedProjectPaths(item, sourceRoot, targetRoot),
+      ])
+    )
+  }
+  return value
+}
+
 const createProjectSnapshotFilename = (timestamp = new Date()) => {
   const date = timestamp instanceof Date ? timestamp : new Date(timestamp)
   return [
@@ -231,6 +270,62 @@ export const saveProject = async (projectDir, projectData) => {
     await writeProjectSnapshot(projectDir, serializedProject, saveTimestamp)
   } catch (snapshotError) {
     console.warn('Project snapshot save failed:', snapshotError)
+  }
+}
+
+/**
+ * Duplicate a project folder beside the original and update the copied
+ * project metadata so it appears as a separate project.
+ * @param {string|FileSystemDirectoryHandle} sourceProjectDir
+ * @returns {Promise<{path: string, name: string, projectData: object, copied?: number|null}>}
+ */
+export const duplicateProjectFolder = async (sourceProjectDir) => {
+  if (!isElectron()) {
+    throw new Error('Project duplication is only available in the desktop app.')
+  }
+  if (!sourceProjectDir || typeof sourceProjectDir !== 'string') {
+    throw new Error('This project does not have a folder path available.')
+  }
+  if (!window.electronAPI?.copyDirectory) {
+    throw new Error('Project duplication is not available in this build.')
+  }
+
+  const sourceProject = await loadProject(sourceProjectDir)
+  const sourceFolderName = await window.electronAPI.pathBasename(sourceProjectDir)
+  const parentDir = await window.electronAPI.pathDirname(sourceProjectDir)
+
+  let copyIndex = 1
+  let duplicateName = buildDuplicateProjectName(sourceProject?.name || sourceFolderName, copyIndex)
+  let duplicatePath = await window.electronAPI.pathJoin(parentDir, duplicateName)
+  while (await window.electronAPI.exists(duplicatePath)) {
+    copyIndex += 1
+    duplicateName = buildDuplicateProjectName(sourceProject?.name || sourceFolderName, copyIndex)
+    duplicatePath = await window.electronAPI.pathJoin(parentDir, duplicateName)
+  }
+
+  const copyResult = await window.electronAPI.copyDirectory(sourceProjectDir, duplicatePath)
+  if (!copyResult?.success) {
+    throw new Error(copyResult?.error || 'Could not duplicate project folder.')
+  }
+
+  const now = new Date().toISOString()
+  const copiedProject = remapDuplicatedProjectPaths(sourceProject, sourceProjectDir, duplicatePath)
+  const duplicatedProject = {
+    ...copiedProject,
+    name: duplicateName,
+    created: now,
+    modified: now,
+  }
+  await saveProject(duplicatePath, duplicatedProject)
+
+  return {
+    path: duplicatePath,
+    name: duplicateName,
+    projectData: {
+      ...duplicatedProject,
+      modified: now,
+    },
+    copied: copyResult.copied ?? null,
   }
 }
 
@@ -1443,6 +1538,7 @@ export default {
   requestDirectoryAccess,
   openProjectFolder,
   createProjectFolder,
+  duplicateProjectFolder,
   saveProject,
   loadProject,
   isValidProject,

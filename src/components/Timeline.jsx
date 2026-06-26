@@ -49,6 +49,29 @@ const PLAYHEAD_SCRUB_AUTO_SCROLL_MAX_STEP_PX = 28
 const MIN_INTERACTIVE_CLIP_WIDTH_PX = 24
 const TIMELINE_VIDEO_THUMB_WIDTH_PX = 90
 const MAX_TIMELINE_VIDEO_THUMBNAILS = 12
+const CLIP_LABEL_COLOR_OPTIONS = Object.freeze([
+  { label: 'Clear label', color: '' },
+  { label: 'Red', color: '#ef4444' },
+  { label: 'Orange', color: '#f97316' },
+  { label: 'Yellow', color: '#eab308' },
+  { label: 'Green', color: '#22c55e' },
+  { label: 'Cyan', color: '#06b6d4' },
+  { label: 'Blue', color: '#3b82f6' },
+  { label: 'Purple', color: '#a855f7' },
+  { label: 'Pink', color: '#ec4899' },
+])
+const getClipLabelColorValue = (clip) => (
+  typeof clip?.labelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(clip.labelColor.trim())
+    ? clip.labelColor.trim().toLowerCase()
+    : ''
+)
+const getClipLabelTintOpacity = (clip) => {
+  if (!clip) return 0.28
+  if (clip.type === 'audio') return 0.34
+  if (clip.type === 'text' || clip.type === 'adjustment') return 0.42
+  return 0.3
+}
+const getClipLabelFooterOpacity = (clip) => (clip?.type === 'audio' ? 0.5 : 0.62)
 
 // Resolve-style audio track/waveform colors
 const AUDIO_TRACK_BG = '#2d4038'
@@ -688,6 +711,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     toggleTrackLock,
     toggleTrackVisibility,
     setClipsEnabled,
+    setClipLabelColor,
     addTrack,
     addTransition,
     removeTransition,
@@ -997,11 +1021,28 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     () => clipContextSelectionClips.length > 0 && clipContextSelectionClips.every((clip) => !isClipEnabled(clip)),
     [clipContextSelectionClips, isClipEnabled]
   )
+  const clipContextActiveLabelColor = useMemo(() => {
+    if (clipContextSelectionClips.length === 0) return ''
+    const firstColor = getClipLabelColorValue(clipContextSelectionClips[0])
+    const allSameColor = clipContextSelectionClips.every((clip) => getClipLabelColorValue(clip) === firstColor)
+    return allSameColor ? firstColor : null
+  }, [clipContextSelectionClips])
 
   const setClipSelectionEnabled = useCallback((clipIds, enabled) => {
     if (!Array.isArray(clipIds) || clipIds.length === 0) return
     setClipsEnabled(clipIds, enabled)
   }, [setClipsEnabled])
+
+  const applyClipLabelColor = useCallback((labelColor) => {
+    const targetIds = clipContextSelectionIds.length > 0
+      ? clipContextSelectionIds
+      : (clipContextMenu?.clipId ? [clipContextMenu.clipId] : [])
+    if (targetIds.length === 0) return
+
+    setClipLabelColor(targetIds, labelColor)
+    setMaskSubmenuOpen(false)
+    setClipContextMenu(null)
+  }, [clipContextMenu?.clipId, clipContextSelectionIds, setClipLabelColor])
 
   const toggleClipSelectionEnabled = useCallback((clipIds = selectedClipIds) => {
     const targetClips = (clipIds || [])
@@ -5210,6 +5251,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   const clipMediaUrl = shouldRenderClipThumbnails && (clip.type === 'image' || clip.type === 'video')
                     ? getClipUrl(clip)
                     : null
+                  const clipLabelColor = getClipLabelColorValue(clip)
                   
                   return (
                   <div
@@ -5581,6 +5623,29 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                       </>
                     )}
 
+                    {clipLabelColor && (
+                      <>
+                        <div
+                          className="absolute inset-0 z-[6] pointer-events-none"
+                          style={{
+                            backgroundColor: clipLabelColor,
+                            opacity: getClipLabelTintOpacity(clip),
+                          }}
+                        />
+                        <div
+                          className="absolute inset-x-0 bottom-0 z-[7] h-[14px] pointer-events-none"
+                          style={{
+                            backgroundColor: clipLabelColor,
+                            opacity: getClipLabelFooterOpacity(clip),
+                          }}
+                        />
+                        <div
+                          className="absolute inset-x-0 top-0 z-20 h-[3px] pointer-events-none"
+                          style={{ backgroundColor: clipLabelColor }}
+                        />
+                      </>
+                    )}
+
                     {/* Hover overlay */}
                     <div className="absolute inset-0 bg-white/0 group-hover:bg-white/5 transition-colors pointer-events-none" />
                     
@@ -5948,6 +6013,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                     ? null
                     : Math.max(18, Math.min(renderedClipWidth - 18, activeFadeHandleX))
                   const clipAsset = clip.assetId ? getAssetById(clip.assetId) : null
+                  const clipLabelColor = getClipLabelColorValue(clip)
                   const nativeWaveformInput = (
                     (clipAsset?.absolutePath || null)
                     || (isNativeMediaUrl(clipAsset?.playbackCacheUrl) ? clipAsset.playbackCacheUrl : null)
@@ -6062,6 +6128,29 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                           <EyeOff className="w-2.5 h-2.5" />
                           <span>Off</span>
                         </div>
+                      </>
+                    )}
+
+                    {clipLabelColor && (
+                      <>
+                        <div
+                          className="absolute inset-0 z-[6] pointer-events-none"
+                          style={{
+                            backgroundColor: clipLabelColor,
+                            opacity: getClipLabelTintOpacity(clip),
+                          }}
+                        />
+                        <div
+                          className="absolute inset-x-0 bottom-0 z-[7] h-[14px] pointer-events-none"
+                          style={{
+                            backgroundColor: clipLabelColor,
+                            opacity: getClipLabelFooterOpacity(clip),
+                          }}
+                        />
+                        <div
+                          className="absolute inset-x-0 top-0 z-20 h-[3px] pointer-events-none"
+                          style={{ backgroundColor: clipLabelColor }}
+                        />
                       </>
                     )}
                     
@@ -6222,6 +6311,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           {markers.map((marker, index) => {
             const isSelected = marker.id === selectedMarkerId
             const markerLabel = marker.label?.trim() || `M${index + 1}`
+            const markerColor = /^#[0-9a-fA-F]{6}$/.test(marker.color || '') ? marker.color : '#06b6d4'
             return (
               <div
                 key={marker.id}
@@ -6232,16 +6322,24 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   className={`absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-px ${
                     isSelected
                       ? 'bg-cyan-200 shadow-[0_0_8px_rgba(103,232,249,0.45)]'
-                      : 'bg-cyan-400/70'
+                      : ''
                   }`}
+                  style={isSelected ? undefined : {
+                    backgroundColor: markerColor,
+                    boxShadow: `0 0 8px ${markerColor}66`,
+                  }}
                 />
                 <button
                   data-marker-handle="true"
                   className={`absolute -top-1 left-1/2 -translate-x-1/2 h-4 min-w-[18px] px-1 pointer-events-auto transition-all rounded-[4px] border shadow-[0_4px_10px_rgba(0,0,0,0.35)] flex items-center justify-center gap-1 ${
                     isSelected
                       ? 'border-cyan-100/80 bg-cyan-300 text-slate-950'
-                      : 'border-cyan-300/45 bg-cyan-500/85 text-white hover:bg-cyan-400'
+                      : 'text-white hover:brightness-110'
                   }`}
+                  style={isSelected ? undefined : {
+                    backgroundColor: markerColor,
+                    borderColor: `${markerColor}aa`,
+                  }}
                   onMouseDown={(e) => {
                     e.stopPropagation()
                     e.preventDefault()
@@ -6261,8 +6359,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                 </button>
                 <div
                   className={`absolute top-3 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rotate-45 ${
-                    isSelected ? 'bg-cyan-300' : 'bg-cyan-500/90'
+                    isSelected ? 'bg-cyan-300' : ''
                   }`}
+                  style={isSelected ? undefined : { backgroundColor: markerColor }}
                 />
                 {isSelected && (
                   <div className="absolute top-5 left-2 text-[9px] px-1.5 py-0.5 rounded border border-cyan-400/35 bg-slate-950/92 text-cyan-100 whitespace-nowrap pointer-events-none font-mono shadow-[0_6px_14px_rgba(0,0,0,0.35)]">
@@ -6447,7 +6546,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       {clipContextMenu && (
         <div
           ref={clipContextMenuRef}
-          className="fixed z-50 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl py-1 min-w-[160px]"
+          className="fixed z-50 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl py-1 min-w-[240px]"
           style={{
             left: `${clipContextMenuPosition.x}px`,
             top: `${clipContextMenuPosition.y}px`,
@@ -6474,12 +6573,12 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                     // Decide which side of the parent menu to open the
                     // submenu on. We don't know the exact submenu width
                     // before render, but `min-w-[220px]` is a safe lower
-                    // bound; the parent menu is `min-w-[160px]`. If opening
+                    // bound; the parent menu is `min-w-[240px]`. If opening
                     // to the right would push the submenu off the viewport
                     // edge (or close enough to it that it would feel
                     // cramped), we flip to the left instead.
                     const SUBMENU_MIN_WIDTH = 220
-                    const PARENT_MIN_WIDTH = 160
+                    const PARENT_MIN_WIDTH = 240
                     const EDGE_MARGIN = 12
                     const viewportWidth = typeof window !== 'undefined'
                       ? window.innerWidth
@@ -6592,6 +6691,37 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
               <span className="ml-auto text-sf-text-muted text-[10px]">{addTransitionHotkeyLabel}</span>
             </button>
           )}
+          <div className="h-px bg-sf-dark-600 my-1" />
+          <div className="px-3 py-2">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-sf-text-muted">
+              <Flag className="w-3 h-3" />
+              <span>Label color</span>
+            </div>
+            <div className="grid grid-cols-9 gap-1">
+              {CLIP_LABEL_COLOR_OPTIONS.map((option) => {
+                const isActive = clipContextActiveLabelColor !== null && clipContextActiveLabelColor === option.color
+                return (
+                  <button
+                    key={option.label}
+                    type="button"
+                    onClick={() => applyClipLabelColor(option.color)}
+                    className={`h-5 w-5 rounded border flex items-center justify-center transition-colors ${
+                      isActive
+                        ? 'border-white ring-1 ring-white/70'
+                        : 'border-sf-dark-500 hover:border-sf-text-secondary'
+                    } ${option.color ? '' : 'bg-sf-dark-900'}`}
+                    style={option.color ? { backgroundColor: option.color } : undefined}
+                    title={option.label}
+                    aria-label={option.label}
+                  >
+                    {!option.color && <X className="w-3 h-3 text-sf-text-muted" />}
+                    {option.color && isActive && <Check className="w-3 h-3 text-white drop-shadow" />}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="h-px bg-sf-dark-600 my-1" />
           <button
             onClick={() => handleContextMenuAction('toggle-enabled')}
             className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors"

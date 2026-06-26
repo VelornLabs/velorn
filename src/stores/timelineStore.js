@@ -289,6 +289,10 @@ const applyInferredSyncLockToClip = (clip, assetsById, fps = FRAME_RATE) => {
 
 const dedupeClipIds = (clipIds = []) => [...new Set((clipIds || []).filter(Boolean))]
 const RIPPLE_TIME_EPSILON = 1e-6
+const normalizeClipLabelColor = (color) => {
+  const value = String(color || '').trim()
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : ''
+}
 
 const expandClipIdsWithLinked = (clips, clipIds = []) => {
   const sourceIds = dedupeClipIds(clipIds)
@@ -4414,6 +4418,38 @@ export const useTimelineStore = create(
           ? { ...clip, enabled: desiredEnabled }
           : clip
       )),
+    }))
+  },
+
+  /**
+   * Set or clear the visible label color for one or more timeline clips.
+   */
+  setClipLabelColor: (clipIds, color) => {
+    const state = get()
+    const targetIds = dedupeClipIds(Array.isArray(clipIds) ? clipIds : [clipIds])
+    if (targetIds.length === 0) return
+
+    const targetSet = new Set(targetIds)
+    const labelColor = normalizeClipLabelColor(color)
+    const hasChanges = state.clips.some((clip) => (
+      targetSet.has(clip.id) && normalizeClipLabelColor(clip.labelColor) !== labelColor
+    ))
+    if (!hasChanges) return
+
+    get().saveToHistory()
+    set((current) => ({
+      clips: current.clips.map((clip) => {
+        if (!targetSet.has(clip.id)) return clip
+        if (!labelColor) {
+          const nextClip = { ...clip }
+          delete nextClip.labelColor
+          return nextClip
+        }
+        return {
+          ...clip,
+          labelColor,
+        }
+      }),
     }))
   },
 

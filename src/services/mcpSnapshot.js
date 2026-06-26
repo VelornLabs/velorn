@@ -75,6 +75,21 @@ function sanitizeAsset(asset = {}) {
     generationStatus: asset.generationStatus || asset.status || 'none',
     error: truncateText(asset.error || asset.generationError || settings.error || ''),
     yolo: safeClone(yolo),
+    poster: asset.poster ? {
+      posterPath: asset.poster.posterPath || '',
+      width: safeNumber(asset.poster.width),
+      height: safeNumber(asset.poster.height),
+      created: asset.poster.created || null,
+    } : null,
+    sprite: asset.sprite ? {
+      spritePath: asset.sprite.spritePath || '',
+      width: safeNumber(asset.sprite.width),
+      height: safeNumber(asset.sprite.height),
+      frameCount: safeNumber(asset.sprite.frameCount),
+      duration: safeNumber(asset.sprite.duration),
+      frameWidth: safeNumber(asset.sprite.frameWidth),
+      frameHeight: safeNumber(asset.sprite.frameHeight),
+    } : null,
     playbackCacheStatus: asset.playbackCacheStatus || '',
     proxyStatus: asset.proxyStatus || '',
   }
@@ -107,13 +122,17 @@ function sanitizeClip(clip = {}) {
     sourceDuration: safeNumber(clip.sourceDuration),
     speed: safeNumber(clip.speed, 1),
     enabled: clip.enabled !== false,
+    labelColor: clip.labelColor || '',
     lockMode: clip.lockMode || null,
     syncLock: safeClone(clip.syncLock),
     transform: safeClone(clip.transform),
+    textProperties: safeClone(clip.textProperties),
+    titleAnimation: safeClone(clip.titleAnimation),
+    keyframes: safeClone(clip.keyframes),
     metadata: safeClone(clip.metadata),
     captionScope: clip.captionScope || clip.metadata?.captionScope || null,
     overlayKind: clip.overlayKind || null,
-    text: truncateText(clip.text || clip.content || ''),
+    text: truncateText(clip.textProperties?.text || clip.text || clip.content || ''),
   }
 }
 
@@ -146,6 +165,7 @@ function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeCli
     width: settings.width,
     height: settings.height,
     fps: settings.fps,
+    playheadPosition: safeNumber(timeline.playheadPosition, 0),
     duration: safeNumber(timeline.duration, 0),
     trackCount: tracks.length,
     clipCount: clips.length,
@@ -203,6 +223,7 @@ export function buildMcpSnapshot() {
     width: currentTimelineMeta.width ?? projectSettings.width,
     height: currentTimelineMeta.height ?? projectSettings.height,
     fps: currentTimelineMeta.fps ?? projectSettings.fps ?? timelineState.timelineFps,
+    playheadPosition: timelineState.playheadPosition,
   }
 
   const timelines = (project.timelines || []).map((timeline) => {

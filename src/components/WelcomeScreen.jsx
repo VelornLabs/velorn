@@ -166,6 +166,7 @@ function WelcomeScreen() {
   const [deleteProjectDialog, setDeleteProjectDialog] = useState(null)
   const [deleteProjectError, setDeleteProjectError] = useState('')
   const [isDeletingProject, setIsDeletingProject] = useState(false)
+  const [duplicatingProjectKey, setDuplicatingProjectKey] = useState('')
   
   const {
     isFirstRun,
@@ -179,6 +180,7 @@ function WelcomeScreen() {
     openProjectFromPicker,
     openLatestAutosaveForFailedProject,
     openRecentProject,
+    duplicateProject,
     removeRecentProject,
     clearError,
     getRecentProjectsList,
@@ -203,6 +205,7 @@ function WelcomeScreen() {
   const showMediaPreparation = Boolean(isLoading && mediaPreparation?.active && mediaPreparationTotal > 0)
   const welcomeHeroVideoSrc = getWelcomeAssetPath('welcome-hero.mp4')
   const welcomeHeroPosterSrc = getWelcomeAssetPath('hero-v1.webp')
+  const desktopMode = isElectronMode()
   
   // Keep partner-key status fresh so the chip in the header reflects
   // changes made from the ApiKeyDialog without remounting.
@@ -310,6 +313,20 @@ function WelcomeScreen() {
     )
   }
 
+  const getProjectKey = (project) => project?.path || project?.name || ''
+
+  const handleDuplicateProject = async (event, project) => {
+    event.stopPropagation()
+    if (!project || duplicatingProjectKey) return
+    const key = getProjectKey(project)
+    setDuplicatingProjectKey(key)
+    try {
+      await duplicateProject(project)
+    } finally {
+      setDuplicatingProjectKey('')
+    }
+  }
+
   const openDeleteProjectDialog = (event, project) => {
     event.stopPropagation()
     setDeleteProjectError('')
@@ -334,7 +351,7 @@ function WelcomeScreen() {
       setDeleteProjectError('This project does not have a folder path available, so it can only be removed from the list.')
       return
     }
-    if (!isElectronMode || !window.electronAPI?.trashItem) {
+    if (!desktopMode || !window.electronAPI?.trashItem) {
       setDeleteProjectError('Moving a project folder to the Recycle Bin is only available in the desktop app.')
       return
     }
@@ -463,7 +480,7 @@ function WelcomeScreen() {
           </div>
           
           {/* Browser Support Warning - only show in web mode */}
-          {!isBrowserSupported && !isElectronMode() && (
+          {!isBrowserSupported && !desktopMode && (
             <div className="mb-6 p-4 bg-sf-error/20 border border-sf-error/50 rounded-lg">
               <div className="flex items-start gap-3">
                 <AlertCircle className="w-5 h-5 text-sf-error flex-shrink-0 mt-0.5" />
@@ -516,7 +533,7 @@ function WelcomeScreen() {
             {/* Action Button - simple outlined style */}
             <button
               onClick={selectDefaultProjectsLocation}
-              disabled={(!isBrowserSupported && !isElectronMode()) || isLoading}
+              disabled={(!isBrowserSupported && !desktopMode) || isLoading}
               className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-sf-dark-800 hover:bg-sf-dark-700 border border-sf-dark-500 disabled:bg-sf-dark-700 disabled:border-sf-dark-600 disabled:cursor-not-allowed rounded-lg text-sf-text-secondary font-medium transition-colors"
             >
               {isLoading ? (
@@ -781,6 +798,8 @@ function WelcomeScreen() {
             <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900 shadow-lg shadow-black/40 overflow-hidden divide-y divide-sf-dark-800">
               {recentProjectsList.map((project, index) => {
                 const thumbKey = project.path || project.name
+                const projectKey = getProjectKey(project)
+                const isDuplicating = duplicatingProjectKey === projectKey
                 const resolvedThumb = thumbnailUrls[thumbKey]
                 const resolution = project.settings?.width && project.settings?.height
                   ? `${project.settings.width}×${project.settings.height}`
@@ -818,7 +837,20 @@ function WelcomeScreen() {
                         <span className="w-24 text-right">{formatDate(project.modified)}</span>
                       </div>
                     </button>
-                    {/* Remove from recent */}
+                    {/* Duplicate / remove from recent */}
+                    <button
+                      type="button"
+                      onClick={(e) => handleDuplicateProject(e, project)}
+                      disabled={!desktopMode || !project.path || Boolean(duplicatingProjectKey)}
+                      className="flex-shrink-0 p-1.5 rounded-md hover:bg-sf-dark-700 text-sf-text-muted hover:text-sf-text-primary opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+                      title={desktopMode && project.path ? 'Duplicate project and open copy' : 'Duplicate requires a local project folder'}
+                    >
+                      {isDuplicating ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
                     <button
                       type="button"
                       onClick={(e) => openDeleteProjectDialog(e, project)}
@@ -839,6 +871,8 @@ function WelcomeScreen() {
             >
               {recentProjectsList.map((project, index) => {
                 const thumbKey = project.path || project.name
+                const projectKey = getProjectKey(project)
+                const isDuplicating = duplicatingProjectKey === projectKey
                 const resolvedThumb = thumbnailUrls[thumbKey]
                 const resolution = project.settings?.width && project.settings?.height
                   ? `${project.settings.width}×${project.settings.height}`
@@ -890,15 +924,30 @@ function WelcomeScreen() {
                         </div>
                       </div>
                     </button>
-                    {/* Remove from recent */}
-                    <button
-                      type="button"
-                      onClick={(e) => openDeleteProjectDialog(e, project)}
-                      className="absolute top-1.5 right-1.5 p-1 rounded-md bg-sf-dark-900/90 hover:bg-sf-error/80 text-sf-text-muted hover:text-white opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                      title="Delete or remove project"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {/* Duplicate / remove from recent */}
+                    <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={(e) => handleDuplicateProject(e, project)}
+                        disabled={!desktopMode || !project.path || Boolean(duplicatingProjectKey)}
+                        className="p-1 rounded-md bg-sf-dark-900/90 hover:bg-sf-dark-700 text-sf-text-muted hover:text-sf-text-primary disabled:opacity-30 disabled:cursor-not-allowed"
+                        title={desktopMode && project.path ? 'Duplicate project and open copy' : 'Duplicate requires a local project folder'}
+                      >
+                        {isDuplicating ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => openDeleteProjectDialog(e, project)}
+                        className="p-1 rounded-md bg-sf-dark-900/90 hover:bg-sf-error/80 text-sf-text-muted hover:text-white"
+                        title="Delete or remove project"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 )
               })}
@@ -1019,7 +1068,7 @@ function WelcomeScreen() {
               <button
                 type="button"
                 onClick={handleTrashProjectFolder}
-                disabled={isDeletingProject || !deleteProjectDialog.path || !isElectronMode}
+                disabled={isDeletingProject || !deleteProjectDialog.path || !desktopMode}
                 className="px-3 py-1.5 rounded bg-sf-error hover:bg-red-500 text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isDeletingProject ? 'Moving...' : 'Move to Recycle Bin'}

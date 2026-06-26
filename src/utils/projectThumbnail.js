@@ -92,7 +92,7 @@ async function renderCompositeFrameAt(time, canvas, renderWidth, renderHeight) {
         ctx.filter = 'none'
         applyClipTransform(ctx, rect, clipTransform, null)
         applyClipCrop(ctx, rect, clipTransform)
-        try { drawText(ctx, rect, clip) } catch (_) { /* ignore bad text state */ }
+        try { drawText(ctx, rect, clip, 1, clipTime) } catch (_) { /* ignore bad text state */ }
         ctx.restore()
         drewSomething = true
         continue

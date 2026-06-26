@@ -5,6 +5,7 @@ import {
   isFileSystemSupported,
   requestDirectoryAccess,
   createProjectFolder,
+  duplicateProjectFolder,
   saveProject as saveProjectToFile,
   loadProject as loadProjectFromFile,
   loadLatestProjectAutosave as loadLatestProjectAutosaveFromFile,
@@ -489,6 +490,59 @@ export const useProjectStore = create(
         } catch (err) {
           console.error('Error opening project from picker:', err)
           set({ error: err.message })
+          return null
+        }
+      },
+
+      /**
+       * Duplicate a recent project folder and open the copy.
+       * @param {object} project - Recent project object
+       * @returns {Promise<object|null>} Duplicated project data, or null on failure
+       */
+      duplicateProject: async (project) => {
+        const state = get()
+        if (!isElectron()) {
+          set({ error: 'Project duplication is only available in the desktop app.' })
+          return null
+        }
+
+        let sourcePath = project?.path || null
+        if (!sourcePath && state.defaultProjectsHandle && project?.name) {
+          sourcePath = await window.electronAPI.pathJoin(state.defaultProjectsHandle, project.name)
+        }
+        if (!sourcePath) {
+          set({ error: 'This project does not have a folder path available.' })
+          return null
+        }
+
+        set({ isLoading: true, error: null })
+
+        try {
+          const duplicate = await duplicateProjectFolder(sourcePath)
+          const duplicatedProject = duplicate.projectData
+          const recentProject = {
+            name: duplicatedProject.name,
+            path: duplicate.path,
+            modified: duplicatedProject.modified,
+            created: duplicatedProject.created,
+            settings: duplicatedProject.settings,
+            thumbnail: duplicatedProject.thumbnail,
+          }
+
+          set((state) => ({
+            recentProjects: [
+              recentProject,
+              ...state.recentProjects.filter((p) => (
+                p.name !== recentProject.name && (p.path || '') !== (recentProject.path || '')
+              )),
+            ].slice(0, 10),
+            isLoading: false,
+          }))
+
+          return await get().openProject(duplicate.path)
+        } catch (err) {
+          console.error('Error duplicating project:', err)
+          set({ isLoading: false, error: err?.message || 'Could not duplicate project.' })
           return null
         }
       },

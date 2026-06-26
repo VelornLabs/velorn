@@ -181,6 +181,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<{success: boolean, error?: string}>}
    */
   copyFile: (srcPath, destPath) => ipcRenderer.invoke('fs:copyFile', srcPath, destPath),
+
+  /**
+   * Copy a directory recursively
+   * @param {string} srcPath
+   * @param {string} destPath
+   * @returns {Promise<{success: boolean, copied?: number|null, error?: string}>}
+   */
+  copyDirectory: (srcPath, destPath) => ipcRenderer.invoke('fs:copyDirectory', srcPath, destPath),
   
   /**
    * Move/rename a file
@@ -351,6 +359,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mcp: {
     getStatus: () => ipcRenderer.invoke('mcp:getStatus'),
     updateSnapshot: (snapshot) => ipcRenderer.invoke('mcp:updateSnapshot', snapshot),
+    onAction: (callback) => {
+      const handler = (_event, request) => callback(request)
+      ipcRenderer.on('mcp:action', handler)
+      return () => ipcRenderer.removeListener('mcp:action', handler)
+    },
+    sendActionResult: (response) => ipcRenderer.send('mcp:actionResult', response),
   },
 
   // ============================================

@@ -112,7 +112,7 @@ async function renderTimelineCompositeStill(time, canvas, width, height) {
         ctx.filter = clipTransform.blur > 0 ? `blur(${clipTransform.blur}px)` : 'none'
         applyClipTransform(ctx, rect, clipTransform, null)
         applyClipCrop(ctx, rect, clipTransform)
-        drawText(ctx, rect, clip, 1)
+        drawText(ctx, rect, clip, 1, clipTime)
         ctx.restore()
         drewSomething = true
         continue
@@ -151,16 +151,32 @@ async function renderTimelineCompositeStill(time, canvas, width, height) {
 
 /**
  * Capture the composed timeline frame at the given timeline time.
- * Returns Promise<{ blobUrl, file }> or Promise<null> if no visual clip or error.
+ * Returns Promise<{ blobUrl, file, width, height, mimeType, time }> or Promise<null> if no visual clip or error.
  */
-export async function captureTimelineFrameAt(time) {
+export async function captureTimelineFrameAt(time, options = {}) {
   try {
+    const captureOptions = options && typeof options === 'object' ? options : {}
     const projectState = useProjectStore.getState?.()
     const settings = projectState?.getCurrentTimelineSettings?.()
       || projectState?.currentProject?.settings
       || {}
-    const width = Math.max(16, Math.min(7680, Number(settings.width) || 1920))
-    const height = Math.max(16, Math.min(4320, Number(settings.height) || 1080))
+    const sourceWidth = Math.max(16, Math.min(7680, Number(settings.width) || 1920))
+    const sourceHeight = Math.max(16, Math.min(4320, Number(settings.height) || 1080))
+    const maxWidth = Number(captureOptions.maxWidth)
+    const maxHeight = Number(captureOptions.maxHeight)
+    const widthScale = Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth / sourceWidth : 1
+    const heightScale = Number.isFinite(maxHeight) && maxHeight > 0 ? maxHeight / sourceHeight : 1
+    const scale = Math.min(1, widthScale, heightScale)
+    const width = Math.max(16, Math.round(sourceWidth * scale))
+    const height = Math.max(16, Math.round(sourceHeight * scale))
+    const requestedMimeType = String(captureOptions.mimeType || 'image/png').toLowerCase()
+    const mimeType = requestedMimeType === 'image/jpeg' || requestedMimeType === 'image/webp'
+      ? requestedMimeType
+      : 'image/png'
+    const requestedQuality = Number(captureOptions.quality)
+    const quality = Number.isFinite(requestedQuality)
+      ? Math.max(0.1, Math.min(1, requestedQuality))
+      : undefined
 
     const canvas = document.createElement('canvas')
     canvas.width = width
@@ -169,12 +185,20 @@ export async function captureTimelineFrameAt(time) {
     const rendered = await renderTimelineCompositeStill(time, canvas, width, height)
     if (!rendered) return null
 
-    const blob = await new Promise((resolve) => canvas.toBlob((nextBlob) => resolve(nextBlob), 'image/png'))
+    const blob = await new Promise((resolve) => canvas.toBlob((nextBlob) => resolve(nextBlob), mimeType, quality))
     if (!blob) return null
 
-    const file = new File([blob], `timeline_frame_${Date.now()}.png`, { type: 'image/png' })
-    const blobUrl = URL.createObjectURL(blob)
-    return { blobUrl, file }
+    const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
+    const file = new File([blob], `timeline_frame_${Date.now()}.${extension}`, { type: mimeType })
+    const blobUrl = captureOptions.createBlobUrl === false ? '' : URL.createObjectURL(blob)
+    return {
+      blobUrl,
+      file,
+      width,
+      height,
+      mimeType,
+      time: Number(time) || 0,
+    }
   } catch (err) {
     console.warn('[captureTimelineFrame] failed to capture timeline composite:', err?.message || err)
     return null

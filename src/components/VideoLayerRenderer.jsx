@@ -4,7 +4,7 @@ import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
 import videoCache from '../services/videoCache'
 import renderCacheService from '../services/renderCache'
-import { getAnimatedTransform, getAnimatedAdjustmentSettings } from '../utils/keyframes'
+import { getAnimatedTransform, getAnimatedAdjustmentSettings, getAnimatedTextProperties } from '../utils/keyframes'
 import { loadRenderCache, saveRenderCache } from '../services/fileSystem'
 import { hasUsablePlaybackCache } from '../services/playbackCache'
 import { getSpriteFramePosition } from '../services/thumbnailSprites'
@@ -2218,7 +2218,7 @@ const TextLayer = memo(function TextLayer({
     [letterboxEffect, clipTime]
   )
   const combinedFilter = [clipEffectsFilterValue, adjustmentFilterValue, transformStyle.filter].filter(Boolean).join(' ') || undefined
-  const textProps = clip.textProperties || {}
+  const textProps = useMemo(() => getAnimatedTextProperties(clip, clipTime), [clip, clipTime])
   const safePreviewScale = Number.isFinite(previewScale) && previewScale > 0 ? previewScale : 1
   const scaledFontSize = (textProps.fontSize || 64) * safePreviewScale
   const scaledStrokeWidth = (textProps.strokeWidth || 0) * safePreviewScale

@@ -33,6 +33,7 @@ import {
 import { startComfyLauncherEventBridge } from './services/comfyLauncherEventBridge'
 import { startComfyAutoImport } from './services/comfyAutoImport'
 import { startMcpSnapshotPublisher } from './services/mcpSnapshot'
+import { startMcpActionBridge } from './services/mcpActions'
 
 function formatDownloadBytes(bytes) {
   const numeric = Math.max(0, Number(bytes) || 0)
@@ -138,6 +139,11 @@ function App() {
 
   useEffect(() => {
     const stop = startMcpSnapshotPublisher()
+    return () => { try { stop?.() } catch (_) { /* ignore */ } }
+  }, [])
+
+  useEffect(() => {
+    const stop = startMcpActionBridge()
     return () => { try { stop?.() } catch (_) { /* ignore */ } }
   }, [])
 

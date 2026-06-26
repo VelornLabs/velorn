@@ -1,7 +1,7 @@
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
-import { getAnimatedTransform, getAnimatedAdjustmentSettings } from '../utils/keyframes'
+import { getAnimatedTransform, getAnimatedAdjustmentSettings, getAnimatedTextProperties } from '../utils/keyframes'
 import {
   applyAdjustmentSettingsToImageData,
   buildCssFilterFromAdjustments,
@@ -473,7 +473,7 @@ const getFadeOverlayOpacity = (transitionInfo) => {
   return null
 }
 
-export const getBaseDrawRect = (assetWidth, assetHeight, canvasWidth, canvasHeight) => {
+export const getBaseDrawRect = (assetWidth, assetHeight, canvasWidth, canvasHeight, fitMode = 'fit') => {
   if (!assetWidth || !assetHeight) {
     return {
       width: canvasWidth,
@@ -482,7 +482,9 @@ export const getBaseDrawRect = (assetWidth, assetHeight, canvasWidth, canvasHeig
       y: 0,
     }
   }
-  const scale = Math.min(canvasWidth / assetWidth, canvasHeight / assetHeight)
+  const scale = fitMode === 'fill'
+    ? Math.max(canvasWidth / assetWidth, canvasHeight / assetHeight)
+    : Math.min(canvasWidth / assetWidth, canvasHeight / assetHeight)
   const width = assetWidth * scale
   const height = assetHeight * scale
   const x = (canvasWidth - width) / 2
@@ -605,8 +607,10 @@ const applyTransitionClip = (ctx, rect, transitionStyle) => {
   ctx.clip()
 }
 
-export const drawText = (ctx, rect, clip, textScale = 1) => {
-  const textProps = clip.textProperties || {}
+export const drawText = (ctx, rect, clip, textScale = 1, clipTime = null) => {
+  const textProps = clipTime == null
+    ? (clip.textProperties || {})
+    : getAnimatedTextProperties(clip, clipTime)
   const lines = String(textProps.text || '').split('\n')
   const scale = Number.isFinite(textScale) && textScale > 0 ? textScale : 1
   const fontSize = (textProps.fontSize || 48) * scale
@@ -780,6 +784,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     useProxyMedia = false,
     fastSeek = true,
     useDirectFramePipe = true,
+    deliveryFraming = 'fit',
     glslQualityScale = 1,
     signal = null,
   } = options
@@ -791,8 +796,14 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   
   const totalDuration = Math.max(0, rangeEnd - rangeStart)
   const totalFrames = Math.ceil(totalDuration * fps)
-  const transformScaleX = width / Math.max(1, Number(sourceTimelineWidth) || width)
-  const transformScaleY = height / Math.max(1, Number(sourceTimelineHeight) || height)
+  const normalizedDeliveryFraming = ['fill', 'cover', 'center_crop', 'center-crop'].includes(String(deliveryFraming || '').toLowerCase())
+    ? 'fill'
+    : 'fit'
+  const sourceWidthForFraming = Math.max(1, Number(sourceTimelineWidth) || width)
+  const sourceHeightForFraming = Math.max(1, Number(sourceTimelineHeight) || height)
+  const fillTransformScale = Math.max(width / sourceWidthForFraming, height / sourceHeightForFraming)
+  const transformScaleX = normalizedDeliveryFraming === 'fill' ? fillTransformScale : width / sourceWidthForFraming
+  const transformScaleY = normalizedDeliveryFraming === 'fill' ? fillTransformScale : height / sourceHeightForFraming
   const textStyleScale = Math.min(transformScaleX, transformScaleY)
   const scaleTransformToExport = (transform = {}) => ({
     ...transform,
@@ -1151,7 +1162,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
           applyClipCrop(offCtx, rect, clipTransform)
           applyTransitionClip(offCtx, rect, transitionStyle)
-          drawText(offCtx, rect, clip, textStyleScale)
+          drawText(offCtx, rect, clip, textStyleScale, clipTime)
           offCtx.restore()
 
           const processedCanvasForText = applyAdvancedAdjustmentsToCanvas(offCanvas, clipAdjustmentSettings, blurPx)
@@ -1190,7 +1201,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
           applyClipCrop(offCtx, rect, clipTransform)
           applyTransitionClip(offCtx, rect, transitionStyle)
-          drawText(offCtx, rect, clip, textStyleScale)
+          drawText(offCtx, rect, clip, textStyleScale, clipTime)
           offCtx.restore()
 
           applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
@@ -1214,7 +1225,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         applyClipTransform(ctx, rect, clipTransform, transitionStyle)
         applyClipCrop(ctx, rect, clipTransform)
         applyTransitionClip(ctx, rect, transitionStyle)
-        drawText(ctx, rect, clip, textStyleScale)
+        drawText(ctx, rect, clip, textStyleScale, clipTime)
         ctx.restore()
         continue
       }
@@ -1291,7 +1302,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       
       if (!drawSource) continue
       
-      const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
+      const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height, normalizedDeliveryFraming)
       const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
       const clipOpacity = (transitionStyle?.opacity ?? 1) * baseOpacity
       const blurPx = transitionStyle?.blur ?? (clipTransform?.blur > 0 ? clipTransform.blur : null)

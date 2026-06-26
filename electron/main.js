@@ -60,6 +60,7 @@ let mainWindow = null
 let splashWindow = null
 let exportWorkerWindow = null
 let mcpServer = null
+const pendingMcpActionRequests = new Map()
 let downloadSaveDialogHandlerInstalled = false
 let downloadCounter = 0
 const activeDownloads = new Map()
@@ -68,6 +69,27 @@ let restoreFullscreenAfterMinimize = false
 let mainWindowStateSaveTimer = null
 const settingsPath = path.join(app.getPath('userData'), 'settings.json')
 let settingsWriteQueue = Promise.resolve()
+
+function performMcpRendererAction(request = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return Promise.reject(new Error('No ComfyStudio window is available.'))
+  }
+
+  const id = `mcp-action-${crypto.randomUUID()}`
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingMcpActionRequests.delete(id)
+      reject(new Error('Timed out waiting for ComfyStudio to apply MCP action.'))
+    }, 60000)
+
+    pendingMcpActionRequests.set(id, { resolve, reject, timeout })
+    mainWindow.webContents.send('mcp:action', {
+      id,
+      action: request.action,
+      payload: request.payload || {},
+    })
+  })
+}
 
 function resolvePackagedBinaryPath(binaryPath) {
   if (!binaryPath || typeof binaryPath !== 'string') return binaryPath
@@ -950,6 +972,67 @@ async function copyDirectoryContents(sourceDir, targetDir) {
   }
 
   return copied
+}
+
+async function copyDirectoryTree(sourceDir, targetDir) {
+  const source = path.resolve(String(sourceDir || ''))
+  const target = path.resolve(String(targetDir || ''))
+
+  if (!sourceDir || !targetDir) {
+    throw new Error('Source and destination paths are required.')
+  }
+  if (source === target) {
+    throw new Error('Source and destination folders are the same.')
+  }
+  const sourcePrefix = source.endsWith(path.sep) ? source : `${source}${path.sep}`
+  if (target.toLowerCase().startsWith(sourcePrefix.toLowerCase())) {
+    throw new Error('Destination folder cannot be inside the source folder.')
+  }
+  if (!(await isDirectoryPath(source))) {
+    throw new Error('Source folder does not exist.')
+  }
+  if (await pathExists(target)) {
+    throw new Error('Destination folder already exists.')
+  }
+
+  await fs.mkdir(path.dirname(target), { recursive: true })
+
+  if (typeof fs.cp === 'function') {
+    await fs.cp(source, target, {
+      recursive: true,
+      errorOnExist: true,
+      force: false,
+      verbatimSymlinks: true,
+    })
+    return { copied: null }
+  }
+
+  let copied = 0
+  const copyRecursive = async (from, to) => {
+    const entries = await fs.readdir(from, { withFileTypes: true })
+    await fs.mkdir(to, { recursive: true })
+
+    for (const entry of entries) {
+      const sourcePath = path.join(from, entry.name)
+      const targetPath = path.join(to, entry.name)
+      if (entry.isDirectory()) {
+        await copyRecursive(sourcePath, targetPath)
+        continue
+      }
+      if (entry.isSymbolicLink()) {
+        const linkTarget = await fs.readlink(sourcePath)
+        await fs.symlink(linkTarget, targetPath)
+        copied += 1
+        continue
+      }
+      if (!entry.isFile()) continue
+      await fs.copyFile(sourcePath, targetPath)
+      copied += 1
+    }
+  }
+
+  await copyRecursive(source, target)
+  return { copied }
 }
 
 async function getComfyStudioBridgeStatusInternal() {
@@ -2640,6 +2723,15 @@ ipcMain.handle('fs:copyFile', async (event, srcPath, destPath) => {
   }
 })
 
+ipcMain.handle('fs:copyDirectory', async (event, srcPath, destPath) => {
+  try {
+    const result = await copyDirectoryTree(srcPath, destPath)
+    return { success: true, ...result }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
 ipcMain.handle('fs:moveFile', async (event, srcPath, destPath) => {
   try {
     // Ensure destination directory exists
@@ -3358,6 +3450,23 @@ ipcMain.handle('mcp:updateSnapshot', async (_event, snapshot = null) => {
   } catch (error) {
     return { success: false, error: error?.message || String(error) }
   }
+})
+
+ipcMain.on('mcp:actionResult', (event, response = {}) => {
+  if (mainWindow && event.sender !== mainWindow.webContents) return
+  const id = response?.id
+  const pending = id ? pendingMcpActionRequests.get(id) : null
+  if (!pending) return
+
+  clearTimeout(pending.timeout)
+  pendingMcpActionRequests.delete(id)
+
+  if (response.success === false) {
+    pending.reject(new Error(response.error || 'MCP action failed.'))
+    return
+  }
+
+  pending.resolve(response.result || {})
 })
 
 // ============================================
@@ -4802,6 +4911,7 @@ app.whenReady().then(() => {
   mcpServer = createComfyStudioMcpServer({
     port: DEFAULT_MCP_PORT,
     version: app.getVersion(),
+    performAction: performMcpRendererAction,
   })
   mcpServer.start()
     .then((status) => {

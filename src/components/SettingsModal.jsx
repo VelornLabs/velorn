@@ -922,7 +922,7 @@ function GeneralTab({ initialSection = null }) {
               <div className="min-w-0">
                 <div className="text-sm font-medium text-sf-text-primary">ComfyStudio MCP server</div>
                 <p className="mt-1 text-[11px] text-sf-text-muted">
-                  Local read-only access for AI agents. Agents can inspect the open project, analyze timeline health, and summarize assets, generation status, and music-video workflow state.
+                  Local project access for AI agents. Agents can inspect and review the open project, analyze timeline health, follow safe review-pass recipes, use limited undoable timeline/text actions, and start delivery exports.
                 </p>
               </div>
               <span className={`inline-flex flex-shrink-0 items-center gap-1.5 rounded px-2 py-1 text-[10px] font-medium ${
@@ -995,7 +995,7 @@ function GeneralTab({ initialSection = null }) {
           <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
             <div className="text-xs font-semibold text-sf-text-primary">Available tools</div>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-sf-text-secondary">
-              {['get_project', 'get_timeline', 'get_assets', 'get_generation_status', 'get_music_video_status', 'analyze_timeline', 'analyze_music_video_workflow'].map((tool) => (
+              {['get_project', 'get_timeline', 'get_assets', 'get_ai_review_passes', 'check_export_readiness', 'inspect_clip', 'inspect_timeline_frame', 'inspect_timeline_range', 'inspect_visible_shots', 'get_generation_status', 'get_music_video_status', 'analyze_timeline', 'analyze_music_video_workflow', 'set_clip_label_color', 'set_clips_enabled', 'add_timeline_markers', 'remove_timeline_markers', 'set_timeline_marker_properties', 'add_track', 'add_text_clip', 'duplicate_clip', 'update_text_clip', 'export_timeline'].map((tool) => (
                 <span key={tool} className="rounded bg-sf-dark-800 px-2 py-1">{tool}</span>
               ))}
             </div>
