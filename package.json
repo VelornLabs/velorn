@@ -37,7 +37,7 @@
   "bugs": {
     "url": "https://github.com/JaimeIsMe/comfystudio/issues"
   },
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "@xyflow/react": "^12.10.2",
     "clsx": "^2.0.0",
