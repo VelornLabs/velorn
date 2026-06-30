@@ -45,6 +45,7 @@ function sanitizeFolder(folder = {}) {
     id: folder.id,
     name: folder.name,
     parentId: folder.parentId || null,
+    color: folder.color || null,
     createdAt: folder.createdAt || folder.created || null,
   }
 }
@@ -72,6 +73,10 @@ function sanitizeAsset(asset = {}) {
     workflowId: asset.workflowId || settings.workflowId || '',
     workflowName: asset.workflowName || settings.workflowName || '',
     model: asset.model || settings.model || settings.modelName || '',
+    sourceTool: settings.sourceTool || asset.sourceTool || '',
+    overlayKind: settings.overlayKind || asset.overlayKind || '',
+    generatedBy: settings.generatedBy || asset.generatedBy || '',
+    solidColor: settings.solidColor || settings.color || asset.solidColor || asset.color || '',
     generationStatus: asset.generationStatus || asset.status || 'none',
     error: truncateText(asset.error || asset.generationError || settings.error || ''),
     yolo: safeClone(yolo),
@@ -127,6 +132,7 @@ function sanitizeClip(clip = {}) {
     syncLock: safeClone(clip.syncLock),
     transform: safeClone(clip.transform),
     textProperties: safeClone(clip.textProperties),
+    shapeProperties: safeClone(clip.shapeProperties),
     titleAnimation: safeClone(clip.titleAnimation),
     keyframes: safeClone(clip.keyframes),
     metadata: safeClone(clip.metadata),
@@ -147,7 +153,7 @@ function sanitizeTransition(transition = {}) {
   }
 }
 
-function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeClips = true } = {}) {
+function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeClips = true, selectedClipIds = [] } = {}) {
   const settings = {
     width: safeNumber(timeline.width ?? projectSettings.width, projectSettings.width || null),
     height: safeNumber(timeline.height ?? projectSettings.height, projectSettings.height || null),
@@ -171,6 +177,8 @@ function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeCli
     clipCount: clips.length,
     transitionCount: transitions.length,
     markerCount: Array.isArray(timeline.markers) ? timeline.markers.length : 0,
+    selectedClipIds: Array.isArray(selectedClipIds) ? selectedClipIds.filter(Boolean) : [],
+    selectedClipCount: Array.isArray(selectedClipIds) ? selectedClipIds.filter(Boolean).length : 0,
     tracks: tracks.map(sanitizeTrack),
     clips: includeClips ? clips.map(sanitizeClip) : undefined,
     transitions: transitions.map(sanitizeTransition),
@@ -228,7 +236,10 @@ export function buildMcpSnapshot() {
 
   const timelines = (project.timelines || []).map((timeline) => {
     const source = timeline.id === currentTimeline.id ? currentTimeline : timeline
-    return buildTimelineSnapshot(source, projectSettings, { includeClips: false })
+    return buildTimelineSnapshot(source, projectSettings, {
+      includeClips: false,
+      selectedClipIds: timeline.id === currentTimeline.id ? timelineState.selectedClipIds : [],
+    })
   })
 
   return {
@@ -247,7 +258,10 @@ export function buildMcpSnapshot() {
       folderCount: folders.length,
     },
     timelines,
-    currentTimeline: buildTimelineSnapshot(currentTimeline, projectSettings, { includeClips: true }),
+    currentTimeline: buildTimelineSnapshot(currentTimeline, projectSettings, {
+      includeClips: true,
+      selectedClipIds: timelineState.selectedClipIds,
+    }),
     assets,
     folders,
   }

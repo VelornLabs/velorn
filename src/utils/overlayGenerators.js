@@ -89,3 +89,18 @@ export function generateLetterboxOverlayBlob(width, height, targetAspect, barCol
     canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('toBlob failed'))), 'image/png')
   })
 }
+
+export function generateColorMatteBlob(width, height, color) {
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(Number(width) || 1))
+  canvas.height = Math.max(1, Math.round(Number(height) || 1))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    return Promise.reject(new Error('Canvas context unavailable'))
+  }
+  ctx.fillStyle = color || '#000000'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('toBlob failed'))), 'image/png')
+  })
+}

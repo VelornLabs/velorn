@@ -1350,43 +1350,78 @@ export function modifyWAN22Workflow(workflow, options = {}) {
 
   const modified = JSON.parse(JSON.stringify(workflow))
   const useFaceLockPreset = String(qualityPreset || 'balanced') === 'face-lock'
-  const positivePrompt = useFaceLockPreset
-    ? `${prompt}. Keep the exact same person identity in every frame: same face, eyes, skin tone, hairstyle, and bone structure. Preserve facial consistency during motion.`
-    : prompt
-  const negativeWithFaceLock = [
-    negativePrompt,
-    useFaceLockPreset ? 'identity drift, different person, changing face, face morphing, deformed face' : '',
-  ]
-    .filter(Boolean)
-    .join(', ')
+  const positivePrompt = String(prompt || '')
+  const effectiveNegativePrompt = String(negativePrompt || '')
 
   const samplerSteps = useFaceLockPreset ? 6 : 4
   const samplerCfg = useFaceLockPreset ? 1.3 : 1
   const splitStep = Math.max(2, Math.floor(samplerSteps / 2))
   const modelShift = useFaceLockPreset ? 4.5 : 5.0
   const loraStrength = useFaceLockPreset ? 1.05 : 1.0
+  const numericFps = Math.max(1, Math.round(Number(fps) || 16))
+  const numericFrames = Math.max(2, Math.round(Number(frames) || 81))
+  const numericDuration = Math.max(0.1, (numericFrames - 1) / numericFps)
 
-  // Positive prompt (node 93)
-  if (modified['93']) {
-    modified['93'].inputs.text = positivePrompt
+  const findNodeId = (predicate) => {
+    for (const [nodeId, node] of Object.entries(modified || {})) {
+      if (predicate(node, nodeId)) return nodeId
+    }
+    return null
   }
-  // Negative prompt (node 89)
-  if (modified['89']) {
-    modified['89'].inputs.text = negativeWithFaceLock
+
+  const findNodeByClassAndTitle = (classType, titlePattern) => findNodeId((node) => (
+    String(node?.class_type || '') === classType
+    && titlePattern.test(String(node?._meta?.title || ''))
+  ))
+
+  const findPrimitiveByTitle = (titlePattern) => findNodeId((node) => (
+    /^Primitive/.test(String(node?.class_type || ''))
+    && titlePattern.test(String(node?._meta?.title || ''))
+  ))
+
+  const setNodeInput = (nodeId, key, value) => {
+    if (!nodeId || !modified[nodeId]?.inputs) return false
+    modified[nodeId].inputs[key] = value
+    return true
   }
-  // Image input (node 97)
-  if (modified['97']) {
-    modified['97'].inputs.image = inputImage
+
+  const setDirectNodeInput = (nodeId, key, value) => {
+    if (!nodeId || !modified[nodeId]?.inputs) return false
+    if (Array.isArray(modified[nodeId].inputs[key])) return false
+    modified[nodeId].inputs[key] = value
+    return true
   }
-  // Resolution + frame count (node 98 - WanImageToVideo)
-  if (modified['98']) {
-    modified['98'].inputs.width = width
-    modified['98'].inputs.height = height
-    modified['98'].inputs.length = frames
+
+  const positiveNodeId = modified['93']
+    ? '93'
+    : findNodeByClassAndTitle('CLIPTextEncode', /positive\s*prompt/i)
+      || findNodeId((node) => (
+        String(node?.class_type || '') === 'CLIPTextEncode'
+        && 'text' in (node.inputs || {})
+      ))
+  const negativeNodeId = modified['89']
+    ? '89'
+    : findNodeByClassAndTitle('CLIPTextEncode', /negative\s*prompt/i)
+  const imageNodeId = modified['97']
+    ? '97'
+    : findFirstNodeIdByClass(modified, 'LoadImage')
+  const wanNodeId = modified['98']
+    ? '98'
+    : findFirstNodeIdByClass(modified, 'WanImageToVideo')
+  const createVideoNodeId = modified['94']
+    ? '94'
+    : findFirstNodeIdByClass(modified, 'CreateVideo')
+
+  setNodeInput(positiveNodeId, 'text', positivePrompt)
+  setNodeInput(negativeNodeId, 'text', effectiveNegativePrompt)
+  setNodeInput(imageNodeId, 'image', inputImage)
+  setNodeInput(wanNodeId, 'width', width)
+  setNodeInput(wanNodeId, 'height', height)
+  if (!setDirectNodeInput(wanNodeId, 'length', numericFrames)) {
+    setNodeInput(findPrimitiveByTitle(/\bduration\b/i), 'value', numericDuration)
   }
-  // FPS (node 94 - CreateVideo)
-  if (modified['94']) {
-    modified['94'].inputs.fps = fps
+  if (!setDirectNodeInput(createVideoNodeId, 'fps', numericFps)) {
+    setNodeInput(findPrimitiveByTitle(/\bfps\b/i), 'value', numericFps)
   }
   // Seed (node 86 - KSamplerAdvanced 1st pass)
   if (modified['86']) {
@@ -1403,6 +1438,18 @@ export function modifyWAN22Workflow(workflow, options = {}) {
     modified['85'].inputs.cfg = samplerCfg
     modified['85'].inputs.start_at_step = splitStep
     modified['85'].inputs.end_at_step = samplerSteps
+  }
+  for (const [, node] of Object.entries(modified)) {
+    if (node?.class_type !== 'KSamplerAdvanced' || !node.inputs) continue
+    if ('noise_seed' in node.inputs && node.inputs.add_noise === 'enable') {
+      node.inputs.noise_seed = seed
+    }
+    if (!Array.isArray(node.inputs.steps) && !modified['85'] && !modified['86']) {
+      node.inputs.steps = samplerSteps
+    }
+    if (!Array.isArray(node.inputs.cfg) && !modified['85'] && !modified['86']) {
+      node.inputs.cfg = samplerCfg
+    }
   }
   // LoRA strength tuning (nodes 101/102)
   if (modified['101']) {
@@ -1459,6 +1506,7 @@ export function modifyLTX23I2VWorkflow(workflow, options = {}) {
   }
   numericDuration = Math.max(1, Math.round(numericDuration))
   const numericSeed = Math.round(Number(seed) || Math.floor(Math.random() * 1000000000000))
+  const effectiveNegativePrompt = String(negativePrompt || '')
 
   const setInput = (nodeId, key, value) => {
     if (modified[nodeId]?.inputs && key in modified[nodeId].inputs) modified[nodeId].inputs[key] = value
@@ -1469,7 +1517,7 @@ export function modifyLTX23I2VWorkflow(workflow, options = {}) {
   // 320:299 height, 320:300 fps, 320:301 duration (seconds), 320:276/320:277 seeds.
   if (inputImage) setInput('269', 'image', inputImage)
   if (prompt) setInput('320:319', 'value', prompt)
-  if (negativePrompt) setInput('320:313', 'text', negativePrompt)
+  setInput('320:313', 'text', effectiveNegativePrompt)
   // prompt_enhance (320:328): when true, our prompt is routed through the LTX2
   // prompt enhancer (gemma). We now send a clean verbatim prompt, so enhancing
   // is safe and matches the ComfyUI setup that lip-syncs. (Set false to send the
@@ -1514,6 +1562,7 @@ export function modifyLTX23IA2VWorkflow(workflow, options = {}) {
   const numericDuration = Math.max(1, Number(duration) || 9)
   const numericFps = Math.max(1, Math.round(Number(fps) || 24))
   const numericSeed = Math.round(Number(seed) || Math.floor(Math.random() * 1000000000000))
+  const effectiveNegativePrompt = String(negativePrompt || '')
 
   for (const imageNodeId of ['269', '345']) {
     if (modified[imageNodeId]?.inputs && inputImage) {
@@ -1533,7 +1582,7 @@ export function modifyLTX23IA2VWorkflow(workflow, options = {}) {
   }
 
   if (modified['340:314']?.inputs && 'text' in modified['340:314'].inputs) {
-    modified['340:314'].inputs.text = negativePrompt || modified['340:314'].inputs.text
+    modified['340:314'].inputs.text = effectiveNegativePrompt
   }
 
   if (modified['340:330']?.inputs && 'value' in modified['340:330'].inputs) {
@@ -1601,6 +1650,7 @@ export function modifyLTX23IdLoraWorkflow(workflow, options = {}) {
   const numericDuration = Math.max(1, Number(duration) || 5)
   const numericFps = Math.max(1, Math.round(Number(fps) || 24))
   const numericSeed = Math.round(Number(seed) || Math.floor(Math.random() * 1000000000000))
+  const effectiveNegativePrompt = String(negativePrompt || '')
 
   const setInput = (nodeId, key, value) => {
     if (modified[nodeId]?.inputs && key in modified[nodeId].inputs) modified[nodeId].inputs[key] = value
@@ -1612,7 +1662,7 @@ export function modifyLTX23IdLoraWorkflow(workflow, options = {}) {
     delete modified['276'].inputs.audioUI
   }
   if (prompt) setInput('340:319', 'value', prompt)
-  if (negativePrompt) setInput('340:314', 'text', negativePrompt)
+  setInput('340:314', 'text', effectiveNegativePrompt)
   setInput('340:330', 'value', numericWidth)
   setInput('340:324', 'value', numericHeight)
   setInput('340:323', 'value', numericFps)

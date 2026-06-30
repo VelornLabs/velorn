@@ -33,7 +33,7 @@ import {
 import { startComfyLauncherEventBridge } from './services/comfyLauncherEventBridge'
 import { startComfyAutoImport } from './services/comfyAutoImport'
 import { startMcpSnapshotPublisher } from './services/mcpSnapshot'
-import { startMcpActionBridge } from './services/mcpActions'
+import { MCP_ACTION_BRIDGE_VERSION, startMcpActionBridge } from './services/mcpActions'
 
 function formatDownloadBytes(bytes) {
   const numeric = Math.max(0, Number(bytes) || 0)
@@ -80,11 +80,11 @@ function App() {
   // Min/max constraints
   const ICON_BAR_WIDTH = 48 // Fixed icon toolbar width
   const MIN_LEFT_PANEL = 200 // Content panel min
-  const MAX_LEFT_PANEL = 450 // Content panel max
+  const MAX_LEFT_PANEL = 900 // Content panel max
   const MIN_INSPECTOR = 200 // Content panel min
-  const MAX_INSPECTOR = 400 // Content panel max
+  const MAX_INSPECTOR = 800 // Content panel max
   const MIN_TIMELINE = 180 // Accounts for transport controls (40px) + minimum timeline
-  const MAX_TIMELINE = 450
+  const MAX_TIMELINE = 900
 
   const LAYOUT_STORAGE_KEY = 'comfystudio-editor-layout'
   const [comfyIframeUrl, setComfyIframeUrl] = useState(() => getLocalComfyHttpBaseSync())
@@ -145,7 +145,7 @@ function App() {
   useEffect(() => {
     const stop = startMcpActionBridge()
     return () => { try { stop?.() } catch (_) { /* ignore */ } }
-  }, [])
+  }, [MCP_ACTION_BRIDGE_VERSION])
 
   useEffect(() => {
     const previousTab = mainTabRef.current

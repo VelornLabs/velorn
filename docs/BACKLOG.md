@@ -472,3 +472,131 @@ warnings banner. Phase 7's cast/lyric-tag resolution is unchanged.
 - `src/config/generateWorkspaceConfig.js` — where `YOLO_MUSIC_PROFILES` lives (needs the new profile added in step 6)
 
 ---
+
+## 3. MCP support roadmap from live ComfyStudio editing sessions
+
+**Added:** 2026-06-29
+**Severity:** Product polish / agent capability
+**Last touched:** Added MCP workflow discovery, workflow-node validation, and
+Generate-from-timeline preparation tools after the launcher/log support pass.
+
+### Shipped in this pass
+
+- `diagnose_comfyui_connection` already identifies the configured ComfyUI
+  port, API health, queue state, launcher config, likely install mode, and
+  port owner.
+- Added `set_comfyui_connection` so an MCP client can preview or apply a
+  local port change in ComfyStudio settings.
+- Added `repair_comfyui_connection` so an MCP client can detect "configured
+  port broken, another local ComfyUI port works" and propose the exact fix
+  first. It defaults to `previewOnly: true`; applying requires an explicit
+  `previewOnly: false` call.
+- The setter changes ComfyStudio settings only. It does not restart ComfyUI
+  or edit launcher scripts.
+- The setter also syncs the open renderer cache through the normal
+  `saveLocalComfyConnectionPort` path, so the running app sees the new port
+  without needing the Settings panel open.
+- Added `control_comfyui_launcher` for preview/apply start, stop, and restart
+  through the existing ComfyStudio launcher. It defaults to preview-only and
+  refuses unsafe external-process stop/restart cases.
+- Added `get_comfyui_launcher_logs` for read-only recent launcher logs with a
+  lightweight issue summary for port conflicts, Python import errors, custom
+  node load errors, missing files/models, and CUDA memory errors.
+- Added `list_comfystudio_workflows` so MCP clients can discover bundled
+  workflow ids, categories, local/cloud runtime, image requirements, and source
+  files without opening the Generate tab.
+- Added `inspect_comfystudio_workflow` so MCP clients can inspect a bundled or
+  explicit workflow JSON, extract required `class_type` node names, validate
+  them against the configured local ComfyUI `/object_info`, and return mapped
+  install/update hints for missing nodes.
+- Added `prepare_generation_from_timeline_context` so MCP clients can preview
+  and then apply a safe Generate-tab setup from the selected clip or playhead
+  frame. Applying captures the frame and opens/prefills Generate.
+- Added `queue_prepared_generation` so MCP clients can inspect the staged
+  Generate request and, after explicit approval, queue it through the same path
+  as the normal ComfyStudio Queue button. It defaults to preview-only and
+  requires a prepared timeline frame by default.
+- Added `queue_timeline_generation_batch` so MCP clients can preview and then
+  queue multiple WAN 2.2/LTX 2.3 image-to-video variations from one selected
+  clip or playhead frame. Counts are flexible per workflow, capped to avoid
+  accidental huge render batches, and apply still uses the normal Generate
+  queue path.
+- Added `queue_prompt_generation_batch` so MCP clients can preview and then
+  queue prompt-only text-to-image/text-to-video jobs without needing a
+  timeline frame. This is the first "brief to generated assets" building
+  block for agents that create source images/videos before assembling a
+  sequence.
+- Added `create_asset_folder` so MCP clients can preview and then create
+  asset-panel folders or nested folder paths. Prompt generation batches can
+  target the returned folder ID so AI-created source assets do not all land in
+  the project root/default generated folders.
+- Added `move_assets_to_folder` so MCP clients can preview and then organize
+  existing assets into folders. It supports explicit asset IDs/names plus safe
+  filters such as `rootOnly` and `constantsOnly`, and can create the missing
+  destination folder on apply.
+
+### Next MCP additions worth considering
+
+1. **Launcher port alignment.** Extend repair to notice launcher `extraArgs`
+   such as `--port 8190` when ComfyStudio is set to `8188`, then propose
+   either changing ComfyStudio or changing launcher args. This should be
+   opt-in because it edits startup behavior.
+
+2. **Safe settings mutation pattern.** For any future MCP setting write,
+   follow the same shape: preview result, before/after values, narrow scope,
+   no process restart by default, explicit apply call, and renderer cache
+   sync when the app is already open.
+
+3. **Generate result placement.** Added `add_asset_to_timeline` so an MCP
+   agent can preview and then place a specific/latest video, image, or audio
+   asset on the active timeline. It can use the playhead, selected clip start
+   or end, timeline end, track end, an existing compatible track, or a new top
+   video/audio track. Added `add_assets_to_timeline` for preview-first batch
+   placement of explicit assets or latest matching generated assets as stacked
+   review lanes or a sequential strip. Next useful layer: replace a selected
+   source clip with the chosen generated variation.
+
+4. **Visual clip keyframes.** Added `set_clip_keyframes` so an MCP agent can
+   preview and then apply opacity, transform, blur, crop, and color-adjustment
+   keyframes to existing visual clips. This is the foundation for natural
+   requests like "fade these clips down to black," "move this layer north,"
+   "blur in over 12 frames," or "animate this crop reveal." Next useful layer:
+   a higher-level dip/fade helper that combines solids and opacity keyframes
+   into one previewable operation.
+
+5. **Solid color constants.** Added `add_solid_color` so an MCP agent can
+   preview and then create a solid-color PNG asset, optionally placing it on
+   the active timeline. New solids default to a bottom video track when the
+   tool creates a track, which makes black/color plates useful underneath
+   opacity fades instead of accidentally covering the edit.
+
+6. **Sequence/timeline creation.** Added `create_timeline` so an MCP agent can
+   preview and then create a named sequence/timeline, optionally inheriting the
+   current timeline dimensions/fps and switching into the new sequence before
+   placing generated assets, solids, titles, or review layouts.
+
+7. **Prompt generation batches.** Added `queue_prompt_generation_batch` so an
+   MCP agent can turn a written brief into a small, approved set of source
+   image/video generation jobs. Added `create_asset_folder` so the same pass can
+   create a named output folder first and pass its `folderId` into the batch.
+   Next useful layer: a higher-level storyboard planner prompt/pass that
+   recommends prompts first, waits for generated assets, then uses
+   `create_timeline`, `add_assets_to_timeline`, `add_text_clip`,
+   `set_clip_keyframes`, and `inspect_timeline_range` to assemble a review cut.
+
+8. **Asset cleanup and organization.** Added `move_assets_to_folder` so an MCP
+   agent can clean up the asset panel after it creates solids/constants,
+   generated sources, or imported media. Useful prompt: "Move all root-level
+   constants into a Constants folder; preview first."
+
+### Relevant files
+
+- `electron/main.js` - ComfyUI diagnostics, settings persistence, launcher
+  integration, and MCP server wiring.
+- `electron/mcpServer.js` - MCP tool schemas and repair orchestration.
+- `src/services/mcpActions.js` - renderer-side MCP action bridge.
+- `src/services/localComfyConnection.js` - canonical renderer save/cache path
+  for the local ComfyUI endpoint.
+- `src/components/SettingsModal.jsx` - visible MCP tool list.
+
+---

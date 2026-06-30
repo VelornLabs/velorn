@@ -9,7 +9,7 @@ import {
   Diamond, ChevronFirst, ChevronLast,
   FileVideo, FileImage, FileAudio, HardDrive, Calendar, Info,
   Wand2, Trash2, EyeOff, Plus, Play, Loader2, Check, AlertTriangle, X,
-  Copy, ClipboardPaste
+  Copy, ClipboardPaste, Square
 } from 'lucide-react'
 import useTimelineStore, { buildClipSyncLock, isMusicVideoSyncCapableClip, isSyncLockedClip } from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
@@ -17,7 +17,7 @@ import useProjectStore from '../stores/projectStore'
 import renderCacheService from '../services/renderCache'
 import { commitAdjustmentRender } from '../services/commitRender'
 import { saveRenderCache, deleteRenderCache, writeGeneratedOverlayToProject, isElectron } from '../services/fileSystem'
-import { getKeyframeAtTime, getAnimatedTransform, getAnimatedAdjustmentSettings, EASING_OPTIONS } from '../utils/keyframes'
+import { getKeyframeAtTime, getAnimatedTransform, getAnimatedAdjustmentSettings, getAnimatedShapeProperties, EASING_OPTIONS } from '../utils/keyframes'
 import { TEXT_ANIMATION_PRESETS, TEXT_ANIMATION_MODE_OPTIONS } from '../utils/textAnimationPresets'
 import {
   COLOR_ADJUSTMENT_KEYS,
@@ -50,11 +50,12 @@ import {
   getClipLowerLayerCompositeStatus,
   normalizeClipCompositeMode,
 } from '../utils/layerCompositing'
+import { DEFAULT_LINE_THICKNESS, DEFAULT_POLYGON_SIDES, DEFAULT_SHAPE_PROPERTIES, SHAPE_FILL_TYPES, SHAPE_TYPES, normalizeShapeProperties } from '../utils/shapes'
 
 const TRANSITION_DEFAULT_DURATION_KEY = 'comfystudio-transition-default-duration-frames'
 const INSPECTOR_EXPANDED_SECTIONS_KEY = 'comfystudio-inspector-expanded-sections-v1'
 const INSPECTOR_EXPANDED_ADJUSTMENT_GROUPS_KEY = 'comfystudio-inspector-expanded-adjustment-groups-v1'
-const DEFAULT_INSPECTOR_EXPANDED_SECTIONS = ['clipInfo', 'transform', 'compositing', 'crop', 'timing', 'effects', 'text', 'style', 'animation', 'adjustments', 'commit']
+const DEFAULT_INSPECTOR_EXPANDED_SECTIONS = ['clipInfo', 'transform', 'compositing', 'crop', 'timing', 'effects', 'text', 'style', 'shape', 'animation', 'adjustments', 'commit']
 const DEFAULT_EXPANDED_ADJUSTMENT_GROUPS = ['global']
 const INSPECTOR_SETTINGS_SCOPE = {
   ALL: 'all',
@@ -70,7 +71,7 @@ const INSPECTOR_SETTINGS_SCOPE_LABELS = {
   [INSPECTOR_SETTINGS_SCOPE.ADJUSTMENTS]: 'color settings',
   [INSPECTOR_SETTINGS_SCOPE.TIMING]: 'timing settings',
 }
-const TRANSFORM_SETTINGS_KEYS = ['positionX', 'positionY', 'scaleX', 'scaleY', 'scaleLinked', 'rotation', 'anchorX', 'anchorY', 'opacity', 'flipH', 'flipV', 'blendMode', 'blur']
+const TRANSFORM_SETTINGS_KEYS = ['positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'scaleLinked', 'rotation', 'rotationX', 'rotationY', 'perspective', 'anchorX', 'anchorY', 'opacity', 'flipH', 'flipV', 'motionBlurEnabled', 'motionBlurMode', 'motionBlurSamples', 'motionBlurShutter', 'blendMode']
 const CROP_SETTINGS_KEYS = ['cropTop', 'cropBottom', 'cropLeft', 'cropRight']
 const TONAL_ADJUSTMENT_GROUP_LABELS = {
   shadows: 'Shadows',
@@ -112,6 +113,7 @@ const getCopyableTextStyleProperties = (textProperties = {}) => {
 const getInspectorSettingsSourceLabel = (clip, track) => {
   if (!clip) return 'clip'
   if (clip.type === 'text') return 'text clip'
+  if (clip.type === 'shape') return 'shape clip'
   if (clip.type === 'adjustment') return 'adjustment clip'
   if (clip.type === 'audio' || track?.type === 'audio') return 'audio clip'
   if (clip.type === 'image') return 'image clip'
@@ -174,6 +176,37 @@ const formatInspectorResolution = (width, height) => {
   return `${safeWidth}x${safeHeight}`
 }
 
+const firstPositiveNumber = (...values) => {
+  for (const value of values) {
+    const number = Number(value)
+    if (Number.isFinite(number) && number > 0) return number
+  }
+  return null
+}
+
+const getAssetInspectorWidth = (asset) => firstPositiveNumber(
+  asset?.settings?.width,
+  asset?.width,
+  asset?.metadata?.width,
+  asset?.mediaInfo?.width
+)
+
+const getAssetInspectorHeight = (asset) => firstPositiveNumber(
+  asset?.settings?.height,
+  asset?.height,
+  asset?.metadata?.height,
+  asset?.mediaInfo?.height
+)
+
+const getAssetInspectorSize = (asset) => firstPositiveNumber(
+  asset?.size,
+  asset?.fileSize,
+  asset?.sizeBytes,
+  asset?.metadata?.size,
+  asset?.metadata?.fileSize,
+  asset?.metadata?.sizeBytes
+)
+
 const getFileExtensionLabel = (filename) => {
   if (!filename) return 'Unknown'
   const parts = filename.split('.')
@@ -213,7 +246,7 @@ const formatAssetFormatLabel = (asset) => {
 }
 
 // Draggable number input component - click and drag to change value
-function DraggableNumberInput({ value, onChange, onCommit, min, max, step = 1, sensitivity = 0.5, suffix = '', className = '' }) {
+function DraggableNumberInput({ value, onChange, onCommit, min, max, step = 1, sensitivity = 0.5, suffix = '', className = '', resetValue, onReset }) {
   const [isDragging, setIsDragging] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(value.toString())
@@ -266,13 +299,37 @@ function DraggableNumberInput({ value, onChange, onCommit, min, max, step = 1, s
   
   const handleMouseDown = (e) => {
     if (isEditing) return
+    if ((e.altKey || e.shiftKey) && resetToDefault()) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
     e.preventDefault()
     startX.current = e.clientX
     startValue.current = value
     setIsDragging(true)
   }
   
-  const handleDoubleClick = () => {
+  const resetToDefault = () => {
+    if (resetValue === undefined) return false
+    let newValue = resetValue
+    if (min !== undefined) newValue = Math.max(min, newValue)
+    if (max !== undefined) newValue = Math.min(max, newValue)
+    onChange(newValue)
+    if (onReset) {
+      onReset(newValue)
+    } else {
+      onCommit && onCommit(newValue)
+    }
+    return true
+  }
+
+  const handleDoubleClick = (e) => {
+    if ((e.altKey || e.shiftKey) && resetToDefault()) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
     setIsEditing(true)
     setEditValue(value.toString())
     setTimeout(() => inputRef.current?.select(), 0)
@@ -318,7 +375,7 @@ function DraggableNumberInput({ value, onChange, onCommit, min, max, step = 1, s
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
       className={`w-full bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary cursor-ew-resize select-none hover:border-sf-dark-500 transition-colors ${className}`}
-      title="Drag to adjust, double-click to edit"
+      title={resetValue === undefined ? 'Drag to adjust, double-click to edit' : 'Drag to adjust, double-click to edit, Alt/Shift-click to reset'}
     >
       {Math.round(value * 100) / 100}{suffix}
     </div>
@@ -478,6 +535,7 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
     updateClipAdjustments,
     resetClipTransform,
     updateTextProperties,
+    updateShapeProperties,
     applyTextAnimationPreset,
     clearTextAnimationPreset,
     removeClip,
@@ -699,6 +757,7 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
   
   // Check if it's a video, text, or audio clip
   const isTextClip = selectedClip?.type === 'text'
+  const isShapeClip = selectedClip?.type === 'shape'
   const isAdjustmentClip = selectedClip?.type === 'adjustment'
   const isVideoClip = selectedTrack?.type === 'video' && !isTextClip && !isAdjustmentClip
   const isAudioClip = selectedTrack?.type === 'audio'
@@ -707,11 +766,12 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
   const getTransform = useCallback(() => {
     if (!selectedClip) return null
     return selectedClip.transform || {
-      positionX: 0, positionY: 0,
+      positionX: 0, positionY: 0, positionZ: 0,
       scaleX: 100, scaleY: 100, scaleLinked: true,
-      rotation: 0, anchorX: 50, anchorY: 50, opacity: 100,
+      rotation: 0, rotationX: 0, rotationY: 0, perspective: 1200, anchorX: 50, anchorY: 50, opacity: 100,
       flipH: false, flipV: false,
       cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0,
+      motionBlurEnabled: false, motionBlurMode: 'auto', motionBlurSamples: 8, motionBlurShutter: 180,
       blendMode: 'normal',
       blur: 0,
     }
@@ -735,6 +795,12 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
     { value: 'saturation', label: 'Saturation' },
     { value: 'color', label: 'Color' },
     { value: 'luminosity', label: 'Luminosity' },
+  ]
+
+  const MOTION_BLUR_MODE_OPTIONS = [
+    { value: 'auto', label: 'Auto', description: 'Use GPU velocity blur for X/Y movement and sampled blur as a fallback.' },
+    { value: 'velocity', label: 'Velocity / GPU', description: 'Use directional GPU blur for X/Y movement only.' },
+    { value: 'sampled', label: 'Subframe / Sampled', description: 'Use repeated subframe samples. Better for some non-position animation, but slower.' },
   ]
   
   const transform = getTransform()
@@ -798,6 +864,11 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
       shadowOffsetY: 2,
     }
   }, [selectedClip])
+
+  const getShapeProps = useCallback(() => {
+    if (!selectedClip || selectedClip.type !== 'shape') return null
+    return getAnimatedShapeProperties(selectedClip, clipTime) || normalizeShapeProperties(selectedClip.shapeProperties || {})
+  }, [clipTime, selectedClip])
   
   // Check if a property has keyframes
   const propertyHasKeyframes = useCallback((property) => {
@@ -1282,7 +1353,6 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
       </p>
       {renderAdjustmentGroup({
         title: 'Global',
-        description: 'Affects the full image. Blur now lives in Effects.',
         values,
       })}
       {TONAL_ADJUSTMENT_GROUP_KEYS.map((groupKey) => renderAdjustmentGroup({
@@ -1583,6 +1653,110 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
     updateAsset,
   ])
 
+  useEffect(() => {
+    if (!selectedAsset || selectedAsset.type !== 'image') return
+    if (typeof window === 'undefined') return
+
+    const knownWidth = getAssetInspectorWidth(selectedAsset)
+    const knownHeight = getAssetInspectorHeight(selectedAsset)
+    const knownSize = getAssetInspectorSize(selectedAsset)
+    const needsResolution = !(knownWidth && knownHeight)
+    const needsSize = !knownSize
+    if (!needsResolution && !needsSize) return
+
+    let cancelled = false
+
+    const loadImageDimensions = (url) => new Promise((resolve) => {
+      if (!url) {
+        resolve(null)
+        return
+      }
+      const image = new Image()
+      image.onload = () => {
+        resolve({
+          width: image.naturalWidth || image.width || null,
+          height: image.naturalHeight || image.height || null,
+        })
+      }
+      image.onerror = () => resolve(null)
+      image.src = url
+    })
+
+    const hydrateImageMetadata = async () => {
+      let imageUrl = selectedAsset.url || selectedClip?.url || null
+      let filePath = selectedAsset.absolutePath || null
+      if (!filePath && selectedAsset.path && typeof currentProjectHandle === 'string' && isElectron() && window.electronAPI?.pathJoin) {
+        try {
+          filePath = await window.electronAPI.pathJoin(currentProjectHandle, selectedAsset.path)
+        } catch (_) {}
+      }
+
+      if (needsResolution && !imageUrl && filePath && isElectron() && window.electronAPI?.getFileUrlDirect) {
+        try {
+          imageUrl = await window.electronAPI.getFileUrlDirect(filePath)
+        } catch (_) {}
+      }
+
+      const [dimensions, fileInfo] = await Promise.all([
+        needsResolution ? loadImageDimensions(imageUrl) : Promise.resolve(null),
+        needsSize && filePath && isElectron() && window.electronAPI?.getFileInfo
+          ? window.electronAPI.getFileInfo(filePath).catch(() => null)
+          : Promise.resolve(null),
+      ])
+
+      if (cancelled) return
+
+      const nextSettings = { ...(selectedAsset.settings || {}) }
+      const updates = {}
+
+      const resolvedWidth = firstPositiveNumber(dimensions?.width)
+      const resolvedHeight = firstPositiveNumber(dimensions?.height)
+      if (resolvedWidth && resolvedHeight) {
+        if (!knownWidth) {
+          updates.width = resolvedWidth
+          nextSettings.width = resolvedWidth
+        }
+        if (!knownHeight) {
+          updates.height = resolvedHeight
+          nextSettings.height = resolvedHeight
+        }
+      }
+
+      const resolvedSize = firstPositiveNumber(fileInfo?.info?.size)
+      if (resolvedSize && !knownSize) {
+        updates.size = resolvedSize
+      }
+
+      if (nextSettings.width !== selectedAsset.settings?.width || nextSettings.height !== selectedAsset.settings?.height) {
+        updates.settings = nextSettings
+      }
+
+      if (Object.keys(updates).length > 0) {
+        updateAsset(selectedAsset.id, updates)
+      }
+    }
+
+    hydrateImageMetadata().catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    selectedAsset,
+    selectedAsset?.absolutePath,
+    selectedAsset?.id,
+    selectedAsset?.settings,
+    selectedAsset?.size,
+    selectedAsset?.type,
+    selectedAsset?.url,
+    selectedAsset?.width,
+    selectedAsset?.height,
+    selectedAsset?.path,
+    selectedClip?.url,
+    currentProjectHandle,
+    updateAsset,
+  ])
+
   // Handle render cache for clips with effects
   const handleRenderCache = useCallback(async () => {
     if (!selectedClip || isRendering) return
@@ -1851,25 +2025,474 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
     )
   }
 
+  const renderMotionBlurControl = () => {
+    if (!selectedClip || !transform || selectedClip.type === 'adjustment') return null
+
+    const enabled = transform.motionBlurEnabled === true
+    const mode = ['auto', 'velocity', 'sampled'].includes(String(transform.motionBlurMode || '').toLowerCase())
+      ? String(transform.motionBlurMode).toLowerCase()
+      : 'auto'
+    const samples = Math.max(2, Math.min(48, Math.round(Number(transform.motionBlurSamples) || 8)))
+    const shutter = Math.max(1, Math.min(360, Math.round(Number(transform.motionBlurShutter) || 180)))
+    const selectedMode = MOTION_BLUR_MODE_OPTIONS.find((option) => option.value === mode) || MOTION_BLUR_MODE_OPTIONS[0]
+
+    return (
+      <div className="rounded-md border border-sf-dark-700 bg-sf-dark-800/50 p-3 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <label className="text-[10px] text-sf-text-muted block">Motion Blur</label>
+            <p className="mt-1 text-[10px] text-sf-text-secondary">
+              Blends sub-frame samples for animated layer movement.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleTransformCommit('motionBlurEnabled', !enabled)}
+            className={`px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+              enabled
+                ? 'bg-sf-accent text-white'
+                : 'bg-sf-dark-700 text-sf-text-muted hover:bg-sf-dark-600'
+            }`}
+            title={enabled ? 'Turn motion blur off for this clip' : 'Turn motion blur on for this clip'}
+          >
+            {enabled ? 'On' : 'Off'}
+          </button>
+        </div>
+
+        <div className={enabled ? 'space-y-3' : 'space-y-3 opacity-45 pointer-events-none'}>
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-[10px] text-sf-text-muted">Mode</span>
+              <span className="text-[10px] text-sf-text-secondary">{selectedMode.label}</span>
+            </div>
+            <select
+              value={mode}
+              onChange={(e) => handleTransformCommit('motionBlurMode', e.target.value)}
+              title={selectedMode.description}
+              className="w-full bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1.5 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+            >
+              {MOTION_BLUR_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-[10px] text-sf-text-secondary leading-relaxed">
+              {selectedMode.description}
+            </p>
+          </div>
+
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-[10px] text-sf-text-muted">Samples</span>
+              <span className="text-[10px] text-sf-text-secondary">{samples}</span>
+            </div>
+            <input
+              type="range"
+              min="2"
+              max="48"
+              step="1"
+              value={samples}
+              onChange={(e) => handleTransformChange('motionBlurSamples', parseInt(e.target.value, 10))}
+              onMouseUp={(e) => handleTransformCommit('motionBlurSamples', parseInt(e.target.value, 10))}
+              onDoubleClick={() => handleTransformCommit('motionBlurSamples', 8)}
+              title="Double-click to reset to 8 samples"
+              className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-[10px] text-sf-text-muted">Shutter</span>
+              <span className="text-[10px] text-sf-text-secondary">{shutter} deg</span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="360"
+              step="1"
+              value={shutter}
+              onChange={(e) => handleTransformChange('motionBlurShutter', parseInt(e.target.value, 10))}
+              onMouseUp={(e) => handleTransformCommit('motionBlurShutter', parseInt(e.target.value, 10))}
+              onDoubleClick={() => handleTransformCommit('motionBlurShutter', 180)}
+              title="Double-click to reset to 180 deg"
+              className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderShapeControlsSection = () => {
+    if (!selectedClip || selectedClip.type !== 'shape') return null
+    const shapeProps = getShapeProps()
+    if (!shapeProps) return null
+    const isLineShape = shapeProps.shapeType === 'line'
+    const isPolygonShape = shapeProps.shapeType === 'polygon'
+
+    return (
+      <>
+        {renderSectionHeader('shape', 'Shape', Square)}
+        {expandedSections.includes('shape') && (
+          <div className="p-3 space-y-3 border-b border-sf-dark-700">
+            <div>
+              <label className="text-[10px] text-sf-text-muted block mb-1">Type</label>
+              <select
+                value={shapeProps.shapeType}
+                onChange={(e) => handleShapeTypeCommit(e.target.value)}
+                className="w-full bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1.5 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+              >
+                {SHAPE_TYPES.map((shape) => (
+                  <option key={shape.value} value={shape.value}>{shape.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-[10px] text-sf-text-muted flex items-center gap-1">
+                  <Maximize2 className="w-3 h-3" /> Size
+                </label>
+                {!isLineShape && (
+                  <button
+                    onClick={() => handleShapePropertyCommit('sizeLinked', !shapeProps.sizeLinked)}
+                    className={`p-1 rounded transition-colors ${shapeProps.sizeLinked ? 'bg-sf-accent/30 text-sf-accent' : 'hover:bg-sf-dark-700 text-sf-text-muted'}`}
+                    title={shapeProps.sizeLinked ? 'Unlink Width/Height' : 'Link Width/Height'}
+                  >
+                    {shapeProps.sizeLinked ? <Link className="w-3 h-3" /> : <Unlink className="w-3 h-3" />}
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[9px] text-sf-text-muted">{isLineShape ? 'Length' : 'Width'}</label>
+                  <KeyframeButton
+                    clipId={selectedClip?.id}
+                    property="width"
+                    clip={selectedClip}
+                    playheadPosition={playheadPosition}
+                  />
+                </div>
+                <DraggableNumberInput
+                  value={shapeProps.width}
+                  onChange={(val) => handleShapePropertyChange('width', val)}
+                  onCommit={(val) => handleShapePropertyCommit('width', val)}
+                  min={1}
+                  max={20000}
+                  step={1}
+                  sensitivity={1}
+                  suffix="px"
+                  resetValue={DEFAULT_SHAPE_PROPERTIES.width}
+                  onReset={() => handleShapeSizeReset('width')}
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[9px] text-sf-text-muted">{isLineShape ? 'Thickness' : 'Height'}</label>
+                  <KeyframeButton
+                    clipId={selectedClip?.id}
+                    property="height"
+                    clip={selectedClip}
+                    playheadPosition={playheadPosition}
+                  />
+                </div>
+                <DraggableNumberInput
+                  value={shapeProps.height}
+                  onChange={(val) => handleShapePropertyChange('height', val)}
+                  onCommit={(val) => handleShapePropertyCommit('height', val)}
+                  min={1}
+                  max={20000}
+                  step={1}
+                  sensitivity={1}
+                  suffix="px"
+                  resetValue={isLineShape ? DEFAULT_LINE_THICKNESS : DEFAULT_SHAPE_PROPERTIES.height}
+                  onReset={() => handleShapeSizeReset('height')}
+                />
+              </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[10px] text-sf-text-muted">{isLineShape ? 'Line' : 'Fill'}</label>
+                <select
+                  value={shapeProps.fillType}
+                  onChange={(e) => handleShapePropertyCommit('fillType', e.target.value)}
+                  className="bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1 text-[10px] text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                >
+                  {SHAPE_FILL_TYPES.map((fillType) => (
+                    <option key={fillType.value} value={fillType.value}>{fillType.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="color"
+                  value={shapeProps.fillColor}
+                  onChange={(e) => handleShapePropertyChange('fillColor', e.target.value)}
+                  onBlur={(e) => handleShapePropertyCommit('fillColor', e.target.value)}
+                  className="w-8 h-8 rounded border border-sf-dark-600 cursor-pointer bg-transparent"
+                />
+                <input
+                  type="text"
+                  value={shapeProps.fillColor}
+                  onChange={(e) => handleShapePropertyChange('fillColor', e.target.value)}
+                  onBlur={(e) => handleShapePropertyCommit('fillColor', e.target.value)}
+                  className="flex-1 bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                />
+              </div>
+              {shapeProps.fillType !== 'solid' && (
+                <>
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      type="color"
+                      value={shapeProps.fillColorB}
+                      onChange={(e) => handleShapePropertyChange('fillColorB', e.target.value)}
+                      onBlur={(e) => handleShapePropertyCommit('fillColorB', e.target.value)}
+                      className="w-8 h-8 rounded border border-sf-dark-600 cursor-pointer bg-transparent"
+                    />
+                    <input
+                      type="text"
+                      value={shapeProps.fillColorB}
+                      onChange={(e) => handleShapePropertyChange('fillColorB', e.target.value)}
+                      onBlur={(e) => handleShapePropertyCommit('fillColorB', e.target.value)}
+                      className="flex-1 bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                    />
+                  </div>
+                  {shapeProps.fillType === 'linearGradient' && (
+                    <div className="mt-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[9px] text-sf-text-muted">Angle</span>
+                        <div className="flex items-center gap-1">
+                          <KeyframeButton
+                            clipId={selectedClip?.id}
+                            property="gradientAngle"
+                            clip={selectedClip}
+                            playheadPosition={playheadPosition}
+                          />
+                          <span className="text-[9px] text-sf-text-secondary">{Math.round(shapeProps.gradientAngle)}deg</span>
+                        </div>
+                      </div>
+                      <input
+                        type="range"
+                        min="-180"
+                        max="180"
+                        step="1"
+                        value={shapeProps.gradientAngle}
+                        onChange={(e) => handleShapePropertyChange('gradientAngle', parseInt(e.target.value, 10))}
+                        onMouseUp={(e) => handleShapePropertyCommit('gradientAngle', parseInt(e.target.value, 10))}
+                        onDoubleClick={() => handleShapePropertyCommit('gradientAngle', DEFAULT_SHAPE_PROPERTIES.gradientAngle)}
+                        title="Double-click to reset to 0deg"
+                        className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+                      />
+                    </div>
+                  )}
+                  {shapeProps.fillType === 'radialGradient' && (
+                    <div className="mt-2 space-y-2">
+                      {[
+                        ['gradientCenterX', 'Center X', DEFAULT_SHAPE_PROPERTIES.gradientCenterX],
+                        ['gradientCenterY', 'Center Y', DEFAULT_SHAPE_PROPERTIES.gradientCenterY],
+                        ['gradientRadius', 'Radius', DEFAULT_SHAPE_PROPERTIES.gradientRadius],
+                      ].map(([property, label, resetValue]) => (
+                        <div key={property}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[9px] text-sf-text-muted">{label}</span>
+                            <div className="flex items-center gap-1">
+                              <KeyframeButton
+                                clipId={selectedClip?.id}
+                                property={property}
+                                clip={selectedClip}
+                                playheadPosition={playheadPosition}
+                              />
+                              <span className="text-[9px] text-sf-text-secondary">{Math.round(shapeProps[property])}%</span>
+                            </div>
+                          </div>
+                          <input
+                            type="range"
+                            min={property === 'gradientRadius' ? '1' : '0'}
+                            max={property === 'gradientRadius' ? '200' : '100'}
+                            step="1"
+                            value={shapeProps[property]}
+                            onChange={(e) => handleShapePropertyChange(property, parseInt(e.target.value, 10))}
+                            onMouseUp={(e) => handleShapePropertyCommit(property, parseInt(e.target.value, 10))}
+                            onDoubleClick={() => handleShapePropertyCommit(property, resetValue)}
+                            title={`Double-click to reset ${label.toLowerCase()}`}
+                            className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              <div className="mt-2 flex items-center gap-2">
+                <span className="w-12 text-[9px] text-sf-text-muted">Opacity</span>
+                <KeyframeButton
+                  clipId={selectedClip?.id}
+                  property="fillOpacity"
+                  clip={selectedClip}
+                  playheadPosition={playheadPosition}
+                />
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={shapeProps.fillOpacity}
+                  onChange={(e) => handleShapePropertyChange('fillOpacity', parseInt(e.target.value))}
+                  onMouseUp={(e) => handleShapePropertyCommit('fillOpacity', parseInt(e.target.value))}
+                  className="flex-1 h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+                />
+                <span className="w-9 text-right text-[9px] text-sf-text-secondary">{Math.round(shapeProps.fillOpacity)}%</span>
+              </div>
+            </div>
+
+            {!isLineShape && (
+            <div>
+              <label className="text-[10px] text-sf-text-muted block mb-1">Stroke</label>
+              <div className="flex gap-2">
+                <input
+                  type="color"
+                  value={shapeProps.strokeColor}
+                  onChange={(e) => handleShapePropertyChange('strokeColor', e.target.value)}
+                  onBlur={(e) => handleShapePropertyCommit('strokeColor', e.target.value)}
+                  className="w-8 h-8 rounded border border-sf-dark-600 cursor-pointer bg-transparent"
+                />
+                <input
+                  type="text"
+                  value={shapeProps.strokeColor}
+                  onChange={(e) => handleShapePropertyChange('strokeColor', e.target.value)}
+                  onBlur={(e) => handleShapePropertyCommit('strokeColor', e.target.value)}
+                  className="flex-1 bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                />
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="w-12 text-[9px] text-sf-text-muted">Width</span>
+                <KeyframeButton
+                  clipId={selectedClip?.id}
+                  property="strokeWidth"
+                  clip={selectedClip}
+                  playheadPosition={playheadPosition}
+                />
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={shapeProps.strokeWidth}
+                  onChange={(e) => handleShapePropertyChange('strokeWidth', parseInt(e.target.value))}
+                  onMouseUp={(e) => handleShapePropertyCommit('strokeWidth', parseInt(e.target.value))}
+                  className="flex-1 h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+                />
+                <span className="w-9 text-right text-[9px] text-sf-text-secondary">{Math.round(shapeProps.strokeWidth)}px</span>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="w-12 text-[9px] text-sf-text-muted">Opacity</span>
+                <KeyframeButton
+                  clipId={selectedClip?.id}
+                  property="strokeOpacity"
+                  clip={selectedClip}
+                  playheadPosition={playheadPosition}
+                />
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={shapeProps.strokeOpacity}
+                  onChange={(e) => handleShapePropertyChange('strokeOpacity', parseInt(e.target.value))}
+                  onMouseUp={(e) => handleShapePropertyCommit('strokeOpacity', parseInt(e.target.value))}
+                  className="flex-1 h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+                />
+                <span className="w-9 text-right text-[9px] text-sf-text-secondary">{Math.round(shapeProps.strokeOpacity)}%</span>
+              </div>
+            </div>
+            )}
+
+            {shapeProps.shapeType === 'roundedRectangle' && (
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[10px] text-sf-text-muted">Corner Radius</label>
+                  <div className="flex items-center gap-1">
+                    <KeyframeButton
+                      clipId={selectedClip?.id}
+                      property="cornerRadius"
+                      clip={selectedClip}
+                      playheadPosition={playheadPosition}
+                    />
+                    <span className="text-[10px] text-sf-text-secondary">{Math.round(shapeProps.cornerRadius)}px</span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="500"
+                  value={shapeProps.cornerRadius}
+                  onChange={(e) => handleShapePropertyChange('cornerRadius', parseInt(e.target.value))}
+                  onMouseUp={(e) => handleShapePropertyCommit('cornerRadius', parseInt(e.target.value))}
+                  className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+                />
+              </div>
+            )}
+
+            {isPolygonShape && (
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[10px] text-sf-text-muted">Sides</label>
+                  <div className="flex items-center gap-1">
+                    <KeyframeButton
+                      clipId={selectedClip?.id}
+                      property="sides"
+                      clip={selectedClip}
+                      playheadPosition={playheadPosition}
+                    />
+                    <span className="text-[10px] text-sf-text-secondary">{Math.round(shapeProps.sides)}</span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="3"
+                  max="64"
+                  step="1"
+                  value={shapeProps.sides}
+                  onChange={(e) => handleShapePropertyChange('sides', parseInt(e.target.value))}
+                  onMouseUp={(e) => handleShapePropertyCommit('sides', parseInt(e.target.value))}
+                  onDoubleClick={() => handleShapePropertyCommit('sides', DEFAULT_POLYGON_SIDES)}
+                  title="Double-click to reset to 6 sides"
+                  className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </>
+    )
+  }
+
   // Render Video Clip Inspector (with 2D transforms)
   const renderVideoClipInspector = () => {
     if (!selectedClip || !transform) return null
+    const isShapeInspector = selectedClip.type === 'shape'
+    const isImageInspector = selectedClip.type === 'image'
+    const summaryTitle = selectedClip.name || (isShapeInspector ? 'Shape Clip' : (isImageInspector ? 'Image Clip' : 'Video Clip'))
+    const summarySubtitle = `${selectedTrack?.name || 'Unknown Track'} - ${isShapeInspector ? 'Shape clip' : (isImageInspector ? 'Image clip' : 'Video clip')}`
+    const SummaryIcon = isShapeInspector ? Square : (isImageInspector ? FileImage : FileVideo)
+    const iconToneClassName = isShapeInspector ? 'text-cyan-100' : (isImageInspector ? 'text-emerald-200' : 'text-blue-100')
+    const iconBgClassName = isShapeInspector ? 'bg-cyan-500/20' : (isImageInspector ? 'bg-emerald-500/20' : 'bg-blue-500/20')
+    const typeBadgeClassName = isShapeInspector
+      ? 'bg-cyan-500/15 text-cyan-300'
+      : (isImageInspector ? 'bg-emerald-500/15 text-emerald-300' : 'bg-blue-500/15 text-blue-300')
 
     return (
       <>
         {renderClipSummaryHeader({
-          title: selectedClip.name || (selectedClip.type === 'image' ? 'Image Clip' : 'Video Clip'),
-          subtitle: `${selectedTrack?.name || 'Unknown Track'} • ${selectedClip.type === 'image' ? 'Image clip' : 'Video clip'}`,
-          icon: selectedClip.type === 'image' ? FileImage : FileVideo,
-          iconToneClassName: selectedClip.type === 'image' ? 'text-emerald-200' : 'text-blue-100',
-          iconBgClassName: selectedClip.type === 'image' ? 'bg-emerald-500/20' : 'bg-blue-500/20',
+          title: summaryTitle,
+          subtitle: summarySubtitle,
+          icon: SummaryIcon,
+          iconToneClassName,
+          iconBgClassName,
           badges: [
             {
               label: 'type',
-              value: selectedClip.type === 'image' ? 'IMAGE' : 'VIDEO',
-              className: selectedClip.type === 'image'
-                ? 'bg-emerald-500/15 text-emerald-300'
-                : 'bg-blue-500/15 text-blue-300',
+              value: isShapeInspector ? 'SHAPE' : (isImageInspector ? 'IMAGE' : 'VIDEO'),
+              className: typeBadgeClassName,
             },
             {
               label: 'timeline-fps',
@@ -1877,6 +2500,8 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
             },
           ],
         })}
+
+        {renderShapeControlsSection()}
 
         {/* Transform Section */}
         {renderSectionHeader('transform', 'Transform', Move, {
@@ -1900,7 +2525,13 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <div className="flex items-center justify-between mb-0.5">
-                    <label className="text-[9px] text-sf-text-muted">X</label>
+                    <label
+                      className="text-[9px] text-sf-text-muted cursor-pointer select-none"
+                      title="Double-click to reset X position"
+                      onDoubleClick={() => handleSliderReset('positionX', 0)}
+                    >
+                      X
+                    </label>
                     <KeyframeButton 
                       clipId={selectedClip?.id} 
                       property="positionX" 
@@ -1913,6 +2544,8 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                       value={animatedTransform?.positionX ?? transform.positionX}
                       onChange={(val) => handleTransformChange('positionX', val)}
                       onCommit={(val) => handleTransformCommit('positionX', val)}
+                      resetValue={0}
+                      onReset={(val) => handleSliderReset('positionX', val)}
                       step={1}
                       sensitivity={1}
                     />
@@ -1921,7 +2554,13 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                 </div>
                 <div>
                   <div className="flex items-center justify-between mb-0.5">
-                    <label className="text-[9px] text-sf-text-muted">Y</label>
+                    <label
+                      className="text-[9px] text-sf-text-muted cursor-pointer select-none"
+                      title="Double-click to reset Y position"
+                      onDoubleClick={() => handleSliderReset('positionY', 0)}
+                    >
+                      Y
+                    </label>
                     <KeyframeButton 
                       clipId={selectedClip?.id} 
                       property="positionY" 
@@ -1934,11 +2573,42 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                       value={animatedTransform?.positionY ?? transform.positionY}
                       onChange={(val) => handleTransformChange('positionY', val)}
                       onCommit={(val) => handleTransformCommit('positionY', val)}
+                      resetValue={0}
+                      onReset={(val) => handleSliderReset('positionY', val)}
                       step={1}
                       sensitivity={1}
                     />
                     <span className="ml-1 text-[9px] text-sf-text-muted">px</span>
                   </div>
+                </div>
+              </div>
+              <div className="mt-2">
+                <div className="flex items-center justify-between mb-0.5">
+                  <label
+                    className="text-[9px] text-sf-text-muted cursor-pointer select-none"
+                    title="Double-click to reset Z position"
+                    onDoubleClick={() => handleSliderReset('positionZ', 0)}
+                  >
+                    Z
+                  </label>
+                  <KeyframeButton
+                    clipId={selectedClip?.id}
+                    property="positionZ"
+                    clip={selectedClip}
+                    playheadPosition={playheadPosition}
+                  />
+                </div>
+                <div className="flex items-center">
+                  <DraggableNumberInput
+                    value={animatedTransform?.positionZ ?? transform.positionZ ?? 0}
+                    onChange={(val) => handleTransformChange('positionZ', val)}
+                    onCommit={(val) => handleTransformCommit('positionZ', val)}
+                    resetValue={0}
+                    onReset={(val) => handleSliderReset('positionZ', val)}
+                    step={1}
+                    sensitivity={1}
+                  />
+                  <span className="ml-1 text-[9px] text-sf-text-muted">px</span>
                 </div>
               </div>
             </div>
@@ -2030,7 +2700,7 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
             <div>
               <div className="flex justify-between items-center mb-1">
                 <label className="text-[10px] text-sf-text-muted flex items-center gap-1">
-                  <RotateCw className="w-3 h-3" /> Rotation
+                  <RotateCw className="w-3 h-3" /> Rotate Z
                 </label>
                 <div className="flex items-center gap-1">
                   <KeyframeButton 
@@ -2044,6 +2714,8 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                     value={Math.round(animatedTransform?.rotation ?? transform.rotation)}
                     onChange={(e) => handleTransformChange('rotation', parseFloat(e.target.value) || 0)}
                     onBlur={(e) => handleTransformCommit('rotation', parseFloat(e.target.value) || 0)}
+                    onDoubleClick={() => handleSliderReset('rotation', 0)}
+                    title="Double-click to reset to 0deg"
                     className="w-14 bg-sf-dark-700 border border-sf-dark-600 rounded px-1.5 py-0.5 text-[10px] text-sf-text-primary focus:outline-none focus:border-sf-accent text-right"
                   />
                   <span className="text-[10px] text-sf-text-secondary">°</span>
@@ -2060,6 +2732,108 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                 title="Double-click to reset to 0°"
                 className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
               />
+            </div>
+
+            {/* 3D Rotation */}
+            <div>
+              <label className="text-[10px] text-sf-text-muted block mb-1.5">
+                3D Rotation
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <label
+                      className="text-[9px] text-sf-text-muted cursor-pointer select-none"
+                      title="Double-click to reset X rotation"
+                      onDoubleClick={() => handleSliderReset('rotationX', 0)}
+                    >
+                      Rotate X
+                    </label>
+                    <KeyframeButton
+                      clipId={selectedClip?.id}
+                      property="rotationX"
+                      clip={selectedClip}
+                      playheadPosition={playheadPosition}
+                    />
+                  </div>
+                  <div className="flex items-center">
+                    <DraggableNumberInput
+                      value={animatedTransform?.rotationX ?? transform.rotationX ?? 0}
+                      onChange={(val) => handleTransformChange('rotationX', val)}
+                      onCommit={(val) => handleTransformCommit('rotationX', val)}
+                      resetValue={0}
+                      onReset={(val) => handleSliderReset('rotationX', val)}
+                      min={-89}
+                      max={89}
+                      step={1}
+                      sensitivity={0.5}
+                    />
+                    <span className="ml-1 text-[9px] text-sf-text-muted">deg</span>
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <label
+                      className="text-[9px] text-sf-text-muted cursor-pointer select-none"
+                      title="Double-click to reset Y rotation"
+                      onDoubleClick={() => handleSliderReset('rotationY', 0)}
+                    >
+                      Rotate Y
+                    </label>
+                    <KeyframeButton
+                      clipId={selectedClip?.id}
+                      property="rotationY"
+                      clip={selectedClip}
+                      playheadPosition={playheadPosition}
+                    />
+                  </div>
+                  <div className="flex items-center">
+                    <DraggableNumberInput
+                      value={animatedTransform?.rotationY ?? transform.rotationY ?? 0}
+                      onChange={(val) => handleTransformChange('rotationY', val)}
+                      onCommit={(val) => handleTransformCommit('rotationY', val)}
+                      resetValue={0}
+                      onReset={(val) => handleSliderReset('rotationY', val)}
+                      min={-89}
+                      max={89}
+                      step={1}
+                      sensitivity={0.5}
+                    />
+                    <span className="ml-1 text-[9px] text-sf-text-muted">deg</span>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-2">
+                <div className="flex items-center justify-between mb-0.5">
+                  <label
+                    className="text-[9px] text-sf-text-muted cursor-pointer select-none"
+                    title="Double-click to reset perspective"
+                    onDoubleClick={() => handleSliderReset('perspective', 1200)}
+                  >
+                    Perspective
+                  </label>
+                  <KeyframeButton
+                    clipId={selectedClip?.id}
+                    property="perspective"
+                    clip={selectedClip}
+                    playheadPosition={playheadPosition}
+                  />
+                </div>
+                <div className="flex items-center">
+                  <DraggableNumberInput
+                    value={animatedTransform?.perspective ?? transform.perspective ?? 1200}
+                    onChange={(val) => handleTransformChange('perspective', val)}
+                    onCommit={(val) => handleTransformCommit('perspective', val)}
+                    resetValue={1200}
+                    onReset={(val) => handleSliderReset('perspective', val)}
+                    min={100}
+                    max={10000}
+                    step={10}
+                    sensitivity={4}
+                  />
+                  <span className="ml-1 text-[9px] text-sf-text-muted">px</span>
+                </div>
+              </div>
             </div>
 
             {/* Flip Controls */}
@@ -2120,40 +2894,8 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
               />
             </div>
 
-            {/* Blur (video / image / text only) */}
-            {(selectedClip?.type === 'video' || selectedClip?.type === 'image' || selectedClip?.type === 'text') && (
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="text-[10px] text-sf-text-muted flex items-center gap-1">
-                    <CircleDot className="w-3 h-3" /> Blur
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <KeyframeButton 
-                      clipId={selectedClip?.id} 
-                      property="blur" 
-                      clip={selectedClip}
-                      playheadPosition={playheadPosition}
-                    />
-                    <span className="text-[10px] text-sf-text-secondary">{(animatedTransform?.blur ?? transform.blur ?? 0).toFixed(1)}px</span>
-                  </div>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="50"
-                  step="0.25"
-                  value={animatedTransform?.blur ?? transform.blur ?? 0}
-                  onChange={(e) => handleTransformChange('blur', parseFloat(e.target.value))}
-                  onMouseUp={(e) => handleTransformCommit('blur', parseFloat(e.target.value))}
-                  onDoubleClick={() => handleSliderReset('blur', 0)}
-                  title="Double-click to reset to 0px"
-                  className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
-                />
-              </div>
-            )}
-
-            {/* Blend Mode (video / image / text only) */}
-            {(selectedClip?.type === 'video' || selectedClip?.type === 'image' || selectedClip?.type === 'text') && (
+            {/* Blend Mode (visual clips only) */}
+            {(selectedClip?.type === 'video' || selectedClip?.type === 'image' || selectedClip?.type === 'text' || selectedClip?.type === 'shape') && (
               <div>
                 <label className="text-[10px] text-sf-text-muted block mb-1">
                   Blend Mode
@@ -2478,6 +3220,7 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
         {expandedSections.includes('effects') && (
           <div className="p-3 space-y-2 border-b border-sf-dark-700">
             {renderAdjustmentBlurControl('Applies blur as an effect on this clip.')}
+            {renderMotionBlurControl()}
 
             {/* Stylistic effects (camera shake, chromatic aberration, film grain, vignette) */}
             <EffectsStack
@@ -2892,6 +3635,12 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                 <label className="text-[10px] text-sf-text-muted flex items-center gap-1">
                   <RotateCw className="w-3 h-3" /> Rotation
                 </label>
+                <KeyframeButton
+                  clipId={selectedClip?.id}
+                  property="rotation"
+                  clip={selectedClip}
+                  playheadPosition={playheadPosition}
+                />
                 <div className="flex items-center gap-1">
                   <KeyframeButton
                     clipId={selectedClip?.id}
@@ -3379,6 +4128,90 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
     updateTextProperties(selectedClip.id, { [key]: value }, true)
   }, [selectedClip, updateTextProperties])
 
+  const buildShapePropertyUpdates = useCallback((key, value) => {
+    if (!selectedClip || selectedClip.type !== 'shape') return null
+
+    const currentShape = normalizeShapeProperties(selectedClip.shapeProperties || {})
+    const isSizeProperty = key === 'width' || key === 'height'
+    if (!isSizeProperty || !currentShape.sizeLinked) {
+      return { [key]: value }
+    }
+
+    const nextValue = Math.max(1, Number(value) || currentShape[key] || DEFAULT_SHAPE_PROPERTIES[key])
+    const currentWidth = Math.max(1, Number(currentShape.width) || DEFAULT_SHAPE_PROPERTIES.width)
+    const currentHeight = Math.max(1, Number(currentShape.height) || DEFAULT_SHAPE_PROPERTIES.height)
+    if (key === 'width') {
+      const ratio = currentHeight / currentWidth
+      return {
+        width: nextValue,
+        height: Math.max(1, Math.round(nextValue * ratio)),
+      }
+    }
+
+    const ratio = currentWidth / currentHeight
+    return {
+      width: Math.max(1, Math.round(nextValue * ratio)),
+      height: nextValue,
+    }
+  }, [selectedClip])
+
+  const handleShapePropertyChange = useCallback((key, value) => {
+    if (!selectedClip || selectedClip.type !== 'shape') return
+    const updates = buildShapePropertyUpdates(key, value)
+    if (!updates) return
+    updateShapeProperties(selectedClip.id, updates, false)
+    for (const [property, nextValue] of Object.entries(updates)) {
+      if (propertyHasKeyframes(property)) {
+        setKeyframe(selectedClip.id, property, clipTime, nextValue, 'easeInOut', { saveHistory: false })
+      }
+    }
+  }, [selectedClip, buildShapePropertyUpdates, updateShapeProperties, propertyHasKeyframes, setKeyframe, clipTime])
+
+  const handleShapePropertyCommit = useCallback((key, value) => {
+    if (!selectedClip || selectedClip.type !== 'shape') return
+    const updates = buildShapePropertyUpdates(key, value)
+    if (!updates) return
+    updateShapeProperties(selectedClip.id, updates, true)
+  }, [selectedClip, buildShapePropertyUpdates, updateShapeProperties])
+
+  const handleShapeTypeCommit = useCallback((shapeType) => {
+    if (!selectedClip || selectedClip.type !== 'shape') return
+    const currentShape = normalizeShapeProperties(selectedClip.shapeProperties || {})
+    const updates = { shapeType }
+    if (shapeType === 'line') {
+      updates.sizeLinked = false
+      updates.height = DEFAULT_LINE_THICKNESS
+    } else if (currentShape.shapeType === 'line') {
+      updates.sizeLinked = DEFAULT_SHAPE_PROPERTIES.sizeLinked
+      updates.width = DEFAULT_SHAPE_PROPERTIES.width
+      updates.height = DEFAULT_SHAPE_PROPERTIES.height
+    }
+    updateShapeProperties(selectedClip.id, updates, true)
+  }, [selectedClip, updateShapeProperties])
+
+  const handleShapeSizeReset = useCallback((key) => {
+    if (!selectedClip || selectedClip.type !== 'shape') return
+    const currentShape = normalizeShapeProperties(selectedClip.shapeProperties || {})
+    const updates = currentShape.shapeType === 'line'
+      ? {
+          [key]: key === 'height' ? DEFAULT_LINE_THICKNESS : DEFAULT_SHAPE_PROPERTIES.width,
+        }
+      : currentShape.sizeLinked
+      ? {
+          width: DEFAULT_SHAPE_PROPERTIES.width,
+          height: DEFAULT_SHAPE_PROPERTIES.height,
+        }
+      : {
+          [key]: DEFAULT_SHAPE_PROPERTIES[key],
+        }
+    updateShapeProperties(selectedClip.id, updates, true)
+    for (const [property, nextValue] of Object.entries(updates)) {
+      if (propertyHasKeyframes(property)) {
+        setKeyframe(selectedClip.id, property, clipTime, nextValue, 'easeInOut', { saveHistory: false })
+      }
+    }
+  }, [clipTime, propertyHasKeyframes, selectedClip, setKeyframe, updateShapeProperties])
+
   const handleApplyTextAnimationPreset = useCallback((presetId) => {
     if (!selectedClip || selectedClip.type !== 'text') return
     applyTextAnimationPreset(selectedClip.id, presetId, textAnimationMode)
@@ -3684,6 +4517,27 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
           </div>
         )}
 
+        {renderSectionHeader('effects', 'Effects', Zap)}
+        {expandedSections.includes('effects') && (
+          <div className="p-3 space-y-2 border-b border-sf-dark-700">
+            {renderAdjustmentBlurControl('Applies blur as an effect on this text clip.')}
+            {renderMotionBlurControl()}
+            <EffectsStack
+              clip={selectedClip}
+              playheadPosition={playheadPosition}
+              addEffect={addEffect}
+              removeEffect={removeEffect}
+              updateEffect={updateEffect}
+              toggleEffect={toggleEffect}
+              reorderEffect={reorderEffect}
+              setKeyframe={setKeyframe}
+              removeKeyframe={removeKeyframe}
+              goToNextKeyframe={goToNextKeyframe}
+              goToPrevKeyframe={goToPrevKeyframe}
+            />
+          </div>
+        )}
+
         {/* Transform Section (shared with video) */}
         {renderSectionHeader('transform', 'Transform', Move, {
           actions: renderInspectorClipboardButtons({
@@ -3705,7 +4559,15 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-[9px] text-sf-text-muted block mb-0.5">X</label>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <label className="text-[9px] text-sf-text-muted">X</label>
+                    <KeyframeButton
+                      clipId={selectedClip?.id}
+                      property="positionX"
+                      clip={selectedClip}
+                      playheadPosition={playheadPosition}
+                    />
+                  </div>
                   <div className="flex items-center">
                     <DraggableNumberInput
                       value={animatedTransform?.positionX ?? transform.positionX}
@@ -3718,7 +4580,15 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                   </div>
                 </div>
                 <div>
-                  <label className="text-[9px] text-sf-text-muted block mb-0.5">Y</label>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <label className="text-[9px] text-sf-text-muted">Y</label>
+                    <KeyframeButton
+                      clipId={selectedClip?.id}
+                      property="positionY"
+                      clip={selectedClip}
+                      playheadPosition={playheadPosition}
+                    />
+                  </div>
                   <div className="flex items-center">
                     <DraggableNumberInput
                       value={animatedTransform?.positionY ?? transform.positionY}
@@ -3739,7 +4609,15 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                 <label className="text-[10px] text-sf-text-muted flex items-center gap-1">
                   <Maximize2 className="w-3 h-3" /> Scale
                 </label>
-                <span className="text-[10px] text-sf-text-secondary">{Math.round(animatedTransform?.scaleX ?? transform.scaleX)}%</span>
+                <div className="flex items-center gap-1">
+                  <KeyframeButton
+                    clipId={selectedClip?.id}
+                    property="scaleX"
+                    clip={selectedClip}
+                    playheadPosition={playheadPosition}
+                  />
+                  <span className="text-[10px] text-sf-text-secondary">{Math.round(animatedTransform?.scaleX ?? transform.scaleX)}%</span>
+                </div>
               </div>
               <input
                 type="range"
@@ -3760,6 +4638,12 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                 <label className="text-[10px] text-sf-text-muted flex items-center gap-1">
                   <RotateCw className="w-3 h-3" /> Rotation
                 </label>
+                <KeyframeButton
+                  clipId={selectedClip?.id}
+                  property="rotation"
+                  clip={selectedClip}
+                  playheadPosition={playheadPosition}
+                />
                 <span className="text-[10px] text-sf-text-secondary">{Math.round(animatedTransform?.rotation ?? transform.rotation)}°</span>
               </div>
               <input
@@ -3781,7 +4665,15 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                 <label className="text-[10px] text-sf-text-muted flex items-center gap-1">
                   <Eye className="w-3 h-3" /> Opacity
                 </label>
-                <span className="text-[10px] text-sf-text-secondary">{Math.round(animatedTransform?.opacity ?? transform.opacity)}%</span>
+                <div className="flex items-center gap-1">
+                  <KeyframeButton
+                    clipId={selectedClip?.id}
+                    property="opacity"
+                    clip={selectedClip}
+                    playheadPosition={playheadPosition}
+                  />
+                  <span className="text-[10px] text-sf-text-secondary">{Math.round(animatedTransform?.opacity ?? transform.opacity)}%</span>
+                </div>
               </div>
               <input
                 type="range"
@@ -3792,28 +4684,6 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                 onMouseUp={(e) => handleTransformCommit('opacity', parseInt(e.target.value))}
                 onDoubleClick={() => handleSliderReset('opacity', 100)}
                 title="Double-click to reset to 100%"
-                className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
-              />
-            </div>
-
-            {/* Blur */}
-            <div>
-              <div className="flex justify-between mb-1">
-                <label className="text-[10px] text-sf-text-muted flex items-center gap-1">
-                  <CircleDot className="w-3 h-3" /> Blur
-                </label>
-                <span className="text-[10px] text-sf-text-secondary">{(animatedTransform?.blur ?? transform.blur ?? 0).toFixed(1)}px</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="50"
-                step="0.25"
-                value={animatedTransform?.blur ?? transform.blur ?? 0}
-                onChange={(e) => handleTransformChange('blur', parseFloat(e.target.value))}
-                onMouseUp={(e) => handleTransformCommit('blur', parseFloat(e.target.value))}
-                onDoubleClick={() => handleSliderReset('blur', 0)}
-                title="Double-click to reset to 0px"
                 className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
               />
             </div>
@@ -4190,9 +5060,10 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
           ? sourceIn + clipDuration * effectiveTimeScale
           : (Number.isFinite(sourceDuration) ? sourceDuration : null))
 
-    const assetWidth = selectedAsset?.settings?.width ?? selectedAsset?.width
-    const assetHeight = selectedAsset?.settings?.height ?? selectedAsset?.height
+    const assetWidth = getAssetInspectorWidth(selectedAsset)
+    const assetHeight = getAssetInspectorHeight(selectedAsset)
     const assetFps = selectedAsset?.settings?.fps ?? selectedAsset?.fps
+    const assetSize = getAssetInspectorSize(selectedAsset)
     const videoCodec = selectedAsset?.videoCodec || null
     const audioCodec = selectedAsset?.audioCodec || null
     const formatLabel = formatAssetFormatLabel(selectedAsset)
@@ -4227,8 +5098,8 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
     if (selectedAsset) {
       infoItems.push({ label: 'Format', value: formatLabel })
     }
-    if (selectedAsset?.size) {
-      infoItems.push({ label: 'Size', value: formatFileSize(selectedAsset.size) })
+    if (assetSize) {
+      infoItems.push({ label: 'Size', value: formatFileSize(assetSize) })
     }
 
     return (

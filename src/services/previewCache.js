@@ -121,6 +121,26 @@ function buildClipSignature(clip) {
         : [],
     }
     : null
+  const shapeProperties = clip.shapeProperties
+    ? {
+      shapeType: clip.shapeProperties.shapeType || null,
+      width: roundNumber(clip.shapeProperties.width),
+      height: roundNumber(clip.shapeProperties.height),
+      sizeLinked: clip.shapeProperties.sizeLinked !== false,
+      fillType: clip.shapeProperties.fillType || null,
+      fillColor: clip.shapeProperties.fillColor || null,
+      fillColorB: clip.shapeProperties.fillColorB || null,
+      fillOpacity: roundNumber(clip.shapeProperties.fillOpacity),
+      gradientAngle: roundNumber(clip.shapeProperties.gradientAngle),
+      gradientCenterX: roundNumber(clip.shapeProperties.gradientCenterX),
+      gradientCenterY: roundNumber(clip.shapeProperties.gradientCenterY),
+      gradientRadius: roundNumber(clip.shapeProperties.gradientRadius),
+      strokeColor: clip.shapeProperties.strokeColor || null,
+      strokeOpacity: roundNumber(clip.shapeProperties.strokeOpacity),
+      strokeWidth: roundNumber(clip.shapeProperties.strokeWidth),
+      cornerRadius: roundNumber(clip.shapeProperties.cornerRadius),
+    }
+    : null
   const keyframes = clip.keyframes && typeof clip.keyframes === 'object'
     ? Object.fromEntries(
       Object.entries(clip.keyframes)
@@ -158,9 +178,13 @@ function buildClipSignature(clip) {
     transform: {
       positionX: roundNumber(transform.positionX),
       positionY: roundNumber(transform.positionY),
+      positionZ: roundNumber(transform.positionZ),
       scaleX: roundNumber(transform.scaleX),
       scaleY: roundNumber(transform.scaleY),
       rotation: roundNumber(transform.rotation),
+      rotationX: roundNumber(transform.rotationX),
+      rotationY: roundNumber(transform.rotationY),
+      perspective: roundNumber(transform.perspective),
       opacity: roundNumber(transform.opacity),
       anchorX: roundNumber(transform.anchorX),
       anchorY: roundNumber(transform.anchorY),
@@ -170,14 +194,19 @@ function buildClipSignature(clip) {
       cropBottom: roundNumber(transform.cropBottom),
       cropLeft: roundNumber(transform.cropLeft),
       cropRight: roundNumber(transform.cropRight),
+      motionBlurEnabled: Boolean(transform.motionBlurEnabled),
+      motionBlurMode: transform.motionBlurMode || 'auto',
+      motionBlurSamples: roundNumber(transform.motionBlurSamples),
+      motionBlurShutter: roundNumber(transform.motionBlurShutter),
       blendMode: transform.blendMode || 'normal',
       blur: roundNumber(transform.blur),
     },
-    adjustments: (clip.type === 'adjustment' || clip.type === 'video' || clip.type === 'image' || clip.type === 'text')
+    adjustments: (clip.type === 'adjustment' || clip.type === 'video' || clip.type === 'image' || clip.type === 'text' || clip.type === 'shape')
       ? normalizeAdjustmentSettings(clip.adjustments || {})
       : null,
     effects,
     textProperties,
+    shapeProperties,
     keyframes,
   }
 }

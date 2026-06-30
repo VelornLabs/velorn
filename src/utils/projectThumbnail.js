@@ -24,7 +24,9 @@ import {
   getBaseDrawRect,
   applyClipTransform,
   applyClipCrop,
+  drawPerspectiveClipSource,
   drawText,
+  hasPerspectiveClipTransform,
 } from '../services/exporter'
 import { getAnimatedTransform } from './keyframes'
 
@@ -90,9 +92,20 @@ async function renderCompositeFrameAt(time, canvas, renderWidth, renderHeight) {
         ctx.globalAlpha = baseOpacity
         ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
         ctx.filter = 'none'
-        applyClipTransform(ctx, rect, clipTransform, null)
-        applyClipCrop(ctx, rect, clipTransform)
-        try { drawText(ctx, rect, clip, 1, clipTime) } catch (_) { /* ignore bad text state */ }
+        try {
+          if (hasPerspectiveClipTransform(clipTransform)) {
+            const textCanvas = document.createElement('canvas')
+            textCanvas.width = Math.max(1, Math.ceil(rect.width))
+            textCanvas.height = Math.max(1, Math.ceil(rect.height))
+            const textCtx = textCanvas.getContext('2d', { alpha: true })
+            drawText(textCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, clip, 1, clipTime)
+            drawPerspectiveClipSource(ctx, textCanvas, rect, clipTransform, null)
+          } else {
+            applyClipTransform(ctx, rect, clipTransform, null)
+            applyClipCrop(ctx, rect, clipTransform)
+            drawText(ctx, rect, clip, 1, clipTime)
+          }
+        } catch (_) { /* ignore bad text state */ }
         ctx.restore()
         drewSomething = true
         continue
@@ -120,10 +133,14 @@ async function renderCompositeFrameAt(time, canvas, renderWidth, renderHeight) {
       ctx.globalAlpha = baseOpacity
       ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
       ctx.filter = 'none'
-      applyClipTransform(ctx, rect, clipTransform, null)
-      applyClipCrop(ctx, rect, clipTransform)
       try {
-        ctx.drawImage(loaded.element, 0, 0, rect.width, rect.height)
+        if (hasPerspectiveClipTransform(clipTransform)) {
+          drawPerspectiveClipSource(ctx, loaded.element, rect, clipTransform, null)
+        } else {
+          applyClipTransform(ctx, rect, clipTransform, null)
+          applyClipCrop(ctx, rect, clipTransform)
+          ctx.drawImage(loaded.element, 0, 0, rect.width, rect.height)
+        }
         drewSomething = true
       } catch (_) {
         // Source wasn't drawable (e.g., video never produced a frame);

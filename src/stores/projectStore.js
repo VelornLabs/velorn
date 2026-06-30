@@ -65,7 +65,9 @@ const createDefaultTimeline = (name = 'Timeline 1', id = null, settings = null) 
   width: settings?.width || null,
   height: settings?.height || null,
   fps: settings?.fps || null,
-  duration: 60,
+  duration: Number.isFinite(Number(settings?.duration)) && Number(settings.duration) > 0
+    ? Number(settings.duration)
+    : 60,
   zoom: 100,
   tracks: [
     { id: 'video-1', name: 'Video 1', type: 'video', muted: false, locked: false, visible: true },
@@ -881,6 +883,7 @@ export const useProjectStore = create(
        * @param {number} options.width - Optional timeline-specific width
        * @param {number} options.height - Optional timeline-specific height
        * @param {number} options.fps - Optional timeline-specific frame rate
+       * @param {number} options.durationSeconds - Optional starting timeline duration in seconds
        */
       createTimeline: (options = null) => {
         const state = get()
@@ -894,6 +897,7 @@ export const useProjectStore = create(
           width: options?.width || null,
           height: options?.height || null,
           fps: options?.fps || null,
+          duration: options?.durationSeconds || options?.duration || null,
           color: options?.color || null,
           folderId: options?.folderId || null,
         }

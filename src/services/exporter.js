@@ -1,7 +1,7 @@
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
-import { getAnimatedTransform, getAnimatedAdjustmentSettings, getAnimatedTextProperties } from '../utils/keyframes'
+import { getAnimatedTransform, getAnimatedAdjustmentSettings, getAnimatedTextProperties, getAnimatedShapeProperties } from '../utils/keyframes'
 import {
   applyAdjustmentSettingsToImageData,
   buildCssFilterFromAdjustments,
@@ -26,6 +26,9 @@ import {
 } from '../utils/effects'
 import { applyGlslEffectsToCanvas, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
+import { drawShape, getShapeCanvasRect } from '../utils/shapes'
+import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
+import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 
 const DEFAULT_SAMPLE_RATE = 44100
 const AUDIO_FETCH_TIMEOUT_MS = 15000
@@ -41,6 +44,7 @@ const EXPORT_STATUS = {
 }
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
+const degToRad = (degrees) => (degrees * Math.PI) / 180
 
 const getLocalStorageFlag = (key) => {
   try {
@@ -496,9 +500,13 @@ export const applyClipTransform = (ctx, rect, transform, transitionStyle) => {
   const {
     positionX = 0,
     positionY = 0,
+    positionZ = 0,
     scaleX = 100,
     scaleY = 100,
     rotation = 0,
+    rotationX = 0,
+    rotationY = 0,
+    perspective = 1200,
     anchorX = 50,
     anchorY = 50,
     flipH = false,
@@ -511,12 +519,26 @@ export const applyClipTransform = (ctx, rect, transform, transitionStyle) => {
   const translateY = rect.y + anchorPxY + positionY + (transitionStyle?.translateY || 0) * rect.height
   const scaleFactorX = (scaleX / 100) * (flipH ? -1 : 1) * (transitionStyle?.scale || 1)
   const scaleFactorY = (scaleY / 100) * (flipV ? -1 : 1) * (transitionStyle?.scale || 1)
+  const safePerspective = clamp(Number(perspective) || 1200, 100, 10000)
+  const safePositionZ = clamp(Number(positionZ) || 0, -20000, safePerspective - 100)
+  const depthScale = clamp(safePerspective / Math.max(100, safePerspective - safePositionZ), 0.05, 12)
+  const safeRotationX = clamp(Number(rotationX) || 0, -89, 89)
+  const safeRotationY = clamp(Number(rotationY) || 0, -89, 89)
   
   ctx.translate(translateX, translateY)
   if (rotation) {
     ctx.rotate((rotation * Math.PI) / 180)
   }
-  ctx.scale(scaleFactorX, scaleFactorY)
+  if (safeRotationX || safeRotationY) {
+    const tiltXRad = (safeRotationX * Math.PI) / 180
+    const tiltYRad = (safeRotationY * Math.PI) / 180
+    const tiltScaleX = Math.max(0.05, Math.cos(tiltYRad))
+    const tiltScaleY = Math.max(0.05, Math.cos(tiltXRad))
+    const perspectiveSkewX = Math.sin(tiltYRad) * 0.22
+    const perspectiveSkewY = -Math.sin(tiltXRad) * 0.22
+    ctx.transform(tiltScaleX, perspectiveSkewY, perspectiveSkewX, tiltScaleY, 0, 0)
+  }
+  ctx.scale(scaleFactorX * depthScale, scaleFactorY * depthScale)
   ctx.translate(-anchorPxX, -anchorPxY)
 }
 
@@ -535,6 +557,169 @@ export const applyClipCrop = (ctx, rect, transform) => {
   ctx.beginPath()
   ctx.rect(left, top, rect.width - left - right, rect.height - top - bottom)
   ctx.clip()
+}
+
+export const hasPerspectiveClipTransform = (transform = {}) => (
+  Math.abs(Number(transform?.rotationX) || 0) > 0.001
+  || Math.abs(Number(transform?.rotationY) || 0) > 0.001
+)
+
+const getVisibleLocalRect = (rect, transform = {}, transitionStyle = null) => {
+  const cropTop = clamp(Number(transform?.cropTop) || 0, 0, 100)
+  const cropBottom = clamp(Number(transform?.cropBottom) || 0, 0, 100)
+  const cropLeft = clamp(Number(transform?.cropLeft) || 0, 0, 100)
+  const cropRight = clamp(Number(transform?.cropRight) || 0, 0, 100)
+  let left = rect.width * (cropLeft / 100)
+  let right = rect.width - rect.width * (cropRight / 100)
+  let top = rect.height * (cropTop / 100)
+  let bottom = rect.height - rect.height * (cropBottom / 100)
+
+  if (transitionStyle?.clipInset) {
+    const inset = transitionStyle.clipInset
+    left = Math.max(left, rect.width * (Number(inset.left) || 0))
+    right = Math.min(right, rect.width - rect.width * (Number(inset.right) || 0))
+    top = Math.max(top, rect.height * (Number(inset.top) || 0))
+    bottom = Math.min(bottom, rect.height - rect.height * (Number(inset.bottom) || 0))
+  }
+
+  left = clamp(left, 0, rect.width)
+  right = clamp(right, left, rect.width)
+  top = clamp(top, 0, rect.height)
+  bottom = clamp(bottom, top, rect.height)
+
+  return { left, right, top, bottom, width: right - left, height: bottom - top }
+}
+
+const projectClipPoint = (x, y, rect, transform = {}, transitionStyle = null) => {
+  const anchorX = Number.isFinite(Number(transform.anchorX)) ? Number(transform.anchorX) : 50
+  const anchorY = Number.isFinite(Number(transform.anchorY)) ? Number(transform.anchorY) : 50
+  const anchorPxX = rect.width * (anchorX / 100)
+  const anchorPxY = rect.height * (anchorY / 100)
+  const perspective = clamp(Number(transform.perspective) || 1200, 100, 10000)
+  const positionZ = clamp(Number(transform.positionZ) || 0, -20000, perspective - 100)
+  const transitionScale = transitionStyle?.scale || 1
+  const scaleX = ((Number(transform.scaleX) || 100) / 100) * (transform.flipH ? -1 : 1) * transitionScale
+  const scaleY = ((Number(transform.scaleY) || 100) / 100) * (transform.flipV ? -1 : 1) * transitionScale
+  const rotation = degToRad(Number(transform.rotation) || 0)
+  const rotationX = degToRad(clamp(Number(transform.rotationX) || 0, -89, 89))
+  const rotationY = degToRad(clamp(Number(transform.rotationY) || 0, -89, 89))
+
+  let px = (x - anchorPxX) * scaleX
+  let py = (y - anchorPxY) * scaleY
+  let pz = 0
+
+  if (rotationX) {
+    const cos = Math.cos(rotationX)
+    const sin = Math.sin(rotationX)
+    const nextY = py * cos - pz * sin
+    const nextZ = py * sin + pz * cos
+    py = nextY
+    pz = nextZ
+  }
+
+  if (rotationY) {
+    const cos = Math.cos(rotationY)
+    const sin = Math.sin(rotationY)
+    const nextX = px * cos + pz * sin
+    const nextZ = -px * sin + pz * cos
+    px = nextX
+    pz = nextZ
+  }
+
+  if (rotation) {
+    const cos = Math.cos(rotation)
+    const sin = Math.sin(rotation)
+    const nextX = px * cos - py * sin
+    const nextY = px * sin + py * cos
+    px = nextX
+    py = nextY
+  }
+
+  pz += positionZ
+  const projection = clamp(perspective / Math.max(100, perspective - pz), 0.05, 12)
+  const centerX = rect.x + anchorPxX + (Number(transform.positionX) || 0) + (transitionStyle?.translateX || 0) * rect.width
+  const centerY = rect.y + anchorPxY + (Number(transform.positionY) || 0) + (transitionStyle?.translateY || 0) * rect.height
+
+  return {
+    x: centerX + px * projection,
+    y: centerY + py * projection,
+  }
+}
+
+const drawAffineTriangle = (ctx, source, sourceWidth, sourceHeight, s0, s1, s2, d0, d1, d2) => {
+  const overlapPx = 1.25
+  const centroid = {
+    x: (d0.x + d1.x + d2.x) / 3,
+    y: (d0.y + d1.y + d2.y) / 3,
+  }
+  const expand = (point) => {
+    const dx = point.x - centroid.x
+    const dy = point.y - centroid.y
+    const length = Math.hypot(dx, dy) || 1
+    return {
+      x: point.x + (dx / length) * overlapPx,
+      y: point.y + (dy / length) * overlapPx,
+    }
+  }
+  const p0 = expand(d0)
+  const p1 = expand(d1)
+  const p2 = expand(d2)
+  const det = s0.x * (s1.y - s2.y) + s1.x * (s2.y - s0.y) + s2.x * (s0.y - s1.y)
+  if (Math.abs(det) < 0.000001) return
+
+  const a = (p0.x * (s1.y - s2.y) + p1.x * (s2.y - s0.y) + p2.x * (s0.y - s1.y)) / det
+  const b = (p0.y * (s1.y - s2.y) + p1.y * (s2.y - s0.y) + p2.y * (s0.y - s1.y)) / det
+  const c = (p0.x * (s2.x - s1.x) + p1.x * (s0.x - s2.x) + p2.x * (s1.x - s0.x)) / det
+  const d = (p0.y * (s2.x - s1.x) + p1.y * (s0.x - s2.x) + p2.y * (s1.x - s0.x)) / det
+  const e = (p0.x * (s1.x * s2.y - s2.x * s1.y) + p1.x * (s2.x * s0.y - s0.x * s2.y) + p2.x * (s0.x * s1.y - s1.x * s0.y)) / det
+  const f = (p0.y * (s1.x * s2.y - s2.x * s1.y) + p1.y * (s2.x * s0.y - s0.x * s2.y) + p2.y * (s0.x * s1.y - s1.x * s0.y)) / det
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(p0.x, p0.y)
+  ctx.lineTo(p1.x, p1.y)
+  ctx.lineTo(p2.x, p2.y)
+  ctx.closePath()
+  ctx.clip()
+  ctx.setTransform(a, b, c, d, e, f)
+  ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight)
+  ctx.restore()
+}
+
+export const drawPerspectiveClipSource = (ctx, source, rect, transform = {}, transitionStyle = null, options = {}) => {
+  const sourceWidth = options.sourceWidth || rect.width
+  const sourceHeight = options.sourceHeight || rect.height
+  const visible = getVisibleLocalRect(rect, transform, transitionStyle)
+  if (visible.width <= 0.001 || visible.height <= 0.001) return
+
+  const columns = clamp(Math.ceil(visible.width / 48), 8, 40)
+  const rows = clamp(Math.ceil(visible.height / 48), 8, 32)
+  const stepX = visible.width / columns
+  const stepY = visible.height / rows
+  const smoothing = ctx.imageSmoothingEnabled
+  ctx.imageSmoothingEnabled = true
+
+  for (let row = 0; row < rows; row += 1) {
+    const y0 = visible.top + row * stepY
+    const y1 = row === rows - 1 ? visible.bottom : y0 + stepY
+    for (let col = 0; col < columns; col += 1) {
+      const x0 = visible.left + col * stepX
+      const x1 = col === columns - 1 ? visible.right : x0 + stepX
+      const s00 = { x: x0, y: y0 }
+      const s10 = { x: x1, y: y0 }
+      const s11 = { x: x1, y: y1 }
+      const s01 = { x: x0, y: y1 }
+      const d00 = projectClipPoint(x0, y0, rect, transform, transitionStyle)
+      const d10 = projectClipPoint(x1, y0, rect, transform, transitionStyle)
+      const d11 = projectClipPoint(x1, y1, rect, transform, transitionStyle)
+      const d01 = projectClipPoint(x0, y1, rect, transform, transitionStyle)
+
+      drawAffineTriangle(ctx, source, sourceWidth, sourceHeight, s00, s10, s11, d00, d10, d11)
+      drawAffineTriangle(ctx, source, sourceWidth, sourceHeight, s00, s11, s01, d00, d11, d01)
+    }
+  }
+
+  ctx.imageSmoothingEnabled = smoothing
 }
 
 const hasManagedPixelOrVignetteEffect = (clip, clipTime) => {
@@ -608,6 +793,7 @@ const applyTransitionClip = (ctx, rect, transitionStyle) => {
 }
 
 export const drawText = (ctx, rect, clip, textScale = 1, clipTime = null) => {
+  const inheritedAlpha = Number.isFinite(ctx.globalAlpha) ? ctx.globalAlpha : 1
   const textProps = clipTime == null
     ? (clip.textProperties || {})
     : getAnimatedTextProperties(clip, clipTime)
@@ -666,13 +852,13 @@ export const drawText = (ctx, rect, clip, textScale = 1, clipTime = null) => {
     }
     const boxY = baseY - boxHeight / 2
     ctx.fillStyle = textProps.backgroundColor || '#000000'
-    ctx.globalAlpha = clamp(textProps.backgroundOpacity, 0, 1)
+    ctx.globalAlpha = inheritedAlpha * clamp(textProps.backgroundOpacity, 0, 1)
     ctx.fillRect(boxX, boxY, boxWidth, boxHeight)
     ctx.restore()
   }
   
   ctx.fillStyle = textProps.textColor || '#FFFFFF'
-  ctx.globalAlpha = 1
+  ctx.globalAlpha = inheritedAlpha
   
   if (textProps.strokeWidth > 0) {
     ctx.lineWidth = textProps.strokeWidth * scale
@@ -1122,8 +1308,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       const transitionStyle = (isVideoA || isVideoB) ? getTransitionCanvasStyle(transitionInfo, isVideoA) : null
       
       const clipTime = time - clip.startTime
-      const baseClipTransform = getAnimatedTransform(clip, clipTime) || clip.transform || {}
-      const clipTransform = scaleTransformToExport(applyEffectsToTransform(baseClipTransform, clip.effects, clipTime))
+      const resolveClipTransformAtTime = (sampleClipTime) => scaleTransformToExport(
+        applyEffectsToTransform(getAnimatedTransform(clip, sampleClipTime) || clip.transform || {}, clip.effects, sampleClipTime)
+      )
+      const clipTransform = resolveClipTransformAtTime(clipTime)
       const clipAdjustmentSettings = normalizeAdjustmentSettings(
         getAnimatedAdjustmentSettings(clip, clipTime) || clip.adjustments || {}
       )
@@ -1131,12 +1319,47 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       const clipAdjustmentFilter = buildCssFilterFromAdjustments(clipAdjustmentSettings)
       const clipAdjustmentFilterValue = clipAdjustmentFilter !== 'none' ? clipAdjustmentFilter : null
       const usesManagedPixelEffects = hasManagedPixelOrVignetteEffect(clip, clipTime)
-      if (clip.type === 'text') {
-        const rect = getBaseDrawRect(width, height, width, height)
+      const velocityMotionBlur = canUseVelocityMotionBlur()
+        ? getVelocityMotionBlurOptions(clip, clipTime, fps, resolveClipTransformAtTime)
+        : null
+      const motionBlurSamples = velocityMotionBlur
+        ? [{ clipTime, weight: 1 }]
+        : getMotionBlurSamples(clip, clipTime, fps, 'export')
+      const hasMotionBlurSamples = motionBlurSamples.length > 1
+      if (clip.type === 'text' || clip.type === 'shape') {
+        const isShapeClip = clip.type === 'shape'
         const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
         const clipOpacity = (transitionStyle?.opacity ?? 1) * baseOpacity
         const blendMode = clipTransform.blendMode || 'normal'
         const blurPx = transitionStyle?.blur ?? (clipTransform?.blur > 0 ? clipTransform.blur : null)
+        const getTextShapeFrame = (sampleClipTime) => {
+          const animatedShapeProperties = isShapeClip ? getAnimatedShapeProperties(clip, sampleClipTime) : null
+          const shapeClip = isShapeClip ? { ...clip, shapeProperties: animatedShapeProperties || clip.shapeProperties } : clip
+          const rect = isShapeClip
+            ? getShapeCanvasRect(shapeClip.shapeProperties, width, height)
+            : getBaseDrawRect(width, height, width, height)
+          return { shapeClip, rect }
+        }
+        const drawNativeClip = (targetCtx, rect, shapeClip, sampleClipTime) => {
+          if (isShapeClip) {
+            drawShape(targetCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, shapeClip)
+          } else {
+            drawText(targetCtx, rect, clip, textStyleScale, sampleClipTime)
+          }
+        }
+        const drawTextShapeSample = (targetCtx, sample, targetFilter = 'none', alphaScale = 1, compositeOperation = 'source-over') => {
+          const sampleTransform = resolveClipTransformAtTime(sample.clipTime)
+          const { shapeClip, rect } = getTextShapeFrame(sample.clipTime)
+          targetCtx.save()
+          targetCtx.globalAlpha = alphaScale * sample.weight
+          targetCtx.globalCompositeOperation = compositeOperation
+          targetCtx.filter = targetFilter
+          applyClipTransform(targetCtx, rect, sampleTransform, transitionStyle)
+          applyClipCrop(targetCtx, rect, sampleTransform)
+          applyTransitionClip(targetCtx, rect, transitionStyle)
+          drawNativeClip(targetCtx, rect, shapeClip, sample.clipTime)
+          targetCtx.restore()
+        }
 
         if (usesTonalAdjustments) {
           let buffers = maskRenderBuffers.get(clip.id)
@@ -1155,15 +1378,12 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           const { offCanvas, offCtx } = buffers
 
           offCtx.clearRect(0, 0, width, height)
-          offCtx.save()
-          offCtx.globalAlpha = 1
-          offCtx.filter = 'none'
-          offCtx.globalCompositeOperation = 'source-over'
-          applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
-          applyClipCrop(offCtx, rect, clipTransform)
-          applyTransitionClip(offCtx, rect, transitionStyle)
-          drawText(offCtx, rect, clip, textStyleScale, clipTime)
-          offCtx.restore()
+          for (const sample of motionBlurSamples) {
+            drawTextShapeSample(offCtx, sample)
+          }
+          if (velocityMotionBlur) {
+            applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+          }
 
           const processedCanvasForText = applyAdvancedAdjustmentsToCanvas(offCanvas, clipAdjustmentSettings, blurPx)
 
@@ -1193,16 +1413,16 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           }
           const { offCanvas, offCtx } = buffers
           offCtx.clearRect(0, 0, width, height)
-          offCtx.save()
           const filterPartsInner = []
           if (clipAdjustmentFilterValue) filterPartsInner.push(clipAdjustmentFilterValue)
           if (blurPx != null) filterPartsInner.push(`blur(${blurPx}px)`)
-          offCtx.filter = filterPartsInner.length > 0 ? filterPartsInner.join(' ') : 'none'
-          applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
-          applyClipCrop(offCtx, rect, clipTransform)
-          applyTransitionClip(offCtx, rect, transitionStyle)
-          drawText(offCtx, rect, clip, textStyleScale, clipTime)
-          offCtx.restore()
+          const sampleFilter = filterPartsInner.length > 0 ? filterPartsInner.join(' ') : 'none'
+          for (const sample of motionBlurSamples) {
+            drawTextShapeSample(offCtx, sample, sampleFilter)
+          }
+          if (velocityMotionBlur) {
+            applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+          }
 
           applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
 
@@ -1215,18 +1435,38 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           continue
         }
 
-        ctx.save()
-        ctx.globalAlpha = clipOpacity
-        ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
         const filterParts = []
         if (clipAdjustmentFilterValue) filterParts.push(clipAdjustmentFilterValue)
         if (blurPx != null) filterParts.push(`blur(${blurPx}px)`)
-        ctx.filter = filterParts.length > 0 ? filterParts.join(' ') : 'none'
-        applyClipTransform(ctx, rect, clipTransform, transitionStyle)
-        applyClipCrop(ctx, rect, clipTransform)
-        applyTransitionClip(ctx, rect, transitionStyle)
-        drawText(ctx, rect, clip, textStyleScale, clipTime)
-        ctx.restore()
+        const sampleFilter = filterParts.length > 0 ? filterParts.join(' ') : 'none'
+        if (velocityMotionBlur) {
+          let buffers = maskRenderBuffers.get(clip.id)
+          if (!buffers) {
+            const offCanvas = document.createElement('canvas')
+            offCanvas.width = width
+            offCanvas.height = height
+            const offCtx = offCanvas.getContext('2d')
+            buffers = { offCanvas, offCtx }
+            maskRenderBuffers.set(clip.id, buffers)
+          }
+          const { offCanvas, offCtx } = buffers
+          offCtx.clearRect(0, 0, width, height)
+          for (const sample of motionBlurSamples) {
+            drawTextShapeSample(offCtx, sample, sampleFilter)
+          }
+          applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+
+          ctx.save()
+          ctx.globalAlpha = clipOpacity
+          ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
+          ctx.filter = 'none'
+          ctx.drawImage(offCanvas, 0, 0)
+          ctx.restore()
+          continue
+        }
+        for (const sample of motionBlurSamples) {
+          drawTextShapeSample(ctx, sample, sampleFilter, clipOpacity, blendMode === 'normal' ? 'source-over' : blendMode)
+        }
         continue
       }
       const asset = assetsState.getAssetById(clip.assetId)
@@ -1278,7 +1518,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const assetFps = Number(asset?.settings?.fps)
         sourceFps = Number.isFinite(assetFps) && assetFps > 0 ? assetFps : null
 
-        shouldBlend = !!(sourceFps && sourceFps < fps - 0.5 && !maskEffect)
+        shouldBlend = !!(sourceFps && sourceFps < fps - 0.5 && !maskEffect && !hasMotionBlurSamples && !velocityMotionBlur)
         if (!shouldBlend) {
           try {
             await seekVideo(video, clampedSourceTime, fastSeek)
@@ -1307,6 +1547,18 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       const clipOpacity = (transitionStyle?.opacity ?? 1) * baseOpacity
       const blurPx = transitionStyle?.blur ?? (clipTransform?.blur > 0 ? clipTransform.blur : null)
       const blendMode = clipTransform?.blendMode || 'normal'
+      const drawMediaTransformSample = (targetCtx, sample, targetFilter = 'none', alphaScale = 1, compositeOperation = 'source-over', source = drawSource) => {
+        const sampleTransform = resolveClipTransformAtTime(sample.clipTime)
+        targetCtx.save()
+        targetCtx.globalAlpha = alphaScale * sample.weight
+        targetCtx.globalCompositeOperation = compositeOperation
+        targetCtx.filter = targetFilter
+        applyClipTransform(targetCtx, rect, sampleTransform, transitionStyle)
+        applyClipCrop(targetCtx, rect, sampleTransform)
+        applyTransitionClip(targetCtx, rect, transitionStyle)
+        targetCtx.drawImage(source, 0, 0, rect.width, rect.height)
+        targetCtx.restore()
+      }
 
       if (usesTonalAdjustments) {
         let buffers = maskRenderBuffers.get(clip.id)
@@ -1329,11 +1581,17 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         offCtx.globalAlpha = 1
         offCtx.filter = 'none'
         offCtx.globalCompositeOperation = 'source-over'
-        applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
-        applyClipCrop(offCtx, rect, clipTransform)
-        applyTransitionClip(offCtx, rect, transitionStyle)
+        if (hasMotionBlurSamples) {
+          for (const sample of motionBlurSamples) {
+            drawMediaTransformSample(offCtx, sample)
+          }
+        } else {
+          applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
+          applyClipCrop(offCtx, rect, clipTransform)
+          applyTransitionClip(offCtx, rect, transitionStyle)
+        }
 
-        if (shouldBlend && sourceTime !== null) {
+        if (!hasMotionBlurSamples && shouldBlend && sourceTime !== null) {
           const sourceFrameDuration = 1 / sourceFps
           const baseIndex = Math.floor(sourceTime / sourceFrameDuration)
           const baseTime = baseIndex * sourceFrameDuration
@@ -1359,10 +1617,13 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             offCtx.restore()
             continue
           }
-        } else {
+        } else if (!hasMotionBlurSamples) {
           offCtx.drawImage(drawSource, 0, 0, rect.width, rect.height)
         }
         offCtx.restore()
+        if (velocityMotionBlur) {
+          applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+        }
 
         let advancedOutputCanvas = offCanvas
         if (maskEffect) {
@@ -1429,12 +1690,19 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const filterPartsInner = []
         if (clipAdjustmentFilterValue) filterPartsInner.push(clipAdjustmentFilterValue)
         if (blurPx != null) filterPartsInner.push(`blur(${blurPx}px)`)
-        offCtx.filter = filterPartsInner.length > 0 ? filterPartsInner.join(' ') : 'none'
-        applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
-        applyClipCrop(offCtx, rect, clipTransform)
-        applyTransitionClip(offCtx, rect, transitionStyle)
+        const sampleFilter = filterPartsInner.length > 0 ? filterPartsInner.join(' ') : 'none'
+        offCtx.filter = sampleFilter
+        if (hasMotionBlurSamples) {
+          for (const sample of motionBlurSamples) {
+            drawMediaTransformSample(offCtx, sample, sampleFilter)
+          }
+        } else {
+          applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
+          applyClipCrop(offCtx, rect, clipTransform)
+          applyTransitionClip(offCtx, rect, transitionStyle)
+        }
 
-        if (shouldBlend && sourceTime !== null) {
+        if (!hasMotionBlurSamples && shouldBlend && sourceTime !== null) {
           const sourceFrameDuration = 1 / sourceFps
           const baseIndex = Math.floor(sourceTime / sourceFrameDuration)
           const baseTime = baseIndex * sourceFrameDuration
@@ -1458,10 +1726,13 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             offCtx.restore()
             continue
           }
-        } else {
+        } else if (!hasMotionBlurSamples) {
           offCtx.drawImage(drawSource, 0, 0, rect.width, rect.height)
         }
         offCtx.restore()
+        if (velocityMotionBlur) {
+          applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+        }
 
         applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
 
@@ -1479,9 +1750,37 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       const filterParts = []
       if (clipAdjustmentFilterValue) filterParts.push(clipAdjustmentFilterValue)
       if (blurPx != null) filterParts.push(`blur(${blurPx}px)`)
-      ctx.filter = filterParts.length > 0 ? filterParts.join(' ') : 'none'
+      const sampleFilter = filterParts.length > 0 ? filterParts.join(' ') : 'none'
+      ctx.filter = sampleFilter
       // Blend mode (CSS mix-blend-mode → canvas globalCompositeOperation)
       ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
+
+      if (hasMotionBlurSamples && !maskEffect && !shouldBlend) {
+        for (const sample of motionBlurSamples) {
+          drawMediaTransformSample(ctx, sample, sampleFilter, clipOpacity, blendMode === 'normal' ? 'source-over' : blendMode)
+        }
+        ctx.restore()
+        continue
+      }
+
+      if (velocityMotionBlur && !maskEffect && !shouldBlend) {
+        let buffers = maskRenderBuffers.get(clip.id)
+        if (!buffers) {
+          const offCanvas = document.createElement('canvas')
+          offCanvas.width = width
+          offCanvas.height = height
+          const offCtx = offCanvas.getContext('2d')
+          buffers = { offCanvas, offCtx }
+          maskRenderBuffers.set(clip.id, buffers)
+        }
+        const { offCanvas, offCtx } = buffers
+        offCtx.clearRect(0, 0, width, height)
+        drawMediaTransformSample(offCtx, { clipTime, weight: 1 }, sampleFilter)
+        applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+        ctx.drawImage(offCanvas, 0, 0)
+        ctx.restore()
+        continue
+      }
 
       applyClipTransform(ctx, rect, clipTransform, transitionStyle)
       applyClipCrop(ctx, rect, clipTransform)
@@ -1572,6 +1871,9 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           }
           
           offCtx.putImageData(frameData, 0, 0)
+          if (velocityMotionBlur) {
+            applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+          }
 
           if (usesManagedPixelEffects) {
             applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)

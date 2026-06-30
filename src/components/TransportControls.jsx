@@ -7,6 +7,8 @@ import TimelineSwitcher from './TimelineSwitcher'
 import { isTextEditingElement } from '../utils/keyboardFocus'
 import { formatTimecode, getSafeTimelineFps, stepTimeByFrames } from '../utils/timelineFrames'
 
+const SPACE_MODIFIER_USED_EVENT = 'comfystudio-space-modifier-used'
+
 // Playback mode options
 const PLAYBACK_MODES = [
   { id: 'normal', label: 'Normal', description: 'Play once and stop', icon: null },
@@ -277,15 +279,23 @@ function TransportControls() {
         spaceUsedAsModifierRef.current = true
       }
     }
+
+    const handleSpaceModifierUsed = () => {
+      if (pendingSpaceToggleRef.current) {
+        spaceUsedAsModifierRef.current = true
+      }
+    }
     
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('keyup', handleKeyUp)
     window.addEventListener('mousedown', handleMouseDown)
+    window.addEventListener(SPACE_MODIFIER_USED_EVENT, handleSpaceModifierUsed)
     
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('keyup', handleKeyUp)
       window.removeEventListener('mousedown', handleMouseDown)
+      window.removeEventListener(SPACE_MODIFIER_USED_EVENT, handleSpaceModifierUsed)
     }
   }, [isKHeld, playDisabled, isPlaying, togglePlay, shuttleReverse, shuttlePause, shuttleForward, shuttleSlow, setInPoint, setOutPoint, clearInOutPoints, frameBack, frameForward])
 

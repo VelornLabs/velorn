@@ -3271,7 +3271,7 @@ export default function FlowAIWorkspace({ onOpenWorkflowSetup }) {
                       {selectedNode.data.workflowId === 'wan22-i2v' && (
                         <InspectorRow label="WAN Quality Preset">
                           <select
-                            value={selectedNode.data.wanQualityPreset || 'face-lock'}
+                            value={selectedNode.data.wanQualityPreset || 'balanced'}
                             onChange={(event) => updateNodeData(selectedNode.id, { wanQualityPreset: event.target.value })}
                             className="w-full rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-sm text-sf-text-primary outline-none"
                           >

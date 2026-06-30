@@ -20,6 +20,64 @@ import {
 import { generateMissingProxiesForAllVideos, hasUsableProxy, isProxyableVideoAsset } from '../services/proxyCache'
 import { importAsset } from '../services/fileSystem'
 import { getGlslPreviewQualityScale } from '../utils/glslEffects'
+import { getShapeCanvasRect } from '../utils/shapes'
+
+const SPACE_MODIFIER_USED_EVENT = 'comfystudio-space-modifier-used'
+
+function notifySpaceModifierUsed() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(SPACE_MODIFIER_USED_EVENT))
+}
+
+function firstPositiveMediaNumber(...values) {
+  for (const value of values) {
+    const number = Number(value)
+    if (Number.isFinite(number) && number > 0) return number
+  }
+  return null
+}
+
+function getMediaSourceDimensions(asset, clip) {
+  const width = firstPositiveMediaNumber(
+    asset?.settings?.width,
+    asset?.width,
+    asset?.metadata?.width,
+    asset?.mediaInfo?.width,
+    clip?.settings?.width,
+    clip?.width,
+    clip?.sourceWidth
+  )
+  const height = firstPositiveMediaNumber(
+    asset?.settings?.height,
+    asset?.height,
+    asset?.metadata?.height,
+    asset?.mediaInfo?.height,
+    clip?.settings?.height,
+    clip?.height,
+    clip?.sourceHeight
+  )
+  return { width, height }
+}
+
+function getPreviewBaseDrawRect(assetWidth, assetHeight, canvasWidth, canvasHeight) {
+  if (!assetWidth || !assetHeight) {
+    return {
+      width: canvasWidth,
+      height: canvasHeight,
+      x: 0,
+      y: 0,
+    }
+  }
+  const scale = Math.min(canvasWidth / assetWidth, canvasHeight / assetHeight)
+  const width = assetWidth * scale
+  const height = assetHeight * scale
+  return {
+    width,
+    height,
+    x: (canvasWidth - width) / 2,
+    y: (canvasHeight - height) / 2,
+  }
+}
 
 /**
  * MaskPreview - Component for previewing mask assets with frame-by-frame playback
@@ -327,11 +385,12 @@ function PreviewPanel() {
     // Find the full clip object from the store to get transform
     const fullClip = clips.find(c => c.id === clip.id)
     return fullClip?.transform || {
-      positionX: 0, positionY: 0,
+      positionX: 0, positionY: 0, positionZ: 0,
       scaleX: 100, scaleY: 100, scaleLinked: true,
-      rotation: 0, anchorX: 50, anchorY: 50, opacity: 100,
+      rotation: 0, rotationX: 0, rotationY: 0, perspective: 1200, anchorX: 50, anchorY: 50, opacity: 100,
       flipH: false, flipV: false,
       cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0,
+      motionBlurEnabled: false, motionBlurMode: 'auto', motionBlurSamples: 8, motionBlurShutter: 180,
       blur: 0,
     }
   }
@@ -341,12 +400,20 @@ function PreviewPanel() {
     if (!clipTransform) return {}
     
     const {
-      positionX, positionY,
-      scaleX, scaleY,
-      rotation,
-      anchorX, anchorY,
-      opacity,
-      flipH, flipV,
+      positionX = 0,
+      positionY = 0,
+      positionZ = 0,
+      scaleX = 100,
+      scaleY = 100,
+      rotation = 0,
+      rotationX = 0,
+      rotationY = 0,
+      perspective = 1200,
+      anchorX = 50,
+      anchorY = 50,
+      opacity = 100,
+      flipH = false,
+      flipV = false,
       cropTop, cropBottom, cropLeft, cropRight,
       blendMode,
       blur = 0,
@@ -367,8 +434,15 @@ function PreviewPanel() {
     // Position (translate)
     const scaledPositionX = positionX * previewScaleX
     const scaledPositionY = positionY * previewScaleY
-    if (scaledPositionX !== 0 || scaledPositionY !== 0) {
-      transforms.push(`translate(${scaledPositionX}px, ${scaledPositionY}px)`)
+    const scaledPositionZ = positionZ * previewScaleUniform
+    const safePerspective = Math.max(100, Math.min(10000, Number(perspective) || 1200) * previewScaleUniform)
+    const has3DTransform = scaledPositionZ !== 0 || rotationX !== 0 || rotationY !== 0
+    if (has3DTransform) {
+      transforms.push(`perspective(${safePerspective}px)`)
+    }
+
+    if (scaledPositionX !== 0 || scaledPositionY !== 0 || scaledPositionZ !== 0) {
+      transforms.push(`translate3d(${scaledPositionX}px, ${scaledPositionY}px, ${scaledPositionZ}px)`)
     }
     
     // Scale (with flip)
@@ -380,7 +454,15 @@ function PreviewPanel() {
     
     // Rotation
     if (rotation !== 0) {
-      transforms.push(`rotate(${rotation}deg)`)
+      transforms.push(`rotateZ(${rotation}deg)`)
+    }
+
+    if (rotationX !== 0) {
+      transforms.push(`rotateX(${rotationX}deg)`)
+    }
+
+    if (rotationY !== 0) {
+      transforms.push(`rotateY(${rotationY}deg)`)
     }
     
     // Build style object
@@ -388,6 +470,10 @@ function PreviewPanel() {
     
     if (transforms.length > 0) {
       style.transform = transforms.join(' ')
+      if (has3DTransform) {
+        style.transformStyle = 'preserve-3d'
+        style.backfaceVisibility = 'visible'
+      }
     }
     
     // Transform origin (anchor point)
@@ -433,6 +519,8 @@ function PreviewPanel() {
   const [isZooming, setIsZooming] = useState(false)
   const [isSpaceHeld, setIsSpaceHeld] = useState(false)
   const [isCtrlHeld, setIsCtrlHeld] = useState(false)
+  const spaceHeldRef = useRef(false)
+  const ctrlHeldRef = useRef(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [zoomStart, setZoomStart] = useState(100)
   const [showZoomDropdown, setShowZoomDropdown] = useState(false)
@@ -887,9 +975,14 @@ function PreviewPanel() {
     if (!selectedId) return null
     const activeEntry = activeLayerClipById.get(selectedId)
     if (!activeEntry) return null
-    if (!['video', 'image', 'text'].includes(activeEntry.clip?.type)) return null
+    if (!['video', 'image', 'text', 'shape'].includes(activeEntry.clip?.type)) return null
     return clips.find(c => c.id === selectedId) || activeEntry.clip
   }, [previewMode, selectedClipIds, activeLayerClipById, clips])
+
+  const selectedPreviewAsset = useMemo(() => {
+    if (!selectedPreviewClip?.assetId) return null
+    return assets.find(asset => asset.id === selectedPreviewClip.assetId) || null
+  }, [assets, selectedPreviewClip?.assetId])
 
   const selectedPreviewClipId = selectedPreviewClip?.id || null
   const selectedPreviewClipStartTime = selectedPreviewClip?.startTime || 0
@@ -927,7 +1020,7 @@ function PreviewPanel() {
       }
     }
 
-    if (selectedPreviewScaleLinked) {
+    if (selectedPreviewScaleLinked && nextUpdates.scaleLinked !== false) {
       if ('scaleX' in nextUpdates && !('scaleY' in nextUpdates)) {
         nextUpdates.scaleY = nextUpdates.scaleX
       } else if ('scaleY' in nextUpdates && !('scaleX' in nextUpdates)) {
@@ -1333,20 +1426,24 @@ function PreviewPanel() {
       
       if (e.code === 'Space' && !e.repeat) {
         e.preventDefault()
+        spaceHeldRef.current = true
         setIsSpaceHeld(true)
       }
       if (e.key === 'Control') {
+        ctrlHeldRef.current = true
         setIsCtrlHeld(true)
       }
     }
     
     const handleKeyUp = (e) => {
       if (e.code === 'Space') {
+        spaceHeldRef.current = false
         setIsSpaceHeld(false)
         setIsPanning(false)
         setIsZooming(false)
       }
       if (e.key === 'Control') {
+        ctrlHeldRef.current = false
         setIsCtrlHeld(false)
         setIsZooming(false)
       }
@@ -1363,15 +1460,19 @@ function PreviewPanel() {
   
   // Handle mouse events for panning and zooming
   const handleMouseDown = useCallback((e) => {
-    if (isSpaceHeld && isCtrlHeld) {
+    const spaceHeld = isSpaceHeld || spaceHeldRef.current
+    const ctrlHeld = isCtrlHeld || ctrlHeldRef.current
+    if (spaceHeld && ctrlHeld) {
       // Start zooming with mouse drag
       e.preventDefault()
+      notifySpaceModifierUsed()
       setIsZooming(true)
       setDragStart({ x: e.clientX, y: e.clientY })
       setZoomStart(zoom === 'fit' ? 100 : zoom)
-    } else if (isSpaceHeld) {
+    } else if (spaceHeld) {
       // Start panning
       e.preventDefault()
+      notifySpaceModifierUsed()
       setIsPanning(true)
       setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y })
     }
@@ -1686,6 +1787,38 @@ function PreviewPanel() {
       uniform: Math.min(x, y),
     }
   }, [timelineWidth, timelineHeight, videoDimensions?.width, videoDimensions?.height])
+
+  const selectedPreviewFrameRect = useMemo(() => {
+    if (!selectedPreviewClip || !['image', 'video', 'shape'].includes(selectedPreviewClip.type)) return null
+
+    if (selectedPreviewClip.type === 'shape') {
+      const rect = getShapeCanvasRect(selectedPreviewClip.shapeProperties, timelineWidth, timelineHeight)
+      return {
+        x: rect.x * previewScale.x,
+        y: rect.y * previewScale.y,
+        width: rect.width * previewScale.x,
+        height: rect.height * previewScale.y,
+      }
+    }
+
+    const { width: sourceWidth, height: sourceHeight } = getMediaSourceDimensions(selectedPreviewAsset, selectedPreviewClip)
+    if (!sourceWidth || !sourceHeight) return null
+
+    const rect = getPreviewBaseDrawRect(sourceWidth, sourceHeight, timelineWidth, timelineHeight)
+    return {
+      x: rect.x * previewScale.x,
+      y: rect.y * previewScale.y,
+      width: rect.width * previewScale.x,
+      height: rect.height * previewScale.y,
+    }
+  }, [
+    previewScale.x,
+    previewScale.y,
+    selectedPreviewAsset,
+    selectedPreviewClip,
+    timelineHeight,
+    timelineWidth,
+  ])
   
   // Calculate fit-to-view dimensions for the current viewport. Numeric zoom
   // levels are derived from project resolution instead of this measured box.
@@ -2049,15 +2182,11 @@ function PreviewPanel() {
               } ${showPreviewTransformControls ? 'text-sf-accent' : 'text-sf-text-muted'}`}
               title={
                 canShowPreviewTransformControls
-                  ? (showPreviewTransformControls ? 'Hide transform controls' : 'Show transform controls')
+                  ? (showPreviewTransformControls ? 'Hide transform handles' : 'Show transform handles')
                   : 'Select an active visual clip to toggle transform controls'
               }
             >
-              {showPreviewTransformControls ? (
-                <EyeOff className="w-4 h-4" />
-              ) : (
-                <Eye className="w-4 h-4" />
-              )}
+              <Crosshair className="w-4 h-4" />
             </button>
           )}
           <button 
@@ -2539,6 +2668,7 @@ function PreviewPanel() {
                 clip={selectedPreviewClip}
                 transform={selectedPreviewTransform}
                 buildVideoTransform={buildVideoTransform}
+                frameRect={selectedPreviewFrameRect}
                 previewScale={previewScale}
                 zoomScale={1}
                 disabled={isSpaceHeld || isPanning || isZooming}
@@ -2937,12 +3067,8 @@ function PreviewPanel() {
                 onClick={() => handleContextAction('toggle-transform-controls')}
                 className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors"
               >
-                {showPreviewTransformControls ? (
-                  <EyeOff className="w-3.5 h-3.5" />
-                ) : (
-                  <Eye className="w-3.5 h-3.5" />
-                )}
-                <span>{showPreviewTransformControls ? 'Hide Transform Controls' : 'Show Transform Controls'}</span>
+                <Crosshair className="w-3.5 h-3.5" />
+                <span>{showPreviewTransformControls ? 'Hide Transform Handles' : 'Show Transform Handles'}</span>
               </button>
               
               <div className="h-px bg-sf-dark-600 my-1" />

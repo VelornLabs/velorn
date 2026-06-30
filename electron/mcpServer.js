@@ -4,6 +4,177 @@ const path = require('path')
 
 const DEFAULT_MCP_PORT = 19790
 const MCP_PROTOCOL_VERSION = '2024-11-05'
+const MCP_TIMELINE_BATCH_MAX_VARIATIONS_PER_WORKFLOW = 8
+const MCP_TIMELINE_BATCH_MAX_TOTAL_JOBS = 24
+const MCP_TIMELINE_BATCH_AUTO_TARGET_AREA = 1280 * 720
+const MCP_TIMELINE_BATCH_AUTO_MAX_EDGE = 1280
+const MCP_TIMELINE_BATCH_AUTO_DIMENSION_MULTIPLE = 16
+const MCP_PROMPT_BATCH_MAX_VARIATIONS_PER_WORKFLOW = 8
+const MCP_PROMPT_BATCH_MAX_TOTAL_JOBS = 24
+const MCP_ASSET_BATCH_MAX_ITEMS = 24
+const MCP_TIMELINE_BATCH_WORKFLOW_ALIASES = new Map([
+  ['ltx23i2v', 'ltx23-i2v'],
+  ['ltx23', 'ltx23-i2v'],
+  ['ltx', 'ltx23-i2v'],
+  ['ltxvideo', 'ltx23-i2v'],
+  ['wan22i2v', 'wan22-i2v'],
+  ['wan22', 'wan22-i2v'],
+  ['wan2', 'wan22-i2v'],
+  ['wan', 'wan22-i2v'],
+  ['wanvideo', 'wan22-i2v'],
+])
+const MCP_TIMELINE_BATCH_SUPPORTED_WORKFLOWS = new Set(['ltx23-i2v', 'wan22-i2v'])
+const MCP_PROMPT_BATCH_WORKFLOW_ALIASES = new Map([
+  ['zimage', 'z-image-turbo'],
+  ['zimageturbo', 'z-image-turbo'],
+  ['zturbo', 'z-image-turbo'],
+  ['z', 'z-image-turbo'],
+  ['longcat', 'longcat-text-to-image'],
+  ['longcatt2i', 'longcat-text-to-image'],
+  ['longcatimage', 'longcat-text-to-image'],
+  ['ernie', 'ernie-image-turbo'],
+  ['ernieturbo', 'ernie-image-turbo'],
+  ['ernieimage', 'ernie-image-turbo'],
+  ['flux2', 'flux2-text-to-image'],
+  ['flux', 'flux2-text-to-image'],
+  ['gptimage2', 'gpt-image-2-t2i'],
+  ['gpt2image', 'gpt-image-2-t2i'],
+  ['gptimage', 'gpt-image-2-t2i'],
+  ['grokimage', 'grok-text-to-image'],
+  ['grokt2i', 'grok-text-to-image'],
+  ['ltx23t2v', 'ltx23-t2v'],
+  ['ltx23', 'ltx23-t2v'],
+  ['ltxt2v', 'ltx23-t2v'],
+  ['ltx', 'ltx23-t2v'],
+  ['wan22t2v', 'wan22-t2v'],
+  ['wan22', 'wan22-t2v'],
+  ['wan2', 'wan22-t2v'],
+  ['wan', 'wan22-t2v'],
+  ['seedance2t2v', 'seedance2-t2v'],
+  ['seedancet2v', 'seedance2-t2v'],
+  ['seedance', 'seedance2-t2v'],
+])
+const MCP_PROMPT_BATCH_SUPPORTED_WORKFLOWS = new Map([
+  ['z-image-turbo', {
+    label: 'Z Image Turbo',
+    category: 'image',
+    outputType: 'image',
+    defaultResolution: { width: 1280, height: 720 },
+  }],
+  ['longcat-text-to-image', {
+    label: 'LongCat Text to Image',
+    category: 'image',
+    outputType: 'image',
+    defaultResolution: { width: 1280, height: 720 },
+  }],
+  ['ernie-image-turbo', {
+    label: 'Ernie Image Turbo',
+    category: 'image',
+    outputType: 'image',
+    defaultResolution: { width: 1280, height: 720 },
+  }],
+  ['flux2-text-to-image', {
+    label: 'Flux 2 Text to Image',
+    category: 'image',
+    outputType: 'image',
+    defaultResolution: { width: 1280, height: 720 },
+  }],
+  ['gpt-image-2-t2i', {
+    label: 'GPT Image 2',
+    category: 'image',
+    outputType: 'image',
+    defaultResolution: { width: 1024, height: 1024 },
+  }],
+  ['grok-text-to-image', {
+    label: 'Grok Text to Image',
+    category: 'image',
+    outputType: 'image',
+    defaultResolution: { width: 1024, height: 1024 },
+  }],
+  ['ltx23-t2v', {
+    label: 'LTX 2.3 Text to Video',
+    category: 'video',
+    outputType: 'video',
+    defaultDurationSeconds: 5,
+    defaultFps: 24,
+    defaultResolution: { width: 1280, height: 720 },
+  }],
+  ['wan22-t2v', {
+    label: 'WAN 2.2 Text to Video',
+    category: 'video',
+    outputType: 'video',
+    defaultDurationSeconds: 5,
+    defaultFps: 24,
+    defaultResolution: { width: 1280, height: 720 },
+  }],
+  ['seedance2-t2v', {
+    label: 'Seedance 2.0 Text to Video',
+    category: 'video',
+    outputType: 'video',
+    defaultDurationSeconds: 5,
+    defaultFps: 24,
+    defaultResolution: { width: 1280, height: 720 },
+  }],
+])
+const MCP_VISUAL_KEYFRAME_CLIP_TYPES = new Set(['video', 'image', 'text', 'shape', 'adjustment', 'caption', 'captions'])
+const MCP_CLIP_KEYFRAME_NUMBER_FIELDS = {
+  positionX: [0, -20000, 20000],
+  positionY: [0, -20000, 20000],
+  positionZ: [0, -20000, 20000],
+  scaleX: [100, 1, 2000],
+  scaleY: [100, 1, 2000],
+  rotation: [0, -3600, 3600],
+  rotationX: [0, -89, 89],
+  rotationY: [0, -89, 89],
+  perspective: [1200, 100, 10000],
+  anchorX: [50, -1000, 1000],
+  anchorY: [50, -1000, 1000],
+  opacity: [100, 0, 100],
+  blur: [0, 0, 50],
+  cropTop: [0, 0, 100],
+  cropBottom: [0, 0, 100],
+  cropLeft: [0, 0, 100],
+  cropRight: [0, 0, 100],
+  width: [640, 1, 20000],
+  height: [640, 1, 20000],
+  fillOpacity: [100, 0, 100],
+  gradientAngle: [0, -3600, 3600],
+  gradientCenterX: [50, -100, 200],
+  gradientCenterY: [50, -100, 200],
+  gradientRadius: [100, 1, 400],
+  strokeWidth: [0, 0, 2000],
+  strokeOpacity: [100, 0, 100],
+  cornerRadius: [24, 0, 10000],
+  sides: [6, 3, 64],
+  brightness: [0, -100, 100],
+  contrast: [0, -100, 100],
+  saturation: [0, -100, 100],
+  gain: [0, -100, 100],
+  gamma: [0, -100, 100],
+  offset: [0, -100, 100],
+  hue: [0, -180, 180],
+}
+for (const group of ['shadows', 'midtones', 'highlights']) {
+  for (const property of ['brightness', 'contrast', 'saturation', 'gain', 'gamma', 'offset']) {
+    MCP_CLIP_KEYFRAME_NUMBER_FIELDS[`${group}.${property}`] = [0, -100, 100]
+  }
+  MCP_CLIP_KEYFRAME_NUMBER_FIELDS[`${group}.hue`] = [0, -180, 180]
+}
+const MCP_CLIP_KEYFRAME_PROPERTIES = Object.keys(MCP_CLIP_KEYFRAME_NUMBER_FIELDS)
+const MCP_CLIP_KEYFRAME_PROPERTY_SET = new Set(MCP_CLIP_KEYFRAME_PROPERTIES)
+const MCP_SHAPE_KEYFRAME_PROPERTY_SET = new Set([
+  'width',
+  'height',
+  'fillOpacity',
+  'gradientAngle',
+  'gradientCenterX',
+  'gradientCenterY',
+  'gradientRadius',
+  'strokeWidth',
+  'strokeOpacity',
+  'cornerRadius',
+  'sides',
+])
 
 function safeJsonStringify(value, spacing = 2) {
   try {
@@ -41,6 +212,13 @@ function clampLimit(value, fallback = 100, max = 500) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback
   return Math.min(max, Math.max(1, Math.floor(parsed)))
+}
+
+function normalizeLocalPort(value) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed)) return null
+  if (parsed < 1 || parsed > 65535) return null
+  return parsed
 }
 
 function hasSnapshot(snapshot) {
@@ -194,6 +372,74 @@ function clipRef(clip) {
   }
 }
 
+function clampMcpKeyframeNumber(property, value) {
+  const [, min = -20000, max = 20000] = MCP_CLIP_KEYFRAME_NUMBER_FIELDS[property] || []
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid keyframe value for ${property}.`)
+  }
+  const clamped = Math.min(max, Math.max(min, parsed))
+  return property === 'sides' ? Math.round(clamped) : clamped
+}
+
+function normalizeMcpClipKeyframes(args = {}, clip = null) {
+  const duration = Math.max(0, getClipDuration(clip))
+  const rawKeyframes = Array.isArray(args.keyframes) ? args.keyframes : []
+  return rawKeyframes.map((entry) => {
+    const property = String(entry?.property || '').trim()
+    if (!MCP_CLIP_KEYFRAME_PROPERTY_SET.has(property)) {
+      throw new Error(`Unsupported clip keyframe property "${property}".`)
+    }
+    if (MCP_SHAPE_KEYFRAME_PROPERTY_SET.has(property) && String(clip?.type || '').toLowerCase() !== 'shape') {
+      throw new Error(`Shape keyframe property "${property}" can only be used on shape clips.`)
+    }
+    const rawTime = Number(entry?.timeSeconds ?? entry?.time)
+    if (!Number.isFinite(rawTime) || rawTime < 0) {
+      throw new Error(`Invalid keyframe time for ${property}.`)
+    }
+    const timeSeconds = duration > 0 ? Math.min(duration, rawTime) : rawTime
+    return {
+      property,
+      timeSeconds: roundTime(timeSeconds),
+      value: clampMcpKeyframeNumber(property, entry?.value),
+      easing: String(entry?.easing || 'easeInOut').slice(0, 120),
+    }
+  })
+}
+
+function normalizeMcpClipKeyframeClearProperties(clearKeyframes, clip = null) {
+  if (!clearKeyframes) return []
+  const isShapeClip = String(clip?.type || '').toLowerCase() === 'shape'
+  const allPropertiesForClip = isShapeClip
+    ? MCP_CLIP_KEYFRAME_PROPERTIES
+    : MCP_CLIP_KEYFRAME_PROPERTIES.filter((property) => !MCP_SHAPE_KEYFRAME_PROPERTY_SET.has(property))
+  const requested = clearKeyframes === true || clearKeyframes === 'all'
+    ? allPropertiesForClip
+    : Array.isArray(clearKeyframes)
+      ? clearKeyframes.map((property) => String(property || '').trim()).filter(Boolean)
+      : []
+  for (const property of requested) {
+    if (!MCP_CLIP_KEYFRAME_PROPERTY_SET.has(property)) {
+      throw new Error(`Unsupported clip keyframe property "${property}".`)
+    }
+    if (MCP_SHAPE_KEYFRAME_PROPERTY_SET.has(property) && clip && String(clip.type || '').toLowerCase() !== 'shape') {
+      throw new Error(`Shape keyframe property "${property}" can only be used on shape clips.`)
+    }
+  }
+  return [...new Set(requested)]
+}
+
+function summarizeClipKeyframeTarget(clip) {
+  return {
+    ...clipRef(clip),
+    enabled: clip?.enabled !== false,
+    transform: clip?.transform || null,
+    textProperties: clip?.type === 'text' ? (clip?.textProperties || null) : undefined,
+    shapeProperties: clip?.type === 'shape' ? (clip?.shapeProperties || null) : undefined,
+    keyframes: clip?.keyframes || {},
+  }
+}
+
 function getAssetById(snapshot, assetId) {
   if (!assetId) return null
   return (snapshot?.assets || []).find((asset) => asset?.id === assetId) || null
@@ -302,9 +548,13 @@ function hasNonDefaultTransform(transform = {}) {
   const checks = [
     Math.abs(toFiniteNumber(transform.positionX, 0)) > 0.001,
     Math.abs(toFiniteNumber(transform.positionY, 0)) > 0.001,
+    Math.abs(toFiniteNumber(transform.positionZ, 0)) > 0.001,
     Math.abs(toFiniteNumber(transform.scaleX, 100) - 100) > 0.001,
     Math.abs(toFiniteNumber(transform.scaleY, 100) - 100) > 0.001,
     Math.abs(toFiniteNumber(transform.rotation, 0)) > 0.001,
+    Math.abs(toFiniteNumber(transform.rotationX, 0)) > 0.001,
+    Math.abs(toFiniteNumber(transform.rotationY, 0)) > 0.001,
+    Math.abs(toFiniteNumber(transform.perspective, 1200) - 1200) > 0.001,
     Math.abs(toFiniteNumber(transform.opacity, 100) - 100) > 0.001,
     Math.abs(toFiniteNumber(transform.cropTop, 0)) > 0.001,
     Math.abs(toFiniteNumber(transform.cropBottom, 0)) > 0.001,
@@ -423,6 +673,21 @@ function summarizeTextClipForMcp(clip) {
   }
 }
 
+function summarizeShapeClipForMcp(clip) {
+  return {
+    id: clip?.id,
+    name: clip?.name || clip?.id,
+    type: clip?.type || 'unknown',
+    trackId: clip?.trackId || null,
+    startTime: roundTime(getClipStart(clip)),
+    duration: roundTime(getClipDuration(clip)),
+    enabled: clip?.enabled !== false,
+    shapeProperties: clip?.shapeProperties || {},
+    transform: clip?.transform || {},
+    keyframes: clip?.keyframes || {},
+  }
+}
+
 function getTextClipForMcp(snapshot, clipId) {
   const timeline = snapshot?.currentTimeline || null
   const clips = Array.isArray(timeline?.clips) ? timeline.clips : []
@@ -432,6 +697,1173 @@ function getTextClipForMcp(snapshot, clipId) {
   if (!clip) return { error: `Text clip ${id} was not found.` }
   if (clip.type !== 'text') return { error: `Clip ${id} is a ${clip.type || 'unknown'} clip, not a text clip.` }
   return { clip }
+}
+
+function getShapeClipForMcp(snapshot, clipId) {
+  const timeline = snapshot?.currentTimeline || null
+  const clips = Array.isArray(timeline?.clips) ? timeline.clips : []
+  const id = String(clipId || '').trim()
+  if (!id) return { error: 'Provide clipId for the shape clip.' }
+  const clip = clips.find((candidate) => candidate?.id === id)
+  if (!clip) return { error: `Shape clip ${id} was not found.` }
+  if (clip.type !== 'shape') return { error: `Clip ${id} is a ${clip.type || 'unknown'} clip, not a shape clip.` }
+  return { clip }
+}
+
+function summarizeAssetForPlacement(asset) {
+  return {
+    id: asset?.id,
+    name: asset?.name || asset?.id,
+    type: asset?.type || 'unknown',
+    duration: asset?.duration || null,
+    width: asset?.width || null,
+    height: asset?.height || null,
+    workflowId: asset?.workflowId || '',
+    workflowName: asset?.workflowName || '',
+    hasAudio: typeof asset?.hasAudio === 'boolean' ? asset.hasAudio : null,
+    audioEnabled: typeof asset?.audioEnabled === 'boolean' ? asset.audioEnabled : null,
+    generationStatus: asset?.generationStatus || asset?.status || 'none',
+    createdAt: asset?.createdAt || asset?.imported || null,
+  }
+}
+
+function isPlaceableTimelineAsset(asset) {
+  return ['video', 'image', 'audio'].includes(String(asset?.type || '').toLowerCase())
+}
+
+function getPlacementAssetCreatedTime(asset) {
+  const raw = asset?.createdAt || asset?.imported || asset?.created || asset?.modified || ''
+  const parsed = raw ? Date.parse(raw) : NaN
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function normalizeAssetPlacementMode(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (['selectedclipstart', 'selectionstart', 'selectedstart'].includes(normalized)) return 'selected_clip_start'
+  if (['selectedclipend', 'selectionend', 'selectedend', 'afterselectedclip', 'afterselection'].includes(normalized)) return 'selected_clip_end'
+  if (['timelineend', 'end', 'append'].includes(normalized)) return 'timeline_end'
+  if (['trackend', 'endoftrack'].includes(normalized)) return 'track_end'
+  return 'playhead'
+}
+
+function getCompatibleTrackTypeForPlacementAsset(asset) {
+  const type = String(asset?.type || '').toLowerCase()
+  if (type === 'audio') return 'audio'
+  if (type === 'video' || type === 'image') return 'video'
+  return ''
+}
+
+function shouldPlanLinkedVideoAudio(asset, args = {}) {
+  if (String(asset?.type || '').toLowerCase() !== 'video') return false
+  if (args.includeAudio === false || args.includeEmbeddedAudio === false) return false
+  if (asset?.audioEnabled === false) return false
+  if (asset?.hasAudio === false) return false
+  return true
+}
+
+function shouldPlanBatchLinkedVideoAudio(args = {}, layout = '') {
+  if (args.includeAudio === true || args.includeEmbeddedAudio === true) return true
+  if (args.includeAudio === false || args.includeEmbeddedAudio === false) return false
+  return layout === 'sequential'
+}
+
+function getAvailableAudioTrackForPlacement(timeline) {
+  return (timeline?.tracks || []).find((track) => (
+    track?.type === 'audio' &&
+    track.locked !== true &&
+    track.visible !== false
+  )) || null
+}
+
+function buildLinkedAudioPlacementPlan(timeline, asset, args = {}) {
+  if (!shouldPlanLinkedVideoAudio(asset, args)) return null
+  const audioTrack = getAvailableAudioTrackForPlacement(timeline)
+  return {
+    createTrack: !audioTrack,
+    track: audioTrack ? {
+      id: audioTrack.id,
+      name: audioTrack.name,
+      type: audioTrack.type,
+      locked: Boolean(audioTrack.locked),
+      muted: Boolean(audioTrack.muted),
+      visible: audioTrack.visible !== false,
+      channels: audioTrack.channels || 'stereo',
+    } : {
+      id: null,
+      name: String(args.audioTrackName || '').trim() || 'MCP Linked Audio',
+      type: 'audio',
+      locked: false,
+      muted: false,
+      visible: true,
+      channels: String(args.channels || '').trim().toLowerCase() === 'mono' ? 'mono' : 'stereo',
+    },
+  }
+}
+
+function resolveAssetForTimelinePlacement(snapshot, args = {}) {
+  const assets = Array.isArray(snapshot?.assets) ? snapshot.assets : []
+  const assetId = String(args.assetId || args.id || '').trim()
+  const assetName = String(args.assetName || args.name || '').trim().toLowerCase()
+  const type = String(args.type || args.assetType || '').trim().toLowerCase()
+  const workflowId = String(args.workflowId || '').trim().toLowerCase()
+
+  if (assetId) {
+    const asset = assets.find((candidate) => candidate?.id === assetId)
+    if (!asset) return { error: `Asset ${assetId} was not found.` }
+    if (!isPlaceableTimelineAsset(asset)) return { error: `Asset ${assetId} is a ${asset.type || 'unknown'} asset and cannot be placed on the timeline yet.` }
+    return { asset }
+  }
+
+  let candidates = assets.filter(isPlaceableTimelineAsset)
+  if (type) candidates = candidates.filter((asset) => String(asset?.type || '').toLowerCase() === type)
+  if (workflowId) {
+    candidates = candidates.filter((asset) => String(asset?.workflowId || '').trim().toLowerCase() === workflowId)
+  }
+
+  if (assetName) {
+    const exact = candidates.find((asset) => String(asset?.name || '').trim().toLowerCase() === assetName)
+    if (exact) return { asset: exact }
+    const partial = candidates.find((asset) => String(asset?.name || '').trim().toLowerCase().includes(assetName))
+    if (partial) return { asset: partial }
+    return { error: `No placeable asset matched "${args.assetName || args.name}".` }
+  }
+
+  const allowedStatuses = new Set(['none', 'done', 'complete', 'completed', 'success', ''])
+  const latest = candidates
+    .filter((asset) => allowedStatuses.has(String(asset?.generationStatus || asset?.status || 'none').toLowerCase()))
+    .sort((a, b) => getPlacementAssetCreatedTime(b) - getPlacementAssetCreatedTime(a))[0]
+
+  if (latest) return { asset: latest }
+  return { error: 'No placeable asset was found. Provide assetId, assetName, or generate/import an asset first.' }
+}
+
+function resolveAssetPlacementTrack(timeline, asset, args = {}) {
+  const targetType = getCompatibleTrackTypeForPlacementAsset(asset)
+  if (!targetType) return { error: `Asset ${asset?.name || asset?.id || ''} cannot be placed on a timeline track.` }
+
+  const trackId = String(args.trackId || '').trim()
+  const newTrackMode = String(args.trackStrategy || args.placementTrack || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+  const createTrack = args.createTrack === true || args.newTrack === true || ['new', 'newtop', 'newtrack', 'newtoptrack'].includes(newTrackMode)
+
+  if (trackId) {
+    const track = getTrackById(timeline, trackId)
+    if (!track) return { error: `Track ${trackId} was not found.` }
+    if (track.type !== targetType) return { error: `Asset ${asset.name || asset.id} is ${asset.type}; it needs a ${targetType} track.` }
+    if (track.locked) return { error: `Track ${trackId} is locked.` }
+    return { track, createTrack: false, targetType }
+  }
+
+  if (createTrack) {
+    return {
+      track: null,
+      createTrack: true,
+      targetType,
+      plannedTrack: {
+        id: null,
+        name: String(args.trackName || '').trim() || `MCP ${targetType === 'video' ? 'Video' : 'Audio'}`,
+        type: targetType,
+      },
+    }
+  }
+
+  const track = (timeline?.tracks || []).find((candidate) => (
+    candidate?.type === targetType &&
+    candidate.locked !== true &&
+    candidate.visible !== false &&
+    candidate.role !== 'captions'
+  ))
+  if (track) return { track, createTrack: false, targetType }
+
+  return {
+    track: null,
+    createTrack: true,
+    targetType,
+    plannedTrack: {
+      id: null,
+      name: String(args.trackName || '').trim() || `MCP ${targetType === 'video' ? 'Video' : 'Audio'}`,
+      type: targetType,
+    },
+  }
+}
+
+function resolveAssetPlacementStart(timeline, trackId, args = {}) {
+  const explicitStart = Number(args.startSeconds ?? args.startTime)
+  if (Number.isFinite(explicitStart)) return roundTime(Math.max(0, explicitStart))
+
+  const placement = normalizeAssetPlacementMode(args.at || args.placement || args.position)
+  const selectedIds = new Set(Array.isArray(timeline?.selectedClipIds) ? timeline.selectedClipIds : [])
+  const selectedClip = selectedIds.size > 0
+    ? (timeline?.clips || []).find((clip) => selectedIds.has(clip?.id))
+    : null
+
+  if (placement === 'selected_clip_start' && selectedClip) {
+    return roundTime(Math.max(0, getClipStart(selectedClip)))
+  }
+  if (placement === 'selected_clip_end' && selectedClip) {
+    return roundTime(Math.max(0, getClipEnd(selectedClip)))
+  }
+  if (placement === 'track_end' && trackId) {
+    const end = (timeline?.clips || [])
+      .filter((clip) => clip?.trackId === trackId)
+      .reduce((max, clip) => Math.max(max, getClipEnd(clip)), 0)
+    return roundTime(end)
+  }
+  if (placement === 'timeline_end') {
+    const end = (timeline?.clips || []).reduce((max, clip) => Math.max(max, getClipEnd(clip)), 0)
+    return roundTime(end)
+  }
+
+  return roundTime(Math.max(0, toFiniteNumber(timeline?.playheadPosition, 0)))
+}
+
+function resolveAssetTimelinePlacementPlan(snapshot, args = {}) {
+  const timeline = snapshot?.currentTimeline || null
+  if (!timeline) return { error: 'No current timeline is available.' }
+
+  const resolvedAsset = resolveAssetForTimelinePlacement(snapshot, args)
+  if (resolvedAsset.error) return { error: resolvedAsset.error }
+  const asset = resolvedAsset.asset
+
+  const resolvedTrack = resolveAssetPlacementTrack(timeline, asset, args)
+  if (resolvedTrack.error) return { error: resolvedTrack.error }
+  const track = resolvedTrack.track || resolvedTrack.plannedTrack || null
+  const startSeconds = resolveAssetPlacementStart(timeline, resolvedTrack.track?.id || '', args)
+  const requestedDuration = Number(args.durationSeconds ?? args.duration)
+  const assetDuration = toFiniteNumber(asset.duration, 0)
+  const durationSeconds = Number.isFinite(requestedDuration) && requestedDuration > 0
+    ? roundTime(requestedDuration)
+    : (asset.type === 'image' ? 5 : roundTime(assetDuration || 5))
+  const linkedAudio = buildLinkedAudioPlacementPlan(timeline, asset, args)
+
+  return {
+    action: 'add_asset_to_timeline',
+    previewOnly: args.previewOnly !== false,
+    asset: summarizeAssetForPlacement(asset),
+    track: track ? {
+      id: track.id || null,
+      name: track.name || '',
+      type: track.type || resolvedTrack.targetType,
+      locked: Boolean(track.locked),
+      muted: Boolean(track.muted),
+      visible: track.visible !== false,
+    } : null,
+    createTrack: resolvedTrack.createTrack === true,
+    trackType: resolvedTrack.targetType,
+    startSeconds,
+    durationSeconds,
+    linkedAudio: linkedAudio ? {
+      ...linkedAudio,
+      startSeconds,
+      durationSeconds,
+    } : null,
+    placement: normalizeAssetPlacementMode(args.at || args.placement || args.position),
+    resolveOverlaps: args.resolveOverlaps !== false,
+    selectAfterAdd: args.selectAfterAdd !== false,
+    transform: args.transform && typeof args.transform === 'object' ? args.transform : null,
+  }
+}
+
+function normalizeSolidTrackPlacement(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (['top', 'newtop', 'newtoptrack', 'above'].includes(normalized)) return 'top'
+  return 'bottom'
+}
+
+function resolveSolidColorPlan(snapshot, args = {}) {
+  const timeline = snapshot?.currentTimeline || null
+  const project = snapshot?.project || null
+  if (!timeline || !project) return { error: 'Open a saved ComfyStudio project and timeline before creating a solid color.' }
+
+  const rawColor = args.color || args.fill || args.solidColor || '#000000'
+  const color = normalizeClipLabelColor(rawColor)
+  if (!color) return { error: 'Invalid solid color. Use a hex color like #000000 or #ff0000.' }
+
+  const width = Math.max(1, Math.round(toFiniteNumber(args.width, timeline.width || project.settings?.width || 1920)))
+  const height = Math.max(1, Math.round(toFiniteNumber(args.height, timeline.height || project.settings?.height || 1080)))
+  const fps = Math.max(1, toFiniteNumber(timeline.fps, project.settings?.fps || 24))
+  const requestedDuration = Number(args.durationSeconds ?? args.duration)
+  const durationSeconds = Number.isFinite(requestedDuration) && requestedDuration > 0
+    ? roundTime(requestedDuration)
+    : 5
+  const name = String(args.name || args.assetName || '').trim()
+    || `${color === '#000000' ? 'Black' : 'Color'} solid ${width}x${height}`
+  const placeOnTimeline = args.placeOnTimeline !== false && args.addToTimeline !== false
+  const createTrack = args.createTrack !== false && args.newTrack !== false && !String(args.trackId || '').trim()
+  const trackPlacement = normalizeSolidTrackPlacement(args.trackPlacement || args.trackPosition || args.placementTrackPosition)
+  const startSeconds = placeOnTimeline
+    ? resolveAssetPlacementStart(timeline, String(args.trackId || '').trim(), args)
+    : null
+  const requestedTrackId = String(args.trackId || '').trim()
+  const existingTrack = requestedTrackId ? getTrackById(timeline, requestedTrackId) : null
+  if (requestedTrackId && !existingTrack) return { error: `Track ${requestedTrackId} was not found.` }
+  if (existingTrack && existingTrack.type !== 'video') return { error: `Solid color assets must be placed on a video track, not ${existingTrack.type}.` }
+  if (existingTrack?.locked) return { error: `Track ${existingTrack.id} is locked.` }
+
+  const track = placeOnTimeline
+    ? (existingTrack || {
+      id: null,
+      name: String(args.trackName || '').trim() || `${color === '#000000' ? 'Black' : 'Color'} solid`,
+      type: 'video',
+      locked: false,
+      muted: false,
+      visible: true,
+    })
+    : null
+
+  return {
+    action: 'add_solid_color',
+    previewOnly: args.previewOnly !== false,
+    asset: {
+      name,
+      type: 'image',
+      width,
+      height,
+      color,
+      duration: durationSeconds,
+      fps,
+    },
+    placeOnTimeline,
+    track: track ? {
+      id: track.id || null,
+      name: track.name || '',
+      type: track.type || 'video',
+      locked: Boolean(track.locked),
+      muted: Boolean(track.muted),
+      visible: track.visible !== false,
+    } : null,
+    createTrack: placeOnTimeline ? createTrack && !existingTrack : false,
+    trackPlacement: placeOnTimeline && createTrack && !existingTrack ? trackPlacement : null,
+    startSeconds,
+    durationSeconds,
+    resolveOverlaps: args.resolveOverlaps === true,
+    selectAfterAdd: args.selectAfterAdd !== false,
+    transform: args.transform && typeof args.transform === 'object' ? args.transform : null,
+    note: placeOnTimeline && createTrack && trackPlacement === 'bottom'
+      ? 'A new bottom video track will be created so the solid can sit behind the edit.'
+      : '',
+  }
+}
+
+function normalizeTimelineName(value, fallback = 'New Sequence') {
+  const normalized = String(value || '').trim().replace(/\s+/g, ' ').slice(0, 120)
+  return normalized || fallback
+}
+
+function createUniqueTimelineName(name, timelines = []) {
+  const usedNames = new Set((timelines || []).map((timeline) => String(timeline?.name || '').trim().toLowerCase()))
+  if (!usedNames.has(name.toLowerCase())) return name
+
+  let index = 2
+  let candidate = `${name} ${index}`
+  while (usedNames.has(candidate.toLowerCase())) {
+    index += 1
+    candidate = `${name} ${index}`
+  }
+  return candidate
+}
+
+function normalizeTimelineDimension(value, fallback) {
+  const parsed = Number(value)
+  if (Number.isFinite(parsed) && parsed > 0) return Math.max(1, Math.round(parsed))
+  return Math.max(1, Math.round(Number(fallback) || 1920))
+}
+
+function normalizeTimelineFps(value, fallback) {
+  const parsed = Number(value)
+  if (Number.isFinite(parsed) && parsed > 0) return Math.min(240, Math.max(1, parsed))
+  const fallbackFps = Number(fallback)
+  return Number.isFinite(fallbackFps) && fallbackFps > 0 ? fallbackFps : 24
+}
+
+function resolveCreateTimelinePlan(snapshot, args = {}) {
+  const project = snapshot?.project || null
+  if (!project) return { error: 'Open a saved ComfyStudio project before creating a sequence.' }
+
+  const timelines = Array.isArray(snapshot?.timelines) ? snapshot.timelines : []
+  const currentTimeline = snapshot?.currentTimeline || null
+  const projectSettings = project.settings || {}
+  const copySettingsFromCurrent = args.copySettingsFromCurrent !== false
+  const settingsSource = copySettingsFromCurrent ? (currentTimeline || projectSettings) : projectSettings
+  const requestedName = normalizeTimelineName(args.name || args.timelineName || args.sequenceName)
+  const name = args.allowDuplicateName === true
+    ? requestedName
+    : createUniqueTimelineName(requestedName, timelines)
+  const fps = normalizeTimelineFps(args.fps, settingsSource?.fps || projectSettings.fps || 24)
+  const requestedDuration = Number(args.durationSeconds ?? args.duration)
+  const durationSeconds = Number.isFinite(requestedDuration) && requestedDuration > 0
+    ? roundTime(requestedDuration)
+    : 60
+  const rawColor = String(args.color || '').trim()
+  const color = rawColor ? normalizeClipLabelColor(rawColor) : null
+  if (rawColor && !color) return { error: 'Invalid timeline color. Use a hex color like #38bdf8 or omit it.' }
+
+  return {
+    action: 'create_timeline',
+    previewOnly: args.previewOnly !== false,
+    requestedName,
+    name,
+    nameAdjusted: name !== requestedName,
+    width: normalizeTimelineDimension(args.width, settingsSource?.width || projectSettings.width || 1920),
+    height: normalizeTimelineDimension(args.height, settingsSource?.height || projectSettings.height || 1080),
+    fps,
+    durationSeconds,
+    color,
+    folderId: String(args.folderId || '').trim() || null,
+    copySettingsFromCurrent,
+    switchToTimeline: args.switchToTimeline !== false && args.activate !== false && args.makeActive !== false,
+    existingTimelineCount: timelines.length,
+    currentTimeline: currentTimeline ? {
+      id: currentTimeline.id,
+      name: currentTimeline.name,
+      width: currentTimeline.width,
+      height: currentTimeline.height,
+      fps: currentTimeline.fps,
+    } : null,
+  }
+}
+
+function summarizeAssetFolder(folder = null) {
+  if (!folder) return null
+  return {
+    id: folder.id || null,
+    name: folder.name || '',
+    parentId: folder.parentId || null,
+    color: folder.color || null,
+    createdAt: folder.createdAt || folder.created || null,
+  }
+}
+
+function normalizeFolderName(value, fallback = 'New Folder') {
+  const normalized = String(value || '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+  return normalized || fallback
+}
+
+function splitFolderPathInput(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeFolderName(entry, '')).filter(Boolean)
+  }
+  const raw = String(value || '').trim()
+  if (!raw) return []
+  return raw
+    .split(/[\\/]+/)
+    .map((entry) => normalizeFolderName(entry, ''))
+    .filter(Boolean)
+}
+
+function makeUniqueFolderName(name, folders = [], parentId = null) {
+  const usedNames = new Set(
+    (folders || [])
+      .filter((folder) => (folder?.parentId || null) === (parentId || null))
+      .map((folder) => String(folder?.name || '').trim().toLowerCase())
+  )
+  if (!usedNames.has(name.toLowerCase())) return name
+
+  let index = 2
+  let candidate = `${name} ${index}`
+  while (usedNames.has(candidate.toLowerCase())) {
+    index += 1
+    candidate = `${name} ${index}`
+  }
+  return candidate
+}
+
+function findAssetFolderByName(folders = [], parentId = null, name = '') {
+  const key = String(name || '').trim().toLowerCase()
+  if (!key) return null
+  return (folders || []).find((folder) => (
+    (folder?.parentId || null) === (parentId || null)
+    && String(folder?.name || '').trim().toLowerCase() === key
+  )) || null
+}
+
+function getAssetFolderPathSegments(folders = [], folderId = null) {
+  const segments = []
+  let cursor = folderId || null
+  const seen = new Set()
+  while (cursor && !seen.has(cursor)) {
+    seen.add(cursor)
+    const folder = (folders || []).find((entry) => entry?.id === cursor)
+    if (!folder) break
+    segments.unshift(folder.name || folder.id)
+    cursor = folder.parentId || null
+  }
+  return segments
+}
+
+function resolveAssetFolderParent(snapshot, args = {}) {
+  const folders = Array.isArray(snapshot?.folders) ? snapshot.folders : []
+  const parentId = String(args.parentId || args.folderId || '').trim() || null
+  const parentPath = splitFolderPathInput(args.parentPath || args.parentFolderPath || [])
+
+  if (parentId) {
+    const parent = folders.find((folder) => folder?.id === parentId) || null
+    if (!parent) return { error: `Parent folder ${parentId} was not found.` }
+    return {
+      parentId,
+      parentPath: getAssetFolderPathSegments(folders, parentId),
+    }
+  }
+
+  if (parentPath.length === 0) return { parentId: null, parentPath: [] }
+
+  let cursor = null
+  for (const segment of parentPath) {
+    const folder = findAssetFolderByName(folders, cursor, segment)
+    if (!folder) {
+      return { error: `Parent folder path "${parentPath.join(' / ')}" was not found. Use folderPath/path to create missing folders.` }
+    }
+    cursor = folder.id
+  }
+
+  return { parentId: cursor, parentPath }
+}
+
+function resolveCreateAssetFolderPlan(snapshot, args = {}) {
+  const project = snapshot?.project || null
+  if (!project) return { error: 'Open a saved ComfyStudio project before creating an asset folder.' }
+
+  const folders = Array.isArray(snapshot?.folders) ? snapshot.folders : []
+  const rawPath = args.path ?? args.folderPath ?? args.segments ?? args.folderSegments
+  const pathSegments = splitFolderPathInput(rawPath)
+  const nameSegments = pathSegments.length > 0
+    ? pathSegments
+    : [normalizeFolderName(args.name || args.folderName)]
+  if (nameSegments.length === 0) return { error: 'Provide a folder name or folder path.' }
+
+  const parent = resolveAssetFolderParent(snapshot, args)
+  if (parent.error) return { error: parent.error }
+
+  const reuseExisting = args.reuseExisting !== false
+  const allowDuplicateName = args.allowDuplicateName === true
+  const rawColor = String(args.color || '').trim()
+  const color = rawColor ? normalizeClipLabelColor(rawColor) : null
+  if (rawColor && !color) return { error: 'Invalid folder color. Use a hex color like #38bdf8 or omit it.' }
+
+  const simulatedFolders = [...folders]
+  const steps = []
+  let cursor = parent.parentId || null
+  for (const segment of nameSegments) {
+    const existing = findAssetFolderByName(simulatedFolders, cursor, segment)
+    if (existing && reuseExisting) {
+      steps.push({
+        action: 'reuse',
+        name: existing.name || segment,
+        folderId: existing.id,
+        parentId: cursor,
+        folder: summarizeAssetFolder(existing),
+      })
+      cursor = existing.id
+      continue
+    }
+
+    const name = existing && !allowDuplicateName
+      ? makeUniqueFolderName(segment, simulatedFolders, cursor)
+      : segment
+    const planned = {
+      id: null,
+      name,
+      parentId: cursor,
+      color: null,
+    }
+    steps.push({
+      action: 'create',
+      name,
+      requestedName: segment,
+      nameAdjusted: name !== segment,
+      parentId: cursor,
+      folder: planned,
+    })
+    simulatedFolders.push({
+      id: `planned-folder-${steps.length}`,
+      ...planned,
+    })
+    cursor = `planned-folder-${steps.length}`
+  }
+
+  const lastStep = steps[steps.length - 1] || null
+  const leafExistingFolder = lastStep?.action === 'reuse'
+    ? folders.find((folder) => folder?.id === lastStep.folderId) || null
+    : null
+
+  return {
+    action: 'create_asset_folder',
+    previewOnly: args.previewOnly !== false,
+    path: [...(parent.parentPath || []), ...nameSegments],
+    requestedPath: nameSegments,
+    parentId: parent.parentId || null,
+    reuseExisting,
+    allowDuplicateName,
+    color,
+    setColorOnExisting: args.setColorOnExisting === true,
+    steps,
+    createdCount: steps.filter((step) => step.action === 'create').length,
+    reusedCount: steps.filter((step) => step.action === 'reuse').length,
+    leafFolder: summarizeAssetFolder(leafExistingFolder),
+    leafFolderId: leafExistingFolder?.id || null,
+  }
+}
+
+function normalizeStringList(value) {
+  if (Array.isArray(value)) return normalizeStringArray(value)
+  const raw = String(value || '').trim()
+  if (!raw) return []
+  return raw.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function resolveFolderIdByPath(folders = [], pathSegments = []) {
+  const segments = Array.isArray(pathSegments) ? pathSegments : []
+  let cursor = null
+  for (const segment of segments) {
+    const folder = findAssetFolderByName(folders, cursor, segment)
+    if (!folder) return null
+    cursor = folder.id
+  }
+  return cursor
+}
+
+function getDescendantFolderIds(folders = [], folderId = null) {
+  const ids = new Set()
+  if (!folderId) return ids
+  ids.add(folderId)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const folder of folders || []) {
+      if (!folder?.id || ids.has(folder.id)) continue
+      if (ids.has(folder.parentId || null)) {
+        ids.add(folder.id)
+        changed = true
+      }
+    }
+  }
+  return ids
+}
+
+function getMoveAssetCreatedTime(asset) {
+  const raw = asset?.createdAt || asset?.imported || asset?.created || asset?.modified || ''
+  const parsed = raw ? Date.parse(raw) : NaN
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function isSolidColorAssetForMove(asset = {}) {
+  const sourceTool = String(asset.sourceTool || asset.settings?.sourceTool || '').trim().toLowerCase()
+  const overlayKind = String(asset.overlayKind || asset.settings?.overlayKind || '').trim().toLowerCase()
+  const generatedBy = String(asset.generatedBy || asset.settings?.generatedBy || '').trim().toLowerCase()
+  const solidColor = String(asset.solidColor || asset.settings?.solidColor || asset.settings?.color || asset.color || '').trim()
+  const name = String(asset.name || '').trim().toLowerCase()
+  return sourceTool === 'add_solid_color'
+    || (overlayKind === 'color' && (generatedBy === 'mcp' || /^#[0-9a-fA-F]{6}$/.test(solidColor)))
+    || (String(asset.type || '').toLowerCase() === 'image' && name.includes('solid') && /^#[0-9a-fA-F]{6}$/.test(solidColor))
+}
+
+function summarizeAssetForOrganization(asset = {}, folders = []) {
+  const folderId = asset.folderId || null
+  return {
+    id: asset.id,
+    name: asset.name || asset.id,
+    type: asset.type || 'unknown',
+    folderId,
+    folderPath: folderId ? getAssetFolderPathSegments(folders, folderId) : [],
+    workflowId: asset.workflowId || '',
+    workflowName: asset.workflowName || '',
+    sourceTool: asset.sourceTool || asset.settings?.sourceTool || '',
+    overlayKind: asset.overlayKind || asset.settings?.overlayKind || '',
+    generatedBy: asset.generatedBy || asset.settings?.generatedBy || '',
+    solidColor: asset.solidColor || asset.settings?.solidColor || asset.settings?.color || asset.color || '',
+    createdAt: asset.createdAt || asset.imported || null,
+  }
+}
+
+function resolveAssetMoveTargetFolder(snapshot, args = {}) {
+  const folders = Array.isArray(snapshot?.folders) ? snapshot.folders : []
+  const wantsRoot = args.targetRoot === true
+    || args.root === true
+    || ['root', 'none', 'null'].includes(String(args.targetFolderPath || args.folderPath || args.targetFolderName || args.folderName || '').trim().toLowerCase())
+  if (wantsRoot) {
+    return {
+      targetFolderId: null,
+      targetFolder: null,
+      targetFolderPath: [],
+      targetWillBeCreated: false,
+      createPlan: null,
+    }
+  }
+
+  const targetFolderId = String(args.targetFolderId || args.folderId || '').trim()
+  if (targetFolderId) {
+    const folder = folders.find((candidate) => candidate?.id === targetFolderId) || null
+    if (!folder) return { error: `Target folder ${targetFolderId} was not found.` }
+    return {
+      targetFolderId,
+      targetFolder: summarizeAssetFolder(folder),
+      targetFolderPath: getAssetFolderPathSegments(folders, targetFolderId),
+      targetWillBeCreated: false,
+      createPlan: null,
+    }
+  }
+
+  const rawPath = args.targetFolderPath ?? args.folderPath ?? args.targetPath ?? args.path ?? args.targetFolderName ?? args.folderName ?? args.name
+  const targetPath = splitFolderPathInput(rawPath)
+  if (targetPath.length === 0) return { error: 'Provide targetFolderId, targetFolderPath, folderName, or targetRoot=true.' }
+
+  const existingFolderId = resolveFolderIdByPath(folders, targetPath)
+  if (existingFolderId) {
+    const folder = folders.find((candidate) => candidate?.id === existingFolderId) || null
+    return {
+      targetFolderId: existingFolderId,
+      targetFolder: summarizeAssetFolder(folder),
+      targetFolderPath: getAssetFolderPathSegments(folders, existingFolderId),
+      targetWillBeCreated: false,
+      createPlan: null,
+    }
+  }
+
+  const createPlan = resolveCreateAssetFolderPlan(snapshot, {
+    path: targetPath,
+    color: args.targetFolderColor || args.folderColor || args.color || '',
+    reuseExisting: args.reuseExisting !== false,
+    allowDuplicateName: args.allowDuplicateName === true,
+    previewOnly: true,
+  })
+  if (createPlan.error) return { error: createPlan.error }
+
+  return {
+    targetFolderId: createPlan.leafFolderId || null,
+    targetFolder: createPlan.leafFolder || null,
+    targetFolderPath: createPlan.path || targetPath,
+    targetWillBeCreated: createPlan.createdCount > 0,
+    createPlan,
+  }
+}
+
+function resolveAssetSourceFolderFilter(snapshot, args = {}) {
+  const folders = Array.isArray(snapshot?.folders) ? snapshot.folders : []
+  const rootOnly = args.rootOnly === true || args.sourceRoot === true || args.fromRoot === true
+  if (rootOnly) return { mode: 'root', folderIds: new Set([null]), sourceFolderPath: [] }
+
+  const sourceFolderId = String(args.sourceFolderId || args.fromFolderId || '').trim()
+  const sourceFolderPath = splitFolderPathInput(args.sourceFolderPath || args.fromFolderPath || [])
+  let resolvedSourceFolderId = null
+  if (sourceFolderId) {
+    const folder = folders.find((candidate) => candidate?.id === sourceFolderId) || null
+    if (!folder) return { error: `Source folder ${sourceFolderId} was not found.` }
+    resolvedSourceFolderId = sourceFolderId
+  } else if (sourceFolderPath.length > 0) {
+    resolvedSourceFolderId = resolveFolderIdByPath(folders, sourceFolderPath)
+    if (!resolvedSourceFolderId) return { error: `Source folder path "${sourceFolderPath.join(' / ')}" was not found.` }
+  }
+
+  if (!resolvedSourceFolderId) return { mode: 'all', folderIds: null, sourceFolderPath: [] }
+
+  const includeSubfolders = args.includeSubfolders !== false
+  const folderIds = includeSubfolders
+    ? getDescendantFolderIds(folders, resolvedSourceFolderId)
+    : new Set([resolvedSourceFolderId])
+
+  return {
+    mode: includeSubfolders ? 'sourceFolderWithSubfolders' : 'sourceFolder',
+    folderIds,
+    sourceFolderPath: getAssetFolderPathSegments(folders, resolvedSourceFolderId),
+  }
+}
+
+function resolveAssetsForFolderMove(snapshot, args = {}, target = {}) {
+  const assets = Array.isArray(snapshot?.assets) ? snapshot.assets : []
+  const source = resolveAssetSourceFolderFilter(snapshot, args)
+  if (source.error) return { error: source.error }
+
+  const explicitEntries = []
+  if (Array.isArray(args.assets)) explicitEntries.push(...args.assets)
+  if (args.assetId) explicitEntries.push(args.assetId)
+  for (const assetId of normalizeStringList(args.assetIds)) explicitEntries.push({ assetId })
+  for (const assetName of normalizeStringList(args.assetNames || args.assetName)) explicitEntries.push({ assetName })
+
+  let candidates = []
+  const missingAssetIds = []
+  const missingAssetNames = []
+
+  if (explicitEntries.length > 0) {
+    const byId = new Map(assets.map((asset) => [asset?.id, asset]).filter(([id]) => id))
+    const seen = new Set()
+    for (const rawEntry of explicitEntries) {
+      const entry = typeof rawEntry === 'string' ? { assetId: rawEntry } : (rawEntry || {})
+      const assetId = String(entry.assetId || entry.id || '').trim()
+      const assetName = String(entry.assetName || entry.name || '').trim().toLowerCase()
+      let asset = assetId ? byId.get(assetId) : null
+      if (!asset && assetName) {
+        asset = assets.find((candidate) => String(candidate?.name || '').trim().toLowerCase() === assetName)
+          || assets.find((candidate) => String(candidate?.name || '').trim().toLowerCase().includes(assetName))
+      }
+      if (!asset) {
+        if (assetId) missingAssetIds.push(assetId)
+        if (assetName) missingAssetNames.push(entry.assetName || entry.name)
+        continue
+      }
+      if (!seen.has(asset.id)) {
+        candidates.push(asset)
+        seen.add(asset.id)
+      }
+    }
+  } else {
+    candidates = assets.slice()
+  }
+
+  const typeFilters = normalizeStringList(args.types || args.type || args.assetType).map((type) => type.toLowerCase())
+  if (typeFilters.length > 0) {
+    candidates = candidates.filter((asset) => typeFilters.includes(String(asset?.type || '').toLowerCase()))
+  }
+
+  const workflowIds = normalizeStringList(args.workflowIds || args.workflowId).map((id) => id.toLowerCase())
+  if (workflowIds.length > 0) {
+    candidates = candidates.filter((asset) => workflowIds.includes(getAssetWorkflowId(asset)))
+  }
+
+  const query = String(args.nameIncludes || args.nameContains || args.search || args.query || '').trim().toLowerCase()
+  if (query) {
+    candidates = candidates.filter((asset) => String(asset?.name || '').toLowerCase().includes(query))
+  }
+
+  const filter = String(args.filter || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+  const solidColorsOnly = args.solidColorsOnly === true
+    || args.constantsOnly === true
+    || args.solidOnly === true
+    || ['solid', 'solids', 'solidcolor', 'solidcolors', 'constant', 'constants'].includes(filter)
+  if (solidColorsOnly) {
+    candidates = candidates.filter(isSolidColorAssetForMove)
+  }
+
+  if (filter === 'generated') candidates = candidates.filter((asset) => asset?.isImported !== true)
+  if (filter === 'imported') candidates = candidates.filter((asset) => asset?.isImported === true)
+
+  if (source.folderIds) {
+    candidates = candidates.filter((asset) => {
+      const folderId = asset?.folderId || null
+      return source.folderIds.has(folderId)
+    })
+  }
+
+  const statuses = normalizeStringList(args.statuses || args.status).map((status) => status.toLowerCase())
+  if (statuses.length > 0) {
+    candidates = candidates.filter((asset) => statuses.includes(String(asset?.generationStatus || asset?.status || 'none').toLowerCase()))
+  }
+
+  const order = String(args.order || args.sortOrder || 'oldest_first').trim().toLowerCase()
+  candidates = candidates
+    .filter((asset) => asset?.id)
+    .sort((a, b) => order === 'newest_first'
+      ? getMoveAssetCreatedTime(b) - getMoveAssetCreatedTime(a)
+      : getMoveAssetCreatedTime(a) - getMoveAssetCreatedTime(b))
+
+  const targetFolderId = target.targetWillBeCreated ? '__new_target_folder__' : (target.targetFolderId || null)
+  const unchangedAssets = target.targetWillBeCreated
+    ? []
+    : candidates.filter((asset) => (asset?.folderId || null) === targetFolderId)
+  const assetsToMove = target.targetWillBeCreated
+    ? candidates
+    : candidates.filter((asset) => (asset?.folderId || null) !== targetFolderId)
+
+  return {
+    source,
+    candidates,
+    assetsToMove,
+    unchangedAssets,
+    missingAssetIds,
+    missingAssetNames,
+    mode: explicitEntries.length > 0 ? 'explicit' : 'filter',
+    filters: {
+      typeFilters,
+      workflowIds,
+      query,
+      filter,
+      solidColorsOnly,
+      statuses,
+    },
+  }
+}
+
+function resolveMoveAssetsToFolderPlan(snapshot, args = {}) {
+  const project = snapshot?.project || null
+  if (!project) return { error: 'Open a saved ComfyStudio project before moving assets.' }
+
+  const folders = Array.isArray(snapshot?.folders) ? snapshot.folders : []
+  const target = resolveAssetMoveTargetFolder(snapshot, args)
+  if (target.error) return { error: target.error }
+
+  const resolvedAssets = resolveAssetsForFolderMove(snapshot, args, target)
+  if (resolvedAssets.error) return { error: resolvedAssets.error }
+
+  const limit = clampLimit(args.limit, 100, 1000)
+  if (resolvedAssets.assetsToMove.length > limit) {
+    return {
+      error: `Matched ${resolvedAssets.assetsToMove.length} assets to move, above limit ${limit}. Pass a higher limit intentionally if this is expected.`,
+    }
+  }
+
+  return {
+    action: 'move_assets_to_folder',
+    previewOnly: args.previewOnly !== false,
+    mode: resolvedAssets.mode,
+    targetFolderId: target.targetFolderId,
+    targetFolder: target.targetFolder,
+    targetFolderPath: target.targetFolderPath,
+    targetRoot: target.targetFolderId === null && !target.targetWillBeCreated,
+    targetWillBeCreated: target.targetWillBeCreated,
+    createTargetFolderPlan: target.createPlan,
+    sourceMode: resolvedAssets.source.mode,
+    sourceFolderPath: resolvedAssets.source.sourceFolderPath || [],
+    filters: resolvedAssets.filters,
+    candidateCount: resolvedAssets.candidates.length,
+    moveCount: resolvedAssets.assetsToMove.length,
+    unchangedCount: resolvedAssets.unchangedAssets.length,
+    missingAssetIds: resolvedAssets.missingAssetIds,
+    missingAssetNames: resolvedAssets.missingAssetNames,
+    assets: resolvedAssets.assetsToMove.map((asset) => summarizeAssetForOrganization(asset, folders)),
+    unchangedAssets: resolvedAssets.unchangedAssets.slice(0, 50).map((asset) => summarizeAssetForOrganization(asset, folders)),
+  }
+}
+
+function getAssetWorkflowId(asset) {
+  return String(asset?.workflowId || asset?.settings?.workflowId || '').trim().toLowerCase()
+}
+
+function resolveAssetsForTimelineBatchPlacement(snapshot, args = {}) {
+  const assets = Array.isArray(snapshot?.assets) ? snapshot.assets : []
+  const explicitEntries = []
+
+  if (Array.isArray(args.assets)) {
+    explicitEntries.push(...args.assets)
+  }
+  if (Array.isArray(args.assetIds)) {
+    explicitEntries.push(...args.assetIds.map((assetId) => ({ assetId })))
+  }
+  if (Array.isArray(args.assetNames)) {
+    explicitEntries.push(...args.assetNames.map((assetName) => ({ assetName })))
+  }
+
+  if (explicitEntries.length > 0) {
+    const seen = new Set()
+    const items = []
+    for (const rawEntry of explicitEntries) {
+      const entry = typeof rawEntry === 'string' ? { assetId: rawEntry } : (rawEntry || {})
+      const resolved = resolveAssetForTimelinePlacement(snapshot, { ...args, ...entry })
+      if (resolved.error) return { error: resolved.error }
+      if (!resolved.asset?.id || seen.has(resolved.asset.id)) continue
+      seen.add(resolved.asset.id)
+      items.push({ asset: resolved.asset, entry })
+    }
+    if (items.length === 0) return { error: 'No unique placeable assets were resolved for batch placement.' }
+    if (items.length > MCP_ASSET_BATCH_MAX_ITEMS) return { error: `Batch placement is limited to ${MCP_ASSET_BATCH_MAX_ITEMS} assets.` }
+    return { items }
+  }
+
+  const type = String(args.type || args.assetType || '').trim().toLowerCase()
+  const workflowIds = normalizeStringList(args.workflowIds || args.workflowId).map((id) => id.toLowerCase())
+  const requestedStatuses = normalizeStringList(args.statuses || args.status).map((status) => status.toLowerCase())
+  const allowedStatuses = requestedStatuses.length > 0
+    ? new Set(requestedStatuses)
+    : new Set(['none', 'done', 'complete', 'completed', 'success', ''])
+
+  let candidates = assets.filter(isPlaceableTimelineAsset)
+  if (type) candidates = candidates.filter((asset) => String(asset?.type || '').toLowerCase() === type)
+  if (workflowIds.length > 0) {
+    candidates = candidates.filter((asset) => workflowIds.includes(getAssetWorkflowId(asset)))
+  }
+  candidates = candidates.filter((asset) => allowedStatuses.has(String(asset?.generationStatus || asset?.status || 'none').toLowerCase()))
+
+  if (candidates.length === 0) {
+    return { error: 'No matching placeable assets were found for batch placement.' }
+  }
+
+  const requestedCount = Number(args.latestCount ?? args.count ?? args.limit)
+  const count = Number.isFinite(requestedCount) && requestedCount > 0
+    ? Math.min(MCP_ASSET_BATCH_MAX_ITEMS, Math.floor(requestedCount))
+    : Math.min(6, candidates.length, MCP_ASSET_BATCH_MAX_ITEMS)
+  const newestFirst = candidates
+    .slice()
+    .sort((a, b) => getPlacementAssetCreatedTime(b) - getPlacementAssetCreatedTime(a))
+    .slice(0, count)
+  const order = String(args.order || args.sortOrder || 'oldest_first').trim().toLowerCase()
+  const selected = order === 'newest_first' ? newestFirst : newestFirst.reverse()
+
+  return {
+    items: selected.map((asset) => ({ asset, entry: {} })),
+  }
+}
+
+function normalizeAssetBatchTrackStrategy(value, count) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (['single', 'singletrack', 'singleexisting', 'existing', 'existingtrack', 'onetrack', 'sametrack'].includes(normalized)) {
+    return 'single_track'
+  }
+  if (['sequential', 'singletracksequential'].includes(normalized)) return 'single_track'
+  if (count <= 1 && ['auto', ''].includes(normalized)) return 'new_tracks'
+  return 'new_tracks'
+}
+
+function normalizeAssetBatchLayout(value, trackStrategy) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (['sequential', 'sequence', 'append', 'sidebysideintime'].includes(normalized)) return 'sequential'
+  if (['stack', 'stacked', 'lanes', 'reviewlanes', 'same start', 'samestart'].includes(normalized)) return 'stacked'
+  return trackStrategy === 'single_track' ? 'sequential' : 'stacked'
+}
+
+function formatBatchTrackName(template, asset, index, total, fallbackPrefix = 'MCP Review') {
+  const workflow = asset?.workflowName || asset?.workflowId || asset?.model || asset?.type || 'Asset'
+  const assetName = asset?.name || asset?.id || `Asset ${index + 1}`
+  const raw = String(template || '').trim()
+    || `${fallbackPrefix} ${index + 1} - ${workflow}`
+  return raw
+    .replace(/\{index\}/gi, String(index + 1))
+    .replace(/\{number\}/gi, String(index + 1))
+    .replace(/\{total\}/gi, String(total))
+    .replace(/\{asset\}/gi, assetName)
+    .replace(/\{name\}/gi, assetName)
+    .replace(/\{workflow\}/gi, workflow)
+    .slice(0, 100)
+}
+
+function getBatchPlacementLabelColor(args = {}, entry = {}, index = 0) {
+  const labelColors = Array.isArray(args.labelColors) ? args.labelColors : []
+  const rawColor = entry.labelColor ?? labelColors[index] ?? args.labelColor ?? args.color ?? ''
+  if (hasInvalidClipLabelColor(rawColor)) {
+    return { error: 'Invalid label color. Use a hex color like #f97316, or omit labelColor.' }
+  }
+  return { color: normalizeClipLabelColor(rawColor) }
+}
+
+function getBatchPlacementDuration(asset, args = {}, entry = {}) {
+  const requestedDuration = Number(entry.durationSeconds ?? entry.duration ?? args.durationSeconds ?? args.duration)
+  if (Number.isFinite(requestedDuration) && requestedDuration > 0) return roundTime(requestedDuration)
+  const assetDuration = toFiniteNumber(asset?.duration, 0)
+  return asset?.type === 'image' ? 5 : roundTime(assetDuration || 5)
+}
+
+function resolveAssetsTimelinePlacementPlan(snapshot, args = {}) {
+  const timeline = snapshot?.currentTimeline || null
+  if (!timeline) return { error: 'No current timeline is available.' }
+
+  const resolvedAssets = resolveAssetsForTimelineBatchPlacement(snapshot, args)
+  if (resolvedAssets.error) return { error: resolvedAssets.error }
+  const items = resolvedAssets.items || []
+  if (items.length === 0) return { error: 'No assets were resolved for batch placement.' }
+  if (items.length > MCP_ASSET_BATCH_MAX_ITEMS) return { error: `Batch placement is limited to ${MCP_ASSET_BATCH_MAX_ITEMS} assets.` }
+
+  const trackStrategy = normalizeAssetBatchTrackStrategy(args.trackStrategy || args.placementTrack, items.length)
+  const layout = normalizeAssetBatchLayout(args.layout || args.placementLayout, trackStrategy)
+  const includeLinkedAudio = shouldPlanBatchLinkedVideoAudio(args, layout)
+  const spacingSeconds = Math.max(0, toFiniteNumber(args.spacingSeconds ?? args.spacing, 0))
+  const baseStartSeconds = resolveAssetPlacementStart(timeline, String(args.trackId || '').trim(), args)
+  const trackNamePrefix = String(args.trackNamePrefix || args.trackPrefix || 'MCP Review').trim() || 'MCP Review'
+  const trackNameTemplate = args.trackNameTemplate || args.trackTemplate || ''
+  const placements = []
+
+  if (trackStrategy === 'single_track') {
+    const targetTypes = [...new Set(items.map(({ asset }) => getCompatibleTrackTypeForPlacementAsset(asset)))]
+    if (targetTypes.length !== 1 || !targetTypes[0]) {
+      return { error: 'Single-track batch placement requires all assets to use the same compatible track type.' }
+    }
+
+    const sharedTrack = resolveAssetPlacementTrack(timeline, items[0].asset, {
+      ...args,
+      createTrack: args.createTrack !== false && args.newTrack !== false && !args.trackId,
+      newTrack: args.createTrack !== false && args.newTrack !== false && !args.trackId,
+      trackName: args.trackName || `${trackNamePrefix} Batch`,
+    })
+    if (sharedTrack.error) return { error: sharedTrack.error }
+
+    let cursor = baseStartSeconds
+    for (let index = 0; index < items.length; index += 1) {
+      const { asset, entry } = items[index]
+      const durationSeconds = getBatchPlacementDuration(asset, args, entry)
+      const colorResult = getBatchPlacementLabelColor(args, entry, index)
+      if (colorResult.error) return { error: colorResult.error }
+      const startSeconds = layout === 'sequential' ? cursor : baseStartSeconds
+      placements.push({
+        index,
+        asset: summarizeAssetForPlacement(asset),
+        track: sharedTrack.track ? {
+          id: sharedTrack.track.id,
+          name: sharedTrack.track.name,
+          type: sharedTrack.track.type,
+          locked: Boolean(sharedTrack.track.locked),
+          muted: Boolean(sharedTrack.track.muted),
+          visible: sharedTrack.track.visible !== false,
+        } : {
+          id: null,
+          name: sharedTrack.plannedTrack?.name || `${trackNamePrefix} Batch`,
+          type: sharedTrack.targetType,
+          locked: false,
+          muted: false,
+          visible: true,
+        },
+        createTrack: sharedTrack.createTrack === true,
+        startSeconds,
+        durationSeconds,
+        linkedAudio: includeLinkedAudio
+          ? buildLinkedAudioPlacementPlan(timeline, asset, { ...args, includeAudio: true })
+          : null,
+        labelColor: colorResult.color,
+        transform: entry.transform && typeof entry.transform === 'object'
+          ? entry.transform
+          : (args.transform && typeof args.transform === 'object' ? args.transform : null),
+      })
+      cursor = roundTime(startSeconds + durationSeconds + spacingSeconds)
+    }
+  } else {
+    let cursor = baseStartSeconds
+    for (let index = 0; index < items.length; index += 1) {
+      const { asset, entry } = items[index]
+      const targetType = getCompatibleTrackTypeForPlacementAsset(asset)
+      if (!targetType) return { error: `Asset ${asset?.name || asset?.id || index + 1} cannot be placed on a timeline track.` }
+      const durationSeconds = getBatchPlacementDuration(asset, args, entry)
+      const colorResult = getBatchPlacementLabelColor(args, entry, index)
+      if (colorResult.error) return { error: colorResult.error }
+      const startSeconds = layout === 'sequential' ? cursor : baseStartSeconds
+      const trackName = String(entry.trackName || '').trim()
+        || formatBatchTrackName(trackNameTemplate, asset, index, items.length, trackNamePrefix)
+      placements.push({
+        index,
+        asset: summarizeAssetForPlacement(asset),
+        track: {
+          id: null,
+          name: trackName,
+          type: targetType,
+          locked: false,
+          muted: false,
+          visible: true,
+        },
+        createTrack: true,
+        startSeconds,
+        durationSeconds,
+        linkedAudio: includeLinkedAudio
+          ? buildLinkedAudioPlacementPlan(timeline, asset, { ...args, includeAudio: true })
+          : null,
+        labelColor: colorResult.color,
+        transform: entry.transform && typeof entry.transform === 'object'
+          ? entry.transform
+          : (args.transform && typeof args.transform === 'object' ? args.transform : null),
+      })
+      cursor = roundTime(startSeconds + durationSeconds + spacingSeconds)
+    }
+  }
+
+  return {
+    action: 'add_assets_to_timeline',
+    previewOnly: args.previewOnly !== false,
+    assetCount: placements.length,
+    layout,
+    trackStrategy,
+    includeAudio: includeLinkedAudio,
+    baseStartSeconds,
+    spacingSeconds,
+    resolveOverlaps: args.resolveOverlaps !== false,
+    selectAfterAdd: args.selectAfterAdd !== false,
+    placements,
+  }
 }
 
 function resolveTimelineMarkerInputs(snapshot, args = {}) {
@@ -655,6 +2087,19 @@ function buildAiReviewPasses(snapshot) {
         },
       },
       {
+        id: 'asset_folder_cleanup',
+        title: 'Asset Folder Cleanup Pass',
+        goal: 'Organize generated/imported project assets without deleting anything.',
+        prompt: 'Find assets that match my cleanup request, preview the exact assets and destination folder first, then move them only after I approve. For MCP-created solid/color constants in the root, use rootOnly plus constantsOnly and move them into a Constants folder.',
+        tools: ['get_assets', 'create_asset_folder', 'move_assets_to_folder'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          destructive: false,
+          createMissingTargetFolder: true,
+          usefulFilters: ['rootOnly', 'constantsOnly', 'type', 'nameIncludes', 'workflowId'],
+        },
+      },
+      {
         id: 'clip_enable_disable',
         title: 'Clip Enable/Disable Pass',
         goal: 'Preview and apply simple editorial decisions by enabling or disabling exact timeline clips.',
@@ -667,18 +2112,44 @@ function buildAiReviewPasses(snapshot) {
         },
       },
       {
+        id: 'sequence_setup',
+        title: 'Sequence Setup Pass',
+        goal: 'Create a named sequence/timeline for alternate edits, selects, generated variations, or AI-built review layouts.',
+        prompt: 'If I ask for a new sequence, preview the sequence name/settings first. After I approve, create it and switch into it before placing clips, solids, titles, or generated assets.',
+        tools: ['get_project', 'get_timeline', 'create_timeline'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          switchToTimeline: true,
+          copySettingsFromCurrent: true,
+        },
+      },
+      {
         id: 'text_motion_graphics',
         title: 'Text And Motion Graphics Pass',
-        goal: 'Create tracks and text clips, adjust typography, crop/move/scale/rotate/blur them, and set explicit transform/color keyframes for simple title animation.',
-        prompt: 'Create a text title at the playhead, preview the timing/style/transform first, then add it. If I ask for another layer, create a new top video track first. If I ask for a split or cloned title effect, use duplicate_clip to clone the existing text clip, set static crop percentages on each copy, then animate each layer separately. If I ask for motion or color changes, use explicit keyframes so I can ask for things like faster, lower, blur, rotate, bounce, gravity, or change color. For richer motion, use easing strings like cubicBezier(0.55,0,1,0.45).',
-        tools: ['get_timeline', 'inspect_timeline_frame', 'add_track', 'add_text_clip', 'duplicate_clip', 'update_text_clip'],
+        goal: 'Create tracks, text clips, and basic shape clips; adjust typography/shape styling; crop/move/scale/rotate/blur them; and set explicit transform/color keyframes for simple motion graphics.',
+        prompt: 'Create a text title or basic shape at the playhead, preview the timing/style/transform first, then add it. Use add_shape_clip for rectangles, rounded rectangles, ellipses, polygons, lines, lower-third bars, frames, simple graphic accents, color blocks, and animated UI-style elements. For triangles/hexagons/octagons, use shapeType polygon with sides 3/6/8. If I ask for another layer, create a new top video track first. If I ask for a split or cloned title effect, use duplicate_clip to clone the existing text/shape clip, set static crop percentages on each copy, then animate each layer separately. If I ask for motion, shape-size/style changes, or color changes, use explicit keyframes so I can ask for things like faster, lower, blur, rotate, bounce, gravity, grow, pulse stroke width, round the corners over time, or change color. Use motionBlurEnabled with motionBlurMode auto/velocity/sampled, motionBlurSamples, and motionBlurShutter when fast-moving graphics should smear naturally. For richer motion, use easing strings like cubicBezier(0.55,0,1,0.45). Use set_clip_keyframes for generic visual keyframes once the clip already exists.',
+        tools: ['get_timeline', 'inspect_timeline_frame', 'add_track', 'add_text_clip', 'add_shape_clip', 'duplicate_clip', 'update_text_clip', 'update_shape_clip', 'set_clip_keyframes'],
         safeDefaults: {
           previewOnlyFirst: true,
           useExplicitClipIdsForUpdates: true,
-          createVideoTrackForNewTextLayer: true,
+          createVideoTrackForNewGraphicLayer: true,
+          supportedShapes: ['rectangle', 'roundedRectangle', 'ellipse', 'polygon', 'line'],
           supportedStaticCropFields: ['cropTop', 'cropBottom', 'cropLeft', 'cropRight'],
-          supportedKeyframes: ['opacity', 'positionX', 'positionY', 'scaleX', 'scaleY', 'rotation', 'blur', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'textColor'],
+          supportedKeyframes: ['opacity', 'positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'rotation', 'rotationX', 'rotationY', 'perspective', 'blur', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'textColor'],
           supportedEasing: ['linear', 'easeIn', 'easeOut', 'easeInOut', 'hold', 'cubicBezier(x1,y1,x2,y2)'],
+        },
+      },
+      {
+        id: 'visual_clip_keyframes',
+        title: 'Visual Clip Keyframe Pass',
+        goal: 'Preview and apply opacity, transform, blur, crop, color-adjustment, or shape-style keyframes on existing visual clips.',
+        prompt: 'Find the exact visual clips first. Preview the keyframes before applying. Use add_solid_color first if the fade needs an explicit black/color plate underneath the clips. Use set_clip_keyframes for fades, dips to black, moves, scale, rotation, blur, crop reveals, color adjustment animation, and shape style animation such as width, height, stroke width, rounded corners, and polygon sides. For dip-to-black between clips, create or target a black solid underneath, then keyframe the outgoing clip opacity from 100 to 0 near its end and the incoming clip opacity from 0 to 100 near its start.',
+        tools: ['get_timeline', 'inspect_clip', 'inspect_visible_shots', 'add_solid_color', 'set_clip_keyframes'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          useExplicitClipIds: true,
+          fadeDurationSeconds: 0.5,
+          supportedKeyframes: MCP_CLIP_KEYFRAME_PROPERTIES,
         },
       },
       {
@@ -691,6 +2162,41 @@ function buildAiReviewPasses(snapshot) {
           includeImage: true,
           maxWidth: 1280,
           maxHeight: 720,
+        },
+      },
+      {
+        id: 'brief_to_generated_assets',
+        title: 'Brief To Generated Assets Pass',
+        goal: 'Turn a written creative brief into source images or videos that can be assembled into a new ComfyStudio sequence.',
+        prompt: 'Break my brief into a small shot/asset plan first. If several new assets will be generated, use create_asset_folder with previewOnly first so the results land in a named/nested project folder instead of the asset root. Use queue_prompt_generation_batch with previewOnly first to show the exact prompts, workflows, variation counts, seeds, resolution, duration, FPS, and folderId. After I approve, queue the generation jobs. Once generated assets exist, create a new timeline if needed, place results with add_assets_to_timeline, add titles/supers/shapes, animate transform/opacity/crop/color/shape style with set_clip_keyframes, inspect sample frames, and export only after I ask.',
+        tools: ['list_comfystudio_workflows', 'create_asset_folder', 'queue_prompt_generation_batch', 'get_generation_status', 'create_timeline', 'add_assets_to_timeline', 'add_text_clip', 'add_shape_clip', 'set_clip_keyframes', 'inspect_timeline_range', 'export_timeline'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          queuesGenerationOnlyAfterApproval: true,
+          placeGeneratedAssetsOnlyAfterApproval: true,
+          createOutputFolderForGeneratedAssets: true,
+          maxPromptBatchVariationsPerWorkflow: MCP_PROMPT_BATCH_MAX_VARIATIONS_PER_WORKFLOW,
+          maxPromptBatchJobs: MCP_PROMPT_BATCH_MAX_TOTAL_JOBS,
+          defaultImageWorkflowId: 'z-image-turbo',
+          defaultVideoWorkflowId: 'ltx23-t2v',
+        },
+      },
+      {
+        id: 'generate_from_timeline_context',
+        title: 'Generate From Timeline Context',
+        goal: 'Turn the selected clip or current playhead frame into a safe Generate-tab image-to-video/keyframe request, or queue an approved multi-workflow variation batch.',
+        prompt: 'Prepare the selected timeline shot for LTX 2.3 image-to-video. Preview the source frame, workflow, and prompt first; after I approve, open Generate with the frame loaded and the prompt filled in. If I ask for variations across workflows, use queue_timeline_generation_batch with previewOnly first, show the exact workflows/counts/seeds, then apply only after I approve. After generation finishes, use add_asset_to_timeline for one result or add_assets_to_timeline for multiple review lanes, always with previewOnly first.',
+        tools: ['inspect_timeline_frame', 'list_comfystudio_workflows', 'prepare_generation_from_timeline_context', 'queue_prepared_generation', 'queue_timeline_generation_batch', 'add_asset_to_timeline', 'add_assets_to_timeline'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          defaultWorkflowId: 'ltx23-i2v',
+          mode: 'extend',
+          queuesGenerationOnlyAfterApproval: true,
+          placeGeneratedAssetsOnlyAfterApproval: true,
+          maxTimelineBatchVariationsPerWorkflow: MCP_TIMELINE_BATCH_MAX_VARIATIONS_PER_WORKFLOW,
+          maxTimelineBatchJobs: MCP_TIMELINE_BATCH_MAX_TOTAL_JOBS,
+          openGenerateTabOnApply: true,
+          defaultResultPlacementLayout: 'stacked review lanes',
         },
       },
       {
@@ -715,7 +2221,18 @@ function buildAiReviewPasses(snapshot) {
       'Use add_timeline_markers with previewOnly before marking many shots.',
       'Use set_timeline_marker_properties to rename/recolor review markers as decisions change.',
       'Use remove_timeline_markers with previewOnly before clearing review markers.',
+      'Use move_assets_to_folder with previewOnly before organizing root assets, constants, generated results, or imported media into folders.',
       'Use add_track, add_text_clip, duplicate_clip, and update_text_clip with previewOnly for AI-assisted text/title graphics.',
+      'Use create_timeline with previewOnly before creating a new named sequence for alternate edits, generated selects, or AI-built layouts.',
+      'Use create_asset_folder with previewOnly before generating a batch of source assets that should stay organized in a named folder.',
+      'Use add_solid_color with previewOnly before creating black/color plates, especially underneath opacity fades.',
+      'Use set_clip_keyframes with previewOnly before changing visual clip opacity, transform, blur, crop, color, or shape style keyframes.',
+      'Use queue_prompt_generation_batch with previewOnly and explicit approval when creating new stills/videos from a written creative brief.',
+      'Use prepare_generation_from_timeline_context with previewOnly before opening Generate from a selected clip or playhead frame.',
+      'Use queue_prepared_generation with previewOnly and explicit approval before starting any prepared Generate job.',
+      'Use queue_timeline_generation_batch with previewOnly and explicit approval before queueing multiple timeline-frame variations across WAN 2.2/LTX 2.3.',
+      'Use add_asset_to_timeline with previewOnly before placing generated assets or imported media back into the edit.',
+      'Use add_assets_to_timeline with previewOnly to place multiple generated results as stacked review lanes or a sequential strip.',
     ],
     generatedAt: new Date().toISOString(),
   }
@@ -1119,7 +2636,7 @@ function getTimelineFrameClips(timeline, timeSeconds) {
     .filter(({ track }) => track && track.visible !== false && !track.muted)
     .sort((a, b) => a.trackIndex - b.trackIndex || getClipStart(a.clip) - getClipStart(b.clip))
 
-  const visualTypes = new Set(['video', 'image', 'text'])
+  const visualTypes = new Set(['video', 'image', 'text', 'shape'])
   const visualClips = activeClips.filter(({ clip, track }) => (
     track?.type === 'video' && visualTypes.has(String(clip?.type || '').toLowerCase())
   ))
@@ -1148,8 +2665,816 @@ function isVisualTimelineClip(clip, track) {
     && track.visible !== false
     && !track.muted
     && clip?.enabled !== false
-    && ['video', 'image', 'text'].includes(type)
+    && ['video', 'image', 'text', 'shape'].includes(type)
     && getClipDuration(clip) > 0
+}
+
+function isGenerationSourceClip(clip, track) {
+  const type = String(clip?.type || '').toLowerCase()
+  return isVisualTimelineClip(clip, track) && (type === 'video' || type === 'image')
+}
+
+function getTimelineClipEntries(timeline, predicate = () => true) {
+  const tracks = Array.isArray(timeline?.tracks) ? timeline.tracks : []
+  const trackById = new Map(tracks.map((track, index) => [track?.id, { track, trackIndex: index }]))
+  return (Array.isArray(timeline?.clips) ? timeline.clips : [])
+    .map((clip) => {
+      const resolved = trackById.get(clip?.trackId) || {}
+      return {
+        clip,
+        track: resolved.track || null,
+        trackIndex: Number.isFinite(resolved.trackIndex) ? resolved.trackIndex : Number.MAX_SAFE_INTEGER,
+      }
+    })
+    .filter(({ clip, track, trackIndex }) => clip && track && predicate(clip, track, trackIndex))
+}
+
+function getGenerationSourceEntriesAtTime(timeline, timeSeconds) {
+  return getTimelineClipEntries(timeline, (clip, track) => (
+    isGenerationSourceClip(clip, track) && isClipActiveAtTime(clip, timeSeconds)
+  )).sort((a, b) => a.trackIndex - b.trackIndex || getClipStart(a.clip) - getClipStart(b.clip))
+}
+
+function getRepresentativeClipTime(clip, fps = 24) {
+  const frameDuration = 1 / Math.max(1, toFiniteNumber(fps, 24))
+  const start = getClipStart(clip)
+  const duration = getClipDuration(clip)
+  if (duration <= frameDuration) return start
+  const midpoint = start + (duration / 2)
+  return roundTime(Math.min(start + duration - (frameDuration / 2), Math.max(start, midpoint)))
+}
+
+function summarizeGenerationSource(snapshot, timeline, entry, captureTime) {
+  if (!entry?.clip) return null
+  const { clip, track, trackIndex } = entry
+  const asset = getAssetById(snapshot, clip.assetId)
+  return {
+    ...clipRef(clip),
+    trackName: track?.name || '',
+    trackType: track?.type || '',
+    trackIndex,
+    captureTimeSeconds: roundTime(captureTime),
+    captureTimecode: formatTimelineTimecode(captureTime, timeline?.fps || 24),
+    enabled: clip.enabled !== false,
+    labelColor: clip.labelColor || '',
+    transform: clip.transform || null,
+    asset: asset ? {
+      id: asset.id,
+      name: asset.name,
+      type: asset.type,
+      width: asset.width || null,
+      height: asset.height || null,
+      duration: asset.duration || null,
+      prompt: asset.prompt || '',
+      negativePrompt: asset.negativePrompt || '',
+      workflowId: asset.workflowId || '',
+      workflowName: asset.workflowName || '',
+      model: asset.model || '',
+    } : null,
+  }
+}
+
+function resolveGenerationPrompt(snapshot, sourceClip, args = {}) {
+  const asset = getAssetById(snapshot, sourceClip?.assetId)
+  const prompt = String(
+    args.prompt
+      ?? sourceClip?.metadata?.prompt
+      ?? sourceClip?.textProperties?.text
+      ?? sourceClip?.text
+      ?? asset?.prompt
+      ?? ''
+  ).trim()
+  const negativePrompt = String(
+    args.negativePrompt
+      ?? sourceClip?.metadata?.negativePrompt
+      ?? asset?.negativePrompt
+      ?? ''
+  ).trim()
+  return {
+    prompt: prompt.slice(0, 5000),
+    negativePrompt: negativePrompt.slice(0, 2000),
+  }
+}
+
+function resolveGenerateFromTimelinePlan(snapshot, args = {}) {
+  const timeline = snapshot?.currentTimeline || null
+  if (!timeline) return { error: 'No current timeline is available.' }
+
+  const fps = Math.max(1, toFiniteNumber(timeline.fps, 24))
+  const selectedIds = new Set(Array.isArray(timeline.selectedClipIds) ? timeline.selectedClipIds : [])
+  const selectedSources = selectedIds.size > 0
+    ? getTimelineClipEntries(timeline, (clip, track) => (
+      selectedIds.has(clip?.id) && isGenerationSourceClip(clip, track)
+    )).sort((a, b) => a.trackIndex - b.trackIndex || getClipStart(a.clip) - getClipStart(b.clip))
+    : []
+
+  const hasExplicitTime = args.timeSeconds !== undefined || args.time !== undefined || args.frame !== undefined
+  const timing = resolveTimelineFrameTime(timeline, {
+    timeSeconds: args.timeSeconds ?? args.time,
+    frame: args.frame,
+  })
+  let captureTime = timing.timeSeconds
+  let requestedSource = 'playhead'
+
+  if (!hasExplicitTime && selectedSources.length > 0) {
+    const selectedAtPlayhead = selectedSources.find(({ clip }) => isClipActiveAtTime(clip, captureTime))
+    if (selectedAtPlayhead) {
+      requestedSource = 'selected_clip_at_playhead'
+    } else {
+      captureTime = getRepresentativeClipTime(selectedSources[0].clip, fps)
+      requestedSource = 'selected_clip_representative_frame'
+    }
+  } else if (hasExplicitTime) {
+    requestedSource = 'explicit_time'
+  }
+
+  const sourcesAtCapture = getGenerationSourceEntriesAtTime(timeline, captureTime)
+  const selectedAtCapture = selectedSources.find(({ clip }) => isClipActiveAtTime(clip, captureTime))
+  const sourceEntry = selectedAtCapture || sourcesAtCapture[0] || null
+  if (!sourceEntry) {
+    return {
+      error: 'No visible video or image clip is available at the requested timeline time.',
+      requested: {
+        timeSeconds: roundTime(captureTime),
+        timecode: formatTimelineTimecode(captureTime, fps),
+        selectedClipCount: selectedIds.size,
+      },
+    }
+  }
+
+  const mode = String(args.mode || 'extend').trim().toLowerCase() === 'keyframe' ? 'keyframe' : 'extend'
+  const workflowId = String(args.workflowId || 'ltx23-i2v').trim() || 'ltx23-i2v'
+  const category = String(args.category || 'video').trim().toLowerCase() || 'video'
+  const promptState = resolveGenerationPrompt(snapshot, sourceEntry.clip, args)
+  const durationSeconds = Number(args.durationSeconds ?? args.duration)
+  const requestedFps = Number(args.fps)
+  const timelineSummary = {
+    id: timeline.id,
+    name: timeline.name,
+    fps,
+    width: timeline.width || snapshot?.project?.settings?.width || null,
+    height: timeline.height || snapshot?.project?.settings?.height || null,
+    playheadPosition: roundTime(toFiniteNumber(timeline.playheadPosition, 0)),
+  }
+  const sourceClipSummary = summarizeGenerationSource(snapshot, timeline, sourceEntry, captureTime)
+  const topVisibleSourceClipSummary = summarizeGenerationSource(snapshot, timeline, sourcesAtCapture[0], captureTime)
+  const explicitResolution = normalizeTimelineBatchExplicitResolution(args)
+  const shouldResolveResolution = Boolean(
+    explicitResolution
+    || args.resolutionSource !== undefined
+    || args.matchResolution !== undefined
+    || args.matchAspect !== undefined
+  )
+  const resolutionPlan = shouldResolveResolution
+    ? resolveTimelineBatchGenerationResolution(snapshot, {
+      timeline: timelineSummary,
+      sourceClip: sourceClipSummary,
+      topVisibleSourceClip: topVisibleSourceClipSummary,
+    }, args)
+    : { resolution: null, source: null, reference: null }
+
+  return {
+    action: 'prepare_generation_from_timeline_context',
+    mode,
+    workflowId,
+    category,
+    previewOnly: args.previewOnly !== false,
+    openGenerateTab: args.openGenerateTab !== false,
+    requestedSource,
+    timeline: timelineSummary,
+    frame: {
+      timeSeconds: roundTime(captureTime),
+      frame: Math.max(0, Math.round(captureTime * fps)),
+      fps,
+      timecode: formatTimelineTimecode(captureTime, fps),
+    },
+    sourceClip: sourceClipSummary,
+    topVisibleSourceClip: topVisibleSourceClipSummary,
+    selectedClipIds: [...selectedIds],
+    selectedGenerationSourceCount: selectedSources.length,
+    prompt: promptState.prompt,
+    negativePrompt: promptState.negativePrompt,
+    generationSettings: {
+      durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
+      fps: Number.isFinite(requestedFps) ? requestedFps : null,
+      resolution: resolutionPlan.resolution,
+      resolutionSource: resolutionPlan.source,
+      resolutionReference: resolutionPlan.reference,
+    },
+  }
+}
+
+function normalizeTimelineBatchWorkflowId(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (MCP_TIMELINE_BATCH_SUPPORTED_WORKFLOWS.has(raw)) return raw
+  const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return MCP_TIMELINE_BATCH_WORKFLOW_ALIASES.get(compact) || raw
+}
+
+function getTimelineBatchVariationCount(value, fallback = 1) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(1, Math.min(MCP_TIMELINE_BATCH_MAX_VARIATIONS_PER_WORKFLOW, Math.floor(parsed)))
+}
+
+function splitWorkflowList(value) {
+  if (Array.isArray(value)) return value
+  const text = String(value || '').trim()
+  if (!text) return []
+  return text
+    .split(/[;,|]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function makeTimelineBatchSeed(baseSeed, index, explicitSeed) {
+  const explicit = Number(explicitSeed)
+  if (Number.isFinite(explicit)) return Math.max(0, Math.floor(explicit))
+  const base = Number(baseSeed)
+  if (Number.isFinite(base)) return Math.max(0, Math.floor(base) + index)
+  return Math.floor(Math.random() * 2147483647)
+}
+
+function normalizeTimelineBatchResolution(value) {
+  if (!value || typeof value !== 'object') return null
+  const width = Number(value.width)
+  const height = Number(value.height)
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null
+  return {
+    width: Math.max(16, Math.round(width)),
+    height: Math.max(16, Math.round(height)),
+  }
+}
+
+function normalizeTimelineBatchExplicitResolution(args = {}) {
+  const topLevel = normalizeTimelineBatchResolution({
+    width: args.width ?? args.outputWidth,
+    height: args.height ?? args.outputHeight,
+  })
+  if (topLevel) return topLevel
+  return normalizeTimelineBatchResolution(args.resolution || args.outputResolution || args.size)
+}
+
+function roundGenerationDimension(value, multiple = MCP_TIMELINE_BATCH_AUTO_DIMENSION_MULTIPLE) {
+  const safeMultiple = Math.max(2, Math.round(Number(multiple) || 2))
+  return Math.max(safeMultiple, Math.round((Number(value) || safeMultiple) / safeMultiple) * safeMultiple)
+}
+
+function resolveAspectMatchedGenerationResolution(width, height) {
+  const sourceWidth = Number(width)
+  const sourceHeight = Number(height)
+  if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) {
+    return null
+  }
+
+  const aspect = sourceWidth / sourceHeight
+  let outputWidth = Math.sqrt(MCP_TIMELINE_BATCH_AUTO_TARGET_AREA * aspect)
+  let outputHeight = outputWidth / aspect
+  const maxEdge = Math.max(outputWidth, outputHeight)
+  if (maxEdge > MCP_TIMELINE_BATCH_AUTO_MAX_EDGE) {
+    const scale = MCP_TIMELINE_BATCH_AUTO_MAX_EDGE / maxEdge
+    outputWidth *= scale
+    outputHeight *= scale
+  }
+
+  return {
+    width: roundGenerationDimension(outputWidth),
+    height: roundGenerationDimension(outputHeight),
+  }
+}
+
+function normalizeTimelineBatchResolutionSource(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (!raw || raw === 'auto') return 'source'
+  if (['source', 'input', 'inputimage', 'sourceclip', 'clip', 'asset'].includes(raw)) return 'source'
+  if (['timeline', 'sequence', 'currenttimeline', 'currentsequence'].includes(raw)) return 'timeline'
+  if (['project', 'projectsettings'].includes(raw)) return 'project'
+  if (['generate', 'generatedefault', 'current', 'currentgenerate'].includes(raw)) return 'generate'
+  return 'source'
+}
+
+function resolutionCandidate(width, height, kind) {
+  const w = Number(width)
+  const h = Number(height)
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null
+  return {
+    kind,
+    width: Math.round(w),
+    height: Math.round(h),
+  }
+}
+
+function getSourceResolutionCandidate(sourcePlan) {
+  const source = sourcePlan?.sourceClip || sourcePlan?.topVisibleSourceClip || null
+  return resolutionCandidate(source?.asset?.width, source?.asset?.height, 'source_asset')
+    || resolutionCandidate(source?.width, source?.height, 'source_clip')
+}
+
+function getTimelineResolutionCandidate(sourcePlan) {
+  return resolutionCandidate(sourcePlan?.timeline?.width, sourcePlan?.timeline?.height, 'timeline')
+}
+
+function getProjectResolutionCandidate(snapshot) {
+  return resolutionCandidate(snapshot?.project?.settings?.width, snapshot?.project?.settings?.height, 'project')
+}
+
+function resolveTimelineBatchGenerationResolution(snapshot, sourcePlan, args = {}) {
+  const explicit = normalizeTimelineBatchExplicitResolution(args)
+  if (explicit) {
+    return {
+      resolution: explicit,
+      source: 'explicit',
+      reference: { kind: 'explicit', ...explicit },
+    }
+  }
+
+  const sourceName = normalizeTimelineBatchResolutionSource(args.resolutionSource ?? args.matchResolution ?? args.matchAspect)
+  if (sourceName === 'generate') {
+    return {
+      resolution: null,
+      source: 'generate',
+      reference: null,
+    }
+  }
+
+  let candidate = null
+  if (sourceName === 'project') {
+    candidate = getProjectResolutionCandidate(snapshot) || getTimelineResolutionCandidate(sourcePlan) || getSourceResolutionCandidate(sourcePlan)
+  } else if (sourceName === 'timeline') {
+    candidate = getTimelineResolutionCandidate(sourcePlan) || getProjectResolutionCandidate(snapshot) || getSourceResolutionCandidate(sourcePlan)
+  } else {
+    candidate = getSourceResolutionCandidate(sourcePlan) || getTimelineResolutionCandidate(sourcePlan) || getProjectResolutionCandidate(snapshot)
+  }
+
+  const resolution = candidate ? resolveAspectMatchedGenerationResolution(candidate.width, candidate.height) : null
+  if (resolution) {
+    return {
+      resolution,
+      source: sourceName,
+      reference: candidate,
+    }
+  }
+
+  return {
+    resolution: { width: 1280, height: 720 },
+    source: 'default',
+    reference: { kind: 'default', width: 1280, height: 720 },
+  }
+}
+
+function resolveTimelineBatchDuration(args = {}, sourcePlan = {}, fallback = 5) {
+  const explicit = getTimelineBatchPositiveNumber(args.durationSeconds ?? args.duration, null)
+  if (explicit !== null) {
+    return { durationSeconds: explicit, source: 'explicit' }
+  }
+
+  const durationSource = String(args.durationSource || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+  const shouldUseSource = durationSource
+    ? ['source', 'sourceclip', 'clip', 'input', 'inputclip'].includes(durationSource)
+    : true
+  if (shouldUseSource) {
+    const sourceDuration = getTimelineBatchPositiveNumber(sourcePlan?.sourceClip?.duration, null)
+    if (sourceDuration !== null) {
+      return { durationSeconds: sourceDuration, source: 'source_clip' }
+    }
+  }
+
+  return {
+    durationSeconds: fallback,
+    source: 'default',
+  }
+}
+
+function getTimelineBatchPositiveNumber(value, fallback) {
+  if (value === null || typeof value === 'undefined' || value === '') return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function normalizeTimelineBatchWorkflows(args = {}) {
+  const fallbackCount = getTimelineBatchVariationCount(
+    args.variationsPerWorkflow ?? args.variationCount ?? args.variations ?? args.count,
+    1
+  )
+  const rawEntries = Array.isArray(args.workflows) && args.workflows.length > 0
+    ? args.workflows
+    : splitWorkflowList(args.workflowIds && args.workflowIds.length !== 0 ? args.workflowIds : (args.workflowId || 'ltx23-i2v'))
+
+  const globalSeeds = Array.isArray(args.seeds) ? args.seeds : []
+  const entries = []
+  let seedOffset = 0
+
+  for (const rawEntry of rawEntries) {
+    const rawWorkflow = typeof rawEntry === 'object' && rawEntry !== null
+      ? (rawEntry.workflowId || rawEntry.id || rawEntry.workflow || rawEntry.name || rawEntry.label)
+      : rawEntry
+    const workflowId = normalizeTimelineBatchWorkflowId(rawWorkflow)
+    if (!workflowId) continue
+    if (!MCP_TIMELINE_BATCH_SUPPORTED_WORKFLOWS.has(workflowId)) {
+      return {
+        error: `Unsupported timeline batch workflow "${rawWorkflow}". This first batch tool supports ltx23-i2v and wan22-i2v.`,
+      }
+    }
+
+    const entryCount = typeof rawEntry === 'object' && rawEntry !== null
+      ? getTimelineBatchVariationCount(rawEntry.variations ?? rawEntry.variationCount ?? rawEntry.count, fallbackCount)
+      : fallbackCount
+    const entrySeeds = typeof rawEntry === 'object' && rawEntry !== null && Array.isArray(rawEntry.seeds)
+      ? rawEntry.seeds
+      : []
+    const seedInputs = Array.from({ length: entryCount }, (_, index) => entrySeeds[index] ?? globalSeeds[seedOffset + index])
+
+    entries.push({
+      workflowId,
+      variations: entryCount,
+      seeds: Array.from({ length: entryCount }, (_, index) => {
+        const explicitSeed = entrySeeds[index] ?? globalSeeds[seedOffset + index]
+        return makeTimelineBatchSeed(args.baseSeed, seedOffset + index, explicitSeed)
+      }),
+    })
+    seedOffset += entryCount
+  }
+
+  if (entries.length === 0) {
+    return { error: 'No workflows were provided for the timeline generation batch.' }
+  }
+
+  const totalJobs = entries.reduce((sum, entry) => sum + entry.variations, 0)
+  if (totalJobs > MCP_TIMELINE_BATCH_MAX_TOTAL_JOBS) {
+    return {
+      error: `Timeline generation batch is too large (${totalJobs} jobs). Keep it at ${MCP_TIMELINE_BATCH_MAX_TOTAL_JOBS} jobs or fewer.`,
+    }
+  }
+
+  return { entries, totalJobs }
+}
+
+function buildTimelineBatchApplyArguments(args = {}, plan = {}) {
+  return {
+    ...args,
+    previewOnly: false,
+    workflowId: undefined,
+    workflowIds: undefined,
+    workflows: (plan.workflows || []).map((workflow) => ({
+      workflowId: workflow.workflowId,
+      variations: workflow.variations,
+      seeds: Array.isArray(workflow.seeds) ? workflow.seeds : [],
+    })),
+    durationSeconds: plan.generationSettings?.durationSeconds ?? args.durationSeconds ?? args.duration,
+    fps: plan.generationSettings?.fps ?? args.fps,
+    resolution: plan.generationSettings?.resolution || args.resolution,
+    resolutionSource: plan.generationSettings?.resolutionSource || args.resolutionSource,
+  }
+}
+
+function resolveTimelineGenerationBatchPlan(snapshot, args = {}) {
+  const normalized = normalizeTimelineBatchWorkflows(args)
+  if (normalized.error) return { error: normalized.error }
+
+  const firstWorkflowId = normalized.entries[0]?.workflowId || 'ltx23-i2v'
+  const sourcePlan = resolveGenerateFromTimelinePlan(snapshot, {
+    ...args,
+    workflowId: firstWorkflowId,
+    category: 'video',
+    mode: 'extend',
+    previewOnly: true,
+    openGenerateTab: args.openGenerateTab === true,
+  })
+  if (sourcePlan.error) return { error: sourcePlan.error }
+
+  const durationPlan = resolveTimelineBatchDuration(args, sourcePlan, 5)
+  const durationSeconds = durationPlan.durationSeconds
+  const requestedFps = getTimelineBatchPositiveNumber(
+    args.fps ?? sourcePlan.generationSettings?.fps,
+    24
+  )
+  const resolutionPlan = resolveTimelineBatchGenerationResolution(snapshot, sourcePlan, args)
+  const resolution = resolutionPlan.resolution
+  const prompt = String(args.prompt ?? sourcePlan.prompt ?? '').trim().slice(0, 5000)
+  const negativePrompt = String(args.negativePrompt ?? sourcePlan.negativePrompt ?? '').trim().slice(0, 2000)
+  const workflows = normalized.entries.map((entry) => ({
+    ...entry,
+    label: entry.workflowId === 'wan22-i2v' ? 'WAN 2.2' : entry.workflowId === 'ltx23-i2v' ? 'LTX 2.3' : entry.workflowId,
+  }))
+  const jobs = workflows.flatMap((workflow) => (
+    workflow.seeds.map((seed, index) => ({
+      workflowId: workflow.workflowId,
+      workflowLabel: workflow.label,
+      variation: index + 1,
+      variationCount: workflow.variations,
+      seed,
+      prompt,
+      negativePrompt,
+      durationSeconds,
+      durationSource: durationPlan.source,
+      fps: requestedFps,
+      resolution,
+      resolutionSource: resolutionPlan.source,
+      resolutionReference: resolutionPlan.reference,
+    }))
+  ))
+
+  return {
+    action: 'queue_timeline_generation_batch',
+    previewOnly: args.previewOnly !== false,
+    mode: 'extend',
+    category: 'video',
+    openGenerateTab: args.openGenerateTab === true,
+    source: {
+      requestedSource: sourcePlan.requestedSource,
+      timeline: sourcePlan.timeline,
+      frame: sourcePlan.frame,
+      sourceClip: sourcePlan.sourceClip,
+      topVisibleSourceClip: sourcePlan.topVisibleSourceClip,
+      selectedClipIds: sourcePlan.selectedClipIds,
+      selectedGenerationSourceCount: sourcePlan.selectedGenerationSourceCount,
+    },
+    frame: sourcePlan.frame,
+    prompt,
+    negativePrompt,
+    generationSettings: {
+      durationSeconds,
+      durationSource: durationPlan.source,
+      fps: requestedFps,
+      resolution,
+      resolutionSource: resolutionPlan.source,
+      resolutionReference: resolutionPlan.reference,
+    },
+    workflows,
+    jobs,
+    totalJobs: jobs.length,
+    limits: {
+      maxVariationsPerWorkflow: MCP_TIMELINE_BATCH_MAX_VARIATIONS_PER_WORKFLOW,
+      maxTotalJobs: MCP_TIMELINE_BATCH_MAX_TOTAL_JOBS,
+    },
+  }
+}
+
+function normalizePromptBatchWorkflowId(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (MCP_PROMPT_BATCH_SUPPORTED_WORKFLOWS.has(raw)) return raw
+  const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return MCP_PROMPT_BATCH_WORKFLOW_ALIASES.get(compact) || raw
+}
+
+function getPromptBatchVariationCount(value, fallback = 1) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(1, Math.min(MCP_PROMPT_BATCH_MAX_VARIATIONS_PER_WORKFLOW, Math.floor(parsed)))
+}
+
+function makePromptBatchSeed(baseSeed, index, explicitSeed) {
+  const explicit = Number(explicitSeed)
+  if (Number.isFinite(explicit)) return Math.max(0, Math.floor(explicit))
+  const base = Number(baseSeed)
+  if (Number.isFinite(base)) return Math.max(0, Math.floor(base) + index)
+  return Math.floor(Math.random() * 2147483647)
+}
+
+function normalizePromptBatchResolution(value, fallback = null) {
+  const resolution = normalizeTimelineBatchResolution(value)
+  if (resolution) return resolution
+  return fallback ? { ...fallback } : null
+}
+
+function normalizePromptBatchPrompts(args = {}) {
+  const rawEntries = Array.isArray(args.prompts) && args.prompts.length > 0
+    ? args.prompts
+    : [args.prompt]
+  const globalNegative = String(args.negativePrompt || '').trim().slice(0, 2000)
+  const prompts = rawEntries.map((entry, index) => {
+    const rawPrompt = typeof entry === 'object' && entry !== null
+      ? entry.prompt ?? entry.text ?? entry.description
+      : entry
+    const prompt = String(rawPrompt || '').trim().slice(0, 5000)
+    if (!prompt) return null
+    const negativePrompt = typeof entry === 'object' && entry !== null
+      ? String(entry.negativePrompt ?? globalNegative).trim().slice(0, 2000)
+      : globalNegative
+    return {
+      prompt,
+      negativePrompt,
+      label: typeof entry === 'object' && entry !== null
+        ? String(entry.label || entry.name || `Prompt ${index + 1}`).trim().slice(0, 120)
+        : `Prompt ${index + 1}`,
+    }
+  }).filter(Boolean)
+
+  if (prompts.length === 0) {
+    return { error: 'No prompt was provided for the prompt generation batch.' }
+  }
+  return { prompts }
+}
+
+function normalizePromptBatchWorkflows(args = {}) {
+  const fallbackCount = getPromptBatchVariationCount(
+    args.variationsPerWorkflow ?? args.variationsPerPrompt ?? args.variationCount ?? args.variations ?? args.count,
+    1
+  )
+  const rawEntries = Array.isArray(args.workflows) && args.workflows.length > 0
+    ? args.workflows
+    : splitWorkflowList(args.workflowIds && args.workflowIds.length !== 0 ? args.workflowIds : (args.workflowId || 'z-image-turbo'))
+
+  const globalSeeds = Array.isArray(args.seeds) ? args.seeds : []
+  const entries = []
+  let seedOffset = 0
+
+  for (const rawEntry of rawEntries) {
+    const rawWorkflow = typeof rawEntry === 'object' && rawEntry !== null
+      ? (rawEntry.workflowId || rawEntry.id || rawEntry.workflow || rawEntry.name || rawEntry.label)
+      : rawEntry
+    const workflowId = normalizePromptBatchWorkflowId(rawWorkflow)
+    if (!workflowId) continue
+    const workflowInfo = MCP_PROMPT_BATCH_SUPPORTED_WORKFLOWS.get(workflowId)
+    if (!workflowInfo) {
+      return {
+        error: `Unsupported prompt generation workflow "${rawWorkflow}". Use one of: ${[...MCP_PROMPT_BATCH_SUPPORTED_WORKFLOWS.keys()].join(', ')}.`,
+      }
+    }
+
+    const entryCount = typeof rawEntry === 'object' && rawEntry !== null
+      ? getPromptBatchVariationCount(rawEntry.variations ?? rawEntry.variationCount ?? rawEntry.count, fallbackCount)
+      : fallbackCount
+    const entrySeeds = typeof rawEntry === 'object' && rawEntry !== null && Array.isArray(rawEntry.seeds)
+      ? rawEntry.seeds
+      : []
+    const seedInputs = Array.from({ length: entryCount }, (_, index) => entrySeeds[index] ?? globalSeeds[seedOffset + index])
+    const entryResolution = typeof rawEntry === 'object' && rawEntry !== null
+      ? normalizePromptBatchResolution(rawEntry.resolution, workflowInfo.defaultResolution)
+      : normalizePromptBatchResolution(args.resolution, workflowInfo.defaultResolution)
+    const entryDuration = getTimelineBatchPositiveNumber(
+      typeof rawEntry === 'object' && rawEntry !== null
+        ? rawEntry.durationSeconds ?? rawEntry.duration ?? args.durationSeconds ?? args.duration
+        : args.durationSeconds ?? args.duration,
+      workflowInfo.defaultDurationSeconds || null
+    )
+    const entryFps = getTimelineBatchPositiveNumber(
+      typeof rawEntry === 'object' && rawEntry !== null
+        ? rawEntry.fps ?? args.fps
+        : args.fps,
+      workflowInfo.defaultFps || null
+    )
+
+    entries.push({
+      workflowId,
+      label: String((typeof rawEntry === 'object' && rawEntry !== null && rawEntry.workflowLabel) || workflowInfo.label || workflowId),
+      category: workflowInfo.category,
+      outputType: workflowInfo.outputType,
+      variations: entryCount,
+      seedInputs,
+      seeds: seedInputs.map((explicitSeed, index) => {
+        return makePromptBatchSeed(args.baseSeed, seedOffset + index, explicitSeed)
+      }),
+      resolution: entryResolution,
+      durationSeconds: entryDuration,
+      fps: entryFps,
+    })
+    seedOffset += entryCount
+  }
+
+  if (entries.length === 0) {
+    return { error: 'No workflows were provided for the prompt generation batch.' }
+  }
+
+  return { entries }
+}
+
+function buildPromptBatchApplyArguments(args = {}, plan = {}) {
+  return {
+    ...args,
+    previewOnly: false,
+    workflowId: undefined,
+    workflowIds: undefined,
+    workflows: (plan.workflows || []).map((workflow) => ({
+      workflowId: workflow.workflowId,
+      variations: workflow.variations,
+      seeds: Array.isArray(workflow.seeds) ? workflow.seeds : [],
+      resolution: workflow.resolution || undefined,
+      durationSeconds: workflow.durationSeconds || undefined,
+      fps: workflow.fps || undefined,
+    })),
+    prompts: (plan.prompts || []).map((prompt) => ({
+      prompt: prompt.prompt,
+      negativePrompt: prompt.negativePrompt,
+      label: prompt.label,
+    })),
+    folderId: plan.folderId || args.folderId || undefined,
+    jobs: plan.jobs || undefined,
+  }
+}
+
+function resolvePromptGenerationBatchPlan(_snapshot, args = {}) {
+  const folderId = String(args.folderId || args.outputFolderId || '').trim() || null
+
+  if (Array.isArray(args.jobs) && args.jobs.length > 0) {
+    if (args.jobs.length > MCP_PROMPT_BATCH_MAX_TOTAL_JOBS) {
+      return {
+        error: `Prompt generation batch is too large (${args.jobs.length} jobs). Keep it at ${MCP_PROMPT_BATCH_MAX_TOTAL_JOBS} jobs or fewer.`,
+      }
+    }
+    let jobs = []
+    try {
+      jobs = args.jobs.map((job, index) => {
+        const workflowId = normalizePromptBatchWorkflowId(job?.workflowId)
+        const workflowInfo = MCP_PROMPT_BATCH_SUPPORTED_WORKFLOWS.get(workflowId)
+        if (!workflowInfo) {
+          throw new Error(`Unsupported prompt generation workflow "${job?.workflowId || ''}".`)
+        }
+        const prompt = String(job?.prompt || '').trim().slice(0, 5000)
+        if (!prompt) throw new Error(`Prompt generation job ${index + 1} is missing prompt text.`)
+        return {
+          workflowId,
+          workflowLabel: String(job?.workflowLabel || workflowInfo.label || workflowId),
+          category: workflowInfo.category,
+          outputType: workflowInfo.outputType,
+          prompt,
+          negativePrompt: String(job?.negativePrompt || '').trim().slice(0, 2000),
+          promptLabel: String(job?.promptLabel || '').trim().slice(0, 120),
+          promptIndex: Number(job?.promptIndex) || null,
+          promptCount: Number(job?.promptCount) || null,
+          variation: Number(job?.variation) || null,
+          variationCount: Number(job?.variationCount) || null,
+          seed: makePromptBatchSeed(undefined, index, job?.seed),
+          durationSeconds: getTimelineBatchPositiveNumber(job?.durationSeconds ?? job?.duration, workflowInfo.defaultDurationSeconds || null),
+          fps: getTimelineBatchPositiveNumber(job?.fps, workflowInfo.defaultFps || null),
+          resolution: normalizePromptBatchResolution(job?.resolution, workflowInfo.defaultResolution),
+          folderId: String(job?.folderId || job?.outputFolderId || folderId || '').trim() || null,
+        }
+      })
+    } catch (error) {
+      return { error: error?.message || String(error) }
+    }
+    return {
+      action: 'queue_prompt_generation_batch',
+      previewOnly: args.previewOnly !== false,
+      prompts: args.prompts || [],
+      workflows: args.workflows || [],
+      jobs,
+      folderId,
+      totalJobs: jobs.length,
+      limits: {
+        maxVariationsPerWorkflow: MCP_PROMPT_BATCH_MAX_VARIATIONS_PER_WORKFLOW,
+        maxTotalJobs: MCP_PROMPT_BATCH_MAX_TOTAL_JOBS,
+      },
+    }
+  }
+
+  const promptState = normalizePromptBatchPrompts(args)
+  if (promptState.error) return { error: promptState.error }
+  const workflowState = normalizePromptBatchWorkflows(args)
+  if (workflowState.error) return { error: workflowState.error }
+
+  const totalJobs = promptState.prompts.length * workflowState.entries.reduce((sum, entry) => sum + entry.variations, 0)
+  if (totalJobs > MCP_PROMPT_BATCH_MAX_TOTAL_JOBS) {
+    return {
+      error: `Prompt generation batch is too large (${totalJobs} jobs). Keep it at ${MCP_PROMPT_BATCH_MAX_TOTAL_JOBS} jobs or fewer.`,
+    }
+  }
+
+  const jobs = []
+  let jobIndex = 0
+  for (const promptEntry of promptState.prompts) {
+    for (const workflow of workflowState.entries) {
+      for (let variationIndex = 0; variationIndex < workflow.variations; variationIndex += 1) {
+        const explicitSeed = Array.isArray(workflow.seedInputs) ? workflow.seedInputs[variationIndex] : undefined
+        jobs.push({
+          workflowId: workflow.workflowId,
+          workflowLabel: workflow.label,
+          category: workflow.category,
+          outputType: workflow.outputType,
+          prompt: promptEntry.prompt,
+          negativePrompt: promptEntry.negativePrompt,
+          promptLabel: promptEntry.label,
+          promptIndex: promptState.prompts.indexOf(promptEntry) + 1,
+          promptCount: promptState.prompts.length,
+          variation: variationIndex + 1,
+          variationCount: workflow.variations,
+          seed: makePromptBatchSeed(args.baseSeed, jobIndex, explicitSeed),
+          durationSeconds: workflow.durationSeconds,
+          fps: workflow.fps,
+          resolution: workflow.resolution,
+          folderId,
+        })
+        jobIndex += 1
+      }
+    }
+  }
+
+  return {
+    action: 'queue_prompt_generation_batch',
+    previewOnly: args.previewOnly !== false,
+    prompts: promptState.prompts,
+    workflows: workflowState.entries,
+    jobs,
+    folderId,
+    totalJobs: jobs.length,
+    limits: {
+      maxVariationsPerWorkflow: MCP_PROMPT_BATCH_MAX_VARIATIONS_PER_WORKFLOW,
+      maxTotalJobs: MCP_PROMPT_BATCH_MAX_TOTAL_JOBS,
+    },
+  }
 }
 
 function stripCaptureImageData(capture = null) {
@@ -2147,6 +4472,170 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'diagnose_comfyui_connection',
+      description: 'Diagnose the local ComfyUI connection used by ComfyStudio. Checks the configured localhost port, ComfyUI API endpoints, launcher state, port owner, likely install mode such as portable/Desktop/Docker/manual, and returns support-friendly next steps.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          port: { type: 'integer', description: 'Optional local ComfyUI port to test. Defaults to ComfyStudio Settings > ComfyUI Connection.' },
+          timeoutMs: { type: 'integer', description: 'Request timeout in milliseconds. Defaults to 4500, max 30000.' },
+        },
+      },
+    },
+    {
+      name: 'set_comfyui_connection',
+      description: 'Set the local ComfyUI connection port used by ComfyStudio. Supports previewOnly so assistants can propose the change before applying it. This changes ComfyStudio settings only; it does not restart ComfyUI or edit launcher scripts.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          port: { type: 'integer', description: 'Local ComfyUI port to save, for example 8188.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the proposed before/after setting without changing ComfyStudio.' },
+        },
+        required: ['port'],
+      },
+    },
+    {
+      name: 'repair_comfyui_connection',
+      description: 'Diagnose the configured ComfyUI port, probe likely local ports, and propose or apply a settings fix when ComfyUI is reachable on a different localhost port. Use previewOnly first unless the user already approved the change.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          strategy: {
+            type: 'string',
+            enum: ['useReachablePort'],
+            description: 'Repair strategy. useReachablePort finds a reachable local ComfyUI port and points ComfyStudio at it.',
+          },
+          candidatePorts: {
+            type: 'array',
+            items: { type: 'integer' },
+            description: 'Optional local ports to probe. Defaults to common ComfyUI ports plus the configured port.',
+          },
+          timeoutMs: { type: 'integer', description: 'Request timeout per probe in milliseconds. Defaults to 4500, max 30000.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the proposed repair without changing ComfyStudio. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'control_comfyui_launcher',
+      description: 'Preview or apply ComfyUI launcher actions through ComfyStudio: start, stop, or restart. Defaults to previewOnly for safety. Stop/restart can interrupt running generations and only work for ComfyUI processes owned by ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['start', 'stop', 'restart'],
+            description: 'Launcher action to preview or run.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the action plan without starting/stopping/restarting ComfyUI. Defaults to true.',
+          },
+        },
+        required: ['action'],
+      },
+    },
+    {
+      name: 'get_comfyui_launcher_logs',
+      description: 'Return recent ComfyUI launcher log lines from ComfyStudio, with a lightweight summary of common support issues like port conflicts, import errors, missing models/files, and CUDA memory errors.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tailLines: { type: 'integer', description: 'Number of recent log lines to return. Defaults to 200, max 2000.' },
+          streams: {
+            type: 'array',
+            items: { type: 'string', enum: ['system', 'stdout', 'stderr', 'event', 'generation'] },
+            description: 'Optional stream filter.',
+          },
+          includeIssueSummary: { type: 'boolean', description: 'Include detected issue summary. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'validate_comfyui_nodes',
+      description: 'Check whether specific ComfyUI node class names are available from /object_info. Useful when a workflow fails because custom nodes are missing or not loading.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          nodeClasses: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'ComfyUI class_type names to check, for example ["KSampler", "LoadImage", "VHS_VideoCombine"].',
+          },
+          port: { type: 'integer', description: 'Optional local ComfyUI port to test. Defaults to ComfyStudio Settings > ComfyUI Connection.' },
+          timeoutMs: { type: 'integer', description: 'Request timeout in milliseconds. Defaults to 4500, max 30000.' },
+        },
+        required: ['nodeClasses'],
+      },
+    },
+    {
+      name: 'list_comfystudio_workflows',
+      description: 'List bundled ComfyStudio workflows available on this machine, with category, local/cloud runtime, input-image requirement, and workflow file names. Useful before choosing a workflow for local generation or setup checks.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          runtime: {
+            type: 'string',
+            enum: ['local', 'cloud'],
+            description: 'Optional runtime filter. Use local for workflows intended to run on the user machine.',
+          },
+          category: {
+            type: 'string',
+            enum: ['video', 'image', 'audio', 'text'],
+            description: 'Optional workflow category filter.',
+          },
+          query: {
+            type: 'string',
+            description: 'Optional search text matched against workflow id, label, description, and file.',
+          },
+          refresh: {
+            type: 'boolean',
+            description: 'Refresh the workflow catalog from disk. Defaults to false.',
+          },
+        },
+      },
+    },
+    {
+      name: 'inspect_comfystudio_workflow',
+      description: 'Inspect a bundled or explicit ComfyStudio workflow JSON, extract required ComfyUI class_type node names, validate them against the configured local ComfyUI /object_info, and return install/update hints for missing nodes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          workflowId: {
+            type: 'string',
+            description: 'Workflow id from list_comfystudio_workflows, for example z-image-turbo, ltx23-i2v, image-edit, caption-qwen-asr, or music-video-shot-ltx23.',
+          },
+          workflowFile: {
+            type: 'string',
+            description: 'Bundled workflow JSON filename if workflowId is unknown, for example image_z_image_turbo.json.',
+          },
+          workflowPath: {
+            type: 'string',
+            description: 'Explicit local workflow JSON path. Use only when inspecting a custom workflow file.',
+          },
+          includeValidation: {
+            type: 'boolean',
+            description: 'Validate node classes against local ComfyUI. Defaults to true.',
+          },
+          includeNodeClasses: {
+            type: 'boolean',
+            description: 'Include the extracted node class list. Defaults to true.',
+          },
+          port: {
+            type: 'integer',
+            description: 'Optional local ComfyUI port to test. Defaults to ComfyStudio Settings > ComfyUI Connection.',
+          },
+          timeoutMs: {
+            type: 'integer',
+            description: 'Request timeout in milliseconds. Defaults to 4500, max 30000.',
+          },
+          refresh: {
+            type: 'boolean',
+            description: 'Refresh the workflow catalog from disk before resolving workflowId.',
+          },
+        },
+      },
+    },
+    {
       name: 'check_export_readiness',
       description: 'Check whether the current timeline is ready for a standard delivery export, especially MP4 H.264 HD. Reports blockers, warnings, target codec/resolution/range, and suggested next actions.',
       inputSchema: {
@@ -2265,6 +4754,374 @@ function createToolDefinitions() {
           maxImageBytes: {
             type: 'integer',
             description: 'Maximum embedded image size. Defaults to 4 MB.',
+          },
+        },
+      },
+    },
+    {
+      name: 'prepare_generation_from_timeline_context',
+      description: 'Prepare the Generate tab from the current timeline context. Uses the selected visible video/image clip when possible, otherwise the playhead frame. Defaults to previewOnly and never queues generation; applying captures the frame, opens Generate, and prefills workflow/prompt/settings for user review.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timeSeconds: {
+            type: 'number',
+            description: 'Optional timeline time in seconds. Defaults to current playhead, or a representative frame from the selected clip when the playhead is not on it.',
+          },
+          time: {
+            type: 'number',
+            description: 'Alias for timeSeconds.',
+          },
+          frame: {
+            type: 'integer',
+            description: 'Optional timeline frame number. Used when timeSeconds is omitted.',
+          },
+          mode: {
+            type: 'string',
+            enum: ['extend', 'keyframe'],
+            description: 'How the captured frame should be used in Generate. Defaults to extend.',
+          },
+          workflowId: {
+            type: 'string',
+            description: 'ComfyStudio workflow id to select in Generate. Defaults to ltx23-i2v.',
+          },
+          category: {
+            type: 'string',
+            enum: ['video', 'image', 'audio', 'text'],
+            description: 'Generate category to open. Defaults to video.',
+          },
+          prompt: {
+            type: 'string',
+            description: 'Prompt to prefill. If omitted, ComfyStudio tries to reuse prompt metadata from the source clip/asset.',
+          },
+          negativePrompt: {
+            type: 'string',
+            description: 'Negative prompt to prefill when supported.',
+          },
+          durationSeconds: {
+            type: 'number',
+            description: 'Optional generation duration to prefill when the workflow supports it.',
+          },
+          duration: {
+            type: 'number',
+            description: 'Alias for durationSeconds.',
+          },
+          width: {
+            type: 'integer',
+            description: 'Top-level output width alias. Used with height when resolution is omitted.',
+          },
+          height: {
+            type: 'integer',
+            description: 'Top-level output height alias. Used with width when resolution is omitted.',
+          },
+          fps: {
+            type: 'number',
+            description: 'Optional generation FPS to prefill when the workflow supports it.',
+          },
+          resolution: {
+            type: 'object',
+            description: 'Optional resolution object to prefill, for example { "width": 1280, "height": 720 }.',
+            properties: {
+              width: { type: 'integer' },
+              height: { type: 'integer' },
+            },
+          },
+          resolutionSource: {
+            type: 'string',
+            enum: ['auto', 'source', 'input', 'timeline', 'sequence', 'project', 'generate'],
+            description: 'When width/height/resolution are omitted, choose which aspect to match. source/input uses the visible source asset; timeline/sequence uses the active timeline; project uses project settings; generate leaves the current Generate tab resolution unchanged.',
+          },
+          openGenerateTab: {
+            type: 'boolean',
+            description: 'When false, captures and stores the frame without switching tabs. Defaults to true on apply.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the plan without capturing a frame or opening Generate. Defaults to true.',
+          },
+        },
+      },
+    },
+    {
+      name: 'queue_prepared_generation',
+      description: 'Queue the generation currently staged in the Generate tab by using the same queue path as ComfyStudio’s Queue button. Use previewOnly first. Applying can start local/credit-backed generation depending on the selected workflow, so only call with previewOnly=false after explicit user approval.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, inspects whether the staged Generate request is queueable without queueing it. Defaults to true.',
+          },
+          requireTimelineFrame: {
+            type: 'boolean',
+            description: 'When true, refuses to queue unless Generate is staged with a timeline frame from prepare_generation_from_timeline_context. Defaults to true.',
+          },
+          timeoutMs: {
+            type: 'integer',
+            description: 'Renderer response timeout in milliseconds. Defaults to 10000.',
+          },
+        },
+      },
+    },
+    {
+      name: 'queue_timeline_generation_batch',
+      description: 'Preview or queue a batch of image-to-video generations from the selected clip or current playhead frame. Supports flexible variation counts per workflow, for example 2 WAN 2.2 variations and 7 LTX 2.3 variations. Defaults to previewOnly; applying can start local/credit-backed generation, so require explicit user approval first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timeSeconds: {
+            type: 'number',
+            description: 'Optional timeline time in seconds. Defaults to the current playhead, or a representative frame from the selected clip when useful.',
+          },
+          time: {
+            type: 'number',
+            description: 'Alias for timeSeconds.',
+          },
+          frame: {
+            type: 'integer',
+            description: 'Optional timeline frame number. Used when timeSeconds is omitted.',
+          },
+          workflowIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Workflow ids or aliases to queue, for example ["wan22-i2v", "ltx23-i2v"]. Supports WAN 2.2 and LTX 2.3 in this first version.',
+          },
+          workflows: {
+            type: 'array',
+            description: 'Per-workflow batch settings. Each item may include workflowId, variations/count, and optional seeds.',
+            items: {
+              type: 'object',
+              properties: {
+                workflowId: { type: 'string' },
+                id: { type: 'string' },
+                name: { type: 'string' },
+                variations: { type: 'integer' },
+                variationCount: { type: 'integer' },
+                count: { type: 'integer' },
+                seeds: {
+                  type: 'array',
+                  items: { type: 'integer' },
+                },
+              },
+            },
+          },
+          workflowId: {
+            type: 'string',
+            description: 'Single workflow id or alias when workflowIds/workflows is omitted.',
+          },
+          variationsPerWorkflow: {
+            type: 'integer',
+            description: 'Default number of variations for each workflow. Maximum 8 per workflow.',
+          },
+          variations: {
+            type: 'integer',
+            description: 'Alias for variationsPerWorkflow.',
+          },
+          count: {
+            type: 'integer',
+            description: 'Alias for variationsPerWorkflow.',
+          },
+          baseSeed: {
+            type: 'integer',
+            description: 'Optional base seed. If provided, each queued job increments from this seed.',
+          },
+          seeds: {
+            type: 'array',
+            items: { type: 'integer' },
+            description: 'Optional explicit seeds across the whole batch.',
+          },
+          prompt: {
+            type: 'string',
+            description: 'Prompt for every variation. If omitted, ComfyStudio tries to reuse prompt metadata from the source clip/asset.',
+          },
+          negativePrompt: {
+            type: 'string',
+            description: 'Negative prompt for every variation when supported.',
+          },
+          durationSeconds: {
+            type: 'number',
+            description: 'Optional generation duration for every queued job.',
+          },
+          duration: {
+            type: 'number',
+            description: 'Alias for durationSeconds.',
+          },
+          durationSource: {
+            type: 'string',
+            enum: ['source', 'source_clip', 'clip', 'default'],
+            description: 'When durationSeconds is omitted, source/source_clip/clip matches the visible source clip duration; default uses the standard 5 second generation duration.',
+          },
+          width: {
+            type: 'integer',
+            description: 'Top-level output width alias. Used with height when resolution is omitted.',
+          },
+          height: {
+            type: 'integer',
+            description: 'Top-level output height alias. Used with width when resolution is omitted.',
+          },
+          fps: {
+            type: 'number',
+            description: 'Optional generation FPS for every queued job.',
+          },
+          resolution: {
+            type: 'object',
+            description: 'Optional generation resolution object, for example { "width": 1280, "height": 720 }. If omitted, MCP matches the source clip aspect at a model-friendly size such as 1280x720 for 16:9.',
+            properties: {
+              width: { type: 'integer' },
+              height: { type: 'integer' },
+            },
+          },
+          resolutionSource: {
+            type: 'string',
+            enum: ['auto', 'source', 'input', 'timeline', 'sequence', 'project', 'generate'],
+            description: 'When width/height/resolution are omitted, choose which aspect to match. source/input uses the visible source asset; timeline/sequence uses the active timeline; project uses project settings; generate leaves the current Generate tab resolution unchanged.',
+          },
+          openGenerateTab: {
+            type: 'boolean',
+            description: 'When true, also opens Generate with the captured frame. Defaults to false for batch queueing.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the batch plan without capturing or queueing. Defaults to true.',
+          },
+          timeoutMs: {
+            type: 'integer',
+            description: 'Renderer response timeout in milliseconds. Defaults to 30000.',
+          },
+        },
+      },
+    },
+    {
+      name: 'queue_prompt_generation_batch',
+      description: 'Preview or queue text-to-image/text-to-video generation jobs directly from written prompts. Use this for brief-to-assets workflows before assembling a sequence. Defaults to previewOnly; applying can start local/credit-backed generation, so require explicit user approval first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          prompt: {
+            type: 'string',
+            description: 'Single prompt to generate from. Use prompts for multiple source prompts.',
+          },
+          prompts: {
+            type: 'array',
+            description: 'Multiple prompts. Items can be strings or objects with prompt/text, negativePrompt, and label.',
+            items: {
+              oneOf: [
+                { type: 'string' },
+                {
+                  type: 'object',
+                  properties: {
+                    prompt: { type: 'string' },
+                    text: { type: 'string' },
+                    negativePrompt: { type: 'string' },
+                    label: { type: 'string' },
+                  },
+                },
+              ],
+            },
+          },
+          workflowIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Prompt workflow ids or aliases, for example ["z-image-turbo", "ltx23-t2v"].',
+          },
+          workflows: {
+            type: 'array',
+            description: 'Per-workflow batch settings. Each item may include workflowId, variations/count, seeds, resolution, durationSeconds, and fps.',
+            items: {
+              type: 'object',
+              properties: {
+                workflowId: { type: 'string' },
+                id: { type: 'string' },
+                name: { type: 'string' },
+                workflowLabel: { type: 'string' },
+                variations: { type: 'integer' },
+                variationCount: { type: 'integer' },
+                count: { type: 'integer' },
+                seeds: {
+                  type: 'array',
+                  items: { type: 'integer' },
+                },
+                resolution: {
+                  type: 'object',
+                  properties: {
+                    width: { type: 'integer' },
+                    height: { type: 'integer' },
+                  },
+                },
+                durationSeconds: { type: 'number' },
+                duration: { type: 'number' },
+                fps: { type: 'number' },
+              },
+            },
+          },
+          workflowId: {
+            type: 'string',
+            description: 'Single prompt workflow id or alias when workflowIds/workflows is omitted. Defaults to z-image-turbo.',
+          },
+          variationsPerWorkflow: {
+            type: 'integer',
+            description: 'Default number of variations for each workflow/prompt pair. Maximum 8 per workflow.',
+          },
+          variationsPerPrompt: {
+            type: 'integer',
+            description: 'Alias for variationsPerWorkflow.',
+          },
+          variations: {
+            type: 'integer',
+            description: 'Alias for variationsPerWorkflow.',
+          },
+          count: {
+            type: 'integer',
+            description: 'Alias for variationsPerWorkflow.',
+          },
+          baseSeed: {
+            type: 'integer',
+            description: 'Optional base seed. If provided, each queued job increments from this seed.',
+          },
+          seeds: {
+            type: 'array',
+            items: { type: 'integer' },
+            description: 'Optional explicit seeds across the whole batch.',
+          },
+          negativePrompt: {
+            type: 'string',
+            description: 'Negative prompt used for prompts that do not provide their own negativePrompt.',
+          },
+          durationSeconds: {
+            type: 'number',
+            description: 'Optional generation duration for video workflows.',
+          },
+          duration: {
+            type: 'number',
+            description: 'Alias for durationSeconds.',
+          },
+          fps: {
+            type: 'number',
+            description: 'Optional generation FPS for video workflows.',
+          },
+          resolution: {
+            type: 'object',
+            description: 'Optional generation resolution object, for example { "width": 1280, "height": 720 }.',
+            properties: {
+              width: { type: 'integer' },
+              height: { type: 'integer' },
+            },
+          },
+          folderId: {
+            type: 'string',
+            description: 'Optional existing ComfyStudio asset folder ID where generated result assets should be organized after import. Use create_asset_folder first when a new folder is needed.',
+          },
+          outputFolderId: {
+            type: 'string',
+            description: 'Alias for folderId.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the batch plan without queueing. Defaults to true.',
+          },
+          timeoutMs: {
+            type: 'integer',
+            description: 'Renderer response timeout in milliseconds. Defaults to 30000.',
           },
         },
       },
@@ -2647,6 +5504,264 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'create_timeline',
+      description: 'Preview or create a new ComfyStudio sequence/timeline with a name, optional dimensions, fps, duration, and optional switch-to-new-sequence behavior. Defaults to previewOnly; applying is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Name for the new sequence/timeline.',
+          },
+          sequenceName: {
+            type: 'string',
+            description: 'Alias for name.',
+          },
+          timelineName: {
+            type: 'string',
+            description: 'Alias for name.',
+          },
+          width: {
+            type: 'integer',
+            description: 'Optional timeline width. Defaults to the current timeline/project width.',
+          },
+          height: {
+            type: 'integer',
+            description: 'Optional timeline height. Defaults to the current timeline/project height.',
+          },
+          fps: {
+            type: 'number',
+            description: 'Optional frame rate. Defaults to the current timeline/project fps.',
+          },
+          durationSeconds: {
+            type: 'number',
+            description: 'Optional starting timeline duration in seconds. Defaults to 60.',
+          },
+          duration: {
+            type: 'number',
+            description: 'Alias for durationSeconds.',
+          },
+          copySettingsFromCurrent: {
+            type: 'boolean',
+            description: 'When true, default dimensions/fps come from the active sequence. Defaults to true.',
+          },
+          switchToTimeline: {
+            type: 'boolean',
+            description: 'When true, switch ComfyStudio to the new sequence after creation. Defaults to true.',
+          },
+          activate: {
+            type: 'boolean',
+            description: 'Alias for switchToTimeline.',
+          },
+          color: {
+            type: 'string',
+            description: 'Optional sequence color as #RRGGBB.',
+          },
+          folderId: {
+            type: 'string',
+            description: 'Optional project folder ID for the new sequence asset/card.',
+          },
+          allowDuplicateName: {
+            type: 'boolean',
+            description: 'When true, allow duplicate sequence names. Defaults to false, which auto-suffixes duplicate names.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the sequence creation plan without changing the project. Defaults to true.',
+          },
+        },
+      },
+    },
+    {
+      name: 'create_asset_folder',
+      description: 'Preview or create ComfyStudio asset-panel folders. Accepts a single folder name or a nested path like "AI Spots / July 4th Demo"; reuses existing matching folders by default and creates only missing folders.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Single folder name to create when path/folderPath is omitted.',
+          },
+          folderName: {
+            type: 'string',
+            description: 'Alias for name.',
+          },
+          path: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Nested folder path to create, for example "Generated Spots / July 4th" or ["Generated Spots", "July 4th"].',
+          },
+          folderPath: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Alias for path.',
+          },
+          parentId: {
+            type: 'string',
+            description: 'Optional existing parent folder ID. New path/name is created under this folder.',
+          },
+          parentPath: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Optional existing parent folder path. Use path/folderPath instead if missing parent folders should be created.',
+          },
+          color: {
+            type: 'string',
+            description: 'Optional folder color as #RRGGBB. Applied to the leaf folder when created; existing leaf folders are recolored only when setColorOnExisting=true.',
+          },
+          reuseExisting: {
+            type: 'boolean',
+            description: 'When true, reuse existing same-name sibling folders. Defaults to true.',
+          },
+          setColorOnExisting: {
+            type: 'boolean',
+            description: 'When true and color is provided, recolor an existing reused leaf folder. Defaults to false.',
+          },
+          allowDuplicateName: {
+            type: 'boolean',
+            description: 'When true, allow duplicate sibling folder names if reuseExisting=false. Defaults to false, which auto-suffixes duplicates.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the folder creation plan without changing the project. Defaults to true.',
+          },
+        },
+      },
+    },
+    {
+      name: 'move_assets_to_folder',
+      description: 'Preview or move existing ComfyStudio assets into an asset-panel folder. Can target explicit asset IDs/names or safe filters such as rootOnly + constantsOnly. Defaults to previewOnly and can create a missing target folder path before moving.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          targetFolderId: {
+            type: 'string',
+            description: 'Existing destination folder ID. Use this when create_asset_folder already returned a folderId.',
+          },
+          folderId: {
+            type: 'string',
+            description: 'Alias for targetFolderId.',
+          },
+          targetFolderPath: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Destination folder path, for example "Constants" or "AI Spots / Constants". Missing folders are created on apply by default.',
+          },
+          folderPath: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Alias for targetFolderPath.',
+          },
+          folderName: {
+            type: 'string',
+            description: 'Single destination folder name when targetFolderPath is omitted.',
+          },
+          targetRoot: {
+            type: 'boolean',
+            description: 'When true, move matching assets back to the asset root instead of into a folder.',
+          },
+          assetIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Explicit asset IDs to move.',
+          },
+          assetId: {
+            type: 'string',
+            description: 'Single asset ID to move.',
+          },
+          assetNames: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Asset names to move. Exact match is preferred, partial match is allowed.',
+          },
+          assets: {
+            type: 'array',
+            description: 'Explicit asset references. Items can be asset IDs or objects with assetId/name.',
+            items: {
+              oneOf: [
+                { type: 'string' },
+                {
+                  type: 'object',
+                  properties: {
+                    assetId: { type: 'string' },
+                    id: { type: 'string' },
+                    assetName: { type: 'string' },
+                    name: { type: 'string' },
+                  },
+                },
+              ],
+            },
+          },
+          rootOnly: {
+            type: 'boolean',
+            description: 'When true, only move assets currently in the asset root.',
+          },
+          sourceFolderId: {
+            type: 'string',
+            description: 'Only move assets currently inside this source folder.',
+          },
+          sourceFolderPath: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Only move assets currently inside this source folder path.',
+          },
+          includeSubfolders: {
+            type: 'boolean',
+            description: 'When using a source folder, include nested folders. Defaults to true.',
+          },
+          type: {
+            type: 'string',
+            description: 'Optional asset type filter such as image, video, or audio.',
+          },
+          nameIncludes: {
+            type: 'string',
+            description: 'Optional case-insensitive name substring filter.',
+          },
+          workflowId: {
+            type: 'string',
+            description: 'Optional workflow ID filter.',
+          },
+          filter: {
+            type: 'string',
+            enum: ['solid_colors', 'constants', 'generated', 'imported'],
+            description: 'Optional preset filter. Use solid_colors/constants for MCP-created color constants.',
+          },
+          solidColorsOnly: {
+            type: 'boolean',
+            description: 'When true, only move solid color/constant assets created by the MCP solid tool.',
+          },
+          constantsOnly: {
+            type: 'boolean',
+            description: 'Alias for solidColorsOnly.',
+          },
+          targetFolderColor: {
+            type: 'string',
+            description: 'Optional #RRGGBB color for a newly-created destination folder.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the exact move plan without changing the project. Defaults to true.',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Maximum assets this call may move. Defaults to 100.',
+          },
+        },
+      },
+    },
+    {
       name: 'add_track',
       description: 'Create a new timeline track. Video tracks are added at the top of the stack, which is useful before adding another text/title layer. Undoable in ComfyStudio.',
       inputSchema: {
@@ -2669,6 +5784,351 @@ function createToolDefinitions() {
           previewOnly: {
             type: 'boolean',
             description: 'When true, returns the track creation plan without changing the timeline.',
+          },
+        },
+      },
+    },
+    {
+      name: 'add_asset_to_timeline',
+      description: 'Preview or place a project asset on the active timeline. Can target a specific asset id/name or the latest generated asset, choose playhead/selected-clip/timeline-end placement, use an existing compatible track, or create a new top video/audio track. Defaults to previewOnly; applying is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          assetId: {
+            type: 'string',
+            description: 'Project asset ID to place. If omitted, assetName or the latest placeable asset is used.',
+          },
+          assetName: {
+            type: 'string',
+            description: 'Exact or partial asset name to place.',
+          },
+          latestGenerated: {
+            type: 'boolean',
+            description: 'When true, place the most recent matching generated/placeable asset.',
+          },
+          latest: {
+            type: 'boolean',
+            description: 'Alias for latestGenerated.',
+          },
+          type: {
+            type: 'string',
+            enum: ['video', 'image', 'audio'],
+            description: 'Optional asset type filter when resolving by name/latest.',
+          },
+          assetType: {
+            type: 'string',
+            enum: ['video', 'image', 'audio'],
+            description: 'Alias for type.',
+          },
+          workflowId: {
+            type: 'string',
+            description: 'Optional workflow id filter when resolving the latest generated asset, for example ltx23-i2v.',
+          },
+          trackId: {
+            type: 'string',
+            description: 'Optional compatible target track ID. Video/image assets require a video track; audio assets require an audio track.',
+          },
+          createTrack: {
+            type: 'boolean',
+            description: 'When true, create a new compatible track before placing the asset. Video tracks are created at the top.',
+          },
+          newTrack: {
+            type: 'boolean',
+            description: 'Alias for createTrack.',
+          },
+          trackName: {
+            type: 'string',
+            description: 'Optional name for the new track when createTrack/newTrack is true.',
+          },
+          trackStrategy: {
+            type: 'string',
+            enum: ['existing', 'new', 'newTopTrack'],
+            description: 'Optional track strategy. Use newTopTrack to compare generated variations on separate upper video layers.',
+          },
+          startSeconds: {
+            type: 'number',
+            description: 'Absolute timeline start time in seconds. Defaults to the playhead.',
+          },
+          startTime: {
+            type: 'number',
+            description: 'Alias for startSeconds.',
+          },
+          at: {
+            type: 'string',
+            enum: ['playhead', 'selected_clip_start', 'selected_clip_end', 'timeline_end', 'track_end'],
+            description: 'Placement shortcut when startSeconds is omitted.',
+          },
+          placement: {
+            type: 'string',
+            description: 'Alias for at.',
+          },
+          durationSeconds: {
+            type: 'number',
+            description: 'Optional timeline duration. Defaults to 5 seconds for images, or source duration for video/audio when known.',
+          },
+          duration: {
+            type: 'number',
+            description: 'Alias for durationSeconds.',
+          },
+          resolveOverlaps: {
+            type: 'boolean',
+            description: 'When true, use normal timeline overwrite behavior on the target track. Defaults to true.',
+          },
+          selectAfterAdd: {
+            type: 'boolean',
+            description: 'When true, select the newly added clip. Defaults to true.',
+          },
+          transform: {
+            type: 'object',
+            description: 'Optional initial transform values such as positionX, positionY, scaleX, scaleY, rotation, opacity, blur, motion blur settings, or crop fields.',
+          },
+          includeAudio: {
+            type: 'boolean',
+            description: 'For video assets with embedded audio, also create a linked audio clip on an audio track. Defaults to true.',
+          },
+          includeEmbeddedAudio: {
+            type: 'boolean',
+            description: 'Alias for includeAudio.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the placement plan without changing the timeline. Defaults to true.',
+          },
+        },
+      },
+    },
+    {
+      name: 'add_solid_color',
+      description: 'Preview or create a solid-color image asset, optionally placing it on the active timeline as a color/black constant. Useful for black plates under opacity fades, color backgrounds, and simple matte layers. Defaults to previewOnly; applying writes a PNG asset to the project and timeline placement is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          color: {
+            type: 'string',
+            description: 'Solid color as #RRGGBB. Defaults to #000000.',
+          },
+          fill: {
+            type: 'string',
+            description: 'Alias for color.',
+          },
+          name: {
+            type: 'string',
+            description: 'Optional asset/clip base name. Defaults to Black solid or Color solid with dimensions.',
+          },
+          width: {
+            type: 'integer',
+            description: 'PNG width. Defaults to the current timeline/project width.',
+          },
+          height: {
+            type: 'integer',
+            description: 'PNG height. Defaults to the current timeline/project height.',
+          },
+          durationSeconds: {
+            type: 'number',
+            description: 'Timeline clip duration if placed. Defaults to 5 seconds.',
+          },
+          duration: {
+            type: 'number',
+            description: 'Alias for durationSeconds.',
+          },
+          placeOnTimeline: {
+            type: 'boolean',
+            description: 'When false, create only the asset. Defaults to true.',
+          },
+          addToTimeline: {
+            type: 'boolean',
+            description: 'Alias for placeOnTimeline.',
+          },
+          trackId: {
+            type: 'string',
+            description: 'Optional existing video track ID for placement.',
+          },
+          createTrack: {
+            type: 'boolean',
+            description: 'When true and trackId is omitted, create a video track for the solid. Defaults to true.',
+          },
+          trackName: {
+            type: 'string',
+            description: 'Optional new track name when creating a track.',
+          },
+          trackPlacement: {
+            type: 'string',
+            enum: ['bottom', 'top'],
+            description: 'Where to insert a newly created video track. Defaults to bottom so black/color plates sit behind the edit.',
+          },
+          startSeconds: {
+            type: 'number',
+            description: 'Absolute timeline start time in seconds. Defaults to the playhead.',
+          },
+          startTime: {
+            type: 'number',
+            description: 'Alias for startSeconds.',
+          },
+          at: {
+            type: 'string',
+            enum: ['playhead', 'selected_clip_start', 'selected_clip_end', 'timeline_end', 'track_end'],
+            description: 'Placement shortcut when startSeconds is omitted.',
+          },
+          resolveOverlaps: {
+            type: 'boolean',
+            description: 'When true, use normal overwrite behavior on the target track. Defaults to false for solids.',
+          },
+          selectAfterAdd: {
+            type: 'boolean',
+            description: 'When true, select the created timeline clip. Defaults to true.',
+          },
+          transform: {
+            type: 'object',
+            description: 'Optional initial transform values such as opacity, scale, position, crop, blur, or blendMode.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the solid creation/placement plan without writing a file or changing the timeline. Defaults to true.',
+          },
+        },
+      },
+    },
+    {
+      name: 'add_assets_to_timeline',
+      description: 'Preview or place multiple project assets onto the active timeline as review lanes or a sequential run. Can target explicit asset IDs/names or the latest matching generated assets, create one new top track per asset, or place sequentially on one compatible track. Defaults to previewOnly; applying is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          assets: {
+            type: 'array',
+            description: 'Optional explicit asset placement entries. Each entry can include assetId, assetName, trackName, durationSeconds, labelColor, and transform.',
+            items: {
+              type: 'object',
+              properties: {
+                assetId: { type: 'string' },
+                assetName: { type: 'string' },
+                trackName: { type: 'string' },
+                durationSeconds: { type: 'number' },
+                labelColor: { type: 'string' },
+                transform: { type: 'object' },
+              },
+            },
+          },
+          assetIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Explicit asset IDs to place, in order.',
+          },
+          assetNames: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Explicit asset names or partial names to place, in order.',
+          },
+          latestCount: {
+            type: 'integer',
+            description: 'When explicit assets are omitted, place the latest N matching placeable assets. Defaults to 6, max 24.',
+          },
+          count: {
+            type: 'integer',
+            description: 'Alias for latestCount.',
+          },
+          type: {
+            type: 'string',
+            enum: ['video', 'image', 'audio'],
+            description: 'Optional asset type filter for latest matching assets. Use video for generated image-to-video results.',
+          },
+          assetType: {
+            type: 'string',
+            enum: ['video', 'image', 'audio'],
+            description: 'Alias for type.',
+          },
+          workflowId: {
+            type: 'string',
+            description: 'Optional workflow id filter for latest assets, for example ltx23-i2v or wan22-i2v.',
+          },
+          workflowIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional workflow id filters for latest assets.',
+          },
+          status: {
+            type: 'string',
+            description: 'Optional asset status filter. Defaults to completed/imported style statuses.',
+          },
+          trackStrategy: {
+            type: 'string',
+            enum: ['newTracks', 'singleTrack'],
+            description: 'newTracks creates one compatible track per asset, stacked as review lanes. singleTrack places all assets on one compatible track.',
+          },
+          layout: {
+            type: 'string',
+            enum: ['stacked', 'sequential'],
+            description: 'stacked aligns assets at the same start time. sequential places them one after another. Defaults to stacked for newTracks and sequential for singleTrack.',
+          },
+          trackId: {
+            type: 'string',
+            description: 'Optional target track ID for singleTrack placement.',
+          },
+          trackName: {
+            type: 'string',
+            description: 'Optional new single-track name when trackStrategy=singleTrack and a track must be created.',
+          },
+          trackNamePrefix: {
+            type: 'string',
+            description: 'Prefix for new review lane names. Defaults to MCP Review.',
+          },
+          trackNameTemplate: {
+            type: 'string',
+            description: 'Template for new track names. Supports {index}, {total}, {asset}, and {workflow}.',
+          },
+          startSeconds: {
+            type: 'number',
+            description: 'Absolute timeline start time in seconds. Defaults to the playhead.',
+          },
+          startTime: {
+            type: 'number',
+            description: 'Alias for startSeconds.',
+          },
+          at: {
+            type: 'string',
+            enum: ['playhead', 'selected_clip_start', 'selected_clip_end', 'timeline_end', 'track_end'],
+            description: 'Placement shortcut when startSeconds is omitted.',
+          },
+          durationSeconds: {
+            type: 'number',
+            description: 'Optional duration for every placed asset. Defaults to source duration for video/audio or 5s for images.',
+          },
+          spacingSeconds: {
+            type: 'number',
+            description: 'Gap between assets for sequential layout. Defaults to 0.',
+          },
+          labelColor: {
+            type: 'string',
+            description: 'Optional clip label color applied to every created clip, as #RRGGBB.',
+          },
+          labelColors: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional per-clip label colors, as #RRGGBB.',
+          },
+          transform: {
+            type: 'object',
+            description: 'Optional initial transform applied to every placed clip.',
+          },
+          includeAudio: {
+            type: 'boolean',
+            description: 'For video assets with embedded audio, also create linked audio clips. Defaults to true for sequential layouts; set true explicitly for stacked review lanes.',
+          },
+          includeEmbeddedAudio: {
+            type: 'boolean',
+            description: 'Alias for includeAudio.',
+          },
+          resolveOverlaps: {
+            type: 'boolean',
+            description: 'When true, use normal timeline overwrite behavior on target tracks. Defaults to true.',
+          },
+          selectAfterAdd: {
+            type: 'boolean',
+            description: 'When true, select all newly created clips. Defaults to true.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the full placement plan without changing the timeline. Defaults to true.',
           },
         },
       },
@@ -2746,16 +6206,25 @@ function createToolDefinitions() {
           },
           transform: {
             type: 'object',
-            description: 'Optional absolute transform values. positionX/positionY are pixels relative to center; scale is percent; rotation is degrees; blur is pixels; crop fields are percentages from 0 to 100.',
+            description: 'Optional absolute transform values. positionX/positionY/positionZ are pixels relative to center; scale is percent; rotation/rotationX/rotationY are degrees; perspective is pixels; blur is pixels; motionBlurEnabled toggles layer motion blur; motionBlurMode is auto/velocity/sampled; motionBlurSamples is 2-48; motionBlurShutter is 1-360 degrees; crop fields are percentages from 0 to 100.',
             properties: {
               positionX: { type: 'number' },
               positionY: { type: 'number' },
+              positionZ: { type: 'number', description: '2.5D depth offset in pixels. Positive moves toward camera.' },
               scaleX: { type: 'number' },
               scaleY: { type: 'number' },
               scaleLinked: { type: 'boolean' },
               rotation: { type: 'number' },
+              rotationX: { type: 'number', description: '2.5D X-axis rotation in degrees, -89 to 89.' },
+              rotationY: { type: 'number', description: '2.5D Y-axis rotation in degrees, -89 to 89.' },
+              perspective: { type: 'number', description: '2.5D perspective distance in pixels, 100 to 10000.' },
               opacity: { type: 'number' },
               blur: { type: 'number', description: 'Blur amount in pixels, 0 to 50.' },
+              motionBlurEnabled: { type: 'boolean', description: 'Turn transform/layer motion blur on or off for this clip.' },
+              motionBlurMode: { type: 'string', enum: ['auto', 'velocity', 'sampled'], description: 'Motion blur renderer mode. auto uses GPU velocity blur for X/Y motion and sampled fallback; velocity uses only GPU directional blur; sampled uses subframe samples.' },
+              motionBlurSamples: { type: 'number', description: 'Motion blur sample count from 2 to 48. Higher values are smoother but heavier.' },
+              motionBlurShutter: { type: 'number', description: 'Motion blur shutter angle from 1 to 360 degrees.' },
+              blendMode: { type: 'string', enum: ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'], description: 'Layer compositing blend mode. Use multiply to darken/composite colors with layers below.' },
               cropTop: { type: 'number', description: 'Crop from the top as a percent, 0 to 100.' },
               cropBottom: { type: 'number', description: 'Crop from the bottom as a percent, 0 to 100.' },
               cropLeft: { type: 'number', description: 'Crop from the left as a percent, 0 to 100.' },
@@ -2780,7 +6249,7 @@ function createToolDefinitions() {
             items: {
               type: 'object',
               properties: {
-                property: { type: 'string', enum: ['opacity', 'positionX', 'positionY', 'scaleX', 'scaleY', 'rotation', 'blur', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'textColor'] },
+                property: { type: 'string', enum: ['opacity', 'positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'rotation', 'rotationX', 'rotationY', 'perspective', 'blur', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'textColor'] },
                 timeSeconds: { type: 'number', description: 'Clip-relative keyframe time in seconds.' },
                 value: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Number for transform fields, or #RRGGBB for textColor.' },
                 easing: { type: 'string', description: 'Easing name. Defaults to easeInOut. Supports cubicBezier(x1,y1,x2,y2), for example cubicBezier(0.55,0,1,0.45).' },
@@ -2811,16 +6280,25 @@ function createToolDefinitions() {
           },
           transform: {
             type: 'object',
-            description: 'Absolute transform values. positionX/positionY are pixels relative to center; scale is percent; rotation is degrees; blur is pixels; crop fields are percentages from 0 to 100.',
+            description: 'Absolute transform values. positionX/positionY/positionZ are pixels relative to center; scale is percent; rotation/rotationX/rotationY are degrees; perspective is pixels; blur is pixels; motionBlurEnabled toggles layer motion blur; motionBlurMode is auto/velocity/sampled; motionBlurSamples is 2-48; motionBlurShutter is 1-360 degrees; crop fields are percentages from 0 to 100.',
             properties: {
               positionX: { type: 'number' },
               positionY: { type: 'number' },
+              positionZ: { type: 'number', description: '2.5D depth offset in pixels. Positive moves toward camera.' },
               scaleX: { type: 'number' },
               scaleY: { type: 'number' },
               scaleLinked: { type: 'boolean' },
               rotation: { type: 'number' },
+              rotationX: { type: 'number', description: '2.5D X-axis rotation in degrees, -89 to 89.' },
+              rotationY: { type: 'number', description: '2.5D Y-axis rotation in degrees, -89 to 89.' },
+              perspective: { type: 'number', description: '2.5D perspective distance in pixels, 100 to 10000.' },
               opacity: { type: 'number' },
               blur: { type: 'number', description: 'Blur amount in pixels, 0 to 50.' },
+              motionBlurEnabled: { type: 'boolean', description: 'Turn transform/layer motion blur on or off for this clip.' },
+              motionBlurMode: { type: 'string', enum: ['auto', 'velocity', 'sampled'], description: 'Motion blur renderer mode. auto uses GPU velocity blur for X/Y motion and sampled fallback; velocity uses only GPU directional blur; sampled uses subframe samples.' },
+              motionBlurSamples: { type: 'number', description: 'Motion blur sample count from 2 to 48. Higher values are smoother but heavier.' },
+              motionBlurShutter: { type: 'number', description: 'Motion blur shutter angle from 1 to 360 degrees.' },
+              blendMode: { type: 'string', enum: ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'], description: 'Layer compositing blend mode. Use multiply to darken/composite colors with layers below.' },
               cropTop: { type: 'number', description: 'Crop from the top as a percent, 0 to 100.' },
               cropBottom: { type: 'number', description: 'Crop from the bottom as a percent, 0 to 100.' },
               cropLeft: { type: 'number', description: 'Crop from the left as a percent, 0 to 100.' },
@@ -2843,7 +6321,11 @@ function createToolDefinitions() {
             properties: {
               positionX: { type: 'number' },
               positionY: { type: 'number' },
+              positionZ: { type: 'number' },
               rotation: { type: 'number' },
+              rotationX: { type: 'number' },
+              rotationY: { type: 'number' },
+              perspective: { type: 'number' },
               blur: { type: 'number' },
               cropTop: { type: 'number' },
               cropBottom: { type: 'number' },
@@ -2858,7 +6340,7 @@ function createToolDefinitions() {
             oneOf: [
               { type: 'boolean' },
               { type: 'string', enum: ['all'] },
-              { type: 'array', items: { type: 'string', enum: ['opacity', 'positionX', 'positionY', 'scaleX', 'scaleY', 'rotation', 'blur', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'textColor'] } },
+              { type: 'array', items: { type: 'string', enum: ['opacity', 'positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'rotation', 'rotationX', 'rotationY', 'perspective', 'blur', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'textColor'] } },
             ],
             description: 'Clear all or selected text transform/textColor keyframes before applying new ones.',
           },
@@ -2868,7 +6350,7 @@ function createToolDefinitions() {
             items: {
               type: 'object',
               properties: {
-                property: { type: 'string', enum: ['opacity', 'positionX', 'positionY', 'scaleX', 'scaleY', 'rotation', 'blur', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'textColor'] },
+                property: { type: 'string', enum: ['opacity', 'positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'rotation', 'rotationX', 'rotationY', 'perspective', 'blur', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight', 'textColor'] },
                 timeSeconds: { type: 'number', description: 'Clip-relative keyframe time in seconds.' },
                 value: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Number for transform fields, or #RRGGBB for textColor.' },
                 easing: { type: 'string', description: 'Easing name. Defaults to easeInOut. Supports cubicBezier(x1,y1,x2,y2), for example cubicBezier(0.55,0,1,0.45).' },
@@ -2878,6 +6360,253 @@ function createToolDefinitions() {
           },
           replaceKeyframes: { type: 'boolean', description: 'When true, replace existing keyframes for properties included in keyframes.' },
           previewOnly: { type: 'boolean', description: 'When true, returns the planned update without changing the timeline.' },
+        },
+        required: ['clipId'],
+      },
+    },
+    {
+      name: 'add_shape_clip',
+      description: 'Create a ComfyStudio shape clip on a video track for motion graphics: rectangle, rounded rectangle, ellipse, polygon, or line. Use polygon with sides=3 for triangles, 6 for hexagons, 8 for octagons, etc. Supports solid, linear-gradient, and radial-gradient fills, stroke styling, transform, crop, blur, 2.5D rotation, and explicit visual keyframes including width, height, fillOpacity, gradient angle/center/radius, strokeWidth, strokeOpacity, cornerRadius, and polygon sides. Undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          shapeType: { type: 'string', enum: ['rectangle', 'roundedRectangle', 'ellipse', 'polygon', 'line'], description: 'Shape kind to create. Defaults to rectangle.' },
+          name: { type: 'string', description: 'Optional clip name.' },
+          trackId: { type: 'string', description: 'Optional target video track ID. Defaults to the first unlocked video track.' },
+          startSeconds: { type: 'number', description: 'Timeline start time in seconds. Defaults to current playhead.' },
+          durationSeconds: { type: 'number', description: 'Clip duration in seconds. Defaults to 5.' },
+          width: { type: 'number', description: 'Shape width in pixels.' },
+          height: { type: 'number', description: 'Shape height in pixels.' },
+          sizeLinked: { type: 'boolean', description: 'When true, width/height edits should preserve the current aspect ratio. Defaults to true.' },
+          fillType: { type: 'string', enum: ['solid', 'linearGradient', 'radialGradient'], description: 'Fill mode. Use linearGradient or radialGradient for gradient backgrounds and graphic accents.' },
+          gradientType: { type: 'string', enum: ['solid', 'linearGradient', 'radialGradient', 'linear', 'radial'], description: 'Alias for fillType.' },
+          fillColor: { type: 'string', description: 'Fill color as #RRGGBB.' },
+          fillColorB: { type: 'string', description: 'Second gradient color as #RRGGBB. Used when fillType is linearGradient or radialGradient.' },
+          gradientColor: { type: 'string', description: 'Alias for fillColorB.' },
+          fillOpacity: { type: 'number', description: 'Fill opacity from 0 to 100.' },
+          gradientAngle: { type: 'number', description: 'Linear gradient angle in degrees. 0 is left-to-right, 90 is top-to-bottom.' },
+          gradientCenterX: { type: 'number', description: 'Radial gradient center X as a percent of shape width.' },
+          gradientCenterY: { type: 'number', description: 'Radial gradient center Y as a percent of shape height.' },
+          gradientRadius: { type: 'number', description: 'Radial gradient radius as a percent of the larger shape dimension.' },
+          strokeColor: { type: 'string', description: 'Stroke color as #RRGGBB.' },
+          strokeOpacity: { type: 'number', description: 'Stroke opacity from 0 to 100.' },
+          strokeWidth: { type: 'number', description: 'Stroke width in pixels.' },
+          cornerRadius: { type: 'number', description: 'Corner radius in pixels for roundedRectangle.' },
+          sides: { type: 'number', description: 'Polygon side count from 3 to 64. Only used when shapeType is polygon.' },
+          polygonSides: { type: 'number', description: 'Alias for sides.' },
+          style: {
+            type: 'object',
+            description: 'Optional shape style object. Same fields as top-level shape fields.',
+          },
+          shapeProperties: {
+            type: 'object',
+            description: 'Optional shapeProperties object. Same fields as top-level shape fields.',
+          },
+          transform: {
+            type: 'object',
+            description: 'Optional absolute transform values. positionX/positionY/positionZ are pixels relative to center; scale is percent; rotation/rotationX/rotationY are degrees; perspective is pixels; blur is pixels; motionBlurEnabled toggles layer motion blur; motionBlurMode is auto/velocity/sampled; motionBlurSamples is 2-48; motionBlurShutter is 1-360 degrees; crop fields are percentages from 0 to 100.',
+            properties: {
+              positionX: { type: 'number' },
+              positionY: { type: 'number' },
+              positionZ: { type: 'number' },
+              scaleX: { type: 'number' },
+              scaleY: { type: 'number' },
+              scaleLinked: { type: 'boolean' },
+              rotation: { type: 'number' },
+              rotationX: { type: 'number' },
+              rotationY: { type: 'number' },
+              perspective: { type: 'number' },
+              opacity: { type: 'number' },
+              blur: { type: 'number' },
+              motionBlurEnabled: { type: 'boolean', description: 'Turn transform/layer motion blur on or off for this clip.' },
+              motionBlurMode: { type: 'string', enum: ['auto', 'velocity', 'sampled'], description: 'Motion blur renderer mode. auto uses GPU velocity blur for X/Y motion and sampled fallback; velocity uses only GPU directional blur; sampled uses subframe samples.' },
+              motionBlurSamples: { type: 'number', description: 'Motion blur sample count from 2 to 48. Higher values are smoother but heavier.' },
+              motionBlurShutter: { type: 'number', description: 'Motion blur shutter angle from 1 to 360 degrees.' },
+              blendMode: { type: 'string', enum: ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'], description: 'Layer compositing blend mode. Use multiply to darken/composite colors with layers below.' },
+              cropTop: { type: 'number' },
+              cropBottom: { type: 'number' },
+              cropLeft: { type: 'number' },
+              cropRight: { type: 'number' },
+            },
+          },
+          crop: {
+            type: 'object',
+            description: 'Alias for static crop transform fields. Values are percentages from 0 to 100.',
+          },
+          keyframes: {
+            type: 'array',
+            description: 'Optional explicit visual keyframes for shape motion, fades, crop reveals, blur, 2.5D motion, size, fill/stroke opacity, gradient angle/center/radius, stroke width, rounded corners, and polygon sides. Easing supports linear/easeIn/easeOut/easeInOut/hold or cubicBezier(x1,y1,x2,y2).',
+            items: {
+              type: 'object',
+              properties: {
+                property: { type: 'string', enum: MCP_CLIP_KEYFRAME_PROPERTIES },
+                timeSeconds: { type: 'number', description: 'Clip-relative keyframe time in seconds.' },
+                value: { type: 'number' },
+                easing: { type: 'string' },
+              },
+              required: ['property', 'timeSeconds', 'value'],
+            },
+          },
+          replaceKeyframes: { type: 'boolean', description: 'When true, replace existing keyframes for properties included in keyframes.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the creation plan without changing the timeline.' },
+        },
+      },
+    },
+    {
+      name: 'update_shape_clip',
+      description: 'Update an existing shape clip by explicit clipId: shape type, size, solid/gradient fill style, stroke style, transform, timing, or visual keyframes. Shape keyframes can animate width, height, fillOpacity, gradient angle/center/radius, strokeWidth, strokeOpacity, cornerRadius, and polygon sides. Use previewOnly first for safety.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Existing shape clip ID from get_timeline.' },
+          shapeType: { type: 'string', enum: ['rectangle', 'roundedRectangle', 'ellipse', 'polygon', 'line'] },
+          name: { type: 'string', description: 'Optional replacement clip name.' },
+          trackId: { type: 'string', description: 'Optional new target video track ID.' },
+          startSeconds: { type: 'number', description: 'Optional new timeline start time in seconds.' },
+          durationSeconds: { type: 'number', description: 'Optional new clip duration in seconds.' },
+          width: { type: 'number' },
+          height: { type: 'number' },
+          sizeLinked: { type: 'boolean', description: 'When true, width/height edits should preserve the current aspect ratio.' },
+          fillType: { type: 'string', enum: ['solid', 'linearGradient', 'radialGradient'], description: 'Fill mode. Use linearGradient or radialGradient for gradient backgrounds and graphic accents.' },
+          gradientType: { type: 'string', enum: ['solid', 'linearGradient', 'radialGradient', 'linear', 'radial'], description: 'Alias for fillType.' },
+          fillColor: { type: 'string', description: 'Fill color as #RRGGBB.' },
+          fillColorB: { type: 'string', description: 'Second gradient color as #RRGGBB. Used when fillType is linearGradient or radialGradient.' },
+          gradientColor: { type: 'string', description: 'Alias for fillColorB.' },
+          fillOpacity: { type: 'number', description: 'Fill opacity from 0 to 100.' },
+          gradientAngle: { type: 'number', description: 'Linear gradient angle in degrees. 0 is left-to-right, 90 is top-to-bottom.' },
+          gradientCenterX: { type: 'number', description: 'Radial gradient center X as a percent of shape width.' },
+          gradientCenterY: { type: 'number', description: 'Radial gradient center Y as a percent of shape height.' },
+          gradientRadius: { type: 'number', description: 'Radial gradient radius as a percent of the larger shape dimension.' },
+          strokeColor: { type: 'string', description: 'Stroke color as #RRGGBB.' },
+          strokeOpacity: { type: 'number', description: 'Stroke opacity from 0 to 100.' },
+          strokeWidth: { type: 'number' },
+          cornerRadius: { type: 'number' },
+          sides: { type: 'number', description: 'Polygon side count from 3 to 64. Only used when shapeType is polygon.' },
+          polygonSides: { type: 'number', description: 'Alias for sides.' },
+          style: {
+            type: 'object',
+            description: 'Optional shape style updates. Same fields as top-level shape fields.',
+          },
+          shapeProperties: {
+            type: 'object',
+            description: 'Optional shapeProperties updates. Same fields as top-level shape fields.',
+          },
+          transform: {
+            type: 'object',
+            description: 'Absolute transform values. positionX/positionY/positionZ are pixels relative to center; scale is percent; rotation/rotationX/rotationY are degrees; perspective is pixels; blur is pixels; motionBlurEnabled toggles layer motion blur; motionBlurMode is auto/velocity/sampled; motionBlurSamples is 2-48; motionBlurShutter is 1-360 degrees; crop fields are percentages from 0 to 100.',
+            properties: {
+              positionX: { type: 'number' },
+              positionY: { type: 'number' },
+              positionZ: { type: 'number' },
+              scaleX: { type: 'number' },
+              scaleY: { type: 'number' },
+              scaleLinked: { type: 'boolean' },
+              rotation: { type: 'number' },
+              rotationX: { type: 'number' },
+              rotationY: { type: 'number' },
+              perspective: { type: 'number' },
+              opacity: { type: 'number' },
+              blur: { type: 'number' },
+              motionBlurEnabled: { type: 'boolean', description: 'Turn transform/layer motion blur on or off for this clip.' },
+              motionBlurMode: { type: 'string', enum: ['auto', 'velocity', 'sampled'], description: 'Motion blur renderer mode. auto uses GPU velocity blur for X/Y motion and sampled fallback; velocity uses only GPU directional blur; sampled uses subframe samples.' },
+              motionBlurSamples: { type: 'number', description: 'Motion blur sample count from 2 to 48. Higher values are smoother but heavier.' },
+              motionBlurShutter: { type: 'number', description: 'Motion blur shutter angle from 1 to 360 degrees.' },
+              blendMode: { type: 'string', enum: ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'], description: 'Layer compositing blend mode. Use multiply to darken/composite colors with layers below.' },
+              cropTop: { type: 'number' },
+              cropBottom: { type: 'number' },
+              cropLeft: { type: 'number' },
+              cropRight: { type: 'number' },
+            },
+          },
+          crop: {
+            type: 'object',
+            description: 'Alias for static crop transform fields. Values are percentages from 0 to 100.',
+          },
+          transformDelta: {
+            type: 'object',
+            description: 'Relative transform changes, for natural requests like move north by 50 pixels, rotate by 10 degrees, or crop another 10 percent.',
+          },
+          clearKeyframes: {
+            oneOf: [
+              { type: 'boolean' },
+              { type: 'string', enum: ['all'] },
+              { type: 'array', items: { type: 'string', enum: MCP_CLIP_KEYFRAME_PROPERTIES } },
+            ],
+            description: 'Clear all or selected visual keyframes before applying new ones.',
+          },
+          keyframes: {
+            type: 'array',
+            description: 'Explicit visual keyframes for shape motion, fades, crop reveals, blur, 2.5D motion, size, fill/stroke opacity, gradient angle/center/radius, stroke width, rounded corners, and polygon sides. Easing supports linear/easeIn/easeOut/easeInOut/hold or cubicBezier(x1,y1,x2,y2).',
+            items: {
+              type: 'object',
+              properties: {
+                property: { type: 'string', enum: MCP_CLIP_KEYFRAME_PROPERTIES },
+                timeSeconds: { type: 'number', description: 'Clip-relative keyframe time in seconds.' },
+                value: { type: 'number' },
+                easing: { type: 'string' },
+              },
+              required: ['property', 'timeSeconds', 'value'],
+            },
+          },
+          replaceKeyframes: { type: 'boolean', description: 'When true, replace existing keyframes for properties included in keyframes.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the planned update without changing the timeline.' },
+        },
+        required: ['clipId'],
+      },
+    },
+    {
+      name: 'set_clip_keyframes',
+      description: 'Preview or set explicit keyframes on an existing visual timeline clip. Use this for video/image/text/shape fades, dips to black, moves, scale/rotation, 2.5D rotation, blur, crop reveals, color-adjustment animation, and shape size/style animation. Defaults to previewOnly; applying is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: {
+            type: 'string',
+            description: 'Existing visual clip ID from get_timeline or inspect_visible_shots. Supports video, image, text, shape, adjustment, caption, and captions clips.',
+          },
+          keyframes: {
+            type: 'array',
+            description: 'Clip-relative keyframes. timeSeconds is relative to the start of the clip. Values are clamped to the supported range for each property.',
+            items: {
+              type: 'object',
+              properties: {
+                property: {
+                  type: 'string',
+                  enum: MCP_CLIP_KEYFRAME_PROPERTIES,
+                  description: 'Visual property to animate. rotation is Z rotation; rotationX/rotationY are 2.5D tilts. width/height/fillOpacity/gradientAngle/gradientCenterX/gradientCenterY/gradientRadius/strokeWidth/strokeOpacity/cornerRadius/sides only apply to shape clips.',
+                },
+                timeSeconds: {
+                  type: 'number',
+                  description: 'Clip-relative keyframe time in seconds. Times past the clip duration are clamped.',
+                },
+                value: {
+                  type: 'number',
+                  description: 'Numeric keyframe value. Opacity/crop use 0-100, scale uses percent, rotation uses degrees, blur/shape dimensions/stroke/corners use pixels, and polygon sides uses a whole number.',
+                },
+                easing: {
+                  type: 'string',
+                  description: 'Easing name. Defaults to easeInOut. Supports linear, easeIn, easeOut, easeInOut, hold, or cubicBezier(x1,y1,x2,y2).',
+                },
+              },
+              required: ['property', 'timeSeconds', 'value'],
+            },
+          },
+          replaceKeyframes: {
+            type: 'boolean',
+            description: 'When true, replace existing keyframes for the properties included in keyframes.',
+          },
+          clearKeyframes: {
+            oneOf: [
+              { type: 'boolean' },
+              { type: 'string', enum: ['all'] },
+              { type: 'array', items: { type: 'string', enum: MCP_CLIP_KEYFRAME_PROPERTIES } },
+            ],
+            description: 'Clear all or selected supported keyframe properties before applying new ones.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the keyframe plan without changing the timeline. Defaults to true.',
+          },
         },
         required: ['clipId'],
       },
@@ -2978,10 +6707,28 @@ function createToolDefinitions() {
 }
 
 class ComfyStudioMcpServer {
-  constructor({ port = DEFAULT_MCP_PORT, version = '0.1.0', performAction = null } = {}) {
+  constructor({
+    port = DEFAULT_MCP_PORT,
+    version = '0.1.0',
+    performAction = null,
+    diagnoseComfyUIConnection = null,
+    setComfyUIConnection = null,
+    controlComfyLauncher = null,
+    getComfyLauncherLogs = null,
+    validateComfyUINodes = null,
+    listComfyStudioWorkflows = null,
+    inspectComfyStudioWorkflow = null,
+  } = {}) {
     this.port = port
     this.version = version
     this.performAction = typeof performAction === 'function' ? performAction : null
+    this.diagnoseComfyUIConnection = typeof diagnoseComfyUIConnection === 'function' ? diagnoseComfyUIConnection : null
+    this.setComfyUIConnection = typeof setComfyUIConnection === 'function' ? setComfyUIConnection : null
+    this.controlComfyLauncher = typeof controlComfyLauncher === 'function' ? controlComfyLauncher : null
+    this.getComfyLauncherLogs = typeof getComfyLauncherLogs === 'function' ? getComfyLauncherLogs : null
+    this.validateComfyUINodes = typeof validateComfyUINodes === 'function' ? validateComfyUINodes : null
+    this.listComfyStudioWorkflows = typeof listComfyStudioWorkflows === 'function' ? listComfyStudioWorkflows : null
+    this.inspectComfyStudioWorkflow = typeof inspectComfyStudioWorkflow === 'function' ? inspectComfyStudioWorkflow : null
     this.server = null
     this.running = false
     this.error = null
@@ -3141,7 +6888,7 @@ class ComfyStudioMcpServer {
               name: 'comfystudio',
               version: this.version,
             },
-            instructions: 'You are connected to ComfyStudio. Use get_ai_review_passes to choose safe review workflows. Use the tools to inspect the open project, timeline, assets, generation status, music-video workflow state, the composed timeline frame at the playhead, sampled visual timeline ranges, and top-visible shot pages for fast-cut edit review. The write actions currently exposed are clip label coloring, clip enable/disable, timeline marker creation/removal/property updates, text/title clip creation and updates, and starting timeline delivery exports through ComfyStudio export worker. Timeline clip/marker/text actions are undoable in ComfyStudio; export writes a new render file to disk.',
+            instructions: 'You are connected to ComfyStudio. Use diagnose_comfyui_connection, repair_comfyui_connection, set_comfyui_connection, control_comfyui_launcher, get_comfyui_launcher_logs, validate_comfyui_nodes, list_comfystudio_workflows, and inspect_comfystudio_workflow for local ComfyUI setup/support questions. Use get_ai_review_passes to choose safe review workflows. Use the tools to inspect the open project, timeline, assets, generation status, music-video workflow state, the composed timeline frame at the playhead, sampled visual timeline ranges, and top-visible shot pages for fast-cut edit review. Use create_timeline with previewOnly first when the user wants a new sequence/timeline for an alternate edit, review selects, generated variations, or a fresh AI-built layout. Use create_asset_folder with previewOnly first when a generation batch or AI-built layout should keep its source assets organized in a named/nested asset folder. Use move_assets_to_folder with previewOnly first when assets should be cleaned up or moved into a folder, for example rootOnly + constantsOnly into a Constants folder. Use queue_prompt_generation_batch with previewOnly first when the user wants new images or videos generated from a written brief; show prompts, workflows, counts, seeds, resolution, duration, FPS, and output folder, then apply only after approval. Use prepare_generation_from_timeline_context with previewOnly first when the user wants to turn a timeline frame into a Generate-tab image-to-video or keyframe request; applying it only captures the frame and prefills Generate. Use queue_prepared_generation with previewOnly first and explicit user approval before queueing a staged Generate request. Use queue_timeline_generation_batch with previewOnly first when the user asks for multiple variations or multiple workflows from the same timeline frame; show workflow counts and seeds, then apply only after approval. Use add_asset_to_timeline with previewOnly first when the user wants one generated/imported asset placed back into the edit, or add_assets_to_timeline with previewOnly first when placing multiple results as review lanes or a sequential strip. Use add_solid_color with previewOnly first when the user needs black/color constants or background plates; it can create a bottom video track so solids sit behind the edit. Use add_text_clip, add_shape_clip, update_text_clip, and update_shape_clip with previewOnly first for titles, lower thirds, lines, boxes, circles, frames, graphic accents, and simple motion graphics; use motionBlurEnabled/motionBlurSamples/motionBlurShutter on fast animated layers when requested. Use set_clip_keyframes with previewOnly first for visual clip fades, dips to black, moves, blur, crop reveals, and color/transform/shape style automation. Queue tools use the same path as the ComfyStudio Queue button and may spend credits or start local GPU work depending on the selected workflow. The write actions currently exposed are ComfyUI connection settings, ComfyUI launcher start/stop/restart, asset folder creation, asset folder cleanup/move operations, sequence/timeline creation, clip label coloring, clip enable/disable, timeline marker creation/removal/property updates, text/title/shape clip creation and updates, visual clip keyframes, solid color asset/clip creation, media asset placement, prompt-based generation queueing, preparing/queueing Generate from a timeline frame, and starting timeline delivery exports through ComfyStudio export worker. Timeline/sequence, clip/marker/text/shape/media/keyframe actions are undoable in ComfyStudio; export writes a new render file to disk.',
           }
           break
         case 'ping':
@@ -3178,7 +6925,18 @@ class ComfyStudioMcpServer {
 
   async callTool(name, args = {}) {
     const snapshot = getSnapshotOrEmpty(this.lastSnapshot)
-    if (!hasSnapshot(snapshot) && name !== 'get_project') {
+    const toolsAllowedWithoutProject = new Set([
+      'get_project',
+      'diagnose_comfyui_connection',
+      'set_comfyui_connection',
+      'repair_comfyui_connection',
+      'control_comfyui_launcher',
+      'get_comfyui_launcher_logs',
+      'validate_comfyui_nodes',
+      'list_comfystudio_workflows',
+      'inspect_comfystudio_workflow',
+    ])
+    if (!hasSnapshot(snapshot) && !toolsAllowedWithoutProject.has(name)) {
       return errorResult('No ComfyStudio project is open yet.')
     }
 
@@ -3237,12 +6995,36 @@ class ComfyStudioMcpServer {
       }
       case 'get_ai_review_passes':
         return textResult(buildAiReviewPasses(snapshot))
+      case 'diagnose_comfyui_connection':
+        return this.runComfyUIConnectionDiagnosis(args)
+      case 'set_comfyui_connection':
+        return this.setComfyUIConnectionTool(args)
+      case 'repair_comfyui_connection':
+        return this.repairComfyUIConnection(args)
+      case 'control_comfyui_launcher':
+        return this.controlComfyUILauncherTool(args)
+      case 'get_comfyui_launcher_logs':
+        return this.getComfyUILauncherLogsTool(args)
+      case 'validate_comfyui_nodes':
+        return this.runComfyUINodeValidation(args)
+      case 'list_comfystudio_workflows':
+        return this.listComfyStudioWorkflowsTool(args)
+      case 'inspect_comfystudio_workflow':
+        return this.inspectComfyStudioWorkflowTool(args)
       case 'check_export_readiness':
         return textResult(checkExportReadiness(snapshot, args))
       case 'inspect_clip':
         return this.inspectClip(snapshot, args)
       case 'inspect_timeline_frame':
         return this.inspectTimelineFrame(snapshot, args)
+      case 'prepare_generation_from_timeline_context':
+        return this.prepareGenerationFromTimelineContext(snapshot, args)
+      case 'queue_prepared_generation':
+        return this.queuePreparedGeneration(snapshot, args)
+      case 'queue_timeline_generation_batch':
+        return this.queueTimelineGenerationBatch(snapshot, args)
+      case 'queue_prompt_generation_batch':
+        return this.queuePromptGenerationBatch(snapshot, args)
       case 'inspect_timeline_range':
         return this.inspectTimelineRange(snapshot, args)
       case 'inspect_visible_shots':
@@ -3265,19 +7047,420 @@ class ComfyStudioMcpServer {
         return this.removeTimelineMarkers(snapshot, args)
       case 'set_timeline_marker_properties':
         return this.setTimelineMarkerProperties(snapshot, args)
+      case 'create_timeline':
+        return this.createTimeline(snapshot, args)
+      case 'create_asset_folder':
+        return this.createAssetFolder(snapshot, args)
+      case 'move_assets_to_folder':
+        return this.moveAssetsToFolder(snapshot, args)
       case 'add_track':
         return this.addTrack(snapshot, args)
+      case 'add_asset_to_timeline':
+        return this.addAssetToTimeline(snapshot, args)
+      case 'add_solid_color':
+        return this.addSolidColor(snapshot, args)
+      case 'add_assets_to_timeline':
+        return this.addAssetsToTimeline(snapshot, args)
       case 'duplicate_clip':
         return this.duplicateClip(snapshot, args)
       case 'add_text_clip':
         return this.addTextClip(snapshot, args)
       case 'update_text_clip':
         return this.updateTextClip(snapshot, args)
+      case 'add_shape_clip':
+        return this.addShapeClip(snapshot, args)
+      case 'update_shape_clip':
+        return this.updateShapeClip(snapshot, args)
+      case 'set_clip_keyframes':
+        return this.setClipKeyframes(snapshot, args)
       case 'export_timeline':
         return this.exportTimeline(snapshot, args)
       default:
         return errorResult(`Unknown tool: ${name}`)
     }
+  }
+
+  async runComfyUIConnectionDiagnosis(args = {}) {
+    if (!this.diagnoseComfyUIConnection) {
+      return errorResult('ComfyUI connection diagnostics are not available. Restart ComfyStudio and try again.')
+    }
+    try {
+      const result = await this.diagnoseComfyUIConnection(args || {})
+      return textResult(result)
+    } catch (error) {
+      return errorResult(`Could not diagnose ComfyUI connection: ${error?.message || String(error)}`)
+    }
+  }
+
+  async setComfyUIConnectionTool(args = {}) {
+    if (!this.setComfyUIConnection) {
+      return errorResult('ComfyUI connection setting is not available. Restart ComfyStudio and try again.')
+    }
+    const port = normalizeLocalPort(args?.port)
+    if (!port) {
+      return errorResult('Invalid ComfyUI port. Use a number from 1 to 65535.')
+    }
+    try {
+      const result = await this.setComfyUIConnection({
+        port,
+        previewOnly: args.previewOnly === true,
+      })
+      if (result?.success === false) {
+        return errorResult(result.error || 'Could not update ComfyUI connection.')
+      }
+      return textResult({
+        action: 'set_comfyui_connection',
+        ...result,
+      })
+    } catch (error) {
+      return errorResult(`Could not update ComfyUI connection: ${error?.message || String(error)}`)
+    }
+  }
+
+  async repairComfyUIConnection(args = {}) {
+    if (!this.diagnoseComfyUIConnection || !this.setComfyUIConnection) {
+      return errorResult('ComfyUI connection repair is not available. Restart ComfyStudio and try again.')
+    }
+
+    const timeoutMs = getNumberArg(args, 'timeoutMs', 4500, 1000, 30000)
+    const configured = await this.diagnoseComfyUIConnection({ timeoutMs })
+    if (configured?.connection?.ok) {
+      return textResult({
+        action: 'repair_comfyui_connection',
+        previewOnly: args.previewOnly !== false,
+        needed: false,
+        summary: 'No repair needed. The configured ComfyUI connection is already healthy.',
+        configured,
+      })
+    }
+
+    const configuredPort = normalizeLocalPort(configured?.connection?.port)
+    const requestedCandidates = Array.isArray(args.candidatePorts) ? args.candidatePorts : []
+    const defaultCandidates = [
+      configuredPort,
+      8188,
+      8189,
+      8190,
+      8191,
+      7860,
+    ]
+    const candidatePorts = [...new Set([...requestedCandidates, ...defaultCandidates]
+      .map(normalizeLocalPort)
+      .filter(Boolean))]
+
+    const probes = []
+    let reachable = null
+    for (const port of candidatePorts) {
+      const diagnosis = port === configuredPort
+        ? configured
+        : await this.diagnoseComfyUIConnection({ port, timeoutMs })
+      probes.push({
+        port,
+        ok: Boolean(diagnosis?.connection?.ok),
+        summary: diagnosis?.summary || '',
+        nodeClassCount: diagnosis?.api?.objectInfo?.nodeClassCount || 0,
+      })
+      if (!reachable && diagnosis?.connection?.ok) {
+        reachable = diagnosis
+      }
+    }
+
+    if (!reachable) {
+      return textResult({
+        action: 'repair_comfyui_connection',
+        previewOnly: args.previewOnly !== false,
+        needed: true,
+        repaired: false,
+        summary: 'ComfyStudio is pointed at an unreachable ComfyUI port, and no reachable ComfyUI server was found on the probed local ports.',
+        configured,
+        probes,
+        recommendations: [
+          'Start ComfyUI and confirm the local browser URL/port it prints.',
+          'Then run repair_comfyui_connection again with that port in candidatePorts, or set the port explicitly with set_comfyui_connection.',
+        ],
+      })
+    }
+
+    const reachablePort = normalizeLocalPort(reachable?.connection?.port)
+    const previewOnly = args.previewOnly !== false
+    const update = await this.setComfyUIConnection({
+      port: reachablePort,
+      previewOnly,
+    })
+    if (update?.success === false) {
+      return errorResult(update.error || 'Could not apply ComfyUI connection repair.')
+    }
+
+    return textResult({
+      action: 'repair_comfyui_connection',
+      previewOnly,
+      needed: true,
+      repaired: !previewOnly,
+      summary: previewOnly
+        ? `ComfyStudio is pointed at ${configured?.connection?.httpBase}, but ComfyUI is reachable at ${reachable?.connection?.httpBase}. This repair would switch ComfyStudio to port ${reachablePort}.`
+        : `ComfyStudio was switched to the reachable ComfyUI port ${reachablePort}.`,
+      configured,
+      reachable,
+      probes,
+      proposedChange: {
+        from: configured?.connection?.httpBase || null,
+        to: reachable?.connection?.httpBase || null,
+      },
+      update,
+      recommendations: previewOnly
+        ? [`Ask the user for approval, then call repair_comfyui_connection with previewOnly=false or set_comfyui_connection with port ${reachablePort}.`]
+        : ['Re-run diagnose_comfyui_connection to confirm the configured connection is now healthy.'],
+    })
+  }
+
+  async controlComfyUILauncherTool(args = {}) {
+    if (!this.controlComfyLauncher) {
+      return errorResult('ComfyUI launcher control is not available. Restart ComfyStudio and try again.')
+    }
+    const action = String(args?.action || '').trim().toLowerCase()
+    if (!['start', 'stop', 'restart'].includes(action)) {
+      return errorResult('Launcher action must be start, stop, or restart.')
+    }
+    try {
+      const result = await this.controlComfyLauncher({
+        action,
+        previewOnly: args.previewOnly !== false,
+      })
+      if (result?.success === false && result?.blocked !== true) {
+        return errorResult(result.error || 'ComfyUI launcher action failed.')
+      }
+      return textResult(result)
+    } catch (error) {
+      return errorResult(`Could not run ComfyUI launcher action: ${error?.message || String(error)}`)
+    }
+  }
+
+  async getComfyUILauncherLogsTool(args = {}) {
+    if (!this.getComfyLauncherLogs) {
+      return errorResult('ComfyUI launcher logs are not available. Restart ComfyStudio and try again.')
+    }
+    try {
+      const result = await this.getComfyLauncherLogs({
+        tailLines: clampLimit(args.tailLines, 200, 2000),
+        streams: Array.isArray(args.streams) ? args.streams : [],
+        includeIssueSummary: args.includeIssueSummary !== false,
+      })
+      return textResult(result)
+    } catch (error) {
+      return errorResult(`Could not read ComfyUI launcher logs: ${error?.message || String(error)}`)
+    }
+  }
+
+  async runComfyUINodeValidation(args = {}) {
+    if (!this.validateComfyUINodes) {
+      return errorResult('ComfyUI node validation is not available. Restart ComfyStudio and try again.')
+    }
+    try {
+      const result = await this.validateComfyUINodes(args || {})
+      return textResult(result)
+    } catch (error) {
+      return errorResult(`Could not validate ComfyUI nodes: ${error?.message || String(error)}`)
+    }
+  }
+
+  async listComfyStudioWorkflowsTool(args = {}) {
+    if (!this.listComfyStudioWorkflows) {
+      return errorResult('ComfyStudio workflow discovery is not available. Restart ComfyStudio and try again.')
+    }
+    try {
+      const result = await this.listComfyStudioWorkflows({
+        runtime: args.runtime,
+        category: args.category,
+        query: args.query,
+        refresh: args.refresh === true,
+      })
+      if (result?.success === false) return errorResult(result.error || 'Could not list ComfyStudio workflows.')
+      return textResult(result)
+    } catch (error) {
+      return errorResult(`Could not list ComfyStudio workflows: ${error?.message || String(error)}`)
+    }
+  }
+
+  async inspectComfyStudioWorkflowTool(args = {}) {
+    if (!this.inspectComfyStudioWorkflow) {
+      return errorResult('ComfyStudio workflow inspection is not available. Restart ComfyStudio and try again.')
+    }
+    try {
+      const result = await this.inspectComfyStudioWorkflow({
+        workflowId: args.workflowId,
+        workflowFile: args.workflowFile,
+        workflowPath: args.workflowPath,
+        includeValidation: args.includeValidation !== false,
+        includeNodeClasses: args.includeNodeClasses !== false,
+        port: args.port,
+        timeoutMs: args.timeoutMs,
+        refresh: args.refresh === true,
+      })
+      if (result?.success === false) return errorResult(result.error || 'Could not inspect ComfyStudio workflow.')
+      return textResult(result)
+    } catch (error) {
+      return errorResult(`Could not inspect ComfyStudio workflow: ${error?.message || String(error)}`)
+    }
+  }
+
+  async prepareGenerationFromTimelineContext(snapshot, args = {}) {
+    const plan = resolveGenerateFromTimelinePlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'prepare_generation_from_timeline_context',
+        message: 'Generate preparation plan only. No frame was captured and Generate was not opened.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'prepare_generation_from_timeline_context',
+          arguments: {
+            ...args,
+            previewOnly: false,
+          },
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP Generate preparation bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const payload = {
+      mode: plan.mode,
+      workflowId: plan.workflowId,
+      category: plan.category,
+      timeSeconds: plan.frame.timeSeconds,
+      prompt: plan.prompt,
+      negativePrompt: plan.negativePrompt,
+      openGenerateTab: plan.openGenerateTab,
+      ...(plan.generationSettings.durationSeconds !== null ? { durationSeconds: plan.generationSettings.durationSeconds } : {}),
+      ...(plan.generationSettings.fps !== null ? { fps: plan.generationSettings.fps } : {}),
+      ...(plan.generationSettings.resolution ? { resolution: plan.generationSettings.resolution } : {}),
+    }
+
+    const result = await this.performAction({
+      action: 'prepare_generation_from_timeline_context',
+      payload,
+    })
+
+    return textResult({
+      success: true,
+      action: 'prepare_generation_from_timeline_context',
+      message: 'Timeline frame captured and sent to Generate. Review settings in ComfyStudio, then click Generate manually when ready.',
+      plan: {
+        ...plan,
+        previewOnly: false,
+      },
+      result,
+    })
+  }
+
+  async queuePreparedGeneration(_snapshot, args = {}) {
+    if (!this.performAction) {
+      return errorResult('MCP Generate queue bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const previewOnly = args.previewOnly !== false
+    const result = await this.performAction({
+      action: 'queue_prepared_generation',
+      payload: {
+        previewOnly,
+        requireTimelineFrame: args.requireTimelineFrame !== false,
+        timeoutMs: args.timeoutMs,
+      },
+    })
+
+    return textResult({
+      success: previewOnly ? undefined : true,
+      previewOnly,
+      action: 'queue_prepared_generation',
+      message: previewOnly
+        ? 'Prepared Generate state inspected. No generation was queued.'
+        : 'Prepared Generate request queued through ComfyStudio.',
+      result,
+    })
+  }
+
+  async queueTimelineGenerationBatch(snapshot, args = {}) {
+    const plan = resolveTimelineGenerationBatchPlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'queue_timeline_generation_batch',
+        message: `Timeline generation batch plan only. No frame was captured and no generation was queued. Planned ${plan.totalJobs} job${plan.totalJobs === 1 ? '' : 's'}.`,
+        plan,
+        suggestedApplyCall: {
+          tool: 'queue_timeline_generation_batch',
+          arguments: buildTimelineBatchApplyArguments(args, plan),
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP timeline generation batch bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'queue_timeline_generation_batch',
+      payload: {
+        ...plan,
+        previewOnly: false,
+        timeoutMs: args.timeoutMs,
+      },
+    })
+
+    return textResult({
+      success: true,
+      previewOnly: false,
+      action: 'queue_timeline_generation_batch',
+      message: `Queued ${plan.totalJobs} timeline generation job${plan.totalJobs === 1 ? '' : 's'} through ComfyStudio.`,
+      plan,
+      result,
+    })
+  }
+
+  async queuePromptGenerationBatch(snapshot, args = {}) {
+    const plan = resolvePromptGenerationBatchPlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'queue_prompt_generation_batch',
+        message: `Prompt generation batch plan only. No generation was queued. Planned ${plan.totalJobs} job${plan.totalJobs === 1 ? '' : 's'}.`,
+        plan,
+        suggestedApplyCall: {
+          tool: 'queue_prompt_generation_batch',
+          arguments: buildPromptBatchApplyArguments(args, plan),
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP prompt generation batch bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'queue_prompt_generation_batch',
+      payload: {
+        ...plan,
+        previewOnly: false,
+        timeoutMs: args.timeoutMs,
+      },
+    })
+
+    return textResult({
+      success: true,
+      previewOnly: false,
+      action: 'queue_prompt_generation_batch',
+      message: `Queued ${plan.totalJobs} prompt generation job${plan.totalJobs === 1 ? '' : 's'} through ComfyStudio.`,
+      plan,
+      result,
+    })
   }
 
   async inspectTimelineFrame(snapshot, args = {}) {
@@ -4008,6 +8191,318 @@ class ComfyStudioMcpServer {
     })
   }
 
+  async createTimeline(snapshot, args = {}) {
+    const plan = resolveCreateTimelinePlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+      name: plan.name,
+      width: plan.width,
+      height: plan.height,
+      fps: plan.fps,
+      durationSeconds: plan.durationSeconds,
+      color: plan.color || undefined,
+      folderId: plan.folderId || undefined,
+      copySettingsFromCurrent: plan.copySettingsFromCurrent,
+      switchToTimeline: plan.switchToTimeline,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'create_timeline',
+        message: 'Sequence creation plan only. No timeline was created.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'create_timeline',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP sequence creation bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'create_timeline',
+      payload: applyArgs,
+    })
+
+    return textResult({
+      success: true,
+      action: 'create_timeline',
+      message: plan.switchToTimeline
+        ? 'Sequence created and ComfyStudio switched to it.'
+        : 'Sequence created.',
+      plan,
+      result,
+    })
+  }
+
+  async createAssetFolder(snapshot, args = {}) {
+    const plan = resolveCreateAssetFolderPlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+      path: plan.requestedPath,
+      parentId: plan.parentId || undefined,
+      reuseExisting: plan.reuseExisting,
+      allowDuplicateName: plan.allowDuplicateName,
+      color: plan.color || undefined,
+      setColorOnExisting: plan.setColorOnExisting,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'create_asset_folder',
+        message: plan.createdCount === 0
+          ? 'Asset folder already exists. No project change was made.'
+          : `Asset folder plan only. ${plan.createdCount} folder${plan.createdCount === 1 ? '' : 's'} would be created.`,
+        plan,
+        suggestedApplyCall: {
+          tool: 'create_asset_folder',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP asset folder bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'create_asset_folder',
+      payload: applyArgs,
+    })
+
+    return textResult({
+      success: true,
+      action: 'create_asset_folder',
+      message: result?.createdCount > 0
+        ? `Created ${result.createdCount} asset folder${result.createdCount === 1 ? '' : 's'}.`
+        : 'Asset folder already existed.',
+      plan,
+      result,
+    })
+  }
+
+  async moveAssetsToFolder(snapshot, args = {}) {
+    const plan = resolveMoveAssetsToFolderPlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+      assetIds: plan.assets.map((asset) => asset.id),
+      targetFolderId: plan.targetWillBeCreated ? undefined : (plan.targetFolderId || null),
+      targetFolderPath: plan.targetFolderPath,
+      targetRoot: plan.targetRoot,
+      targetFolderColor: args.targetFolderColor || args.folderColor || undefined,
+      createTargetFolder: plan.targetWillBeCreated,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'move_assets_to_folder',
+        message: plan.moveCount === 0
+          ? 'No matching assets need to move.'
+          : `Asset move plan only. ${plan.moveCount} asset${plan.moveCount === 1 ? '' : 's'} would move to ${plan.targetRoot ? 'the asset root' : plan.targetFolderPath.join(' / ')}.`,
+        plan,
+        suggestedApplyCall: {
+          tool: 'move_assets_to_folder',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP asset move bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    if (plan.moveCount === 0) {
+      return textResult({
+        success: false,
+        action: 'move_assets_to_folder',
+        message: 'No matching assets need to move.',
+        plan,
+      })
+    }
+
+    const result = await this.performAction({
+      action: 'move_assets_to_folder',
+      payload: applyArgs,
+    })
+
+    return textResult({
+      success: true,
+      action: 'move_assets_to_folder',
+      message: `Moved ${result?.movedCount ?? plan.moveCount} asset${(result?.movedCount ?? plan.moveCount) === 1 ? '' : 's'} to ${result?.targetFolderPath?.join?.(' / ') || (plan.targetRoot ? 'the asset root' : plan.targetFolderPath.join(' / '))}.`,
+      plan,
+      result,
+    })
+  }
+
+  async addAssetToTimeline(snapshot, args = {}) {
+    const plan = resolveAssetTimelinePlacementPlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+      assetId: plan.asset.id,
+      startSeconds: plan.startSeconds,
+      durationSeconds: plan.durationSeconds,
+      createTrack: plan.createTrack,
+      trackName: plan.createTrack ? plan.track?.name : undefined,
+      trackId: plan.createTrack ? undefined : plan.track?.id,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'add_asset_to_timeline',
+        message: 'Asset placement plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'add_asset_to_timeline',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP asset placement bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'add_asset_to_timeline',
+      payload: applyArgs,
+    })
+
+    return textResult({
+      success: true,
+      action: 'add_asset_to_timeline',
+      message: 'Asset placed on the timeline through ComfyStudio.',
+      plan,
+      result,
+    })
+  }
+
+  async addSolidColor(snapshot, args = {}) {
+    const plan = resolveSolidColorPlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+      color: plan.asset.color,
+      name: plan.asset.name,
+      width: plan.asset.width,
+      height: plan.asset.height,
+      durationSeconds: plan.durationSeconds,
+      placeOnTimeline: plan.placeOnTimeline,
+      trackId: plan.track?.id || undefined,
+      createTrack: plan.createTrack,
+      trackName: plan.createTrack ? plan.track?.name : undefined,
+      trackPlacement: plan.trackPlacement || undefined,
+      startSeconds: plan.startSeconds ?? undefined,
+      resolveOverlaps: plan.resolveOverlaps,
+      selectAfterAdd: plan.selectAfterAdd,
+      transform: plan.transform || undefined,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'add_solid_color',
+        message: 'Solid color plan only. No asset or timeline clip was created.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'add_solid_color',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP solid color bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'add_solid_color',
+      payload: applyArgs,
+    })
+
+    return textResult({
+      success: true,
+      action: 'add_solid_color',
+      message: 'Solid color asset created through ComfyStudio.',
+      plan,
+      result,
+    })
+  }
+
+  async addAssetsToTimeline(snapshot, args = {}) {
+    const plan = resolveAssetsTimelinePlacementPlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+      assets: plan.placements.map((placement) => ({
+        assetId: placement.asset.id,
+        trackName: placement.createTrack ? placement.track?.name : undefined,
+        durationSeconds: placement.durationSeconds,
+        labelColor: placement.labelColor || undefined,
+        transform: placement.transform || undefined,
+      })),
+      startSeconds: plan.baseStartSeconds,
+      layout: plan.layout,
+      trackStrategy: plan.trackStrategy === 'single_track' ? 'singleTrack' : 'newTracks',
+      spacingSeconds: plan.spacingSeconds,
+      resolveOverlaps: plan.resolveOverlaps,
+      selectAfterAdd: plan.selectAfterAdd,
+      trackId: plan.trackStrategy === 'single_track' ? args.trackId : undefined,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'add_assets_to_timeline',
+        message: 'Batch asset placement plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'add_assets_to_timeline',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP batch asset placement bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'add_assets_to_timeline',
+      payload: applyArgs,
+    })
+
+    return textResult({
+      success: true,
+      action: 'add_assets_to_timeline',
+      message: 'Assets placed on the timeline through ComfyStudio.',
+      plan,
+      result,
+    })
+  }
+
   async duplicateClip(snapshot, args = {}) {
     const timeline = snapshot.currentTimeline || null
     if (!timeline) return errorResult('No current timeline is available.')
@@ -4025,7 +8520,7 @@ class ComfyStudioMcpServer {
     if (targetTrack.locked) return errorResult(`Track ${targetTrack.id} is locked.`)
 
     const clipNeedsAudioTrack = clip.type === 'audio'
-    const clipNeedsVideoTrack = ['video', 'image', 'text', 'adjustment', 'caption', 'captions'].includes(clip.type)
+    const clipNeedsVideoTrack = ['video', 'image', 'text', 'shape', 'adjustment', 'caption', 'captions'].includes(clip.type)
     if (clipNeedsAudioTrack && targetTrack.type !== 'audio') {
       return errorResult(`Clip ${clipId} is an audio clip and must be duplicated onto an audio track.`)
     }
@@ -4042,6 +8537,7 @@ class ComfyStudioMcpServer {
         labelColor: clip.labelColor || '',
         transform: clip.transform || null,
         textProperties: clip.textProperties || null,
+        shapeProperties: clip.shapeProperties || null,
         titleAnimation: clip.titleAnimation || null,
         keyframes: clip.keyframes || null,
       },
@@ -4164,6 +8660,182 @@ class ComfyStudioMcpServer {
       previewOnly: args.previewOnly === true,
       action: 'update_text_clip',
       before: summarizeTextClipForMcp(resolved.clip),
+      result,
+    })
+  }
+
+  async addShapeClip(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    const requestedTrackId = String(args.trackId || '').trim()
+    const videoTracks = (timeline.tracks || []).filter((track) => track?.type === 'video')
+    const targetTrack = requestedTrackId
+      ? videoTracks.find((track) => track.id === requestedTrackId)
+      : videoTracks.find((track) => track.locked !== true)
+
+    const style = {
+      ...(args.shapeProperties || {}),
+      ...(args.style || {}),
+    }
+    for (const key of ['shapeType', 'type', 'name', 'width', 'height', 'sizeLinked', 'fillType', 'gradientType', 'fillColor', 'color', 'fill', 'fillColorB', 'fillB', 'gradientColor', 'gradientColorB', 'colorB', 'gradientFill', 'fillOpacity', 'gradientAngle', 'gradientCenterX', 'gradientCenterY', 'gradientRadius', 'strokeColor', 'stroke', 'strokeOpacity', 'strokeWidth', 'cornerRadius', 'sides', 'polygonSides']) {
+      if (args[key] !== undefined) style[key] = args[key]
+    }
+    const plannedDuration = args.durationSeconds ?? args.duration ?? 5
+    let keyframes = []
+    try {
+      keyframes = normalizeMcpClipKeyframes(args, { type: 'shape', duration: plannedDuration })
+    } catch (error) {
+      return errorResult(error?.message || String(error))
+    }
+
+    if (args.previewOnly === true) {
+      return textResult({
+        previewOnly: true,
+        action: 'add_shape_clip',
+        message: 'Shape clip creation plan only. No timeline change was made.',
+        plan: {
+          shapeType: args.shapeType || args.type || style.shapeType || 'rectangle',
+          name: args.name || style.name || '',
+          track: targetTrack ? { id: targetTrack.id, name: targetTrack.name, type: targetTrack.type } : null,
+          startSeconds: args.startSeconds ?? args.startTime ?? timeline.playheadPosition ?? 0,
+          durationSeconds: plannedDuration,
+          style,
+          transform: args.transform || {},
+          crop: args.crop || {},
+          keyframes,
+        },
+        warning: targetTrack ? '' : 'No unlocked video track was found in the MCP snapshot.',
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP shape bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'add_shape_clip',
+      payload: args,
+    })
+
+    return textResult({
+      success: true,
+      action: 'add_shape_clip',
+      result,
+    })
+  }
+
+  async updateShapeClip(snapshot, args = {}) {
+    const resolved = getShapeClipForMcp(snapshot, args.clipId)
+    if (resolved.error) return errorResult(resolved.error)
+    let keyframes = []
+    let clearKeyframes = []
+    try {
+      keyframes = normalizeMcpClipKeyframes(args, resolved.clip)
+      clearKeyframes = normalizeMcpClipKeyframeClearProperties(args.clearKeyframes || args.clearKeyframesForProperties, resolved.clip)
+    } catch (error) {
+      return errorResult(error?.message || String(error))
+    }
+
+    if (args.previewOnly === true && !this.performAction) {
+      return textResult({
+        previewOnly: true,
+        action: 'update_shape_clip',
+        message: 'Shape clip update plan only. No timeline change was made.',
+        before: summarizeShapeClipForMcp(resolved.clip),
+        requested: { ...args, keyframes, clearKeyframes },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP shape bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'update_shape_clip',
+      payload: args,
+    })
+
+    return textResult({
+      success: args.previewOnly === true ? undefined : true,
+      previewOnly: args.previewOnly === true,
+      action: 'update_shape_clip',
+      before: summarizeShapeClipForMcp(resolved.clip),
+      result,
+    })
+  }
+
+  async setClipKeyframes(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    const clipId = String(args.clipId || '').trim()
+    if (!clipId) return errorResult('Provide clipId from get_timeline.')
+
+    const clip = (timeline.clips || []).find((candidate) => candidate?.id === clipId)
+    if (!clip) return errorResult(`Clip ${clipId} was not found.`)
+
+    const clipType = String(clip.type || '').toLowerCase()
+    if (!MCP_VISUAL_KEYFRAME_CLIP_TYPES.has(clipType)) {
+      return errorResult(`Clip ${clipId} is a ${clip.type || 'unknown'} clip. set_clip_keyframes currently supports visual clips, not audio clips.`)
+    }
+
+    let keyframes
+    let clearKeyframes
+    try {
+      keyframes = normalizeMcpClipKeyframes(args, clip)
+      clearKeyframes = normalizeMcpClipKeyframeClearProperties(args.clearKeyframes || args.clearKeyframesForProperties, clip)
+    } catch (error) {
+      return errorResult(error?.message || String(error))
+    }
+
+    if (keyframes.length === 0 && clearKeyframes.length === 0) {
+      return errorResult('Provide at least one keyframe or clearKeyframes property.')
+    }
+
+    const plan = {
+      clip: summarizeClipKeyframeTarget(clip),
+      keyframes,
+      clearKeyframes,
+      replaceKeyframes: args.replaceKeyframes === true,
+      supportedProperties: MCP_CLIP_KEYFRAME_PROPERTIES,
+    }
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+      clipId,
+      keyframes,
+      clearKeyframes: clearKeyframes.length > 0 ? clearKeyframes : undefined,
+      replaceKeyframes: args.replaceKeyframes === true,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'set_clip_keyframes',
+        message: 'Clip keyframe plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'set_clip_keyframes',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP clip keyframe bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'set_clip_keyframes',
+      payload: applyArgs,
+    })
+
+    return textResult({
+      success: true,
+      action: 'set_clip_keyframes',
+      message: 'Clip keyframes updated through ComfyStudio.',
+      plan,
       result,
     })
   }

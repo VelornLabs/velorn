@@ -6,24 +6,13 @@ import {
   resolveLetterboxAspect,
   getLetterboxContentRect,
   generateLetterboxOverlayBlob,
+  generateColorMatteBlob,
 } from '../utils/overlayGenerators'
 
 function clampNumber(value, min, max, fallback) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(min, Math.min(max, parsed))
-}
-
-function generateColorMatteBlob(width, height, color) {
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d')
-  ctx.fillStyle = color
-  ctx.fillRect(0, 0, width, height)
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('toBlob failed'))), 'image/png')
-  })
 }
 
 function generateVignetteBlob(width, height, strength, softness) {

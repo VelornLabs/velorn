@@ -5,8 +5,10 @@ import { getAnimatedTransform } from './keyframes'
 import {
   applyClipCrop,
   applyClipTransform,
+  drawPerspectiveClipSource,
   drawText,
   getBaseDrawRect,
+  hasPerspectiveClipTransform,
 } from '../services/exporter'
 
 /**
@@ -110,9 +112,18 @@ async function renderTimelineCompositeStill(time, canvas, width, height) {
         ctx.globalAlpha = opacity
         ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
         ctx.filter = clipTransform.blur > 0 ? `blur(${clipTransform.blur}px)` : 'none'
-        applyClipTransform(ctx, rect, clipTransform, null)
-        applyClipCrop(ctx, rect, clipTransform)
-        drawText(ctx, rect, clip, 1, clipTime)
+        if (hasPerspectiveClipTransform(clipTransform)) {
+          const textCanvas = document.createElement('canvas')
+          textCanvas.width = Math.max(1, Math.ceil(rect.width))
+          textCanvas.height = Math.max(1, Math.ceil(rect.height))
+          const textCtx = textCanvas.getContext('2d', { alpha: true })
+          drawText(textCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, clip, 1, clipTime)
+          drawPerspectiveClipSource(ctx, textCanvas, rect, clipTransform, null)
+        } else {
+          applyClipTransform(ctx, rect, clipTransform, null)
+          applyClipCrop(ctx, rect, clipTransform)
+          drawText(ctx, rect, clip, 1, clipTime)
+        }
         ctx.restore()
         drewSomething = true
         continue
@@ -134,9 +145,13 @@ async function renderTimelineCompositeStill(time, canvas, width, height) {
       ctx.globalAlpha = opacity
       ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
       ctx.filter = clipTransform.blur > 0 ? `blur(${clipTransform.blur}px)` : 'none'
-      applyClipTransform(ctx, rect, clipTransform, null)
-      applyClipCrop(ctx, rect, clipTransform)
-      ctx.drawImage(loaded.element, 0, 0, rect.width, rect.height)
+      if (hasPerspectiveClipTransform(clipTransform)) {
+        drawPerspectiveClipSource(ctx, loaded.element, rect, clipTransform, null)
+      } else {
+        applyClipTransform(ctx, rect, clipTransform, null)
+        applyClipCrop(ctx, rect, clipTransform)
+        ctx.drawImage(loaded.element, 0, 0, rect.width, rect.height)
+      }
       ctx.restore()
       drewSomething = true
     }

@@ -197,7 +197,7 @@ const parseFrameOffsetInput = (value, fps) => {
 
 const getClipSourceDurationForExtension = (clip) => {
   if (!clip) return Infinity
-  if (clip.type === 'image' || clip.type === 'adjustment' || clip.type === 'text') return Infinity
+  if (clip.type === 'image' || clip.type === 'adjustment' || clip.type === 'text' || clip.type === 'shape') return Infinity
   const raw = clip.sourceDuration
   if (raw === Infinity || raw === 'Infinity') return Infinity
   const parsed = Number(raw)
@@ -207,7 +207,7 @@ const getClipSourceDurationForExtension = (clip) => {
 }
 
 const isInfinitelyExtendableClip = (clip) => (
-  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text'
+  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text' || clip?.type === 'shape'
 )
 
 const getAudioWaveformContext = () => {
@@ -690,6 +690,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     selectedMarkerId,
     addClip,
     addTextClip,
+    addShapeClip,
     removeClip,
     removeSelectedClips,
     rippleDeleteClipIds,
@@ -788,6 +789,11 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     }
     return newClip
   }, [preferredVideoTrack, addTextClip, playheadPosition, requestTextEdit])
+  const addShapeClipAtPlayhead = useCallback((options = {}) => {
+    const targetTrack = preferredVideoTrack
+    if (!targetTrack) return null
+    return addShapeClip(targetTrack.id, options, playheadPosition)
+  }, [preferredVideoTrack, addShapeClip, playheadPosition])
   const handleUndoAction = useCallback(() => {
     if (projectCanUndo && (!canUndo() || projectHistoryLastChangedAt > timelineHistoryLastChangedAt)) {
       return undoTimelineStructureChange()
@@ -1204,7 +1210,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   // Helper to get clip URL - uses asset store URL if available (handles refreshed blob URLs)
   const getClipUrl = (clip) => {
     if (!clip) return null
-    if (clip.type === 'text') return null
+    if (clip.type === 'text' || clip.type === 'shape') return null
     // Try to get current URL from assets store (may have been regenerated after refresh)
     if (clip.assetId) {
       const assetUrl = getAssetUrl(clip.assetId)
@@ -2288,7 +2294,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     const remainder = clip.duration - splitTime
 
     let asset = null
-    if (clip.type !== 'text' && clip.type !== 'adjustment') {
+    if (clip.type !== 'text' && clip.type !== 'shape' && clip.type !== 'adjustment') {
       asset = assets.find(a => a.id === clip.assetId)
       if (!asset) return null
     }
@@ -2307,6 +2313,17 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         saveHistory: false,
       }
       return addTextClip(clip.trackId, textOptions, splitPosition)
+    }
+
+    if (clip.type === 'shape') {
+      return addShapeClip(clip.trackId, {
+        shapeProperties: clip.shapeProperties || {},
+        duration: remainder,
+        name: clip.name,
+        transform: clip.transform || {},
+        enabled: isClipEnabled(clip),
+        saveHistory: false,
+      }, splitPosition)
     }
 
     if (clip.type === 'adjustment') {
@@ -2336,7 +2353,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         : {}),
       saveHistory: false,
     })
-  }, [assets, saveToHistory, resizeClip, addTextClip, addAdjustmentClip, addClip, timelineFps, isClipEnabled])
+  }, [assets, saveToHistory, resizeClip, addTextClip, addShapeClip, addAdjustmentClip, addClip, timelineFps, isClipEnabled])
 
   const splitAllTracksAtPlayhead = useCallback(() => {
     const clipsToSplit = clips.filter(
@@ -2678,7 +2695,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [toggleSnapping, toggleRippleEdit, addMarker, selectedClipIds, selectedGap, selectedTransitionId, selectedMarkerId, removeSelectedClips, rippleDeleteSelectedClips, rippleDeleteSelectedGap, removeTransition, removeMarker, clearSelection, selectMarker, clips, handleUndoAction, handleRedoAction, activeTrackId, playheadPosition, saveToHistory, resizeClip, addClip, addTextClip, addTextClipAtPlayhead, addAdjustmentClip, updateClipTrim, assets, timelineFps, copySelectedClips, pasteClipsAtPlayhead, copiedClips, selectClipsFromPlayheadToEnd, selectClipsFromTimelineStartToPlayhead, splitClipAtTime, splitAllTracksAtPlayhead, openMoveOffsetDialog, openDurationDeltaDialog, moveOffsetDialogOpen, durationDeltaDialogOpen, editorHotkeys, linkSelectedClips, unlinkSelectedClips, lockSyncClips, unlockSyncLockedClips, toggleClipSelectionEnabled, applyZoomWithPlayheadPivot, zoom, rippleEditMode, activeTrackClipAtPlayhead, canDeleteCurrentSelection, handleCopySelection, handleDeleteCurrentSelection, handlePasteAtPlayhead, handleSplitActiveTrackAtPlayhead, jumpPlayheadToClipBoundary, jumpPlayheadToMarker, clipContextSyncEligibleClips, clipContextSyncLockByClipId, clipContextAllSyncLocked])
+  }, [toggleSnapping, toggleRippleEdit, addMarker, selectedClipIds, selectedGap, selectedTransitionId, selectedMarkerId, removeSelectedClips, rippleDeleteSelectedClips, rippleDeleteSelectedGap, removeTransition, removeMarker, clearSelection, selectMarker, clips, handleUndoAction, handleRedoAction, activeTrackId, playheadPosition, saveToHistory, resizeClip, addClip, addTextClip, addShapeClip, addTextClipAtPlayhead, addShapeClipAtPlayhead, addAdjustmentClip, updateClipTrim, assets, timelineFps, copySelectedClips, pasteClipsAtPlayhead, copiedClips, selectClipsFromPlayheadToEnd, selectClipsFromTimelineStartToPlayhead, splitClipAtTime, splitAllTracksAtPlayhead, openMoveOffsetDialog, openDurationDeltaDialog, moveOffsetDialogOpen, durationDeltaDialogOpen, editorHotkeys, linkSelectedClips, unlinkSelectedClips, lockSyncClips, unlockSyncLockedClips, toggleClipSelectionEnabled, applyZoomWithPlayheadPivot, zoom, rippleEditMode, activeTrackClipAtPlayhead, canDeleteCurrentSelection, handleCopySelection, handleDeleteCurrentSelection, handlePasteAtPlayhead, handleSplitActiveTrackAtPlayhead, jumpPlayheadToClipBoundary, jumpPlayheadToMarker, clipContextSyncEligibleClips, clipContextSyncLockByClipId, clipContextAllSyncLocked])
 
   // Spacebar panning key state (dedicated listeners so keyup cannot get "stuck")
   useEffect(() => {
@@ -3366,6 +3383,14 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         if (clip.type === 'text') {
           const textOptions = { ...(clip.textProperties || {}), duration: clip.duration, enabled: isClipEnabled(clip) }
           addTextClip(clip.trackId, textOptions, clip.startTime + clip.duration + 0.1)
+        } else if (clip.type === 'shape') {
+          addShapeClip(clip.trackId, {
+            shapeProperties: clip.shapeProperties || {},
+            duration: clip.duration,
+            name: clip.name,
+            transform: clip.transform || {},
+            enabled: isClipEnabled(clip),
+          }, clip.startTime + clip.duration + 0.1)
         } else if (clip.type === 'adjustment') {
           addAdjustmentClip(clip.trackId, clip.startTime + clip.duration + 0.1, {
             duration: clip.duration,
@@ -4555,6 +4580,17 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
             >
               <Type className="w-3 h-3" />
               Text
+            </button>
+            <button
+              onClick={() => addShapeClipAtPlayhead()}
+              disabled={!preferredVideoTrack}
+              className={toolbarButtonClass}
+              title={preferredVideoTrack
+                ? `Add a shape clip on ${preferredVideoTrack.name} at the playhead`
+                : 'Add a video track to create shapes at the playhead'}
+            >
+              <Square className="w-3 h-3 text-cyan-300" />
+              Shape
             </button>
             <button
               onClick={handleOpenTimelineCaptions}

@@ -17,10 +17,10 @@ import ConfirmDialog from '../ConfirmDialog'
 import NewTimelineDialog from '../NewTimelineDialog'
 // Thumbnail size presets (xs = extra small for denser grid)
 const THUMBNAIL_SIZES = {
-  xs: { cols: 5, iconSize: 'w-3 h-3', playSize: 'w-3 h-3', badgeSize: 'text-[5px]', nameSize: 'text-[8px]', infoSize: 'text-[7px]' },
-  small: { cols: 3, iconSize: 'w-4 h-4', playSize: 'w-4 h-4', badgeSize: 'text-[6px]', nameSize: 'text-[9px]', infoSize: 'text-[8px]' },
-  medium: { cols: 2, iconSize: 'w-6 h-6', playSize: 'w-6 h-6', badgeSize: 'text-[7px]', nameSize: 'text-[10px]', infoSize: 'text-[9px]' },
-  large: { cols: 1, iconSize: 'w-8 h-8', playSize: 'w-8 h-8', badgeSize: 'text-[8px]', nameSize: 'text-[11px]', infoSize: 'text-[10px]' },
+  xs: { minWidth: 74, iconSize: 'w-3 h-3', playSize: 'w-3 h-3', badgeSize: 'text-[5px]', nameSize: 'text-[8px]', infoSize: 'text-[7px]' },
+  small: { minWidth: 100, iconSize: 'w-4 h-4', playSize: 'w-4 h-4', badgeSize: 'text-[6px]', nameSize: 'text-[9px]', infoSize: 'text-[8px]' },
+  medium: { minWidth: 136, iconSize: 'w-6 h-6', playSize: 'w-6 h-6', badgeSize: 'text-[7px]', nameSize: 'text-[10px]', infoSize: 'text-[9px]' },
+  large: { minWidth: 200, iconSize: 'w-8 h-8', playSize: 'w-8 h-8', badgeSize: 'text-[8px]', nameSize: 'text-[11px]', infoSize: 'text-[10px]' },
 }
 const THUMBNAIL_SIZE_ORDER = ['xs', 'small', 'medium', 'large']
 const ASSET_DELETE_MODE_KEY = 'assetsDeleteMode'
@@ -1591,6 +1591,7 @@ function AssetsPanel({ isActive = true }) {
 
   // Get thumbnail size config
   const sizeConfig = THUMBNAIL_SIZES[thumbnailSize]
+  const gridTemplateColumns = `repeat(auto-fill, minmax(min(100%, ${sizeConfig.minWidth}px), 1fr))`
   const folderTileIconSize = FOLDER_TILE_ICON_SIZES[thumbnailSize] || FOLDER_TILE_ICON_SIZES.medium
   const listDetailsGridColumns = 'grid-cols-[minmax(0,1fr)_64px_44px_86px_28px]'
   const dragPreviewAsset = assetDragPreview
@@ -2148,7 +2149,7 @@ function AssetsPanel({ isActive = true }) {
         ) : viewMode === 'grid' ? (
           <div 
             className={`grid gap-2`} 
-            style={{ gridTemplateColumns: `repeat(${sizeConfig.cols}, minmax(0, 1fr))` }}
+            style={{ gridTemplateColumns }}
             onDoubleClick={(e) => {
               // Double-click on empty grid area triggers import
               if (e.target === e.currentTarget) {

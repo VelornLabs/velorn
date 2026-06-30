@@ -3,7 +3,7 @@ import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import videoCache from '../services/videoCache'
 import { hasUsablePlaybackCache } from '../services/playbackCache'
-import { getAnimatedAdjustmentSettings, getAnimatedTransform } from '../utils/keyframes'
+import { getAnimatedAdjustmentSettings, getAnimatedTransform, getAnimatedShapeProperties } from '../utils/keyframes'
 import {
   applyAdjustmentSettingsToImageData,
   buildCssFilterFromAdjustments,
@@ -27,12 +27,17 @@ import {
 } from '../utils/effects'
 import { applyGlslEffectsToCanvas, canUseGlslEffects, getGlslPreviewQualityScale, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
+import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
+import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 import {
   applyClipCrop,
   applyClipTransform,
+  drawPerspectiveClipSource,
   drawText,
   getBaseDrawRect,
+  hasPerspectiveClipTransform,
 } from '../services/exporter'
+import { drawShape, getShapeCanvasRect } from '../utils/shapes'
 
 const PRELOAD_LOOKAHEAD = 2.5
 const PLAYBACK_DIAG_KEY = 'comfystudio-playback-diag'
@@ -301,6 +306,116 @@ function getVisualLayerClips(state, time) {
     })
 }
 
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    const number = Number(value)
+    if (Number.isFinite(number) && number > 0) return number
+  }
+  return null
+}
+
+function getAssetMediaDimensions(asset) {
+  return {
+    width: firstPositiveNumber(asset?.settings?.width, asset?.width, asset?.metadata?.width, asset?.mediaInfo?.width),
+    height: firstPositiveNumber(asset?.settings?.height, asset?.height, asset?.metadata?.height, asset?.mediaInfo?.height),
+  }
+}
+
+function getClipHitSourceDimensions({ clip, clipTime = 0, state, getAssetById, imageCacheRef, canvasWidth, canvasHeight }) {
+  if (clip?.type === 'text') {
+    return { width: canvasWidth, height: canvasHeight }
+  }
+  if (clip?.type === 'shape') {
+    const shapeProperties = getAnimatedShapeProperties(clip, clipTime) || clip.shapeProperties
+    const rect = getShapeCanvasRect(shapeProperties, canvasWidth, canvasHeight)
+    return { width: rect.width, height: rect.height }
+  }
+
+  const asset = clip?.assetId ? getAssetById(clip.assetId) : null
+  if (clip?.type === 'image') {
+    const clipUrl = resolvePreviewUrl(clip, getAssetById, state.useProxyPlaybackForAssets)
+    const cachedImage = clipUrl ? imageCacheRef.current.get(clipUrl) : null
+    const loadedImage = cachedImage?.loaded ? cachedImage.image : null
+    return {
+      width: firstPositiveNumber(loadedImage?.naturalWidth, loadedImage?.width, asset?.settings?.width, asset?.width),
+      height: firstPositiveNumber(loadedImage?.naturalHeight, loadedImage?.height, asset?.settings?.height, asset?.height),
+    }
+  }
+
+  if (clip?.type === 'video') {
+    const dimensions = getAssetMediaDimensions(asset)
+    return {
+      width: firstPositiveNumber(dimensions.width, clip?.sourceWidth, clip?.width),
+      height: firstPositiveNumber(dimensions.height, clip?.sourceHeight, clip?.height),
+    }
+  }
+
+  return { width: null, height: null }
+}
+
+function getVisibleHitRect(rect, transform = {}, transitionStyle = null) {
+  const cropTop = clamp(Number(transform?.cropTop) || 0, 0, 100)
+  const cropBottom = clamp(Number(transform?.cropBottom) || 0, 0, 100)
+  const cropLeft = clamp(Number(transform?.cropLeft) || 0, 0, 100)
+  const cropRight = clamp(Number(transform?.cropRight) || 0, 0, 100)
+  let left = rect.width * (cropLeft / 100)
+  let right = rect.width - rect.width * (cropRight / 100)
+  let top = rect.height * (cropTop / 100)
+  let bottom = rect.height - rect.height * (cropBottom / 100)
+
+  if (transitionStyle?.clipInset) {
+    const inset = transitionStyle.clipInset
+    left = Math.max(left, rect.width * (Number(inset.left) || 0))
+    right = Math.min(right, rect.width - rect.width * (Number(inset.right) || 0))
+    top = Math.max(top, rect.height * (Number(inset.top) || 0))
+    bottom = Math.min(bottom, rect.height - rect.height * (Number(inset.bottom) || 0))
+  }
+
+  return {
+    left: clamp(left, 0, rect.width),
+    right: clamp(right, 0, rect.width),
+    top: clamp(top, 0, rect.height),
+    bottom: clamp(bottom, 0, rect.height),
+  }
+}
+
+function clipContainsCanvasPoint(point, clip, rect, transform = {}, transitionStyle = null) {
+  if (!point || !clip || !rect) return false
+  if (transitionStyle?.display === false) return false
+
+  const opacity = ((transitionStyle?.opacity ?? 1) * ((Number(transform?.opacity) || 100) / 100))
+  if (opacity <= 0.001) return false
+
+  const anchorX = Number.isFinite(Number(transform?.anchorX)) ? Number(transform.anchorX) : 50
+  const anchorY = Number.isFinite(Number(transform?.anchorY)) ? Number(transform.anchorY) : 50
+  const anchorPxX = rect.width * (anchorX / 100)
+  const anchorPxY = rect.height * (anchorY / 100)
+  const transitionScale = Number(transitionStyle?.scale) || 1
+  const scaleX = ((Number(transform?.scaleX) || 100) / 100) * (transform?.flipH ? -1 : 1) * transitionScale
+  const scaleY = ((Number(transform?.scaleY) || 100) / 100) * (transform?.flipV ? -1 : 1) * transitionScale
+  if (Math.abs(scaleX) < 0.0001 || Math.abs(scaleY) < 0.0001) return false
+
+  const centerX = rect.x + anchorPxX + (Number(transform?.positionX) || 0) + (transitionStyle?.translateX || 0) * rect.width
+  const centerY = rect.y + anchorPxY + (Number(transform?.positionY) || 0) + (transitionStyle?.translateY || 0) * rect.height
+  const rotation = ((Number(transform?.rotation) || 0) * Math.PI) / 180
+  const cos = Math.cos(-rotation)
+  const sin = Math.sin(-rotation)
+  const dx = point.x - centerX
+  const dy = point.y - centerY
+  const rotatedX = dx * cos - dy * sin
+  const rotatedY = dx * sin + dy * cos
+  const localX = rotatedX / scaleX + anchorPxX
+  const localY = rotatedY / scaleY + anchorPxY
+  const visible = getVisibleHitRect(rect, transform, transitionStyle)
+
+  return (
+    localX >= visible.left
+    && localX <= visible.right
+    && localY >= visible.top
+    && localY <= visible.bottom
+  )
+}
+
 function getMaskInfo(clip, getAssetById, time, isCachedRender = false) {
   if (isCachedRender || !clip?.effects) return null
   const effect = clip.effects.find((entry) => entry?.type === 'mask' && entry.enabled)
@@ -518,8 +633,10 @@ function CanvasPreviewRenderer({
     const getAssetById = useAssetsStore.getState().getAssetById
     const clipTime = time - (clip.startTime || 0)
     const transitionStyle = getTransitionStyleForClip(transitionInfo, clip)
-    const baseTransform = getAnimatedTransform(clip, clipTime) || clip.transform || {}
-    const clipTransform = applyEffectsToTransform(baseTransform, clip.effects, clipTime)
+    const resolveClipTransformAtTime = (sampleClipTime) => (
+      applyEffectsToTransform(getAnimatedTransform(clip, sampleClipTime) || clip.transform || {}, clip.effects, sampleClipTime)
+    )
+    const clipTransform = resolveClipTransformAtTime(clipTime)
     const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
     const clipOpacity = (transitionStyle?.opacity ?? 1) * baseOpacity
     if (clipOpacity <= 0.001 || transitionStyle?.display === false) return
@@ -534,11 +651,20 @@ function CanvasPreviewRenderer({
     const clipAdjustmentFilterValue = adjustmentFilter !== 'none' ? adjustmentFilter : null
     const usesManagedEffects = hasManagedCanvasEffect(clip, clipTime)
     const glslQualityScale = getGlslPreviewQualityScale(state.glslPreviewQuality)
+    const timelineFps = state.timelineFps || state.fps || 24
+    const velocityMotionBlur = canUseVelocityMotionBlur()
+      ? getVelocityMotionBlurOptions(clip, clipTime, timelineFps, resolveClipTransformAtTime)
+      : null
+    const motionBlurSamples = velocityMotionBlur
+      ? [{ clipTime, weight: 1 }]
+      : getMotionBlurSamples(clip, clipTime, timelineFps, 'preview')
+    const hasMotionBlurSamples = motionBlurSamples.length > 1
 
     const buffers = buffersRef.current
     if (!buffers.offCanvas) {
       buffers.offCanvas = document.createElement('canvas')
       buffers.maskCanvas = document.createElement('canvas')
+      buffers.perspectiveCanvas = document.createElement('canvas')
     }
     ensureCanvasSize(buffers.offCanvas, width, height)
     ensureCanvasSize(buffers.maskCanvas, width, height)
@@ -553,13 +679,72 @@ function CanvasPreviewRenderer({
     if (blurPx != null) filterParts.push(`blur(${blurPx}px)`)
     offCtx.filter = filterParts.length > 0 ? filterParts.join(' ') : 'none'
 
-    let rect = getBaseDrawRect(width, height, width, height)
-    if (clip.type === 'text') {
-      applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
-      applyClipCrop(offCtx, rect, clipTransform)
-      applyTransitionClip(offCtx, rect, transitionStyle)
-      drawText(offCtx, rect, clip, 1, clipTime)
-      offCtx.restore()
+    if (clip.type === 'text' || clip.type === 'shape') {
+      const isShapeClip = clip.type === 'shape'
+      const getTextShapeFrame = (sampleClipTime) => {
+        const animatedShapeProperties = isShapeClip ? getAnimatedShapeProperties(clip, sampleClipTime) : null
+        const shapeClip = isShapeClip ? { ...clip, shapeProperties: animatedShapeProperties || clip.shapeProperties } : clip
+        const rect = isShapeClip
+          ? getShapeCanvasRect(shapeClip.shapeProperties, width, height)
+          : getBaseDrawRect(width, height, width, height)
+        return { shapeClip, rect }
+      }
+      const drawNativeClip = (targetCtx, rect, shapeClip, sampleClipTime) => {
+        if (isShapeClip) {
+          drawShape(targetCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, shapeClip)
+        } else {
+          drawText(targetCtx, rect, clip, 1, sampleClipTime)
+        }
+      }
+      const drawTextShapeSample = (targetCtx, sample, targetFilter = 'none') => {
+        const sampleTransform = resolveClipTransformAtTime(sample.clipTime)
+        const { shapeClip, rect } = getTextShapeFrame(sample.clipTime)
+        targetCtx.save()
+        targetCtx.globalAlpha = sample.weight
+        targetCtx.filter = targetFilter
+        targetCtx.globalCompositeOperation = 'source-over'
+        if (hasPerspectiveClipTransform(sampleTransform)) {
+          ensureCanvasSize(buffers.perspectiveCanvas, Math.max(1, Math.ceil(rect.width)), Math.max(1, Math.ceil(rect.height)))
+          const nativeCtx = buffers.perspectiveCanvas.getContext('2d', { alpha: true })
+          nativeCtx.clearRect(0, 0, buffers.perspectiveCanvas.width, buffers.perspectiveCanvas.height)
+          nativeCtx.save()
+          drawNativeClip(nativeCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, shapeClip, sample.clipTime)
+          nativeCtx.restore()
+          drawPerspectiveClipSource(targetCtx, buffers.perspectiveCanvas, rect, sampleTransform, transitionStyle)
+        } else {
+          applyClipTransform(targetCtx, rect, sampleTransform, transitionStyle)
+          applyClipCrop(targetCtx, rect, sampleTransform)
+          applyTransitionClip(targetCtx, rect, transitionStyle)
+          drawNativeClip(targetCtx, rect, shapeClip, sample.clipTime)
+        }
+        targetCtx.restore()
+      }
+      const drawTextShapeSamplesToOffCanvas = (targetFilter = 'none') => {
+        offCtx.clearRect(0, 0, width, height)
+        for (const sample of motionBlurSamples) {
+          drawTextShapeSample(offCtx, sample, targetFilter)
+        }
+      }
+      if (hasPerspectiveClipTransform(clipTransform)) {
+        // Perspective clips render through a temporary source canvas. Treat
+        // that path like motion blur so the perspective sample can be rebuilt
+        // for each sub-frame before post-processing.
+        drawTextShapeSamplesToOffCanvas(offCtx.filter)
+        offCtx.restore()
+      } else if (hasMotionBlurSamples) {
+        drawTextShapeSamplesToOffCanvas(offCtx.filter)
+        offCtx.restore()
+      } else {
+        const { shapeClip, rect } = getTextShapeFrame(clipTime)
+        applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
+        applyClipCrop(offCtx, rect, clipTransform)
+        applyTransitionClip(offCtx, rect, transitionStyle)
+        drawNativeClip(offCtx, rect, shapeClip, clipTime)
+        offCtx.restore()
+      }
+      if (velocityMotionBlur) {
+        applyVelocityMotionBlurToCanvas(buffers.offCanvas, offCtx, width, height, velocityMotionBlur)
+      }
     } else {
       const clipUrl = resolvePreviewUrl(clip, getAssetById, state.useProxyPlaybackForAssets)
       if (!clipUrl) {
@@ -634,11 +819,30 @@ function CanvasPreviewRenderer({
         return
       }
 
-      rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
-      applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
-      applyClipCrop(offCtx, rect, clipTransform)
-      applyTransitionClip(offCtx, rect, transitionStyle)
-      offCtx.drawImage(drawSource, 0, 0, rect.width, rect.height)
+      const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
+      const getSampleTransform = (sampleClipTime) => (
+        resolveClipTransformAtTime(sampleClipTime)
+      )
+      const drawMediaSample = (targetCtx, source, sample, targetFilter = 'none') => {
+        const sampleTransform = getSampleTransform(sample.clipTime)
+        targetCtx.save()
+        targetCtx.globalAlpha = sample.weight
+        targetCtx.globalCompositeOperation = 'source-over'
+        targetCtx.filter = targetFilter
+        if (hasPerspectiveClipTransform(sampleTransform)) {
+          drawPerspectiveClipSource(targetCtx, source, rect, sampleTransform, transitionStyle)
+        } else {
+          applyClipTransform(targetCtx, rect, sampleTransform, transitionStyle)
+          applyClipCrop(targetCtx, rect, sampleTransform)
+          applyTransitionClip(targetCtx, rect, transitionStyle)
+          targetCtx.drawImage(source, 0, 0, rect.width, rect.height)
+        }
+        targetCtx.restore()
+      }
+      offCtx.clearRect(0, 0, width, height)
+      for (const sample of motionBlurSamples) {
+        drawMediaSample(offCtx, drawSource, sample, offCtx.filter)
+      }
       offCtx.restore()
 
       const maskInfo = getMaskInfo(clip, getAssetById, time, isCachedRender)
@@ -646,19 +850,18 @@ function CanvasPreviewRenderer({
         const maskCanvas = getProcessedMaskForUrl(maskInfo.url)
         if (maskCanvas) {
           maskCtx.clearRect(0, 0, width, height)
-          maskCtx.save()
-          maskCtx.filter = blurPx != null ? `blur(${blurPx}px)` : 'none'
-          applyClipTransform(maskCtx, rect, clipTransform, transitionStyle)
-          applyClipCrop(maskCtx, rect, clipTransform)
-          applyTransitionClip(maskCtx, rect, transitionStyle)
-          maskCtx.drawImage(maskCanvas, 0, 0, rect.width, rect.height)
-          maskCtx.restore()
+          for (const sample of motionBlurSamples) {
+            drawMediaSample(maskCtx, maskCanvas, sample, blurPx != null ? `blur(${blurPx}px)` : 'none')
+          }
 
           offCtx.save()
           offCtx.globalCompositeOperation = maskInfo.invertMask ? 'destination-out' : 'destination-in'
           offCtx.drawImage(buffers.maskCanvas, 0, 0)
           offCtx.restore()
         }
+      }
+      if (velocityMotionBlur) {
+        applyVelocityMotionBlurToCanvas(buffers.offCanvas, offCtx, width, height, velocityMotionBlur)
       }
     }
 
@@ -730,9 +933,13 @@ function CanvasPreviewRenderer({
     ctx.globalAlpha = opacity
     ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
     ctx.filter = 'none'
-    applyClipTransform(ctx, rect, clipTransform, null)
-    applyClipCrop(ctx, rect, clipTransform)
-    ctx.drawImage(outputCanvas, 0, 0, rect.width, rect.height)
+    if (hasPerspectiveClipTransform(clipTransform)) {
+      drawPerspectiveClipSource(ctx, outputCanvas, rect, clipTransform, null)
+    } else {
+      applyClipTransform(ctx, rect, clipTransform, null)
+      applyClipCrop(ctx, rect, clipTransform)
+      ctx.drawImage(outputCanvas, 0, 0, rect.width, rect.height)
+    }
     ctx.restore()
   }, [applyAdvancedAdjustmentsToCanvas])
 
@@ -912,7 +1119,7 @@ function CanvasPreviewRenderer({
         applyAdjustmentLayer(stageCtx, clip, time, frameIndex, { ...state, width, height, fps })
         continue
       }
-      if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text') {
+      if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text' || clip.type === 'shape') {
         drawVisualClip(stageCtx, entry, time, transitionInfo, { ...state, width, height, fps }, frameIndex)
       }
     }
@@ -1025,17 +1232,64 @@ function CanvasPreviewRenderer({
     glslPreviewQuality,
   ])
 
-  const activeSelectableClip = useMemo(() => {
+  const getSelectableClipAtPointerEvent = useCallback((event) => {
+    const canvas = canvasRef.current
+    if (!canvas || !event) return null
+
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return null
+
+    const width = latestRef.current.width || safeWidth
+    const height = latestRef.current.height || safeHeight
+    const point = {
+      x: ((event.clientX - rect.left) / rect.width) * width,
+      y: ((event.clientY - rect.top) / rect.height) * height,
+    }
+
     const state = useTimelineStore.getState()
-    const visualClips = getVisualLayerClips(state, playheadPosition)
+    const time = state.playheadPosition || 0
+    const transitionInfo = state.getTransitionAtTime(time)
+    const transitionClipIds = getTransitionClipIds(transitionInfo)
+    const getAssetById = useAssetsStore.getState().getAssetById
+    const visualClips = cullVisualLayerEntries(getVisualLayerClips(state, time), {
+      time,
+      getAssetById,
+      transitionClipIds,
+      timelineWidth: width,
+      timelineHeight: height,
+    })
+
     for (let index = visualClips.length - 1; index >= 0; index -= 1) {
       const clip = visualClips[index]?.clip
-      if (clip && (clip.type === 'video' || clip.type === 'image' || clip.type === 'text')) {
+      if (!clip || !['video', 'image', 'text', 'shape'].includes(clip.type)) continue
+
+      const clipTime = time - (clip.startTime || 0)
+      const transitionStyle = getTransitionStyleForClip(transitionInfo, clip)
+      const baseTransform = getAnimatedTransform(clip, clipTime) || clip.transform || {}
+      const clipTransform = applyEffectsToTransform(baseTransform, clip.effects, clipTime)
+      const { width: sourceWidth, height: sourceHeight } = getClipHitSourceDimensions({
+        clip,
+        clipTime,
+        state,
+        getAssetById,
+        imageCacheRef,
+        canvasWidth: width,
+        canvasHeight: height,
+      })
+      const animatedShapeProperties = clip.type === 'shape'
+        ? getAnimatedShapeProperties(clip, clipTime) || clip.shapeProperties
+        : null
+      const drawRect = clip.type === 'shape'
+        ? getShapeCanvasRect(animatedShapeProperties, width, height)
+        : getBaseDrawRect(sourceWidth || width, sourceHeight || height, width, height)
+
+      if (clipContainsCanvasPoint(point, clip, drawRect, clipTransform, transitionStyle)) {
         return clip
       }
     }
+
     return null
-  }, [clips, tracks, playheadPosition])
+  }, [safeHeight, safeWidth])
 
   return (
     <canvas
@@ -1045,13 +1299,15 @@ function CanvasPreviewRenderer({
       height={safeHeight}
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={(event) => {
-        if (activeSelectableClip && typeof onClipPointerDown === 'function') {
-          onClipPointerDown(activeSelectableClip, event)
+        const selectableClip = getSelectableClipAtPointerEvent(event)
+        if (selectableClip && typeof onClipPointerDown === 'function') {
+          onClipPointerDown(selectableClip, event)
         }
       }}
       onDoubleClick={(event) => {
-        if (activeSelectableClip?.type === 'text' && typeof onClipDoubleClick === 'function') {
-          onClipDoubleClick(activeSelectableClip, event)
+        const selectableClip = getSelectableClipAtPointerEvent(event)
+        if (selectableClip?.type === 'text' && typeof onClipDoubleClick === 'function') {
+          onClipDoubleClick(selectableClip, event)
         }
       }}
       style={{

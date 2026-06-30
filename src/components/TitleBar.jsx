@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { Copy, Minus, Square, X } from 'lucide-react'
 import ComfyLauncherChip from './ComfyLauncherChip'
 import CreditsChip from './CreditsChip'
+import GenerationMonitorChip from './GenerationMonitorChip'
 
 const TOP_TABS = [
   { id: 'editor', label: 'Editor' },
@@ -120,6 +121,7 @@ function TitleBar({
       {/* Right - Launcher chip + Window Controls (Windows style) */}
       <div className="no-drag flex items-center">
         <CreditsChip size="xs" className="mr-1" />
+        <GenerationMonitorChip onOpenGenerate={() => onTabChange?.('generate')} />
         <ComfyLauncherChip />
         <button
           onClick={handleMinimize}

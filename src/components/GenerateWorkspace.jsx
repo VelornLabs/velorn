@@ -21,6 +21,7 @@ import useComfyUI from '../hooks/useComfyUI'
 import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
 import useTimelineStore from '../stores/timelineStore'
+import useGenerationMonitorStore from '../stores/generationMonitorStore'
 import { useFrameForAIStore } from '../stores/frameForAIStore'
 import { BUILTIN_WORKFLOW_PATHS } from '../config/workflowRegistry'
 import { comfyui, validateCustomKeyframeWorkflow, validateCustomVideoWorkflow } from '../services/comfyui'
@@ -3345,7 +3346,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const [fps, setFps] = useState(persistedState?.fps || 24)
   const [interpolationMultiplier, setInterpolationMultiplier] = useState(persistedState?.interpolationMultiplier || 4)
   const [enableFpsMultiplier, setEnableFpsMultiplier] = useState(persistedState?.enableFpsMultiplier || false)
-  const [wanQualityPreset, setWanQualityPreset] = useState(persistedState?.wanQualityPreset || 'face-lock')
+  const [wanQualityPreset, setWanQualityPreset] = useState(persistedState?.wanQualityPreset || 'balanced')
 
   // Image edit settings
   const [editSteps, setEditSteps] = useState(persistedState?.editSteps || 40)
@@ -3602,6 +3603,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     getGenerationCompletionSoundSettings()
   ))
   const [activeJobId, setActiveJobId] = useState(null)
+  const publishGenerationMonitorQueue = useGenerationMonitorStore((state) => state.publishQueue)
+  const resetGenerationMonitor = useGenerationMonitorStore((state) => state.reset)
   const processingRef = useRef(false)
   const queueRef = useRef([])
   const startedJobIdsRef = useRef(new Set())
@@ -3704,11 +3707,49 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   // When opened with timeline frame, switch to video i2v and use that frame as input
   useEffect(() => {
     if (frameForAI) {
+      const nextWorkflowId = String(frameForAI.workflowId || 'wan22-i2v').trim() || 'wan22-i2v'
+      const manifest = getWorkflowManifestByWorkflowId(nextWorkflowId)
+      setGenerationMode('single')
       setCategory('video')
-      setWorkflowId('wan22-i2v')
+      setWorkflowId(nextWorkflowId)
+      if (manifest) {
+        setSelectedWorkflowManifestId(manifest.id)
+        setWorkflowRoute(manifest.route || 'local')
+      }
       setFormError(null)
     }
-  }, [frameForAI?.blobUrl])
+  }, [frameForAI?.blobUrl, frameForAI?.workflowId])
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const nextWorkflowId = String(detail.workflowId || frameForAI?.workflowId || 'ltx23-i2v').trim() || 'ltx23-i2v'
+      const manifest = getWorkflowManifestByWorkflowId(nextWorkflowId)
+      setGenerationMode('single')
+      setCategory(String(detail.category || 'video').trim().toLowerCase() || 'video')
+      setWorkflowId(nextWorkflowId)
+      if (manifest) {
+        setSelectedWorkflowManifestId(manifest.id)
+        setWorkflowRoute(manifest.route || 'local')
+      }
+      setSelectedAssetId(null)
+      setSelectedAsset(null)
+      if (typeof detail.prompt === 'string' && detail.prompt.trim()) setPrompt(detail.prompt)
+      if (typeof detail.negativePrompt === 'string' && detail.negativePrompt.trim()) setNegativePrompt(detail.negativePrompt)
+      if (Number.isFinite(Number(detail.duration)) && Number(detail.duration) > 0) setDuration(Number(detail.duration))
+      if (Number.isFinite(Number(detail.fps)) && Number(detail.fps) > 0) setFps(Number(detail.fps))
+      if (detail.resolution && Number.isFinite(Number(detail.resolution.width)) && Number.isFinite(Number(detail.resolution.height))) {
+        setResolution({
+          width: Number(detail.resolution.width),
+          height: Number(detail.resolution.height),
+        })
+      }
+      setFormError(null)
+      addComfyLog('status', `MCP prepared timeline frame for ${getWorkflowDisplayLabel(nextWorkflowId) || nextWorkflowId}. Review settings, then click Generate when ready.`)
+    }
+    window.addEventListener('comfystudio-mcp-prepare-generation', handler)
+    return () => window.removeEventListener('comfystudio-mcp-prepare-generation', handler)
+  }, [addComfyLog, frameForAI?.workflowId])
 
   // Restore selected asset from ID when assets are available
   useEffect(() => {
@@ -3944,6 +3985,18 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   useEffect(() => {
     queueRef.current = generationQueue
   }, [generationQueue])
+
+  useEffect(() => {
+    publishGenerationMonitorQueue({
+      jobs: generationQueue,
+      activeJobId,
+      isConnected,
+    })
+  }, [activeJobId, generationQueue, isConnected, publishGenerationMonitorQueue])
+
+  useEffect(() => () => {
+    resetGenerationMonitor()
+  }, [resetGenerationMonitor])
 
   useEffect(() => {
     generationCompletionSoundSettingsRef.current = generationCompletionSoundSettings
@@ -6939,7 +6992,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     setGenerationQueue(prev => prev.map(job => {
       if (job.id !== jobId) return job
       const updates = typeof updater === 'function' ? updater(job) : updater
-      return { ...job, ...updates }
+      const next = { ...job, ...updates }
+      const statusChanged = updates && Object.prototype.hasOwnProperty.call(updates, 'status') && updates.status !== job.status
+      if (statusChanged && ACTIVE_JOB_STATUSES.includes(next.status) && !next.startedAt) {
+        next.startedAt = Date.now()
+      }
+      if (statusChanged && (next.status === 'done' || next.status === 'error') && !next.completedAt) {
+        next.completedAt = Date.now()
+        const start = Number(next.startedAt || next.createdAt)
+        if (Number.isFinite(start) && start > 0) {
+          next.elapsedMs = Math.max(0, next.completedAt - start)
+        }
+      }
+      return next
     }))
   }, [])
 
@@ -6948,7 +7013,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     setGenerationQueue(prev => prev.map(job => {
       if (job.promptId !== promptId) return job
       const updates = typeof updater === 'function' ? updater(job) : updater
-      return { ...job, ...updates }
+      const next = { ...job, ...updates }
+      const statusChanged = updates && Object.prototype.hasOwnProperty.call(updates, 'status') && updates.status !== job.status
+      if (statusChanged && ACTIVE_JOB_STATUSES.includes(next.status) && !next.startedAt) {
+        next.startedAt = Date.now()
+      }
+      if (statusChanged && (next.status === 'done' || next.status === 'error') && !next.completedAt) {
+        next.completedAt = Date.now()
+        const start = Number(next.startedAt || next.createdAt)
+        if (Number.isFinite(start) && start > 0) {
+          next.elapsedMs = Math.max(0, next.completedAt - start)
+        }
+      }
+      return next
     }))
   }, [])
 
@@ -11431,37 +11508,51 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   ])
 
   const handleGenerate = () => {
-    if (!isConnected && !allowQueueWhileWaiting) return
+    if (!isConnected && !allowQueueWhileWaiting) {
+      return {
+        success: false,
+        message: 'ComfyUI is not connected yet. Start ComfyUI, then queue generation.',
+      }
+    }
     if (!isConnected && launcherCanAutoStart) {
       void startComfyLauncher()
     }
     if (generationMode === 'yolo') {
       void handleQueueYoloStoryboards()
-      return
+      return {
+        success: true,
+        queued: null,
+        message: 'Queued the current Create workflow action.',
+      }
     }
     if (selectedWorkflowManifest && !selectedWorkflowManifest.runnable) {
-      setFormError('This workflow is in the catalog as a preview. Add its workflow graph and bindings before queueing it.')
-      return
+      const message = 'This workflow is in the catalog as a preview. Add its workflow graph and bindings before queueing it.'
+      setFormError(message)
+      return { success: false, message }
     }
     if (dependencyCheckInProgress) {
-      setFormError('Checking workflow dependencies. Please wait a moment and try again.')
-      return
+      const message = 'Checking workflow dependencies. Please wait a moment and try again.'
+      setFormError(message)
+      return { success: false, message }
     }
     if (hasBlockingDependencies) {
-      setFormError('Missing required workflow dependencies. Install the missing items listed below and re-check.')
-      return
+      const message = 'Missing required workflow dependencies. Install the missing items listed below and re-check.'
+      setFormError(message)
+      return { success: false, message }
     }
     const canUseTimelineFrame = isSingleVideoWorkflowId(workflowId)
     const usingTimelineFrame = !!frameForAI?.file && canUseTimelineFrame
     const requiresPrimaryAsset = Boolean(primaryAssetSlot) || (currentWorkflow?.needsImage && assetInputSlots.length === 0)
     if (requiresPrimaryAsset && !selectedAsset && !usingTimelineFrame) {
       const primaryLabel = primaryAssetSlot?.label || 'input asset'
-      setFormError(`Please select ${String(primaryLabel).toLowerCase()}${canUseTimelineFrame ? ' or use a timeline frame' : ''} first`)
-      return
+      const message = `Please select ${String(primaryLabel).toLowerCase()}${canUseTimelineFrame ? ' or use a timeline frame' : ''} first`
+      setFormError(message)
+      return { success: false, message }
     }
     if (selectedWorkflowManifest?.requiresAudio && !selectedAudioAsset) {
-      setFormError('Please select conditioning audio for this workflow first')
-      return
+      const message = 'Please select conditioning audio for this workflow first'
+      setFormError(message)
+      return { success: false, message }
     }
     const missingRequiredAssetField = (selectedWorkflowManifest?.fields || []).find((field) => (
       field?.type === 'assetSelect' &&
@@ -11470,16 +11561,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       !selectedAssetFields[field.id]
     ))
     if (missingRequiredAssetField) {
-      setFormError(`Please select ${String(missingRequiredAssetField.label || missingRequiredAssetField.id).toLowerCase()} for this workflow first`)
-      return
+      const message = `Please select ${String(missingRequiredAssetField.label || missingRequiredAssetField.id).toLowerCase()} for this workflow first`
+      setFormError(message)
+      return { success: false, message }
     }
     if (workflowId === CUSTOM_GENERATE_IMAGE_WORKFLOW_ID && !customGenerateImageValidation.ok) {
-      setFormError(customGenerateImageValidation.message || 'Load and validate a custom image workflow before queueing.')
-      return
+      const message = customGenerateImageValidation.message || 'Load and validate a custom image workflow before queueing.'
+      setFormError(message)
+      return { success: false, message }
     }
     if (workflowId === CUSTOM_GENERATE_VIDEO_WORKFLOW_ID && !customGenerateVideoValidation.ok) {
-      setFormError(customGenerateVideoValidation.message || 'Load and validate a custom video workflow before queueing.')
-      return
+      const message = customGenerateVideoValidation.message || 'Load and validate a custom video workflow before queueing.'
+      setFormError(message)
+      return { success: false, message }
     }
 
     setFormError(null)
@@ -11506,7 +11600,581 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     })
 
     enqueueJob(job)
+    return {
+      success: true,
+      queued: 1,
+      message: `Queued ${job.workflowLabel || job.workflowId || 'generation'}.`,
+      job: {
+        id: job.id,
+        workflowId: job.workflowId,
+        workflowLabel: job.workflowLabel,
+        category: job.category,
+        prompt: job.prompt,
+        inputFromTimelineFrame: Boolean(job.inputFromTimelineFrame),
+        inputAssetId: job.inputAssetId || null,
+        inputAssetName: job.inputAssetName || '',
+        duration: job.duration,
+        fps: job.fps,
+        resolution: job.resolution,
+        status: job.status,
+      },
+    }
   }
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const respond = typeof detail.respond === 'function' ? detail.respond : null
+      if (!respond) return
+
+      const canUseTimelineFrame = isSingleVideoWorkflowId(workflowId)
+      const usingTimelineFrame = Boolean(frameForAI?.file && canUseTimelineFrame)
+      const status = {
+        generationMode,
+        category,
+        workflowId,
+        workflowLabel: selectedWorkflowManifest?.title || currentWorkflow?.label || workflowId,
+        canUseTimelineFrame,
+        hasTimelineFrame: Boolean(frameForAI?.file),
+        usingTimelineFrame,
+        isConnected,
+        allowQueueWhileWaiting,
+        queuedCount: queueRef.current.filter((job) => job.status === 'queued').length,
+        activeCount: queueRef.current.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
+        prompt: fullPrompt,
+        negativePrompt,
+        duration,
+        fps,
+        resolution: category === 'image' ? effectiveImageResolution : resolution,
+      }
+
+      if (detail.previewOnly !== false) {
+        respond({
+          success: true,
+          previewOnly: true,
+          action: 'queue_prepared_generation',
+          message: usingTimelineFrame
+            ? 'Prepared generation can be queued. No generation was queued in preview mode.'
+            : 'Generate state inspected. No generation was queued in preview mode.',
+          status,
+        })
+        return
+      }
+
+      if (generationMode !== 'single') {
+        respond({
+          success: false,
+          error: 'MCP queue_prepared_generation only supports the single Generate tab mode right now.',
+          status,
+        })
+        return
+      }
+      if (detail.requireTimelineFrame !== false && !usingTimelineFrame) {
+        respond({
+          success: false,
+          error: 'No prepared timeline frame is staged in Generate. Run prepare_generation_from_timeline_context first, or call with requireTimelineFrame=false.',
+          status,
+        })
+        return
+      }
+
+      const result = handleGenerate()
+      if (!result?.success) {
+        respond({
+          success: false,
+          error: result?.message || 'Could not queue the prepared generation.',
+          status,
+        })
+        return
+      }
+
+      addComfyLog('status', `MCP queued prepared generation: ${result.job?.workflowLabel || result.job?.workflowId || workflowId}`)
+      respond({
+        success: true,
+        action: 'queue_prepared_generation',
+        message: result.message || 'Prepared generation queued.',
+        status: {
+          ...status,
+          queuedCount: status.queuedCount + (Number(result.queued) || 0),
+        },
+        result,
+      })
+    }
+
+    window.addEventListener('comfystudio-mcp-queue-prepared-generation', handler)
+    return () => window.removeEventListener('comfystudio-mcp-queue-prepared-generation', handler)
+  }, [
+    addComfyLog,
+    allowQueueWhileWaiting,
+    category,
+    currentWorkflow?.label,
+    duration,
+    effectiveImageResolution,
+    fps,
+    frameForAI?.file,
+    fullPrompt,
+    generationMode,
+    handleGenerate,
+    isConnected,
+    negativePrompt,
+    resolution,
+    selectedWorkflowManifest?.title,
+    workflowId,
+  ])
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const respond = typeof detail.respond === 'function' ? detail.respond : null
+      if (!respond) return
+
+      const run = async () => {
+        const requestedJobs = Array.isArray(detail.jobs) ? detail.jobs : []
+        const workflowIds = Array.from(new Set(
+          requestedJobs
+            .map((job) => String(job?.workflowId || '').trim())
+            .filter(Boolean)
+        ))
+        const frameState = useFrameForAIStore.getState().frame
+        const status = {
+          action: 'queue_timeline_generation_batch',
+          requestedJobCount: requestedJobs.length,
+          workflowIds,
+          hasTimelineFrame: Boolean(frameState?.file),
+          isConnected,
+          allowQueueWhileWaiting,
+          queuedCount: queueRef.current.filter((job) => job.status === 'queued').length,
+          activeCount: queueRef.current.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
+        }
+
+        if (detail.previewOnly !== false) {
+          respond({
+            success: true,
+            previewOnly: true,
+            action: 'queue_timeline_generation_batch',
+            message: `Timeline generation batch inspected. No generation was queued. Planned ${requestedJobs.length} job${requestedJobs.length === 1 ? '' : 's'}.`,
+            status,
+            jobs: requestedJobs,
+          })
+          return
+        }
+
+        if (requestedJobs.length === 0) {
+          respond({ success: false, error: 'No timeline generation batch jobs were provided.', status })
+          return
+        }
+        if (workflowIds.length === 0 || requestedJobs.some((job) => !String(job?.workflowId || '').trim())) {
+          respond({ success: false, error: 'Every timeline generation batch job needs a workflowId.', status })
+          return
+        }
+        if (requestedJobs.length > 24) {
+          respond({ success: false, error: 'Timeline generation batch is too large. Queue 24 jobs or fewer at a time.', status })
+          return
+        }
+        if (!frameState?.file) {
+          respond({ success: false, error: 'No captured timeline frame is available for the batch.', status })
+          return
+        }
+        const unsupportedWorkflow = workflowIds.find((id) => !isSingleVideoWorkflowId(id))
+        if (unsupportedWorkflow) {
+          respond({ success: false, error: `Workflow ${unsupportedWorkflow} cannot use a timeline frame batch.`, status })
+          return
+        }
+        const previewWorkflow = workflowIds.find((id) => {
+          const manifest = getWorkflowManifestByWorkflowId(id)
+          return manifest && manifest.runnable === false
+        })
+        if (previewWorkflow) {
+          respond({ success: false, error: `Workflow ${getWorkflowDisplayLabel(previewWorkflow) || previewWorkflow} is a catalog preview and cannot be queued yet.`, status })
+          return
+        }
+        if (!isConnected && !allowQueueWhileWaiting) {
+          respond({ success: false, error: 'ComfyUI is not connected yet. Start ComfyUI, then queue generation.', status })
+          return
+        }
+        if (!isConnected && launcherCanAutoStart) {
+          void startComfyLauncher()
+        }
+
+        const depsOk = await validateDependenciesForQueue(workflowIds, 'MCP timeline generation batch')
+        if (!depsOk) {
+          respond({ success: false, error: 'Missing required workflow dependencies for this timeline generation batch.', status })
+          return
+        }
+
+        const batchId = detail.batchId || `mcp_batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        const settings = detail.generationSettings || {}
+        const finiteOrNull = (value) => {
+          if (value === null || typeof value === 'undefined' || value === '') return null
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : null
+        }
+        const positiveOrNull = (value) => {
+          const parsed = finiteOrNull(value)
+          return parsed !== null && parsed > 0 ? parsed : null
+        }
+        const coerceResolution = (value) => {
+          if (value && typeof value === 'object') {
+            const width = Number(value.width)
+            const height = Number(value.height)
+            if (Number.isFinite(width) && Number.isFinite(height)) {
+              return {
+                width: Math.max(16, Math.round(width)),
+                height: Math.max(16, Math.round(height)),
+              }
+            }
+          }
+          return resolution
+        }
+        const mergeResolutionFields = (...sources) => {
+          for (const source of sources) {
+            if (!source || typeof source !== 'object') continue
+            const direct = coerceResolution(source.resolution || source.outputResolution || source.size)
+            if (direct !== resolution) return direct
+            const width = Number(source.width ?? source.outputWidth)
+            const height = Number(source.height ?? source.outputHeight)
+            if (Number.isFinite(width) && Number.isFinite(height)) {
+              return coerceResolution({ width, height })
+            }
+          }
+          return resolution
+        }
+        const createdJobs = requestedJobs.map((request, index) => {
+          const wfId = String(request?.workflowId || '').trim()
+          const jobDuration = positiveOrNull(request.durationSeconds ?? request.duration ?? settings.durationSeconds ?? detail.durationSeconds ?? detail.duration) ?? positiveOrNull(duration) ?? 5
+          const jobFps = positiveOrNull(request.fps ?? settings.fps ?? detail.fps) ?? positiveOrNull(fps) ?? 24
+          const jobSeed = finiteOrNull(request.seed) ?? Math.floor(Math.random() * 2147483647)
+          const jobResolution = mergeResolutionFields(request, settings, detail)
+          const jobPrompt = String(request.prompt ?? detail.prompt ?? fullPrompt ?? '').trim()
+          const jobNegativePrompt = String(request.negativePrompt ?? detail.negativePrompt ?? negativePrompt ?? '').trim()
+          const workflowLabel = String(request.workflowLabel || getWorkflowDisplayLabel(wfId) || wfId || 'Video').trim()
+          const sourceFrameLabel = detail.source?.frame?.timecode || detail.frame?.timecode || ''
+
+          return createQueuedJob({
+            category: 'video',
+            workflowId: wfId,
+            workflowLabel,
+            needsImage: true,
+            inputAssetType: 'image',
+            inputAssetId: null,
+            inputAssetName: sourceFrameLabel ? `Timeline frame ${sourceFrameLabel}` : 'Timeline frame',
+            inputFromTimelineFrame: true,
+            audioAssetId: null,
+            audioAssetName: '',
+            assetFieldIds: {},
+            referenceAssetId1: null,
+            referenceAssetId2: null,
+            prompt: jobPrompt,
+            negativePrompt: jobNegativePrompt,
+            seed: jobSeed,
+            duration: jobDuration,
+            fps: jobFps,
+            resolution: jobResolution,
+            status: 'queued',
+            progress: 0,
+            mcpBatch: {
+              id: batchId,
+              action: 'queue_timeline_generation_batch',
+              index: index + 1,
+              total: requestedJobs.length,
+              workflowVariation: Number(request.variation) || null,
+              workflowVariationCount: Number(request.variationCount) || null,
+              sourceFrame: detail.frame || detail.source?.frame || null,
+            },
+          })
+        })
+
+        setFormError(null)
+        setGenerationQueue((prev) => [...prev, ...createdJobs])
+        addComfyLog('status', `MCP queued ${createdJobs.length} timeline generation variation${createdJobs.length === 1 ? '' : 's'} from one frame.`)
+
+        respond({
+          success: true,
+          previewOnly: false,
+          action: 'queue_timeline_generation_batch',
+          message: `Queued ${createdJobs.length} timeline generation variation${createdJobs.length === 1 ? '' : 's'}.`,
+          status: {
+            ...status,
+            queuedCount: status.queuedCount + createdJobs.length,
+          },
+          jobs: createdJobs.map((job) => ({
+            id: job.id,
+            workflowId: job.workflowId,
+            workflowLabel: job.workflowLabel,
+            prompt: job.prompt,
+            seed: job.seed,
+            duration: job.duration,
+            fps: job.fps,
+            resolution: job.resolution,
+            inputFromTimelineFrame: Boolean(job.inputFromTimelineFrame),
+            status: job.status,
+          })),
+        })
+      }
+
+      void run().catch((error) => {
+        respond({
+          success: false,
+          error: error instanceof Error ? error.message : String(error || 'Could not queue timeline generation batch.'),
+        })
+      })
+    }
+
+    window.addEventListener('comfystudio-mcp-queue-timeline-generation-batch', handler)
+    return () => window.removeEventListener('comfystudio-mcp-queue-timeline-generation-batch', handler)
+  }, [
+    addComfyLog,
+    allowQueueWhileWaiting,
+    createQueuedJob,
+    duration,
+    fps,
+    fullPrompt,
+    isConnected,
+    launcherCanAutoStart,
+    negativePrompt,
+    resolution,
+    startComfyLauncher,
+    validateDependenciesForQueue,
+  ])
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const respond = typeof detail.respond === 'function' ? detail.respond : null
+      if (!respond) return
+
+      const run = async () => {
+        const requestedJobs = Array.isArray(detail.jobs) ? detail.jobs : []
+        const workflowIds = Array.from(new Set(
+          requestedJobs
+            .map((job) => String(job?.workflowId || '').trim())
+            .filter(Boolean)
+        ))
+        const status = {
+          action: 'queue_prompt_generation_batch',
+          requestedJobCount: requestedJobs.length,
+          workflowIds,
+          isConnected,
+          allowQueueWhileWaiting,
+          queuedCount: queueRef.current.filter((job) => job.status === 'queued').length,
+          activeCount: queueRef.current.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
+        }
+
+        if (detail.previewOnly !== false) {
+          respond({
+            success: true,
+            previewOnly: true,
+            action: 'queue_prompt_generation_batch',
+            message: `Prompt generation batch inspected. No generation was queued. Planned ${requestedJobs.length} job${requestedJobs.length === 1 ? '' : 's'}.`,
+            status,
+            jobs: requestedJobs,
+          })
+          return
+        }
+
+        if (requestedJobs.length === 0) {
+          respond({ success: false, error: 'No prompt generation batch jobs were provided.', status })
+          return
+        }
+        if (requestedJobs.length > 24) {
+          respond({ success: false, error: 'Prompt generation batch is too large. Queue 24 jobs or fewer at a time.', status })
+          return
+        }
+        if (workflowIds.length === 0 || requestedJobs.some((job) => !String(job?.workflowId || '').trim())) {
+          respond({ success: false, error: 'Every prompt generation batch job needs a workflowId.', status })
+          return
+        }
+        const missingPrompt = requestedJobs.find((job) => !String(job?.prompt || '').trim())
+        if (missingPrompt) {
+          respond({ success: false, error: 'Every prompt generation batch job needs prompt text.', status })
+          return
+        }
+        const requestedFolderIds = Array.from(new Set(
+          requestedJobs
+            .map((job) => String(job?.folderId || job?.outputFolderId || detail.folderId || detail.outputFolderId || '').trim())
+            .filter(Boolean)
+        ))
+        if (requestedFolderIds.length > 0) {
+          const existingFolderIds = new Set((useAssetsStore.getState().folders || []).map((folder) => folder?.id).filter(Boolean))
+          const missingFolderIds = requestedFolderIds.filter((folderId) => !existingFolderIds.has(folderId))
+          if (missingFolderIds.length > 0) {
+            respond({ success: false, error: `Unknown asset folder ID${missingFolderIds.length === 1 ? '' : 's'}: ${missingFolderIds.join(', ')}`, status })
+            return
+          }
+        }
+
+        for (const id of workflowIds) {
+          const manifest = getWorkflowManifestByWorkflowId(id)
+          const label = getWorkflowDisplayLabel(id) || id
+          if (!manifest) {
+            respond({ success: false, error: `Unknown ComfyStudio workflow: ${id}`, status })
+            return
+          }
+          if (manifest.runnable === false) {
+            respond({ success: false, error: `Workflow ${label} is a catalog preview and cannot be queued yet.`, status })
+            return
+          }
+          if (manifest.needsImage || manifest.requiresAudio) {
+            respond({ success: false, error: `Workflow ${label} is not prompt-only. Use a timeline-frame or asset-based MCP tool instead.`, status })
+            return
+          }
+          const requiredAssetField = (manifest.fields || []).find((field) => field?.type === 'assetSelect' && field.required)
+          if (requiredAssetField) {
+            respond({ success: false, error: `Workflow ${label} needs an input asset field and cannot be used by queue_prompt_generation_batch.`, status })
+            return
+          }
+          if (!['image', 'video'].includes(manifest.outputType)) {
+            respond({ success: false, error: `Workflow ${label} outputs ${manifest.outputType || 'an unsupported type'}; prompt batches currently support image and video only.`, status })
+            return
+          }
+        }
+
+        if (!isConnected && !allowQueueWhileWaiting) {
+          respond({ success: false, error: 'ComfyUI is not connected yet. Start ComfyUI, then queue generation.', status })
+          return
+        }
+        if (!isConnected && launcherCanAutoStart) {
+          void startComfyLauncher()
+        }
+
+        const depsOk = await validateDependenciesForQueue(workflowIds, 'MCP prompt generation batch')
+        if (!depsOk) {
+          respond({ success: false, error: 'Missing required workflow dependencies for this prompt generation batch.', status })
+          return
+        }
+
+        const batchId = detail.batchId || `mcp_prompt_batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        const settings = detail.generationSettings || {}
+        const finiteOrNull = (value) => {
+          if (value === null || typeof value === 'undefined' || value === '') return null
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : null
+        }
+        const positiveOrNull = (value) => {
+          const parsed = finiteOrNull(value)
+          return parsed !== null && parsed > 0 ? parsed : null
+        }
+        const coerceResolution = (value, fallback) => {
+          if (value && typeof value === 'object') {
+            const width = Number(value.width)
+            const height = Number(value.height)
+            if (Number.isFinite(width) && Number.isFinite(height)) {
+              return {
+                width: Math.max(16, Math.round(width)),
+                height: Math.max(16, Math.round(height)),
+              }
+            }
+          }
+          return fallback
+        }
+
+        const createdJobs = requestedJobs.map((request, index) => {
+          const wfId = String(request?.workflowId || '').trim()
+          const manifest = getWorkflowManifestByWorkflowId(wfId)
+          const outputType = String(request.outputType || manifest?.outputType || 'image').toLowerCase()
+          const jobCategory = outputType === 'video' ? 'video' : 'image'
+          const fallbackResolution = jobCategory === 'image' ? effectiveImageResolution : resolution
+          const jobResolution = coerceResolution(request.resolution || settings.resolution || detail.resolution, fallbackResolution)
+          const jobDuration = jobCategory === 'video'
+            ? (positiveOrNull(request.durationSeconds ?? request.duration ?? settings.durationSeconds ?? detail.durationSeconds ?? detail.duration) ?? positiveOrNull(duration) ?? 5)
+            : 0
+          const jobFps = jobCategory === 'video'
+            ? (positiveOrNull(request.fps ?? settings.fps ?? detail.fps) ?? positiveOrNull(fps) ?? 24)
+            : 0
+          const jobSeed = finiteOrNull(request.seed) ?? Math.floor(Math.random() * 2147483647)
+          const workflowLabel = String(request.workflowLabel || manifest?.title || getWorkflowDisplayLabel(wfId) || wfId || 'Generation').trim()
+          const promptLabel = String(request.promptLabel || '').trim()
+          const outputFolderId = String(request.folderId || request.outputFolderId || detail.folderId || detail.outputFolderId || '').trim() || null
+
+          return createQueuedJob({
+            category: jobCategory,
+            workflowId: wfId,
+            workflowLabel,
+            needsImage: false,
+            inputAssetType: null,
+            inputAssetId: null,
+            inputAssetName: '',
+            inputFromTimelineFrame: false,
+            audioAssetId: null,
+            audioAssetName: '',
+            assetFieldIds: {},
+            referenceAssetId1: null,
+            referenceAssetId2: null,
+            prompt: String(request.prompt || '').trim(),
+            negativePrompt: String(request.negativePrompt ?? detail.negativePrompt ?? negativePrompt ?? '').trim(),
+            seed: jobSeed,
+            duration: jobDuration,
+            fps: jobFps,
+            resolution: jobResolution,
+            folderId: outputFolderId,
+            status: 'queued',
+            progress: 0,
+            mcpBatch: {
+              id: batchId,
+              action: 'queue_prompt_generation_batch',
+              index: index + 1,
+              total: requestedJobs.length,
+              promptLabel: promptLabel || null,
+              promptIndex: Number(request.promptIndex) || null,
+              promptCount: Number(request.promptCount) || null,
+              workflowVariation: Number(request.variation) || null,
+              workflowVariationCount: Number(request.variationCount) || null,
+            },
+          })
+        })
+
+        setFormError(null)
+        setGenerationQueue((prev) => [...prev, ...createdJobs])
+        addComfyLog('status', `MCP queued ${createdJobs.length} prompt generation job${createdJobs.length === 1 ? '' : 's'}.`)
+
+        respond({
+          success: true,
+          previewOnly: false,
+          action: 'queue_prompt_generation_batch',
+          message: `Queued ${createdJobs.length} prompt generation job${createdJobs.length === 1 ? '' : 's'}.`,
+          status: {
+            ...status,
+            queuedCount: status.queuedCount + createdJobs.length,
+          },
+          jobs: createdJobs.map((job) => ({
+            id: job.id,
+            workflowId: job.workflowId,
+            workflowLabel: job.workflowLabel,
+            category: job.category,
+            prompt: job.prompt,
+            seed: job.seed,
+            duration: job.duration,
+            fps: job.fps,
+            resolution: job.resolution,
+            folderId: job.folderId || null,
+            status: job.status,
+          })),
+        })
+      }
+
+      void run().catch((error) => {
+        respond({
+          success: false,
+          error: error instanceof Error ? error.message : String(error || 'Could not queue prompt generation batch.'),
+        })
+      })
+    }
+
+    window.addEventListener('comfystudio-mcp-queue-prompt-generation-batch', handler)
+    return () => window.removeEventListener('comfystudio-mcp-queue-prompt-generation-batch', handler)
+  }, [
+    addComfyLog,
+    allowQueueWhileWaiting,
+    createQueuedJob,
+    duration,
+    effectiveImageResolution,
+    fps,
+    isConnected,
+    launcherCanAutoStart,
+    negativePrompt,
+    resolution,
+    validateDependenciesForQueue,
+  ])
 
   // Poll for result
   const pollForResult = async (promptId, wfId, onProgress, expectedOutputPrefix = '') => {
@@ -12024,6 +12692,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       ...(GENERATED_ASSET_FOLDERS[kind] || ['Generated']),
       getWorkflowFolderName(kind),
     ]
+    const requestedOutputFolderId = String(job?.folderId || job?.outputFolderId || '').trim() || null
+    const activeFolderExists = (folderId) => {
+      if (!folderId || !importsIntoActiveProject) return false
+      return (useAssetsStore.getState().folders || []).some((folder) => folder?.id === folderId)
+    }
+    const getGeneratedFolderId = (kind, pathSegments) => {
+      if (!importsIntoActiveProject) return null
+      if (requestedOutputFolderId && activeFolderExists(requestedOutputFolderId)) return requestedOutputFolderId
+      return ensureAssetFolderPath(pathSegments || generatedFolderPath(kind))
+    }
     const saveImportedAssetRecord = async (assetRecord, folderPathSegments) => {
       if (importsIntoActiveProject) {
         const addedAsset = addAsset(assetRecord)
@@ -12049,7 +12727,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         ? `VID ${String((Number(shortFilmMeta.shotIndex) || 0) + 1).padStart(2, '0')} - ${shortFilmMeta.shotTitle || 'Shot'}`
         : ''
       const generatedVideoFolderPath = generatedFolderPath('video')
-      const generatedVideoFolderId = importsIntoActiveProject ? ensureAssetFolderPath(generatedVideoFolderPath) : null
+      const generatedVideoFolderId = getGeneratedFolderId('video', generatedVideoFolderPath)
       try {
         const videoFile = await comfyui.downloadVideo(result.filename, result.subfolder, result.outputType)
         const assetInfo = await importAsset(targetProjectHandle, videoFile, 'video')
@@ -12135,7 +12813,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         const img = imageItems[imageIndex]
         if (markImportedSignature('image', img.filename, img.subfolder, img.outputType)) continue
         if (!generatedImageFolderId) {
-          generatedImageFolderId = importsIntoActiveProject ? ensureAssetFolderPath(generatedImageFolderPath) : null
+          generatedImageFolderId = getGeneratedFolderId('image', generatedImageFolderPath)
         }
         try {
           const imageFile = await comfyui.downloadImage(img.filename, img.subfolder, img.outputType)
@@ -12207,7 +12885,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         return { didImportAny: false, importedAssets }
       }
       const generatedAudioFolderPath = generatedFolderPath('audio')
-      const generatedAudioFolderId = importsIntoActiveProject ? ensureAssetFolderPath(generatedAudioFolderPath) : null
+      const generatedAudioFolderId = getGeneratedFolderId('audio', generatedAudioFolderPath)
       const shortFilmVoiceName = shortFilmMeta?.kind === 'dialogue-voice'
         ? `VO ${String((Number(shortFilmMeta.lineIndex) || 0) + 1).padStart(2, '0')} - ${shortFilmMeta.speaker || 'Character'}`
         : ''
@@ -12772,7 +13450,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             fps: job.fps,
             seed: job.seed,
             filenamePrefix: outputPrefix || 'video/ComfyStudio_wan',
-            qualityPreset: job.wanQualityPreset || 'face-lock',
+            qualityPreset: job.wanQualityPreset || 'balanced',
           })
           break
         case 'ltx23-i2v':

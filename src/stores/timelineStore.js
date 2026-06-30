@@ -6,6 +6,7 @@ import { getAdjustmentValue, mergeAdjustmentSettings, normalizeAdjustmentSetting
 import { clampAudioFadeDuration } from '../utils/audioClipFades'
 import { normalizeAudioClipGainDb } from '../utils/audioClipGain'
 import { CLIP_COMPOSITE_MODE, normalizeClipCompositeMode } from '../utils/layerCompositing'
+import { DEFAULT_LINE_THICKNESS, DEFAULT_SHAPE_PROPERTIES, getShapeDisplayName, normalizeShapeProperties } from '../utils/shapes'
 import {
   quantizeTimeToFrame as roundToFrame,
   roundDurationToFrame,
@@ -495,12 +496,13 @@ const getNextClipCounter = (clips = [], fallback = 1) => {
 
 const isAdjustmentClipType = (clip) => clip?.type === 'adjustment'
 const isInfinitelyExtendableClipType = (clip) => (
-  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text'
+  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text' || clip?.type === 'shape'
 )
 const supportsClipAdjustments = (clip) => (
   clip?.type === 'video'
   || clip?.type === 'image'
   || clip?.type === 'text'
+  || clip?.type === 'shape'
   || clip?.type === 'adjustment'
 )
 
@@ -508,6 +510,7 @@ const supportsLowerLayerCompositeMode = (clip) => (
   clip?.type === 'video'
   || clip?.type === 'image'
   || clip?.type === 'text'
+  || clip?.type === 'shape'
 )
 
 const floorDurationToFrame = (duration, fps) => {
@@ -567,10 +570,14 @@ const clampFiniteMediaClipToSource = (clip, fps) => {
 const createDefaultClipTransform = () => ({
   positionX: 0,
   positionY: 0,
+  positionZ: 0,
   scaleX: 100,
   scaleY: 100,
   scaleLinked: true,
   rotation: 0,
+  rotationX: 0,
+  rotationY: 0,
+  perspective: 1200,
   anchorX: 50,
   anchorY: 50,
   opacity: 100,
@@ -580,6 +587,10 @@ const createDefaultClipTransform = () => ({
   cropBottom: 0,
   cropLeft: 0,
   cropRight: 0,
+  motionBlurEnabled: false,
+  motionBlurMode: 'auto',
+  motionBlurSamples: 8,
+  motionBlurShutter: 180,
   blendMode: 'normal',
   blur: 0,
 })
@@ -1178,10 +1189,14 @@ export const useTimelineStore = create(
       transform: {
         positionX: 0,
         positionY: 0,
+        positionZ: 0,
         scaleX: 100,
         scaleY: 100,
         scaleLinked: true,
         rotation: 0,
+        rotationX: 0,
+        rotationY: 0,
+        perspective: 1200,
         anchorX: 50,
         anchorY: 50,
         opacity: 100,
@@ -1191,6 +1206,10 @@ export const useTimelineStore = create(
         cropBottom: 0,
         cropLeft: 0,
         cropRight: 0,
+        motionBlurEnabled: false,
+        motionBlurMode: 'auto',
+        motionBlurSamples: 8,
+        motionBlurShutter: 180,
         blendMode: 'normal',
         blur: 0,
       },
@@ -1213,6 +1232,75 @@ export const useTimelineStore = create(
       duration: Math.max(state.duration, calculatedStartTime + newClip.duration + 10)
     }))
     
+    return newClip
+  },
+
+  /**
+   * Add a native shape clip to the timeline.
+   * @param {string} trackId - Target video track ID
+   * @param {object} shapeOptions - Shape configuration options
+   * @param {number|null} startTime - Start time (null = end of existing clips)
+   */
+  addShapeClip: (trackId, shapeOptions = {}, startTime = null) => {
+    const state = get()
+    const track = state.tracks.find(t => t.id === trackId)
+    if (!track || track.type !== 'video') return null
+    const safeClipCounter = getNextClipCounter(state.clips, state.clipCounter || 1)
+
+    if (shapeOptions?.saveHistory !== false) {
+      get().saveToHistory()
+    }
+
+    const fps = state.timelineFps || 24
+    const trackClips = state.clips.filter(c => c.trackId === trackId)
+    const rawStartTime = startTime ?? trackClips.reduce((max, clip) =>
+      Math.max(max, clip.startTime + clip.duration), 0
+    )
+    const calculatedStartTime = roundToFrame(rawStartTime, fps)
+    const duration = roundDurationToFrame(shapeOptions.duration || 5, fps)
+    const shapeProperties = normalizeShapeProperties(shapeOptions.shapeProperties || shapeOptions)
+    const shapeName = shapeOptions.name || getShapeDisplayName(shapeProperties)
+
+    const newClip = {
+      id: `clip-${safeClipCounter}`,
+      trackId,
+      assetId: null,
+      name: shapeName,
+      startTime: calculatedStartTime,
+      duration,
+      sourceDuration: duration,
+      trimStart: 0,
+      trimEnd: duration,
+      color: '#2f6f88',
+      type: 'shape',
+      enabled: shapeOptions?.enabled !== false,
+      compositeLowerLayers: CLIP_COMPOSITE_MODE.AUTO,
+      url: null,
+      thumbnail: null,
+      shapeProperties,
+      transform: {
+        ...createDefaultClipTransform(),
+        ...(shapeOptions.transform || {}),
+        blendMode: shapeOptions.transform?.blendMode ?? 'normal',
+      },
+    }
+
+    const { clips: updatedClips, addedCount } = get().resolveOverlaps(
+      trackId,
+      newClip.id,
+      calculatedStartTime,
+      duration,
+      undefined,
+      safeClipCounter + 1
+    )
+
+    set((state) => ({
+      clips: [...updatedClips, newClip],
+      clipCounter: Math.max(state.clipCounter, safeClipCounter + 1 + addedCount),
+      selectedClipIds: [newClip.id],
+      duration: Math.max(state.duration, calculatedStartTime + newClip.duration + 10)
+    }))
+
     return newClip
   },
 
@@ -1313,6 +1401,68 @@ export const useTimelineStore = create(
           ...clip,
           name: newName,
           textProperties: updatedText
+        }
+      })
+    }))
+  },
+
+  /**
+   * Update shape clip properties.
+   * @param {string} clipId - The shape clip to update
+   * @param {object} shapeUpdates - Partial shape properties object
+   * @param {boolean} saveHistory - Whether to save to history
+   */
+  updateShapeProperties: (clipId, shapeUpdates, saveHistory = false) => {
+    if (saveHistory) {
+      get().saveToHistory()
+    }
+
+    set((state) => ({
+      clips: state.clips.map(clip => {
+        if (clip.id !== clipId || clip.type !== 'shape') return clip
+
+        const currentShape = normalizeShapeProperties(clip.shapeProperties || {})
+        const hasWidthUpdate = Object.prototype.hasOwnProperty.call(shapeUpdates || {}, 'width')
+        const hasHeightUpdate = Object.prototype.hasOwnProperty.call(shapeUpdates || {}, 'height')
+        const shouldLinkSize = Object.prototype.hasOwnProperty.call(shapeUpdates || {}, 'sizeLinked')
+          ? shapeUpdates.sizeLinked !== false
+          : currentShape.sizeLinked !== false
+        const nextShapeInput = { ...currentShape, ...shapeUpdates, sizeLinked: shouldLinkSize }
+        const switchedFromLineToSolid = currentShape.shapeType === 'line' && shapeUpdates?.shapeType && shapeUpdates.shapeType !== 'line'
+        if (shapeUpdates?.shapeType === 'line' && !hasHeightUpdate) {
+          nextShapeInput.sizeLinked = false
+          nextShapeInput.height = DEFAULT_LINE_THICKNESS
+        } else if (switchedFromLineToSolid) {
+          nextShapeInput.sizeLinked = DEFAULT_SHAPE_PROPERTIES.sizeLinked
+          if (!hasWidthUpdate && !hasHeightUpdate) {
+            nextShapeInput.width = DEFAULT_SHAPE_PROPERTIES.width
+            nextShapeInput.height = DEFAULT_SHAPE_PROPERTIES.height
+          } else if (hasWidthUpdate && !hasHeightUpdate) {
+            nextShapeInput.height = nextShapeInput.sizeLinked
+              ? Math.max(1, Number(shapeUpdates.width) || DEFAULT_SHAPE_PROPERTIES.height)
+              : DEFAULT_SHAPE_PROPERTIES.height
+          } else if (!hasWidthUpdate && hasHeightUpdate) {
+            nextShapeInput.width = nextShapeInput.sizeLinked
+              ? Math.max(1, Number(shapeUpdates.height) || DEFAULT_SHAPE_PROPERTIES.width)
+              : DEFAULT_SHAPE_PROPERTIES.width
+          }
+        }
+        if (!switchedFromLineToSolid && nextShapeInput.sizeLinked && hasWidthUpdate && !hasHeightUpdate) {
+          const currentWidth = Math.max(1, Number(currentShape.width) || 1)
+          const currentHeight = Math.max(1, Number(currentShape.height) || 1)
+          nextShapeInput.height = Math.max(1, Math.round((Number(shapeUpdates.width) || currentWidth) * (currentHeight / currentWidth)))
+        } else if (!switchedFromLineToSolid && nextShapeInput.sizeLinked && hasHeightUpdate && !hasWidthUpdate) {
+          const currentWidth = Math.max(1, Number(currentShape.width) || 1)
+          const currentHeight = Math.max(1, Number(currentShape.height) || 1)
+          nextShapeInput.width = Math.max(1, Math.round((Number(shapeUpdates.height) || currentHeight) * (currentWidth / currentHeight)))
+        }
+        const updatedShape = normalizeShapeProperties(nextShapeInput)
+        const newName = shapeUpdates?.name || clip.name || getShapeDisplayName(updatedShape)
+
+        return {
+          ...clip,
+          name: newName,
+          shapeProperties: updatedShape,
         }
       })
     }))
@@ -1666,6 +1816,40 @@ export const useTimelineStore = create(
           thumbnail: null,
           textProperties: { ...(template.textProperties || {}) },
           transform: { ...(template.transform || {}), blendMode: template.transform?.blendMode ?? 'normal' },
+          ...(pastedLinkGroupId ? { linkGroupId: pastedLinkGroupId } : {}),
+          keyframes: template.keyframes ? JSON.parse(JSON.stringify(template.keyframes)) : undefined,
+        }
+        clipCounter += 1
+        const result = get().resolveOverlaps(trackId, newClip.id, clipStartTime, newClip.duration, clips, clipCounter)
+        clips = [...result.clips, newClip]
+        clipCounter += result.addedCount
+        newIds.push(newClip.id)
+      } else if (template.type === 'shape') {
+        const rawDuration = template.duration ?? 5
+        const duration = roundDurationToFrame(rawDuration, fps)
+        const shapeProperties = normalizeShapeProperties(template.shapeProperties || {})
+        const newClip = {
+          id: `clip-${clipCounter}`,
+          trackId,
+          assetId: null,
+          name: template.name || getShapeDisplayName(shapeProperties),
+          startTime: clipStartTime,
+          duration,
+          sourceDuration: duration,
+          trimStart: 0,
+          trimEnd: duration,
+          color: '#2f6f88',
+          type: 'shape',
+          enabled: template.enabled !== false,
+          compositeLowerLayers: normalizeClipCompositeMode(template.compositeLowerLayers),
+          url: null,
+          thumbnail: null,
+          shapeProperties,
+          transform: {
+            ...createDefaultClipTransform(),
+            ...(template.transform || {}),
+            blendMode: template.transform?.blendMode ?? 'normal',
+          },
           ...(pastedLinkGroupId ? { linkGroupId: pastedLinkGroupId } : {}),
           keyframes: template.keyframes ? JSON.parse(JSON.stringify(template.keyframes)) : undefined,
         }
@@ -2458,18 +2642,22 @@ export const useTimelineStore = create(
         
         // Ensure transform object exists (for legacy clips)
         const currentTransform = clip.transform || {
-          positionX: 0, positionY: 0,
+          positionX: 0, positionY: 0, positionZ: 0,
           scaleX: 100, scaleY: 100, scaleLinked: true,
-          rotation: 0, anchorX: 50, anchorY: 50, opacity: 100,
+          rotation: 0, rotationX: 0, rotationY: 0, perspective: 1200, anchorX: 50, anchorY: 50, opacity: 100,
           flipH: false, flipV: false,
           cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0,
+          motionBlurEnabled: false, motionBlurMode: 'auto', motionBlurSamples: 8, motionBlurShutter: 180,
           blendMode: 'normal',
           blur: 0,
         }
         
         // Handle linked scale: if scaleLinked and one scale changed, update both
         let finalUpdates = { ...transformUpdates }
-        if (currentTransform.scaleLinked) {
+        const shouldKeepScaleLinked = Object.prototype.hasOwnProperty.call(transformUpdates, 'scaleLinked')
+          ? transformUpdates.scaleLinked
+          : currentTransform.scaleLinked
+        if (shouldKeepScaleLinked) {
           if ('scaleX' in transformUpdates && !('scaleY' in transformUpdates)) {
             finalUpdates.scaleY = transformUpdates.scaleX
           } else if ('scaleY' in transformUpdates && !('scaleX' in transformUpdates)) {
@@ -2576,11 +2764,12 @@ export const useTimelineStore = create(
           ? {
               ...clip,
               transform: {
-                positionX: 0, positionY: 0,
+                positionX: 0, positionY: 0, positionZ: 0,
                 scaleX: 100, scaleY: 100, scaleLinked: true,
-                rotation: 0, anchorX: 50, anchorY: 50, opacity: 100,
+                rotation: 0, rotationX: 0, rotationY: 0, perspective: 1200, anchorX: 50, anchorY: 50, opacity: 100,
                 flipH: false, flipV: false,
                 cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0,
+                motionBlurEnabled: false, motionBlurMode: 'auto', motionBlurSamples: 8, motionBlurShutter: 180,
                 blendMode: 'normal',
                 blur: 0,
               }
@@ -2852,9 +3041,13 @@ export const useTimelineStore = create(
       // Add new keyframe with current transform value
       const adjustmentValue = getAdjustmentValue(clip.adjustments || {}, property)
       const hasAdjustmentValue = adjustmentValue !== undefined
+      const shapeProperties = clip.type === 'shape' ? normalizeShapeProperties(clip.shapeProperties || {}) : null
+      const hasShapeValue = shapeProperties && Object.prototype.hasOwnProperty.call(shapeProperties, property)
       const currentValue = hasAdjustmentValue
         ? adjustmentValue
-        : (clip.transform?.[property] ?? adjustmentValue ?? 0)
+        : hasShapeValue
+          ? shapeProperties[property]
+          : (clip.transform?.[property] ?? adjustmentValue ?? 0)
       get().setKeyframe(clipId, property, clipTime, currentValue, 'easeInOut', { saveHistory: true })
       // If scale is linked, also add keyframe for the other scale property
       if (isLinked) {
@@ -4491,11 +4684,16 @@ export const useTimelineStore = create(
     }
     
     set((state) => {
-      // For video tracks, add to the beginning (top)
+      // For video tracks, add to the beginning (top) by default.
       // For audio tracks, add to the end (bottom)
       if (type === 'video') {
         const videoTracks = state.tracks.filter(t => t.type === 'video')
         const audioTracks = state.tracks.filter(t => t.type === 'audio')
+        if (options?.position === 'bottom' || options?.placement === 'bottom') {
+          return {
+            tracks: [...videoTracks, newTrack, ...audioTracks]
+          }
+        }
         return {
           tracks: [newTrack, ...videoTracks, ...audioTracks]
         }

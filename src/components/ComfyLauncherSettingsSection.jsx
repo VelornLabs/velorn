@@ -350,13 +350,13 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
         </div>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm text-sf-text-primary">Stop ComfyUI when ComfyStudio quits</div>
-            <p className="text-[11px] text-sf-text-muted mt-0.5">Recommended. ComfyStudio will ask before quitting if a job might still be running.</p>
+            <div className="text-sm text-sf-text-primary">Keep ComfyUI running after ComfyStudio quits</div>
+            <p className="text-[11px] text-sf-text-muted mt-0.5">When on, closing ComfyStudio leaves ComfyUI open in the background without asking.</p>
           </div>
           <Toggle
-            checked={Boolean(config.stopOnQuit)}
-            ariaLabel="Toggle stop on quit"
-            onChange={(value) => { void updateConfig({ stopOnQuit: value }) }}
+            checked={config.stopOnQuit === false}
+            ariaLabel="Toggle keep ComfyUI running after quit"
+            onChange={(value) => { void updateConfig({ stopOnQuit: !value }) }}
           />
         </div>
         <div className="flex items-start justify-between gap-3">

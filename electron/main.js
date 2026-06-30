@@ -1933,6 +1933,996 @@ async function checkComfyUIRunning(portOverride = null, timeoutMs = COMFYUI_CHEC
   })
 }
 
+function requestLocalComfyJson(portOverride, pathname, timeoutMs = COMFYUI_CHECK_MS) {
+  const port = sanitizeLocalComfyPort(portOverride) || DEFAULT_LOCAL_COMFY_PORT
+  const timeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Number(timeoutMs)
+    : COMFYUI_CHECK_MS
+  const pathName = String(pathname || '/').startsWith('/') ? String(pathname || '/') : `/${pathname}`
+  const url = `http://127.0.0.1:${port}${pathName}`
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve({
+        url,
+        port,
+        path: pathName,
+        ...result,
+      })
+    }
+
+    const req = http.get(url, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => {
+        body += chunk
+        if (body.length > 64 * 1024 * 1024) {
+          req.destroy(new Error('Response was larger than 64 MB.'))
+        }
+      })
+      res.on('end', () => {
+        let json = null
+        let parseError = ''
+        if (body) {
+          try {
+            json = JSON.parse(body)
+          } catch (error) {
+            parseError = error?.message || 'Response was not JSON.'
+          }
+        }
+        finish({
+          ok: res.statusCode === 200 || (res.statusCode >= 200 && res.statusCode < 400),
+          status: res.statusCode || 0,
+          contentType: res.headers?.['content-type'] || '',
+          bodyBytes: Buffer.byteLength(body || '', 'utf8'),
+          json,
+          parseError,
+        })
+      })
+    })
+    req.on('error', (error) => finish({ ok: false, error: error?.message || 'Connection failed.' }))
+    req.setTimeout(timeout, () => {
+      req.destroy()
+      finish({ ok: false, timedOut: true, error: 'Connection timed out.' })
+    })
+  })
+}
+
+function getLauncherScriptPortHint(extraArgs = '') {
+  const text = String(extraArgs || '')
+  const match = text.match(/(?:^|\s)--port(?:=|\s+)(\d{1,5})(?:\s|$)/)
+  const port = match ? sanitizeLocalComfyPort(match[1]) : null
+  return port || null
+}
+
+async function guessComfyInstallMode({ launcherConfig, comfyRootPath, portOwner }) {
+  const script = String(launcherConfig?.launcherScript || '')
+  const scriptName = path.basename(script).toLowerCase()
+  const root = String(comfyRootPath || '')
+  const ownerName = String(portOwner?.name || '').toLowerCase()
+
+  if (/docker|com\.docker|wsl/i.test(ownerName)) {
+    return { mode: 'docker', confidence: 'medium', reason: `Port appears to be owned by ${portOwner.name}.` }
+  }
+  if (launcherConfig?.launcherMode === 'mac-app' || launcherConfig?.macAppPath) {
+    return { mode: 'desktop', confidence: 'high', reason: 'ComfyUI.app is configured as the launcher.' }
+  }
+  if (/run_(nvidia|cpu)|run.*gpu/i.test(scriptName)) {
+    try {
+      const portablePython = path.join(path.dirname(script), 'python_embeded')
+      const stat = await fs.stat(portablePython)
+      if (stat.isDirectory()) {
+        return { mode: 'portable', confidence: 'high', reason: 'Configured launcher looks like a Windows portable ComfyUI script.' }
+      }
+    } catch {
+      return { mode: 'portable', confidence: 'medium', reason: 'Configured launcher name looks like a portable ComfyUI script.' }
+    }
+  }
+  if (/python|comfy/i.test(ownerName)) {
+    return { mode: 'manual-local', confidence: 'medium', reason: `Port appears to be owned by ${portOwner.name}.` }
+  }
+  if (/comfyui/i.test(root)) {
+    return { mode: 'local-install', confidence: 'low', reason: 'A ComfyUI root path is configured.' }
+  }
+  return { mode: 'unknown', confidence: 'low', reason: 'No launcher, port-owner, or install-path signal was strong enough.' }
+}
+
+function buildComfyConnectionRecommendations(diagnosis) {
+  const recommendations = []
+  const connection = diagnosis?.connection || {}
+  const launcher = diagnosis?.launcher || {}
+  const mode = diagnosis?.installMode?.mode || 'unknown'
+  const systemOk = Boolean(diagnosis?.api?.systemStats?.ok || connection?.systemStats?.ok)
+  const objectInfoOk = Boolean(diagnosis?.api?.objectInfo?.ok)
+
+  if (systemOk && objectInfoOk) {
+    recommendations.push('ComfyUI is reachable and its node registry is available. If generation fails, check the specific workflow/custom node error next.')
+  } else if (systemOk) {
+    recommendations.push('Something is answering on the configured ComfyUI port, but ComfyStudio could not read /object_info. Confirm this URL is actually ComfyUI and not another local web app or proxy.')
+  } else {
+    recommendations.push(`Start ComfyUI and confirm its browser URL is http://127.0.0.1:${connection.port || DEFAULT_LOCAL_COMFY_PORT}. If it uses another port, set that port in ComfyStudio Settings > ComfyUI Connection.`)
+  }
+
+  if (!systemOk && mode === 'docker') {
+    recommendations.push('For Docker, publish the ComfyUI container port to the host, for example -p 8188:8188, and make sure ComfyUI listens inside the container. ComfyStudio connects to localhost on the Windows/macOS host.')
+  } else if (!systemOk && mode === 'portable') {
+    recommendations.push('For Windows portable ComfyUI, pick run_nvidia_gpu.bat or run_cpu.bat in Settings > ComfyUI Launcher, then use the same port ComfyUI prints in its terminal.')
+  } else if (!systemOk && mode === 'desktop') {
+    recommendations.push('For ComfyUI Desktop, open the desktop app first and confirm its local server URL/port. Then set that same local port in ComfyStudio.')
+  } else if (!systemOk && !launcher.hasLauncherTarget) {
+    recommendations.push('No launcher target is configured. Either start ComfyUI yourself before using ComfyStudio, or configure ComfyStudio Launcher so it can start ComfyUI for you.')
+  }
+
+  if (launcher.configuredPortHint && launcher.configuredPortHint !== connection.port) {
+    recommendations.push(`The launcher extra args mention port ${launcher.configuredPortHint}, but ComfyStudio is configured for port ${connection.port}. Make those match.`)
+  }
+
+  if (diagnosis?.api?.systemStats?.status === 403 || diagnosis?.api?.objectInfo?.status === 403) {
+    recommendations.push('ComfyUI returned HTTP 403. If you started ComfyUI manually, relaunch with --enable-cors-header * or use ComfyStudio’s built-in launcher.')
+  }
+
+  if (diagnosis?.portOwner?.pid && !systemOk) {
+    recommendations.push(`Port ${connection.port} is held by ${diagnosis.portOwner.name || `pid ${diagnosis.portOwner.pid}`}. If that is not ComfyUI, stop it or change the ComfyStudio port.`)
+  }
+
+  return recommendations
+}
+
+async function diagnoseComfyUIConnectionInternal(options = {}) {
+  await refreshLauncherConfigCache()
+  const port = sanitizeLocalComfyPort(options?.port) || await resolveLocalComfyPort()
+  const timeoutMs = Number.isFinite(Number(options?.timeoutMs)) && Number(options.timeoutMs) > 0
+    ? Math.min(30_000, Math.max(1000, Number(options.timeoutMs)))
+    : 4500
+  const settings = await readSettingsRaw()
+  const rootPath = settings?.[COMFY_ROOT_SETTING_KEY] || ''
+  const launcherConfig = safeCloneLauncherConfig(settings?.[LAUNCHER_SETTING_KEY] || cachedLauncherConfig)
+
+  const [systemStats, objectInfoProbe, queueProbe, portOwner] = await Promise.all([
+    requestLocalComfyJson(port, '/system_stats', timeoutMs),
+    requestLocalComfyJson(port, '/object_info', timeoutMs),
+    requestLocalComfyJson(port, '/queue', timeoutMs),
+    comfyLauncher.describePortOwner().catch((error) => ({ pid: null, name: '', port, error: error?.message || String(error) })),
+  ])
+  const launchers = rootPath ? await detectLaunchersForComfyRoot(rootPath).catch(() => []) : []
+  const installMode = await guessComfyInstallMode({ launcherConfig, comfyRootPath: rootPath, portOwner })
+  const objectInfo = objectInfoProbe?.json && typeof objectInfoProbe.json === 'object' ? objectInfoProbe.json : null
+  const nodeClassCount = objectInfo ? Object.keys(objectInfo).length : 0
+
+  const diagnosis = {
+    summary: systemStats.ok && objectInfoProbe.ok
+      ? `ComfyUI is reachable at http://127.0.0.1:${port} and /object_info returned ${nodeClassCount} node classes.`
+      : systemStats.ok
+        ? `A server answered at http://127.0.0.1:${port}, but ComfyUI node metadata did not load cleanly.`
+        : `ComfyUI is not reachable at http://127.0.0.1:${port}.`,
+    connection: {
+      ok: Boolean(systemStats.ok && objectInfoProbe.ok),
+      port,
+      httpBase: `http://127.0.0.1:${port}`,
+      systemStats: {
+        ok: Boolean(systemStats.ok),
+        status: systemStats.status || null,
+        error: systemStats.error || systemStats.parseError || '',
+        timedOut: Boolean(systemStats.timedOut),
+      },
+    },
+    api: {
+      systemStats: {
+        ok: Boolean(systemStats.ok),
+        status: systemStats.status || null,
+        contentType: systemStats.contentType || '',
+        system: systemStats.json?.system ? {
+          os: systemStats.json.system.os,
+          python_version: systemStats.json.system.python_version,
+          pytorch_version: systemStats.json.system.pytorch_version,
+        } : null,
+        devices: Array.isArray(systemStats.json?.devices)
+          ? systemStats.json.devices.map((device) => ({
+            name: device?.name,
+            type: device?.type,
+            vram_total: device?.vram_total,
+            vram_free: device?.vram_free,
+          })).slice(0, 8)
+          : [],
+      },
+      objectInfo: {
+        ok: Boolean(objectInfoProbe.ok),
+        status: objectInfoProbe.status || null,
+        nodeClassCount,
+        error: objectInfoProbe.error || objectInfoProbe.parseError || '',
+      },
+      queue: {
+        ok: Boolean(queueProbe.ok),
+        status: queueProbe.status || null,
+        running: Array.isArray(queueProbe.json?.queue_running) ? queueProbe.json.queue_running.length : null,
+        pending: Array.isArray(queueProbe.json?.queue_pending) ? queueProbe.json.queue_pending.length : null,
+        error: queueProbe.error || queueProbe.parseError || '',
+      },
+    },
+    launcher: {
+      state: comfyLauncher.getState(),
+      config: {
+        launcherMode: launcherConfig.launcherMode,
+        launcherScript: launcherConfig.launcherScript,
+        macAppPath: launcherConfig.macAppPath,
+        autoStart: Boolean(launcherConfig.autoStart),
+        stopOnQuit: launcherConfig.stopOnQuit !== false,
+        disableAutoLaunch: launcherConfig.disableAutoLaunch !== false,
+        extraArgs: launcherConfig.extraArgs || '',
+      },
+      hasLauncherTarget: launcherConfig.launcherMode === 'mac-app'
+        ? Boolean(launcherConfig.macAppPath)
+        : Boolean(launcherConfig.launcherScript),
+      configuredPortHint: getLauncherScriptPortHint(launcherConfig.extraArgs),
+      detectedLaunchers: launchers,
+    },
+    comfyRootPath: rootPath,
+    installMode,
+    portOwner,
+    generatedAt: new Date().toISOString(),
+  }
+
+  diagnosis.recommendations = buildComfyConnectionRecommendations(diagnosis)
+  return diagnosis
+}
+
+async function setComfyUIConnectionInternal(options = {}) {
+  const port = sanitizeLocalComfyPort(options?.port)
+  if (!port) {
+    return { success: false, error: 'Invalid local ComfyUI port. Use a number from 1 to 65535.' }
+  }
+
+  const currentPort = await resolveLocalComfyPort()
+  const before = {
+    host: '127.0.0.1',
+    port: currentPort,
+    httpBase: `http://127.0.0.1:${currentPort}`,
+  }
+  const after = {
+    host: '127.0.0.1',
+    port,
+    httpBase: `http://127.0.0.1:${port}`,
+  }
+  const previewOnly = options?.previewOnly === true
+  const result = {
+    success: true,
+    previewOnly,
+    changed: before.port !== after.port,
+    before,
+    after,
+    recommendations: [
+      `Set ComfyStudio's local ComfyUI connection to ${after.httpBase}.`,
+      'This changes ComfyStudio settings only; it does not restart ComfyUI or edit launcher scripts.',
+    ],
+  }
+
+  if (previewOnly) return result
+
+  await writeSettingsRaw((settings) => ({
+    ...settings,
+    [COMFY_CONNECTION_SETTING_KEY]: {
+      host: after.host,
+      port: after.port,
+    },
+  }))
+  await refreshSettingsDependentCaches()
+
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      result.rendererSync = await performMcpRendererAction({
+        action: 'set_comfyui_connection',
+        payload: { port: after.port },
+      })
+    }
+  } catch (error) {
+    result.rendererSync = {
+      success: false,
+      error: error?.message || String(error),
+    }
+  }
+
+  return result
+}
+
+async function validateComfyUINodesInternal(options = {}) {
+  const requiredNodeClasses = Array.isArray(options?.nodeClasses)
+    ? options.nodeClasses.map((value) => String(value || '').trim()).filter(Boolean)
+    : []
+  const diagnosis = await diagnoseComfyUIConnectionInternal(options)
+  if (requiredNodeClasses.length === 0) {
+    return {
+      ...diagnosis,
+      validation: {
+        ok: false,
+        error: 'Provide nodeClasses to validate, for example ["KSampler", "LoadImage"].',
+      },
+    }
+  }
+  const port = diagnosis.connection.port
+  const timeoutMs = Number.isFinite(Number(options?.timeoutMs)) && Number(options.timeoutMs) > 0
+    ? Math.min(30_000, Math.max(1000, Number(options.timeoutMs)))
+    : 4500
+  const objectInfoProbe = await requestLocalComfyJson(port, '/object_info', timeoutMs)
+  const objectInfo = objectInfoProbe?.json && typeof objectInfoProbe.json === 'object' ? objectInfoProbe.json : {}
+  const available = []
+  const missing = []
+  for (const className of requiredNodeClasses) {
+    if (Object.prototype.hasOwnProperty.call(objectInfo, className)) {
+      available.push(className)
+    } else {
+      missing.push(className)
+    }
+  }
+
+  return {
+    ...diagnosis,
+    validation: {
+      ok: objectInfoProbe.ok && missing.length === 0,
+      checkedCount: requiredNodeClasses.length,
+      available,
+      missing,
+      nodeClassCount: Object.keys(objectInfo).length,
+      recommendations: missing.length
+        ? [
+          'Install or update the ComfyUI custom nodes required by this workflow, then restart ComfyUI.',
+          'If the nodes are installed but still missing, open ComfyUI Manager and check for import errors or dependency install failures.',
+        ]
+        : ['All requested node classes are available in ComfyUI.'],
+    },
+  }
+}
+
+const WORKFLOW_REGISTRY_SOURCE_PATH = path.join(__dirname, '..', 'src', 'config', 'workflowRegistry.js')
+const WORKFLOW_NODE_HINT_MANIFEST_PATH = path.join(__dirname, '..', 'docs', 'workflow-starter-pack', 'nodes', 'custom-node-manifest.json')
+let cachedMcpWorkflowCatalog = null
+let cachedMcpNodeHintManifest = null
+
+function deriveWorkflowIdFromFile(filename = '') {
+  const base = path.basename(String(filename || ''), '.json').toLowerCase()
+  const aliases = {
+    '1_click_multiple_angles': 'multi-angles',
+    '1_click_multiple_scene_angles-v1.0': 'multi-angles-scene',
+    api_bytedance_seedream_5_0_lite_image_edit: 'seedream-5-lite-image-edit',
+    api_elevenlabs_text_to_speech: 'elevenlabs-tts',
+    api_google_gemini: 'google-gemini-flash-lite',
+    api_google_nano_banana2_image_edit: 'nano-banana-2',
+    api_grok_text_to_image: 'grok-text-to-image',
+    api_grok_video: 'grok-video-i2v',
+    api_kling_o3_i2v: 'kling-o3-i2v',
+    api_openai_gpt_image_2_image_edit: 'gpt-image-2-edit',
+    api_openai_gpt_image_2_t2i: 'gpt-image-2-t2i',
+    api_openai_gpt_image_2_ugc_keyframe: 'gpt-image-2-ugc-keyframe',
+    api_seedance2_0_flf2v: 'seedance2-flf2v',
+    api_seedance2_0_r2v: 'seedance2-r2v',
+    api_seedance2_0_t2v: 'seedance2-t2v',
+    api_sonilo_v2m: 'sonilo-v2m',
+    api_topaz_video_enhance: 'topaz-video-upscale',
+    api_vidu_q2_i2v: 'vidu-q2-i2v',
+    caption_qwen_asr_transcription: 'caption-qwen-asr',
+    image_bytedance_seedream_5_0_lite_image_edit: 'seedream-5-lite-image-edit',
+    image_ernie_image_turbo: 'ernie-image-turbo',
+    image_flux2_text_to_image: 'flux2-text-to-image',
+    image_longcat_image_edit: 'longcat-image-edit',
+    image_longcat_text_to_image: 'longcat-text-to-image',
+    image_qwen_image_edit_2509: 'image-edit',
+    image_qwen_image_edit_2509_model_and_product: 'image-edit-model-product',
+    image_z_image_turbo: 'z-image-turbo',
+    mask_generation_text_prompt: 'mask-gen',
+    music_generation: 'music-gen',
+    music_video_shot_ltx2_3_i2v_audio: 'music-video-shot-ltx23',
+    short_film_dialogue_ltx2_3_ia2v: 'short-film-dialogue-ltx23-ia2v',
+    video_frame_interpolation: 'frame-interpolation',
+    video_ltx2_3_i2v: 'ltx23-i2v',
+    video_ltx2_3_ia2v: 'ltx23-ia2v',
+    video_ltx2_3_id_lora: 'ltx23-id-lora',
+    video_ltx2_3_t2v: 'ltx23-t2v',
+    video_wan2_2_14b_i2v: 'wan22-i2v',
+    video_wan2_2_14b_t2v: 'wan22-t2v',
+    vocal_extract_melband: 'vocal-extract-melband',
+  }
+  return aliases[base] || base
+    .replace(/^api_/, '')
+    .replace(/^image_/, '')
+    .replace(/^video_/, '')
+    .replace(/_/g, '-')
+}
+
+function inferWorkflowRuntime(workflow = {}) {
+  const id = String(workflow.id || '').toLowerCase()
+  const file = String(workflow.file || '').toLowerCase()
+  const label = String(workflow.label || '').toLowerCase()
+  if (file.startsWith('api_') || id.includes('grok') || id.includes('kling') || id.includes('vidu') || id.includes('seedance') || id.includes('seedream') || id.includes('nano-banana') || id.includes('gpt-image') || id.includes('topaz') || id.includes('sonilo') || label.includes('cloud')) {
+    return 'cloud'
+  }
+  return 'local'
+}
+
+function titleizeWorkflowId(id = '') {
+  return String(id || '')
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.length <= 4 ? part.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ')
+}
+
+function parseWorkflowRegistrySource(source = '') {
+  const workflows = []
+  const objectRegex = /\{\s*id:\s*(['"])(.*?)\1\s*,\s*label:\s*(['"])(.*?)\3\s*,\s*category:\s*(['"])(.*?)\5\s*,\s*needsImage:\s*(true|false)\s*,\s*description:\s*(['"])(.*?)\8\s*,\s*file:\s*(['"])(.*?)\10\s*\}/g
+  let match
+  while ((match = objectRegex.exec(source)) !== null) {
+    workflows.push({
+      id: match[2],
+      label: match[4],
+      category: match[6],
+      needsImage: match[7] === 'true',
+      description: match[9],
+      file: match[11],
+      source: 'registry',
+    })
+  }
+  return workflows
+}
+
+async function resolveBundledWorkflowDir() {
+  const candidates = [
+    path.join(__dirname, '..', 'public', 'workflows'),
+    path.join(process.resourcesPath || '', 'workflows'),
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    try {
+      const stat = await fs.stat(candidate)
+      if (stat.isDirectory()) return candidate
+    } catch (_error) {
+      // Keep trying candidate paths.
+    }
+  }
+  return candidates[0]
+}
+
+async function loadMcpWorkflowCatalog({ refresh = false } = {}) {
+  if (cachedMcpWorkflowCatalog && !refresh) return cachedMcpWorkflowCatalog
+
+  const workflowsDir = await resolveBundledWorkflowDir()
+  const byFile = new Map()
+
+  try {
+    const registrySource = await fs.readFile(WORKFLOW_REGISTRY_SOURCE_PATH, 'utf8')
+    for (const workflow of parseWorkflowRegistrySource(registrySource)) {
+      byFile.set(String(workflow.file || '').toLowerCase(), workflow)
+    }
+  } catch (_error) {
+    // Packaged builds do not include src/config; fall back to scanning workflow JSON files.
+  }
+
+  const entries = []
+  try {
+    const files = await fs.readdir(workflowsDir)
+    for (const file of files.filter((entry) => entry.toLowerCase().endsWith('.json')).sort()) {
+      const registryEntry = byFile.get(file.toLowerCase()) || null
+      const id = registryEntry?.id || deriveWorkflowIdFromFile(file)
+      const entry = {
+        id,
+        label: registryEntry?.label || titleizeWorkflowId(id),
+        category: registryEntry?.category || (file.includes('audio') || file.includes('music') || file.includes('vocal') || file.includes('caption') ? 'audio' : file.includes('image') || file.includes('mask') || file.includes('angles') ? 'image' : 'video'),
+        runtime: inferWorkflowRuntime({ ...(registryEntry || {}), id, file }),
+        needsImage: registryEntry?.needsImage ?? /i2v|image|mask|angles|reference/i.test(file),
+        description: registryEntry?.description || '',
+        file,
+        path: path.join(workflowsDir, file),
+        source: registryEntry?.source || 'file-scan',
+      }
+      entries.push(entry)
+    }
+  } catch (error) {
+    cachedMcpWorkflowCatalog = {
+      success: false,
+      error: `Could not read bundled workflows: ${error?.message || String(error)}`,
+      workflowsDir,
+      workflows: [],
+    }
+    return cachedMcpWorkflowCatalog
+  }
+
+  cachedMcpWorkflowCatalog = {
+    success: true,
+    workflowsDir,
+    count: entries.length,
+    workflows: entries,
+    generatedAt: new Date().toISOString(),
+  }
+  return cachedMcpWorkflowCatalog
+}
+
+async function loadMcpNodeHintManifest() {
+  if (cachedMcpNodeHintManifest) return cachedMcpNodeHintManifest
+  try {
+    const raw = await fs.readFile(WORKFLOW_NODE_HINT_MANIFEST_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+    const byClassType = {}
+    for (const node of Array.isArray(parsed?.nodes) ? parsed.nodes : []) {
+      if (node?.classType) byClassType[node.classType] = node
+    }
+    cachedMcpNodeHintManifest = {
+      success: true,
+      generatedAt: parsed?.generatedAt || null,
+      totalNodes: parsed?.totalNodes || Object.keys(byClassType).length,
+      byClassType,
+    }
+  } catch (_error) {
+    cachedMcpNodeHintManifest = {
+      success: false,
+      byClassType: {},
+    }
+  }
+  return cachedMcpNodeHintManifest
+}
+
+function collectWorkflowClassTypes(value, classTypes = new Set()) {
+  if (!value || typeof value !== 'object') return classTypes
+  if (typeof value.class_type === 'string' && value.class_type.trim()) {
+    classTypes.add(value.class_type.trim())
+  }
+  if (typeof value.type === 'string' && value.widgets_values && Array.isArray(value.inputs)) {
+    classTypes.add(value.type.trim())
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectWorkflowClassTypes(item, classTypes)
+  } else {
+    for (const child of Object.values(value)) collectWorkflowClassTypes(child, classTypes)
+  }
+  return classTypes
+}
+
+async function resolveMcpWorkflowReference(options = {}) {
+  const catalog = await loadMcpWorkflowCatalog({ refresh: options?.refresh === true })
+  const workflowId = String(options?.workflowId || options?.id || '').trim()
+  const workflowFile = String(options?.workflowFile || options?.file || '').trim()
+  const workflowPath = String(options?.workflowPath || options?.path || '').trim()
+  const normalizedId = workflowId.toLowerCase()
+  const normalizedFile = path.basename(workflowFile).toLowerCase()
+
+  let workflow = null
+  if (workflowPath) {
+    workflow = {
+      id: deriveWorkflowIdFromFile(workflowPath),
+      label: titleizeWorkflowId(deriveWorkflowIdFromFile(workflowPath)),
+      category: 'unknown',
+      runtime: inferWorkflowRuntime({ file: workflowPath }),
+      needsImage: false,
+      description: '',
+      file: path.basename(workflowPath),
+      path: workflowPath,
+      source: 'explicit-path',
+    }
+  } else if (catalog.success) {
+    workflow = catalog.workflows.find((entry) => entry.id.toLowerCase() === normalizedId)
+      || catalog.workflows.find((entry) => entry.file.toLowerCase() === normalizedFile)
+      || catalog.workflows.find((entry) => entry.file.toLowerCase() === `${normalizedFile}.json`)
+  }
+
+  if (!workflow) {
+    return {
+      success: false,
+      error: workflowId || workflowFile
+        ? `Workflow not found: ${workflowId || workflowFile}`
+        : 'Provide workflowId or workflowFile.',
+      catalog: catalog.success ? {
+        count: catalog.count,
+        workflows: catalog.workflows.map(({ id, label, category, runtime, file }) => ({ id, label, category, runtime, file })),
+      } : catalog,
+    }
+  }
+
+  return { success: true, workflow, catalog }
+}
+
+function buildWorkflowNodeHints(classTypes = [], hintManifest = {}) {
+  return classTypes.map((classType) => {
+    const hint = hintManifest.byClassType?.[classType] || null
+    if (hint) {
+      return {
+        classType,
+        installKind: hint.installKind || 'manual',
+        installDocs: hint.installDocs || '',
+        repoUrl: hint.repoUrl || '',
+        installDirName: hint.installDirName || '',
+        notes: hint.notes || '',
+        searchTerm: hint.searchTerm || classType,
+      }
+    }
+    return {
+      classType,
+      installKind: 'unknown',
+      installDocs: 'https://registry.comfy.org',
+      repoUrl: '',
+      installDirName: '',
+      notes: 'No curated install hint is mapped yet. Search this class type in ComfyUI Manager or the Comfy Registry.',
+      searchTerm: classType,
+    }
+  })
+}
+
+async function listComfyStudioWorkflowsInternal(options = {}) {
+  const catalog = await loadMcpWorkflowCatalog({ refresh: options?.refresh === true })
+  if (!catalog.success) return catalog
+  const runtime = String(options?.runtime || '').trim().toLowerCase()
+  const category = String(options?.category || '').trim().toLowerCase()
+  const query = String(options?.query || '').trim().toLowerCase()
+  let workflows = catalog.workflows
+  if (runtime) workflows = workflows.filter((workflow) => workflow.runtime === runtime)
+  if (category) workflows = workflows.filter((workflow) => workflow.category === category)
+  if (query) {
+    workflows = workflows.filter((workflow) => [
+      workflow.id,
+      workflow.label,
+      workflow.category,
+      workflow.runtime,
+      workflow.description,
+      workflow.file,
+    ].some((value) => String(value || '').toLowerCase().includes(query)))
+  }
+
+  return {
+    action: 'list_comfystudio_workflows',
+    success: true,
+    workflowsDir: catalog.workflowsDir,
+    filters: { runtime: runtime || null, category: category || null, query: query || null },
+    count: workflows.length,
+    totalCount: catalog.count,
+    workflows: workflows.map(({ id, label, category, runtime, needsImage, description, file, source }) => ({
+      id,
+      label,
+      category,
+      runtime,
+      needsImage,
+      description,
+      file,
+      source,
+    })),
+    generatedAt: new Date().toISOString(),
+  }
+}
+
+async function inspectComfyStudioWorkflowInternal(options = {}) {
+  const resolved = await resolveMcpWorkflowReference(options)
+  if (!resolved.success) return resolved
+
+  let raw
+  try {
+    raw = await fs.readFile(resolved.workflow.path, 'utf8')
+  } catch (error) {
+    return {
+      success: false,
+      error: `Could not read workflow file: ${error?.message || String(error)}`,
+      workflow: resolved.workflow,
+    }
+  }
+
+  let workflowJson
+  try {
+    workflowJson = JSON.parse(raw)
+  } catch (error) {
+    return {
+      success: false,
+      error: `Workflow JSON is invalid: ${error?.message || String(error)}`,
+      workflow: resolved.workflow,
+    }
+  }
+
+  const classTypes = Array.from(collectWorkflowClassTypes(workflowJson)).sort()
+  const hintManifest = await loadMcpNodeHintManifest()
+  const includeValidation = options?.includeValidation !== false
+  let validation = null
+  if (includeValidation) {
+    validation = await validateComfyUINodesInternal({
+      nodeClasses: classTypes,
+      port: options?.port,
+      timeoutMs: options?.timeoutMs,
+    })
+  }
+
+  const missing = validation?.validation?.missing || []
+  const installHints = buildWorkflowNodeHints(missing, hintManifest)
+  const recommendations = []
+  if (includeValidation && validation?.validation?.ok) {
+    recommendations.push('All workflow node classes are available in the configured local ComfyUI.')
+  } else if (includeValidation && missing.length > 0) {
+    recommendations.push('Install or update the missing custom nodes, then restart ComfyUI and run this check again.')
+    if (installHints.some((hint) => hint.installKind === 'core')) {
+      recommendations.push('Some missing nodes look like ComfyUI core nodes; update ComfyUI before installing extra custom nodes.')
+    }
+    if (installHints.some((hint) => hint.repoUrl)) {
+      recommendations.push('Use ComfyUI Manager or the listed repository URLs for mapped custom node packs.')
+    }
+  } else if (includeValidation) {
+    recommendations.push('Could not fully validate against ComfyUI. Check the connection diagnosis included in the validation result.')
+  } else {
+    recommendations.push('Call this tool with includeValidation=true to check the workflow against local ComfyUI /object_info.')
+  }
+
+  return {
+    action: 'inspect_comfystudio_workflow',
+    success: true,
+    workflow: {
+      id: resolved.workflow.id,
+      label: resolved.workflow.label,
+      category: resolved.workflow.category,
+      runtime: resolved.workflow.runtime,
+      needsImage: resolved.workflow.needsImage,
+      description: resolved.workflow.description,
+      file: resolved.workflow.file,
+      path: resolved.workflow.path,
+      source: resolved.workflow.source,
+    },
+    graph: {
+      format: workflowJson?.last_node_id || workflowJson?.nodes ? 'comfyui-graph-or-api' : 'api-json',
+      nodeClassCount: classTypes.length,
+      nodeClasses: options?.includeNodeClasses === false ? undefined : classTypes,
+    },
+    validation: includeValidation ? validation?.validation || null : null,
+    connection: includeValidation ? validation?.connection || null : null,
+    missingNodeHints: installHints,
+    hintManifest: {
+      available: hintManifest.success,
+      generatedAt: hintManifest.generatedAt || null,
+      totalNodes: hintManifest.totalNodes || 0,
+    },
+    recommendations,
+    generatedAt: new Date().toISOString(),
+  }
+}
+
+function summarizeComfyLauncherLogIssues(logs = []) {
+  const patterns = [
+    {
+      code: 'port_in_use',
+      severity: 'error',
+      label: 'Port already in use',
+      test: /EADDRINUSE|address already in use|only one usage of each socket address/i,
+    },
+    {
+      code: 'python_import_error',
+      severity: 'error',
+      label: 'Python import/dependency error',
+      test: /ModuleNotFoundError|ImportError|No module named|cannot import name/i,
+    },
+    {
+      code: 'custom_node_error',
+      severity: 'error',
+      label: 'Custom node load error',
+      test: /custom_nodes|custom node|Error importing|Cannot import|Traceback/i,
+    },
+    {
+      code: 'missing_model_or_file',
+      severity: 'warning',
+      label: 'Missing model/file',
+      test: /model.*not found|file.*not found|No such file|does not exist|missing/i,
+    },
+    {
+      code: 'cuda_memory',
+      severity: 'error',
+      label: 'GPU memory error',
+      test: /CUDA out of memory|out of memory|allocation failed/i,
+    },
+  ]
+
+  const matches = []
+  for (const entry of logs) {
+    const text = String(entry?.text || '')
+    if (!text) continue
+    for (const pattern of patterns) {
+      if (!pattern.test.test(text)) continue
+      matches.push({
+        code: pattern.code,
+        severity: pattern.severity,
+        label: pattern.label,
+        ts: entry.ts || null,
+        tsIso: entry.ts ? new Date(entry.ts).toISOString() : null,
+        stream: entry.stream || '',
+        text,
+      })
+      break
+    }
+  }
+
+  const counts = matches.reduce((acc, match) => {
+    acc[match.code] = (acc[match.code] || 0) + 1
+    return acc
+  }, {})
+
+  return {
+    issueCount: matches.length,
+    counts,
+    recent: matches.slice(-20),
+  }
+}
+
+async function getComfyLauncherLogsInternal(options = {}) {
+  const tailLines = Number.isFinite(Number(options?.tailLines))
+    ? Math.min(2000, Math.max(1, Math.floor(Number(options.tailLines))))
+    : 200
+  const rawStreams = Array.isArray(options?.streams) ? options.streams : []
+  const streamFilter = new Set(rawStreams.map((value) => String(value || '').trim()).filter(Boolean))
+  const logs = comfyLauncher.getLogs({ tailLines })
+    .filter((entry) => streamFilter.size === 0 || streamFilter.has(entry?.stream))
+    .map((entry) => ({
+      ...entry,
+      tsIso: entry?.ts ? new Date(entry.ts).toISOString() : null,
+    }))
+
+  return {
+    action: 'get_comfyui_launcher_logs',
+    tailLines,
+    streamFilter: Array.from(streamFilter),
+    count: logs.length,
+    state: comfyLauncher.getState(),
+    logFilePath: comfyLauncher.getState()?.logFilePath || '',
+    issues: options?.includeIssueSummary === false ? null : summarizeComfyLauncherLogIssues(logs),
+    logs,
+    generatedAt: new Date().toISOString(),
+  }
+}
+
+function getComfyLauncherControlPlan(action, before, launcherConfig) {
+  const state = String(before?.state || 'unknown')
+  const ownership = String(before?.ownership || 'none')
+  const hasLauncherTarget = launcherConfig.launcherMode === 'mac-app'
+    ? Boolean(launcherConfig.macAppPath)
+    : Boolean(launcherConfig.launcherScript)
+  const alreadyActive = state === 'running' || state === 'starting' || state === 'external'
+  const ownsProcess = ownership === 'ours' || ownership === 'app'
+
+  if (action === 'start') {
+    if (alreadyActive) {
+      return {
+        blocked: false,
+        needed: false,
+        risk: 'low',
+        summary: `ComfyUI is already ${state}; no start is needed.`,
+      }
+    }
+    if (!hasLauncherTarget) {
+      return {
+        blocked: true,
+        needed: true,
+        risk: 'low',
+        summary: 'ComfyUI cannot be started because no launcher target is configured.',
+        recommendations: ['Configure Settings > ComfyUI Launcher with a portable run script or ComfyUI.app first.'],
+      }
+    }
+    return {
+      blocked: false,
+      needed: true,
+      risk: 'medium',
+      summary: 'ComfyStudio will start ComfyUI using the configured launcher.',
+    }
+  }
+
+  if (action === 'stop') {
+    if (!alreadyActive) {
+      return {
+        blocked: false,
+        needed: false,
+        risk: 'low',
+        summary: `ComfyUI is currently ${state}; no stop is needed.`,
+      }
+    }
+    if (state === 'external' || !ownsProcess) {
+      return {
+        blocked: true,
+        needed: true,
+        risk: 'high',
+        summary: 'ComfyStudio cannot safely stop this ComfyUI process because it was started outside ComfyStudio.',
+        recommendations: ['Stop ComfyUI from the terminal, Docker, or desktop app that launched it.'],
+      }
+    }
+    return {
+      blocked: false,
+      needed: true,
+      risk: 'high',
+      summary: 'ComfyStudio will stop the ComfyUI process it owns. This can interrupt queued or running generations.',
+    }
+  }
+
+  if (action === 'restart') {
+    if (state === 'external' || (alreadyActive && !ownsProcess)) {
+      return {
+        blocked: true,
+        needed: true,
+        risk: 'high',
+        summary: 'ComfyStudio cannot safely restart an external ComfyUI process.',
+        recommendations: ['Restart ComfyUI from the terminal, Docker, or desktop app that launched it.'],
+      }
+    }
+    if (!hasLauncherTarget) {
+      return {
+        blocked: true,
+        needed: true,
+        risk: 'medium',
+        summary: 'ComfyUI cannot be restarted because no launcher target is configured.',
+        recommendations: ['Configure Settings > ComfyUI Launcher with a portable run script or ComfyUI.app first.'],
+      }
+    }
+    return {
+      blocked: false,
+      needed: true,
+      risk: alreadyActive ? 'high' : 'medium',
+      summary: alreadyActive
+        ? 'ComfyStudio will stop and start the ComfyUI process it owns. This can interrupt queued or running generations.'
+        : 'ComfyUI is not running, so restart will behave like start.',
+    }
+  }
+
+  return {
+    blocked: true,
+    needed: false,
+    risk: 'low',
+    summary: `Unknown launcher action: ${action}`,
+  }
+}
+
+async function controlComfyLauncherInternal(options = {}) {
+  await refreshLauncherConfigCache()
+  const action = String(options?.action || '').trim().toLowerCase()
+  if (!['start', 'stop', 'restart'].includes(action)) {
+    return { success: false, error: 'Launcher action must be start, stop, or restart.' }
+  }
+
+  const before = comfyLauncher.getState()
+  const launcherConfig = safeCloneLauncherConfig(cachedLauncherConfig)
+  const previewOnly = options?.previewOnly !== false
+  const plan = getComfyLauncherControlPlan(action, before, launcherConfig)
+  const base = {
+    action: 'control_comfyui_launcher',
+    launcherAction: action,
+    previewOnly,
+    success: !plan.blocked,
+    blocked: Boolean(plan.blocked),
+    needed: plan.needed !== false,
+    risk: plan.risk || 'medium',
+    summary: plan.summary,
+    recommendations: plan.recommendations || [],
+    before,
+    launcher: {
+      launcherMode: launcherConfig.launcherMode,
+      launcherScript: launcherConfig.launcherScript,
+      macAppPath: launcherConfig.macAppPath,
+      hasLauncherTarget: launcherConfig.launcherMode === 'mac-app'
+        ? Boolean(launcherConfig.macAppPath)
+        : Boolean(launcherConfig.launcherScript),
+      autoStart: Boolean(launcherConfig.autoStart),
+    },
+  }
+
+  if (plan.blocked || previewOnly || plan.needed === false) {
+    return {
+      ...base,
+      applied: false,
+      applyHint: plan.blocked
+        ? 'Resolve the blocker first.'
+        : previewOnly
+          ? `Ask the user for approval, then call control_comfyui_launcher with action="${action}" and previewOnly=false.`
+          : '',
+    }
+  }
+
+  let launcherResult
+  if (action === 'start') launcherResult = await comfyLauncher.start()
+  if (action === 'stop') launcherResult = await comfyLauncher.stop()
+  if (action === 'restart') launcherResult = await comfyLauncher.restart()
+
+  return {
+    ...base,
+    applied: true,
+    success: launcherResult?.success !== false,
+    launcherResult,
+    after: comfyLauncher.getState(),
+  }
+}
+
 // ============================================
 // ComfyUI launcher (process manager)
 // ============================================
@@ -1942,6 +2932,12 @@ const launcherLogDir = path.join(app.getPath('userData'), 'logs')
 let cachedLauncherConfig = safeCloneLauncherConfig(DEFAULT_LAUNCHER_CONFIG)
 let cachedHttpBase = `http://127.0.0.1:${DEFAULT_LOCAL_COMFY_PORT}`
 let launcherQuitConfirmed = false
+
+function getOwnedRunningComfyLauncherState() {
+  const state = comfyLauncher.getState()
+  const ownsRunning = state.ownership === 'ours' && (state.state === 'running' || state.state === 'starting')
+  return ownsRunning ? state : null
+}
 
 async function readSettingsRaw() {
   try {
@@ -2457,12 +3453,25 @@ async function createWindow() {
   
   mainWindow.on('close', async (event) => {
     if (launcherQuitConfirmed) return
-    const state = comfyLauncher.getState()
-    const ownsRunning = state.ownership === 'ours' && (state.state === 'running' || state.state === 'starting')
-    if (!ownsRunning) return
+    if (!getOwnedRunningComfyLauncherState()) return
 
     event.preventDefault()
     try {
+      if (!safeCloneLauncherConfig(cachedLauncherConfig).stopOnQuit) {
+        launcherQuitConfirmed = true
+        try {
+          await comfyLauncher.detach()
+        } catch (error) {
+          console.warn('[comfyLauncher] detach during close failed:', error?.message || error)
+        }
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.close()
+        } else {
+          app.quit()
+        }
+        return
+      }
+
       const choice = await dialog.showMessageBox(mainWindow, {
         type: 'question',
         buttons: ['Stop ComfyUI & quit', 'Leave ComfyUI running', 'Cancel'],
@@ -4912,6 +5921,13 @@ app.whenReady().then(() => {
     port: DEFAULT_MCP_PORT,
     version: app.getVersion(),
     performAction: performMcpRendererAction,
+    diagnoseComfyUIConnection: diagnoseComfyUIConnectionInternal,
+    setComfyUIConnection: setComfyUIConnectionInternal,
+    controlComfyLauncher: controlComfyLauncherInternal,
+    getComfyLauncherLogs: getComfyLauncherLogsInternal,
+    validateComfyUINodes: validateComfyUINodesInternal,
+    listComfyStudioWorkflows: listComfyStudioWorkflowsInternal,
+    inspectComfyStudioWorkflow: inspectComfyStudioWorkflowInternal,
   })
   mcpServer.start()
     .then((status) => {
@@ -4956,12 +5972,21 @@ app.whenReady().then(() => {
 
 app.on('before-quit', async (event) => {
   if (launcherQuitConfirmed) return
-  const state = comfyLauncher.getState()
-  const ownsRunning = state.ownership === 'ours' && (state.state === 'running' || state.state === 'starting')
-  if (!ownsRunning) return
+  if (!getOwnedRunningComfyLauncherState()) return
 
   event.preventDefault()
   try {
+    if (!safeCloneLauncherConfig(cachedLauncherConfig).stopOnQuit) {
+      try {
+        await comfyLauncher.detach()
+      } catch (error) {
+        console.warn('[comfyLauncher] detach during before-quit failed:', error?.message || error)
+      }
+      launcherQuitConfirmed = true
+      app.quit()
+      return
+    }
+
     const choice = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : null, {
       type: 'question',
       buttons: ['Stop ComfyUI & quit', 'Leave ComfyUI running', 'Cancel'],

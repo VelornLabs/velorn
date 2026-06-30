@@ -18,6 +18,7 @@ import {
   normalizeAdjustmentSettings,
   setAdjustmentValue,
 } from './adjustments'
+import { normalizeShapeProperties } from './shapes'
 
 // Easing functions (t is normalized 0-1)
 export const easingFunctions = {
@@ -130,8 +131,12 @@ export const EASING_OPTIONS = [
 export const KEYFRAMEABLE_PROPERTIES = [
   { id: 'positionX', label: 'Position X', group: 'position', unit: 'px' },
   { id: 'positionY', label: 'Position Y', group: 'position', unit: 'px' },
+  { id: 'positionZ', label: 'Position Z', group: 'position', unit: 'px' },
   { id: 'scaleX', label: 'Scale X', group: 'scale', unit: '%' },
   { id: 'scaleY', label: 'Scale Y', group: 'scale', unit: '%' },
+  { id: 'rotationX', label: 'Rotate X', group: 'rotation', unit: 'deg' },
+  { id: 'rotationY', label: 'Rotate Y', group: 'rotation', unit: 'deg' },
+  { id: 'perspective', label: 'Perspective', group: 'perspective', unit: 'px' },
   { id: 'rotation', label: 'Rotation', group: 'rotation', unit: '°' },
   { id: 'opacity', label: 'Opacity', group: 'opacity', unit: '%' },
   { id: 'blur', label: 'Blur', group: 'effects', unit: 'px' },
@@ -160,6 +165,20 @@ export const KEYFRAMEABLE_PROPERTIES = [
 ]
 
 export const ADJUSTMENT_KEYFRAME_PROPERTIES = [...GLOBAL_ADJUSTMENT_KEYS, ...TONAL_ADJUSTMENT_PROPERTY_IDS]
+
+export const SHAPE_KEYFRAMEABLE_PROPERTIES = [
+  { id: 'width', label: 'Shape Width', group: 'shape', unit: 'px' },
+  { id: 'height', label: 'Shape Height', group: 'shape', unit: 'px' },
+  { id: 'fillOpacity', label: 'Fill Opacity', group: 'shape', unit: '%' },
+  { id: 'gradientAngle', label: 'Gradient Angle', group: 'shape', unit: 'deg' },
+  { id: 'gradientCenterX', label: 'Gradient Center X', group: 'shape', unit: '%' },
+  { id: 'gradientCenterY', label: 'Gradient Center Y', group: 'shape', unit: '%' },
+  { id: 'gradientRadius', label: 'Gradient Radius', group: 'shape', unit: '%' },
+  { id: 'strokeWidth', label: 'Stroke Width', group: 'shape', unit: 'px' },
+  { id: 'strokeOpacity', label: 'Stroke Opacity', group: 'shape', unit: '%' },
+  { id: 'cornerRadius', label: 'Corner Radius', group: 'shape', unit: 'px' },
+  { id: 'sides', label: 'Polygon Sides', group: 'shape', unit: '' },
+]
 
 /**
  * Get the value of a property at a specific time, interpolating between keyframes
@@ -315,6 +334,27 @@ export function getAnimatedTextProperties(clip, clipTime) {
     )
   }
   return textProperties
+}
+
+export function getAnimatedShapeProperties(clip, clipTime) {
+  if (!clip) return null
+
+  const baseShapeProperties = normalizeShapeProperties(clip.shapeProperties || {})
+  const keyframes = clip.keyframes || {}
+  const animatedShapeProperties = { ...baseShapeProperties }
+
+  for (const prop of SHAPE_KEYFRAMEABLE_PROPERTIES) {
+    const propKeyframes = keyframes[prop.id]
+    if (propKeyframes && propKeyframes.length > 0) {
+      animatedShapeProperties[prop.id] = getValueAtTime(
+        propKeyframes,
+        clipTime,
+        baseShapeProperties[prop.id]
+      )
+    }
+  }
+
+  return normalizeShapeProperties(animatedShapeProperties)
 }
 
 /**
@@ -509,8 +549,10 @@ export default {
   EASING_OPTIONS,
   KEYFRAMEABLE_PROPERTIES,
   ADJUSTMENT_KEYFRAME_PROPERTIES,
+  SHAPE_KEYFRAMEABLE_PROPERTIES,
   getValueAtTime,
   getColorAtTime,
+  getAnimatedShapeProperties,
   getAnimatedTransform,
   getAnimatedAdjustmentSettings,
   getAnimatedTextProperties,
