@@ -203,8 +203,8 @@ function WelcomeScreen() {
     ? Math.round((mediaPreparationCompleted / mediaPreparationTotal) * 100)
     : 0
   const showMediaPreparation = Boolean(isLoading && mediaPreparation?.active && mediaPreparationTotal > 0)
-  const welcomeHeroVideoSrc = getWelcomeAssetPath('welcome-hero.mp4')
-  const welcomeHeroPosterSrc = getWelcomeAssetPath('hero-v1.webp')
+  const welcomeHeroVideoSrc = getWelcomeAssetPath('velorn-project-selection-page.mp4')
+  const welcomeHeroPosterSrc = getWelcomeAssetPath('velorn-home-balanced-plate-4.webp')
   const desktopMode = isElectronMode()
   
   // Keep partner-key status fresh so the chip in the header reflects
@@ -624,86 +624,52 @@ function WelcomeScreen() {
       {/* Header bar — always a solid dark strip, never overlaps the image.
           The top border visually separates the header from the native window
           controls strip above it (matches the border below the banner). */}
-      <div className="flex-shrink-0 flex items-center justify-between px-8 py-4 bg-sf-dark-950 border-t border-b border-sf-dark-800/60">
+      <div className="relative z-30 flex-shrink-0 flex items-center justify-between px-8 py-4 bg-sf-dark-950 border-t border-b border-sf-dark-800/60">
         {headerContent}
       </div>
 
       {mediaPreparationBanner}
 
       {showHeroBackground ? (
-        /* Hero band: full-bleed dark outer, centered cinematic inner.
-           On ultrawide monitors the image is capped at max-w-[2400px] so it keeps
-           roughly the same ~2.9:1 aspect as on 1080p, with the viewport edges
-           fading softly into the dark background. */
-        <div className="welcome-hero relative flex-shrink-0 h-[62vh] min-h-[420px] max-h-[720px] overflow-hidden select-none bg-sf-dark-950">
-          <div className="relative mx-auto h-full w-full max-w-[2400px] overflow-hidden">
-            {/* Animated hero with a 5-second cross-dissolve between loop
-                iterations — see HeroVideoLoop for the why and how. The
-                static WebP acts as the poster so the initial paint is
-                instant even before the MP4 has buffered. Audio is
-                stripped from the source and both <video> tags are
-                `muted` so Chromium's autoplay policy lets us start
-                unattended. */}
+        /* Hero band: full-bleed dark outer, centered cinematic inner. */
+        <div className="welcome-hero relative z-0 flex-shrink-0 h-[62vh] min-h-[420px] max-h-[720px] overflow-visible select-none bg-sf-dark-950">
+          <div className="relative mx-auto h-full w-full max-w-[2400px] overflow-visible">
+            {/* Animated branded hero plate. */}
             <HeroVideoLoop
               src={welcomeHeroVideoSrc}
               poster={welcomeHeroPosterSrc}
-              fadeSeconds={5}
-              className="absolute inset-0 w-full h-full object-cover"
-              style={{ objectPosition: 'center 10%' }}
-            />
-            {/* Fallback static image for users with reduced motion. The CSS
-                `prefers-reduced-motion` media query hides the video above
-                and shows this instead. */}
-            <img
-              src={welcomeHeroPosterSrc}
-              alt=""
-              aria-hidden="true"
-              draggable={false}
-              className="hero-reduced-motion-fallback absolute inset-0 w-full h-full object-cover"
-              style={{ objectPosition: 'center 10%' }}
-            />
-            {/* Cinematic vignette — subtle darkening toward corners */}
-            <div
-              className="absolute inset-0 pointer-events-none"
+              fadeSeconds={2}
+              className="absolute inset-x-0 top-0 w-full h-screen object-cover"
               style={{
-                background: 'radial-gradient(ellipse 90% 80% at 50% 45%, transparent 40%, rgba(0,0,0,0.55) 100%)',
+                objectPosition: 'center 10%',
+                transform: 'translateY(-8%) scale(1.08)',
+                transformOrigin: 'center top',
               }}
             />
-            {/* Left / right edge fades — invisible on 1080p (image fills viewport),
-                softly blend into the dark background on ultrawide. */}
-            <div className="absolute inset-y-0 left-0 w-24 bg-gradient-to-r from-sf-dark-950 to-transparent pointer-events-none" />
-            <div className="absolute inset-y-0 right-0 w-24 bg-gradient-to-l from-sf-dark-950 to-transparent pointer-events-none" />
+            <div
+              className="absolute right-[34.1%] whitespace-nowrap text-right text-[7.5px] font-semibold uppercase tracking-[0.22em] text-[#f2d590]/90 pointer-events-none"
+              style={{
+                top: 'clamp(228px, 26.6vh, 296px)',
+                textShadow: '0 0 14px rgba(247, 210, 132, 0.5), 0 0 5px rgba(255, 231, 176, 0.22), 0 1px 8px rgba(0, 0, 0, 0.72)',
+              }}
+            >
+              Generate shots. Shape edits. Deliver stories.
+            </div>
           </div>
-          {/* Bottom fade into the recents surface (spans the full viewport width) */}
-          <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-sf-dark-950 via-sf-dark-950/70 to-transparent pointer-events-none" />
           {/* Subtle attribution */}
           <div className="absolute bottom-3 right-4 text-[10px] uppercase tracking-wider text-white/40 pointer-events-none">
-            Made with ComfyStudio
+            Made with Velorn
           </div>
         </div>
       ) : null}
 
-      {/* Content. When the hero is visible we pull the recents panel UP into
+      {/* Content. When the hero is visible we pull the recents panel up into
           the hero band with a negative top margin so more projects are
-          visible above the fold. The panel background is a vertical gradient
-          that fades from fully transparent at the very top into solid
-          sf-dark-950 over the first ~96px, so the hero's existing bottom
-          fade bleeds through the panel's upper edge and the overlap looks
-          like a soft dissolve rather than a hard cut. relative + z-10 keeps
-          it layered above the hero's own pointer-events overlays. */}
+          visible above the fold. */}
       <div
         className={`flex-1 overflow-auto px-6 pb-8 ${showHeroBackground
-          ? 'relative z-10 -mt-[280px] pt-12'
+          ? 'relative z-10 -mt-[305px] pt-12'
           : 'py-8'}`}
-        style={showHeroBackground ? {
-          // Gradient-only background (no backgroundColor) so the hero is
-          // visible through the alpha=0 region at the very top. The last
-          // stop is alpha=1, and a linear-gradient's final color extends
-          // to the bottom of the element, so everything below the final
-          // stop is effectively solid sf-dark-950.
-          background:
-            'linear-gradient(to bottom, rgb(var(--sf-dark-950) / 0) 0, rgb(var(--sf-dark-950) / 0.35) 100px, rgb(var(--sf-dark-950) / 0.75) 200px, rgb(var(--sf-dark-950) / 1) 275px)',
-        } : undefined}
       >
         <div className="max-w-5xl mx-auto">
         {/* Error Display */}
@@ -734,13 +700,8 @@ function WelcomeScreen() {
         {/* Recent Projects Section */}
         <div className="mb-8">
           <div className="flex items-end justify-between mb-4">
-            {/* Dark glass pill behind the title cluster. The hero's fade
-                makes plain drop-shadow text look thin and ghostly up here,
-                so we tuck the title into a semi-transparent panel with a
-                hairline border + backdrop blur. That gives the title the
-                same "readable surface" the project cards have without
-                extending into a full-width bar (which would fight the
-                cards visually). */}
+            {/* Dark glass pill behind the title cluster so it stays readable
+                over busy hero artwork without becoming a full-width bar. */}
             <div className="inline-flex items-center rounded-full border border-white/10 bg-black/55 px-3 py-1 shadow-lg shadow-black/40 backdrop-blur-md">
               <h2 className="text-[13px] font-semibold text-sf-text-primary tracking-tight leading-none">
                 Select a project
@@ -957,7 +918,7 @@ function WelcomeScreen() {
         
         {/* Projects Location Info */}
         <div className="text-center text-xs text-sf-text-muted">
-          <p>
+          <p className="inline-flex items-center rounded-full border border-white/10 bg-black/60 px-3 py-1.5 shadow-lg shadow-black/50 backdrop-blur-md">
             Projects and media are saved to: <span className="text-sf-text-secondary">{defaultProjectsLocation || 'Not set'}</span>
             {' '}
             <button 

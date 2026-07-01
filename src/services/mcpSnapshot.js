@@ -131,6 +131,7 @@ function sanitizeClip(clip = {}) {
     lockMode: clip.lockMode || null,
     syncLock: safeClone(clip.syncLock),
     transform: safeClone(clip.transform),
+    effects: safeClone(clip.effects),
     textProperties: safeClone(clip.textProperties),
     shapeProperties: safeClone(clip.shapeProperties),
     titleAnimation: safeClone(clip.titleAnimation),
@@ -145,11 +146,17 @@ function sanitizeClip(clip = {}) {
 function sanitizeTransition(transition = {}) {
   return {
     id: transition.id,
+    kind: transition.kind || (transition.clipId ? 'edge' : 'between'),
     type: transition.type,
     clipAId: transition.clipAId || transition.fromClipId || null,
     clipBId: transition.clipBId || transition.toClipId || null,
+    clipId: transition.clipId || null,
+    edge: transition.edge || null,
     startTime: safeNumber(transition.startTime),
     duration: safeNumber(transition.duration),
+    settings: safeClone(transition.settings),
+    split: safeClone(transition.split),
+    contributions: safeClone(transition.contributions),
   }
 }
 

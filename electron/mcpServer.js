@@ -1,6 +1,8 @@
-const fs = require('fs').promises
+const fsSync = require('fs')
+const fs = fsSync.promises
 const http = require('http')
 const path = require('path')
+const { spawnSync } = require('child_process')
 
 const DEFAULT_MCP_PORT = 19790
 const MCP_PROTOCOL_VERSION = '2024-11-05'
@@ -12,6 +14,62 @@ const MCP_TIMELINE_BATCH_AUTO_DIMENSION_MULTIPLE = 16
 const MCP_PROMPT_BATCH_MAX_VARIATIONS_PER_WORKFLOW = 8
 const MCP_PROMPT_BATCH_MAX_TOTAL_JOBS = 24
 const MCP_ASSET_BATCH_MAX_ITEMS = 24
+const MCP_ACTION_PLAN_MAX_STEPS = 50
+const MCP_ACTION_PLAN_WRITABLE_TOOLS = new Set([
+  'undo',
+  'redo',
+  'set_playhead',
+  'select_clips',
+  'select_assets',
+  'create_project_checkpoint',
+  'restore_project_checkpoint',
+  'set_in_out_range',
+  'import_asset_from_path',
+  'relink_asset',
+  'set_clip_style',
+  'set_clip_label_color',
+  'set_clips_enabled',
+  'add_timeline_markers',
+  'remove_timeline_markers',
+  'set_timeline_marker_properties',
+  'create_project',
+  'duplicate_project',
+  'create_timeline',
+  'switch_timeline',
+  'rename_timeline',
+  'duplicate_timeline',
+  'delete_timeline',
+  'create_asset_folder',
+  'move_assets_to_folder',
+  'move_unused_assets_to_folder',
+  'add_track',
+  'update_track',
+  'remove_track',
+  'add_transition',
+  'update_transition',
+  'remove_transitions',
+  'move_clips',
+  'trim_clips',
+  'delete_clips',
+  'add_asset_to_timeline',
+  'add_assets_to_timeline',
+  'replace_clip_with_asset',
+  'add_solid_color',
+  'add_adjustment_clip',
+  'add_text_clip',
+  'add_shape_clip',
+  'duplicate_clip',
+  'update_text_clip',
+  'update_shape_clip',
+  'add_glsl_effect',
+  'update_glsl_effect',
+  'remove_glsl_effect',
+  'set_clip_keyframes',
+  'add_dip_to_black',
+  'export_timeline',
+  'export_delivery_batch',
+  'export_fcpxml',
+])
 const MCP_TIMELINE_BATCH_WORKFLOW_ALIASES = new Map([
   ['ltx23i2v', 'ltx23-i2v'],
   ['ltx23', 'ltx23-i2v'],
@@ -116,7 +174,37 @@ const MCP_PROMPT_BATCH_SUPPORTED_WORKFLOWS = new Map([
     defaultResolution: { width: 1280, height: 720 },
   }],
 ])
+const MCP_TRANSITION_TYPES = new Set([
+  'dissolve',
+  'fade-black',
+  'fade-white',
+  'wipe-left',
+  'wipe-right',
+  'wipe-up',
+  'wipe-down',
+  'slide-left',
+  'slide-right',
+  'slide-up',
+  'slide-down',
+  'zoom-in',
+  'zoom-out',
+  'blur',
+])
 const MCP_VISUAL_KEYFRAME_CLIP_TYPES = new Set(['video', 'image', 'text', 'shape', 'adjustment', 'caption', 'captions'])
+const MCP_GLSL_EFFECT_IDS = Object.freeze([
+  'glslCameraShake',
+  'glslDirectionalBlur',
+  'glslLensBlur',
+  'glslFisheye',
+  'glslChromaWarp',
+  'glslDigitalGlitch',
+  'glslSharpen',
+  'glslFilmGrain',
+  'glslFilmLook',
+  'glslFlicker',
+  'glslVhsLook',
+  'glslVignette',
+])
 const MCP_CLIP_KEYFRAME_NUMBER_FIELDS = {
   positionX: [0, -20000, 20000],
   positionY: [0, -20000, 20000],
@@ -370,6 +458,93 @@ function clipRef(clip) {
     duration: roundTime(getClipDuration(clip)),
     assetId: clip?.assetId || null,
   }
+}
+
+function trackRef(track) {
+  if (!track) return null
+  return {
+    id: track.id,
+    name: track.name || track.id,
+    type: track.type || 'unknown',
+    visible: track.visible !== false,
+    muted: Boolean(track.muted),
+    locked: Boolean(track.locked),
+    role: track.role || null,
+    channels: track.channels || null,
+  }
+}
+
+function transitionRef(transition) {
+  if (!transition) return null
+  return {
+    id: transition.id,
+    kind: transition.kind || (transition.clipId ? 'edge' : 'between'),
+    type: transition.type || '',
+    duration: roundTime(toFiniteNumber(transition.duration, 0)),
+    clipAId: transition.clipAId || null,
+    clipBId: transition.clipBId || null,
+    clipId: transition.clipId || null,
+    edge: transition.edge || null,
+    settings: transition.settings || null,
+  }
+}
+
+function timelineRef(timeline, fallbackSettings = {}) {
+  if (!timeline) return null
+  const tracks = Array.isArray(timeline.tracks) ? timeline.tracks : []
+  const clips = Array.isArray(timeline.clips) ? timeline.clips : []
+  return {
+    id: timeline.id,
+    name: timeline.name || timeline.id,
+    width: toFiniteNumber(timeline.width, fallbackSettings.width || 1920),
+    height: toFiniteNumber(timeline.height, fallbackSettings.height || 1080),
+    fps: toFiniteNumber(timeline.fps, fallbackSettings.fps || 24),
+    duration: roundTime(toFiniteNumber(timeline.duration, 0)),
+    trackCount: tracks.length,
+    clipCount: clips.length,
+    transitionCount: Array.isArray(timeline.transitions) ? timeline.transitions.length : 0,
+    color: timeline.color || null,
+    folderId: timeline.folderId || null,
+  }
+}
+
+function normalizeMcpTransitionType(value) {
+  const normalized = String(value || 'dissolve').trim().toLowerCase()
+  if (!MCP_TRANSITION_TYPES.has(normalized)) {
+    throw new Error(`Unsupported transition type "${normalized || value}". Use one of: ${[...MCP_TRANSITION_TYPES].join(', ')}.`)
+  }
+  return normalized
+}
+
+function normalizeMcpTransitionDuration(value, fallback = 0.5) {
+  const parsed = Number(value)
+  if (Number.isFinite(parsed) && parsed > 0) return roundTime(Math.min(10, parsed))
+  return fallback
+}
+
+function normalizeMcpTransitionEdge(value) {
+  return String(value || 'in').trim().toLowerCase() === 'out' ? 'out' : 'in'
+}
+
+function normalizeMcpTransitionAlignment(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  return ['start', 'center', 'end'].includes(normalized) ? normalized : ''
+}
+
+function normalizeMcpIdList(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))]
+  }
+  const raw = String(value || '').trim()
+  if (!raw) return []
+  return [...new Set(raw.split(',').map((item) => item.trim()).filter(Boolean))]
+}
+
+function buildMcpTransitionSettings(args = {}) {
+  const settings = args.settings && typeof args.settings === 'object' ? { ...args.settings } : {}
+  const alignment = normalizeMcpTransitionAlignment(args.alignment || settings.alignment)
+  if (alignment) settings.alignment = alignment
+  return settings
 }
 
 function clampMcpKeyframeNumber(property, value) {
@@ -668,6 +843,7 @@ function summarizeTextClipForMcp(clip) {
     enabled: clip?.enabled !== false,
     textProperties: clip?.textProperties || {},
     transform: clip?.transform || {},
+    effects: summarizeClipEffectsForMcp(clip),
     titleAnimation: clip?.titleAnimation || null,
     keyframes: clip?.keyframes || {},
   }
@@ -684,8 +860,42 @@ function summarizeShapeClipForMcp(clip) {
     enabled: clip?.enabled !== false,
     shapeProperties: clip?.shapeProperties || {},
     transform: clip?.transform || {},
+    effects: summarizeClipEffectsForMcp(clip),
     keyframes: clip?.keyframes || {},
   }
+}
+
+function summarizeClipEffectsForMcp(clip) {
+  return (clip?.effects || []).map((effect) => ({
+    id: effect?.id,
+    type: effect?.type,
+    enabled: effect?.enabled !== false,
+    settings: effect?.settings || {},
+  }))
+}
+
+function summarizeEffectClipForMcp(clip) {
+  return {
+    ...clipRef(clip),
+    enabled: clip?.enabled !== false,
+    effects: summarizeClipEffectsForMcp(clip),
+    keyframes: clip?.keyframes || {},
+  }
+}
+
+function getEffectClipForMcp(snapshot, clipId) {
+  const timeline = snapshot?.currentTimeline || null
+  const clips = Array.isArray(timeline?.clips) ? timeline.clips : []
+  const selectedIds = Array.isArray(timeline?.selectedClipIds) ? timeline.selectedClipIds.filter(Boolean) : []
+  const id = String(clipId || '').trim() || (selectedIds.length === 1 ? selectedIds[0] : '')
+  if (!id) return { error: 'Provide clipId from get_timeline, or select exactly one visual clip in ComfyStudio.' }
+  const clip = clips.find((candidate) => candidate?.id === id)
+  if (!clip) return { error: `Clip ${id} was not found.` }
+  const clipType = String(clip.type || '').toLowerCase()
+  if (!MCP_VISUAL_KEYFRAME_CLIP_TYPES.has(clipType)) {
+    return { error: `Clip ${id} is a ${clip.type || 'unknown'} clip. GLSL effects currently support visual clips, not audio clips.` }
+  }
+  return { clip }
 }
 
 function getTextClipForMcp(snapshot, clipId) {
@@ -1041,6 +1251,106 @@ function resolveSolidColorPlan(snapshot, args = {}) {
     note: placeOnTimeline && createTrack && trackPlacement === 'bottom'
       ? 'A new bottom video track will be created so the solid can sit behind the edit.'
       : '',
+  }
+}
+
+function clampMcpAdjustmentNumber(value, min, max, fallback = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+function buildMcpAdjustmentSettings(args = {}) {
+  const source = args.adjustments && typeof args.adjustments === 'object' ? args.adjustments : {}
+  const groupDefaults = {
+    brightness: 0,
+    contrast: 0,
+    saturation: 0,
+    gain: 0,
+    gamma: 0,
+    offset: 0,
+    hue: 0,
+  }
+  const normalizeGroup = (settings = {}) => ({
+    brightness: clampMcpAdjustmentNumber(settings.brightness, -100, 100, 0),
+    contrast: clampMcpAdjustmentNumber(settings.contrast, -100, 100, 0),
+    saturation: clampMcpAdjustmentNumber(settings.saturation, -100, 100, 0),
+    gain: clampMcpAdjustmentNumber(settings.gain, -100, 100, 0),
+    gamma: clampMcpAdjustmentNumber(settings.gamma, -100, 100, 0),
+    offset: clampMcpAdjustmentNumber(settings.offset, -100, 100, 0),
+    hue: clampMcpAdjustmentNumber(settings.hue, -180, 180, 0),
+  })
+  const merged = { ...source }
+  for (const key of ['brightness', 'contrast', 'saturation', 'gain', 'gamma', 'offset', 'hue', 'blur']) {
+    if (Object.prototype.hasOwnProperty.call(args, key)) merged[key] = args[key]
+  }
+  for (const group of ['shadows', 'midtones', 'highlights']) {
+    if (args[group] && typeof args[group] === 'object') merged[group] = args[group]
+  }
+  return {
+    brightness: clampMcpAdjustmentNumber(merged.brightness, -100, 100, 0),
+    contrast: clampMcpAdjustmentNumber(merged.contrast, -100, 100, 0),
+    saturation: clampMcpAdjustmentNumber(merged.saturation, -100, 100, 0),
+    gain: clampMcpAdjustmentNumber(merged.gain, -100, 100, 0),
+    gamma: clampMcpAdjustmentNumber(merged.gamma, -100, 100, 0),
+    offset: clampMcpAdjustmentNumber(merged.offset, -100, 100, 0),
+    hue: clampMcpAdjustmentNumber(merged.hue, -180, 180, 0),
+    blur: clampMcpAdjustmentNumber(merged.blur, 0, 50, 0),
+    shadows: normalizeGroup(merged.shadows || groupDefaults),
+    midtones: normalizeGroup(merged.midtones || groupDefaults),
+    highlights: normalizeGroup(merged.highlights || groupDefaults),
+  }
+}
+
+function resolveAdjustmentClipPlan(snapshot, args = {}) {
+  const timeline = snapshot?.currentTimeline || null
+  if (!timeline) return { error: 'No current timeline is available.' }
+
+  const requestedTrackId = String(args.trackId || '').trim()
+  const createTrack = (args.createTrack === true || args.newTrack === true || ['new', 'newtop', 'newtrack', 'newtoptrack', 'top'].includes(String(args.trackStrategy || args.placementTrack || '').trim().toLowerCase().replace(/[\s_-]+/g, '')))
+    && !requestedTrackId
+  const existingTrack = requestedTrackId
+    ? getTrackById(timeline, requestedTrackId)
+    : (timeline.tracks || []).find((track) => track?.type === 'video' && track.locked !== true)
+  if (requestedTrackId && !existingTrack) return { error: `Track ${requestedTrackId} was not found.` }
+  if (existingTrack && existingTrack.type !== 'video') return { error: `Adjustment clips must be placed on a video track, not ${existingTrack.type}.` }
+  if (existingTrack?.locked) return { error: `Track ${existingTrack.id} is locked.` }
+
+  const track = createTrack
+    ? {
+      id: null,
+      name: String(args.trackName || args.name || 'Adjustment Layer').trim().slice(0, 80) || 'Adjustment Layer',
+      type: 'video',
+      locked: false,
+      muted: false,
+      visible: true,
+    }
+    : existingTrack
+  if (!track) return { error: 'No unlocked video track is available for an adjustment clip.' }
+
+  const requestedDuration = Number(args.durationSeconds ?? args.duration)
+  const durationSeconds = Number.isFinite(requestedDuration) && requestedDuration > 0
+    ? roundTime(requestedDuration)
+    : 5
+  let keyframes = []
+  try {
+    keyframes = normalizeMcpClipKeyframes(args, { type: 'adjustment', duration: durationSeconds })
+  } catch (error) {
+    return { error: error?.message || String(error) }
+  }
+
+  return {
+    action: 'add_adjustment_clip',
+    previewOnly: args.previewOnly !== false,
+    name: String(args.name || 'Adjustment Layer').trim().slice(0, 160) || 'Adjustment Layer',
+    track: trackRef(track),
+    createTrack,
+    startSeconds: resolveAssetPlacementStart(timeline, existingTrack?.id || '', args),
+    durationSeconds,
+    enabled: args.enabled !== false,
+    adjustments: buildMcpAdjustmentSettings(args),
+    transform: args.transform && typeof args.transform === 'object' ? args.transform : null,
+    keyframes,
   }
 }
 
@@ -2090,13 +2400,37 @@ function buildAiReviewPasses(snapshot) {
         id: 'asset_folder_cleanup',
         title: 'Asset Folder Cleanup Pass',
         goal: 'Organize generated/imported project assets without deleting anything.',
-        prompt: 'Find assets that match my cleanup request, preview the exact assets and destination folder first, then move them only after I approve. For MCP-created solid/color constants in the root, use rootOnly plus constantsOnly and move them into a Constants folder.',
-        tools: ['get_assets', 'create_asset_folder', 'move_assets_to_folder'],
+        prompt: 'Find assets that match my cleanup request, preview the exact assets and destination folder first, then move them only after I approve. For unused assets, use move_unused_assets_to_folder instead of guessing. For MCP-created solid/color constants in the root, use rootOnly plus constantsOnly and move them into a Constants folder.',
+        tools: ['get_assets', 'create_asset_folder', 'move_assets_to_folder', 'move_unused_assets_to_folder'],
         safeDefaults: {
           previewOnlyFirst: true,
           destructive: false,
           createMissingTargetFolder: true,
           usefulFilters: ['rootOnly', 'constantsOnly', 'type', 'nameIncludes', 'workflowId'],
+        },
+      },
+      {
+        id: 'timeline_search',
+        title: 'Timeline Search Pass',
+        goal: 'Find exact clips, tracks, markers, transitions, or assets before making a change.',
+        prompt: 'Search the active timeline for the thing I described, then show me matching timecodes, track names, and clip IDs before doing anything else.',
+        tools: ['find_timeline_items', 'inspect_clip', 'select_clips', 'select_assets'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          usefulFilters: ['disabled', 'enabled', 'selected', 'visual', 'audio', 'labeled', 'transformed', 'keyframed', 'effects'],
+          useExplicitIdsForWriteActions: true,
+        },
+      },
+      {
+        id: 'media_health_relink',
+        title: 'Media Health And Relink Pass',
+        goal: 'Find missing/zero-byte/offline media and safely relink assets without touching timeline edits.',
+        prompt: 'Check media health first. If anything is missing, tell me the exact asset IDs and paths. Use relink_asset with previewOnly first before changing any asset path.',
+        tools: ['check_media_health', 'find_timeline_items', 'relink_asset'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          destructive: false,
+          relinkUpdatesMetadataOnly: true,
         },
       },
       {
@@ -2112,15 +2446,65 @@ function buildAiReviewPasses(snapshot) {
         },
       },
       {
+        id: 'project_sandbox_setup',
+        title: 'Project Sandbox Setup',
+        goal: 'Create or duplicate a ComfyStudio project before risky AI edits or fresh automated layouts.',
+        prompt: 'If I want a fresh project, use create_project with previewOnly first. If I want to experiment safely on the current edit, use duplicate_project with previewOnly first, then apply only after I approve so the duplicate opens before you continue.',
+        tools: ['get_project', 'create_project', 'duplicate_project'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          duplicateBeforeRiskyEdits: true,
+          overwritesExistingProjectFolders: false,
+        },
+      },
+      {
         id: 'sequence_setup',
         title: 'Sequence Setup Pass',
         goal: 'Create a named sequence/timeline for alternate edits, selects, generated variations, or AI-built review layouts.',
         prompt: 'If I ask for a new sequence, preview the sequence name/settings first. After I approve, create it and switch into it before placing clips, solids, titles, or generated assets.',
-        tools: ['get_project', 'get_timeline', 'create_timeline'],
+        tools: ['get_project', 'get_timeline', 'create_timeline', 'switch_timeline', 'rename_timeline', 'duplicate_timeline', 'delete_timeline'],
         safeDefaults: {
           previewOnlyFirst: true,
           switchToTimeline: true,
           copySettingsFromCurrent: true,
+        },
+      },
+      {
+        id: 'track_cleanup',
+        title: 'Track Cleanup Pass',
+        goal: 'Rename, reorder, mute, lock, hide, or remove timeline tracks without touching media files.',
+        prompt: 'Inspect the timeline tracks first. Preview any track renames, visibility changes, lock/mute changes, reorders, or removals before applying them.',
+        tools: ['get_timeline', 'update_track', 'remove_track'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          destructive: false,
+          neverRemoveLastTrackOfType: true,
+        },
+      },
+      {
+        id: 'timeline_edit_operations',
+        title: 'Timeline Edit Operations Pass',
+        goal: 'Move, trim, or delete exact timeline clips during cleanup, review-lane layout, or generated-result assembly.',
+        prompt: 'Find the exact clips first, preview the move/trim/delete plan, then apply only after I approve. Use ripple delete only when I explicitly ask to close gaps.',
+        tools: ['get_timeline', 'inspect_clip', 'inspect_visible_shots', 'move_clips', 'trim_clips', 'delete_clips'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          useExplicitClipIds: true,
+          deleteLimit: 100,
+          rippleRequiresExplicitUserRequest: true,
+        },
+      },
+      {
+        id: 'native_transition_polish',
+        title: 'Native Transition Polish Pass',
+        goal: 'Add, update, or remove ComfyStudio native transitions such as dissolves, fades, wipes, slides, zooms, blur, and dip-to-black style edits.',
+        prompt: 'Inspect adjacent clips first. Preview the exact transition type, duration, edge/alignment, and affected clip IDs before applying transitions.',
+        tools: ['get_timeline', 'add_transition', 'update_transition', 'remove_transitions'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          defaultTransitionType: 'dissolve',
+          defaultDurationSeconds: 0.5,
+          supportedTransitionTypes: Array.from(MCP_TRANSITION_TYPES),
         },
       },
       {
@@ -2143,12 +2527,26 @@ function buildAiReviewPasses(snapshot) {
         id: 'visual_clip_keyframes',
         title: 'Visual Clip Keyframe Pass',
         goal: 'Preview and apply opacity, transform, blur, crop, color-adjustment, or shape-style keyframes on existing visual clips.',
-        prompt: 'Find the exact visual clips first. Preview the keyframes before applying. Use add_solid_color first if the fade needs an explicit black/color plate underneath the clips. Use set_clip_keyframes for fades, dips to black, moves, scale, rotation, blur, crop reveals, color adjustment animation, and shape style animation such as width, height, stroke width, rounded corners, and polygon sides. For dip-to-black between clips, create or target a black solid underneath, then keyframe the outgoing clip opacity from 100 to 0 near its end and the incoming clip opacity from 0 to 100 near its start.',
-        tools: ['get_timeline', 'inspect_clip', 'inspect_visible_shots', 'add_solid_color', 'set_clip_keyframes'],
+        prompt: 'Find the exact visual clips first. Preview the keyframes before applying. Use add_solid_color first if the fade needs an explicit black/color plate underneath the clips. Use add_adjustment_clip when a look, blur, GLSL effect, or color treatment should affect multiple clips below one top layer. Use add_dip_to_black for adjacent clip dips, and use set_clip_keyframes for custom fades, moves, scale, rotation, blur, crop reveals, color adjustment animation, and shape style animation such as width, height, stroke width, rounded corners, and polygon sides.',
+        tools: ['get_timeline', 'inspect_clip', 'inspect_visible_shots', 'add_solid_color', 'add_adjustment_clip', 'add_dip_to_black', 'set_clip_keyframes'],
         safeDefaults: {
           previewOnlyFirst: true,
           useExplicitClipIds: true,
           fadeDurationSeconds: 0.5,
+          supportedKeyframes: MCP_CLIP_KEYFRAME_PROPERTIES,
+        },
+      },
+      {
+        id: 'adjustment_layer_pass',
+        title: 'Adjustment Layer Pass',
+        goal: 'Create a top adjustment clip that applies color, blur, GLSL effects, or keyframed looks to multiple clips below it.',
+        prompt: 'Preview the adjustment layer timing, track, color/blur settings, transform, and keyframes first. After I approve, create the adjustment clip. If I ask for an effect such as vignette, camera shake, directional blur, film grain, or VHS over several clips, create the adjustment clip first, then add/update GLSL effects on that adjustment clip.',
+        tools: ['get_timeline', 'add_adjustment_clip', 'add_glsl_effect', 'update_glsl_effect', 'set_clip_keyframes'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          createTrack: true,
+          defaultDurationSeconds: 5,
+          supportedAdjustmentKeys: ['brightness', 'contrast', 'saturation', 'gain', 'gamma', 'offset', 'hue', 'blur', 'shadows', 'midtones', 'highlights'],
           supportedKeyframes: MCP_CLIP_KEYFRAME_PROPERTIES,
         },
       },
@@ -2169,7 +2567,7 @@ function buildAiReviewPasses(snapshot) {
         title: 'Brief To Generated Assets Pass',
         goal: 'Turn a written creative brief into source images or videos that can be assembled into a new ComfyStudio sequence.',
         prompt: 'Break my brief into a small shot/asset plan first. If several new assets will be generated, use create_asset_folder with previewOnly first so the results land in a named/nested project folder instead of the asset root. Use queue_prompt_generation_batch with previewOnly first to show the exact prompts, workflows, variation counts, seeds, resolution, duration, FPS, and folderId. After I approve, queue the generation jobs. Once generated assets exist, create a new timeline if needed, place results with add_assets_to_timeline, add titles/supers/shapes, animate transform/opacity/crop/color/shape style with set_clip_keyframes, inspect sample frames, and export only after I ask.',
-        tools: ['list_comfystudio_workflows', 'create_asset_folder', 'queue_prompt_generation_batch', 'get_generation_status', 'create_timeline', 'add_assets_to_timeline', 'add_text_clip', 'add_shape_clip', 'set_clip_keyframes', 'inspect_timeline_range', 'export_timeline'],
+        tools: ['list_comfystudio_workflows', 'create_project_checkpoint', 'create_asset_folder', 'queue_prompt_generation_batch', 'get_generation_status', 'create_timeline', 'add_assets_to_timeline', 'add_text_clip', 'add_shape_clip', 'set_clip_style', 'set_clip_keyframes', 'inspect_timeline_range', 'export_timeline'],
         safeDefaults: {
           previewOnlyFirst: true,
           queuesGenerationOnlyAfterApproval: true,
@@ -2185,8 +2583,8 @@ function buildAiReviewPasses(snapshot) {
         id: 'generate_from_timeline_context',
         title: 'Generate From Timeline Context',
         goal: 'Turn the selected clip or current playhead frame into a safe Generate-tab image-to-video/keyframe request, or queue an approved multi-workflow variation batch.',
-        prompt: 'Prepare the selected timeline shot for LTX 2.3 image-to-video. Preview the source frame, workflow, and prompt first; after I approve, open Generate with the frame loaded and the prompt filled in. If I ask for variations across workflows, use queue_timeline_generation_batch with previewOnly first, show the exact workflows/counts/seeds, then apply only after I approve. After generation finishes, use add_asset_to_timeline for one result or add_assets_to_timeline for multiple review lanes, always with previewOnly first.',
-        tools: ['inspect_timeline_frame', 'list_comfystudio_workflows', 'prepare_generation_from_timeline_context', 'queue_prepared_generation', 'queue_timeline_generation_batch', 'add_asset_to_timeline', 'add_assets_to_timeline'],
+        prompt: 'Prepare the selected timeline shot for LTX 2.3 image-to-video. Preview the source frame, workflow, and prompt first; after I approve, open Generate with the frame loaded and the prompt filled in. If I ask for variations across workflows, use queue_timeline_generation_batch with previewOnly first, show the exact workflows/counts/seeds, then apply only after I approve. After generation finishes, use add_asset_to_timeline for one result, add_assets_to_timeline for multiple review lanes, or replace_clip_with_asset when I explicitly approve replacing an existing timeline clip.',
+        tools: ['set_playhead', 'inspect_timeline_frame', 'list_comfystudio_workflows', 'prepare_generation_from_timeline_context', 'queue_prepared_generation', 'queue_timeline_generation_batch', 'select_assets', 'add_asset_to_timeline', 'add_assets_to_timeline', 'replace_clip_with_asset'],
         safeDefaults: {
           previewOnlyFirst: true,
           defaultWorkflowId: 'ltx23-i2v',
@@ -2200,11 +2598,26 @@ function buildAiReviewPasses(snapshot) {
         },
       },
       {
+        id: 'shot_replacement_pass',
+        title: 'Shot Replacement Pass',
+        goal: 'Replace an existing timeline clip with an approved imported or generated asset while preserving the edit timing and clip treatment.',
+        prompt: 'Inspect the timeline clip and candidate replacement asset first. Preview the replacement plan, including whether duration, trim, transforms, effects, and keyframes will be preserved. Apply replace_clip_with_asset only after I approve. Do not delete the old asset unless I explicitly ask for cleanup afterward.',
+        tools: ['get_timeline', 'get_assets', 'inspect_clip', 'replace_clip_with_asset'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          preserveDuration: true,
+          keepTransform: true,
+          keepEffects: true,
+          keepKeyframes: true,
+          deleteOldAsset: false,
+        },
+      },
+      {
         id: 'delivery_check',
         title: 'Delivery Check',
-        goal: 'Confirm the timeline is ready for a standard H.264 HD delivery export.',
-        prompt: 'Check whether the active timeline is ready for H.264 HD export. Tell me any blockers or warnings. If it is ready and I ask you to continue, start the export to the project renders folder.',
-        tools: ['check_export_readiness', 'export_timeline'],
+        goal: 'Confirm the timeline is ready for a standard H.264 HD delivery export or an interchange XML handoff.',
+        prompt: 'Check whether the active timeline is ready for H.264 HD export, social delivery variants, or FCPXML handoff. Tell me any blockers or warnings. If I ask for several versions such as 16:9, 1:1, and 9:16, use export_delivery_batch with previewOnly first, then start the batch only after I approve.',
+        tools: ['set_in_out_range', 'check_export_readiness', 'export_timeline', 'export_delivery_batch', 'inspect_export_file', 'export_fcpxml'],
         safeDefaults: {
           target: 'h264_hd',
           resolution: '1080p',
@@ -2213,29 +2626,587 @@ function buildAiReviewPasses(snapshot) {
           includeAudio: true,
         },
       },
+      {
+        id: 'checkpointed_action_plan',
+        title: 'Checkpointed Action Plan',
+        goal: 'Apply a small approved batch of MCP write actions with one safety checkpoint first.',
+        prompt: 'When I approve a multi-step edit, use run_mcp_action_plan with previewOnly first. It should create a checkpoint first, run the approved steps in order, and stop on the first error.',
+        tools: ['run_mcp_action_plan', 'create_project_checkpoint', 'restore_project_checkpoint'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          createCheckpointFirst: true,
+          stopOnError: true,
+          maxSteps: MCP_ACTION_PLAN_MAX_STEPS,
+        },
+      },
+      {
+        id: 'fcpxml_interchange',
+        title: 'FCPXML Interchange Pass',
+        goal: 'Export the active ComfyStudio timeline as FCPXML for Resolve, Final Cut, or Premiere finishing.',
+        prompt: 'Preview the FCPXML export plan first, including the active timeline name, clip count, and output path. After I approve, export the FCPXML to the project renders folder or the path I requested.',
+        tools: ['get_project', 'get_timeline', 'export_fcpxml'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          destination: 'project renders folder',
+          requiresProjectPath: true,
+        },
+      },
     ],
     recommendedWorkflow: [
-      'Call get_ai_review_passes to choose the right pass.',
+      'Call get_mcp_recipes or get_ai_review_passes to choose the right pass.',
+      'Use create_project_checkpoint before risky multi-step AI edits; use restore_project_checkpoint with previewOnly before rolling back to a checkpoint.',
       'Call analyze_timeline for mechanical issues before visual review.',
+      'Use find_timeline_items before targeting clips, tracks, markers, transitions, or assets from a natural-language request.',
+      'Use check_media_health before delivery or relinking work, then use relink_asset with previewOnly when an existing asset points at a missing file.',
+      'Use set_playhead before frame inspection or generation when the user gives a timecode/frame.',
+      'Use select_clips or select_assets when the user asks to find, preview, or target existing timeline/project items.',
       'Use inspect_visible_shots in chunks for fast-cut music-video review.',
       'Use add_timeline_markers with previewOnly before marking many shots.',
       'Use set_timeline_marker_properties to rename/recolor review markers as decisions change.',
       'Use remove_timeline_markers with previewOnly before clearing review markers.',
       'Use move_assets_to_folder with previewOnly before organizing root assets, constants, generated results, or imported media into folders.',
+      'Use move_unused_assets_to_folder with previewOnly before gathering unused project assets into an archive folder.',
+      'Use update_track and remove_track with previewOnly before renaming, hiding, locking, muting, reordering, or removing tracks.',
+      'Use move_clips, trim_clips, and delete_clips with previewOnly before timeline cleanup or layout changes.',
+      'Use add_transition, update_transition, and remove_transitions with previewOnly before adding native transitions or transition cleanup.',
       'Use add_track, add_text_clip, duplicate_clip, and update_text_clip with previewOnly for AI-assisted text/title graphics.',
+      'Use duplicate_project with previewOnly before risky project-wide experiments, or create_project with previewOnly before starting a fresh AI-built project.',
       'Use create_timeline with previewOnly before creating a new named sequence for alternate edits, generated selects, or AI-built layouts.',
+      'Use switch_timeline, rename_timeline, duplicate_timeline, and delete_timeline with previewOnly for sequence management.',
       'Use create_asset_folder with previewOnly before generating a batch of source assets that should stay organized in a named folder.',
       'Use add_solid_color with previewOnly before creating black/color plates, especially underneath opacity fades.',
+      'Use add_adjustment_clip with previewOnly before creating a look/effects layer that should affect clips below it.',
+      'Use add_dip_to_black with previewOnly for adjacent clip dips instead of manually writing both outgoing and incoming opacity fades.',
       'Use set_clip_keyframes with previewOnly before changing visual clip opacity, transform, blur, crop, color, or shape style keyframes.',
+      'Use set_clip_style with previewOnly before batch label-color, enable/disable, transform, blur, blend mode, or motion blur changes.',
+      'Use import_asset_from_path with previewOnly before copying a local media file into the active project.',
       'Use queue_prompt_generation_batch with previewOnly and explicit approval when creating new stills/videos from a written creative brief.',
       'Use prepare_generation_from_timeline_context with previewOnly before opening Generate from a selected clip or playhead frame.',
       'Use queue_prepared_generation with previewOnly and explicit approval before starting any prepared Generate job.',
       'Use queue_timeline_generation_batch with previewOnly and explicit approval before queueing multiple timeline-frame variations across WAN 2.2/LTX 2.3.',
       'Use add_asset_to_timeline with previewOnly before placing generated assets or imported media back into the edit.',
       'Use add_assets_to_timeline with previewOnly to place multiple generated results as stacked review lanes or a sequential strip.',
+      'Use replace_clip_with_asset with previewOnly when an approved generated/imported asset should replace a timeline clip while preserving edit timing and treatment.',
+      'Use set_in_out_range before range-based export requests such as "only the first five seconds" or "export the selected section".',
+      'Use export_delivery_batch with previewOnly before rendering multiple versions such as 16:9, square, and vertical from the same range.',
+      'Use inspect_export_file after rendering when the user asks whether the file exists, has the expected codec, duration, FPS, or dimensions.',
+      'Use run_mcp_action_plan with previewOnly before applying an approved multi-step operation in one checkpointed pass.',
+      'Use export_fcpxml with previewOnly before writing an interchange XML for Resolve, Final Cut, or Premiere.',
     ],
     generatedAt: new Date().toISOString(),
   }
+}
+
+function clipHasKeyframes(clip = {}) {
+  const keyframes = clip?.keyframes || {}
+  if (!keyframes || typeof keyframes !== 'object') return false
+  return Object.values(keyframes).some((value) => Array.isArray(value) ? value.length > 0 : Boolean(value))
+}
+
+function clipHasEffects(clip = {}) {
+  if (Array.isArray(clip.effects) && clip.effects.length > 0) return true
+  if (Array.isArray(clip.glslEffects) && clip.glslEffects.length > 0) return true
+  if (Array.isArray(clip.adjustments?.effects) && clip.adjustments.effects.length > 0) return true
+  if (clip.effect || clip.glslEffect || clip.adjustmentEffect) return true
+  return false
+}
+
+function itemMatchesQuery(item = {}, query = '') {
+  const search = String(query || '').trim().toLowerCase()
+  if (!search) return true
+  const haystack = [
+    item.id,
+    item.name,
+    item.label,
+    item.type,
+    item.trackId,
+    item.trackName,
+    item.assetId,
+    item.assetName,
+    item.color,
+    item.status,
+  ].map((value) => String(value || '').toLowerCase()).join(' ')
+  return haystack.includes(search)
+}
+
+function normalizeTimelineSearchKinds(args = {}) {
+  const raw = normalizeStringList(args.kinds || args.kind || args.types || args.searchIn || args.searchKinds)
+    .map((value) => value.toLowerCase())
+  if (raw.length === 0 || raw.includes('all')) return new Set(['clips', 'tracks', 'markers', 'transitions', 'assets'])
+  const aliases = new Map([
+    ['clip', 'clips'],
+    ['track', 'tracks'],
+    ['marker', 'markers'],
+    ['transition', 'transitions'],
+    ['asset', 'assets'],
+  ])
+  return new Set(raw.map((value) => aliases.get(value) || value))
+}
+
+function findTimelineItems(snapshot, args = {}) {
+  const timeline = snapshot?.currentTimeline || null
+  const project = snapshot?.project || null
+  if (!timeline) return { error: 'No current timeline is available.' }
+  const assets = Array.isArray(snapshot.assets) ? snapshot.assets : []
+  const assetsById = new Map(assets.map((asset) => [asset?.id, asset]).filter(([id]) => id))
+  const tracks = Array.isArray(timeline.tracks) ? timeline.tracks : []
+  const tracksById = new Map(tracks.map((track) => [track?.id, track]).filter(([id]) => id))
+  const fps = Math.max(1, toFiniteNumber(timeline.fps, project?.settings?.fps || 24))
+  const query = String(args.query || args.search || args.nameIncludes || '').trim()
+  const kinds = normalizeTimelineSearchKinds(args)
+  const limit = clampLimit(args.limit, 100, 1000)
+  const startSeconds = Number.isFinite(Number(args.startSeconds)) ? Number(args.startSeconds) : null
+  const endSeconds = Number.isFinite(Number(args.endSeconds)) ? Number(args.endSeconds) : null
+  const timeSeconds = Number.isFinite(Number(args.timeSeconds)) ? Number(args.timeSeconds) : null
+  const filter = String(args.filter || args.status || '').trim().toLowerCase()
+  const typeFilter = String(args.type || args.clipType || '').trim().toLowerCase()
+  const trackIdFilter = String(args.trackId || '').trim()
+  const labelColorFilter = normalizeClipLabelColor(args.labelColor || args.color || '')
+  const selectedIds = new Set(Array.isArray(timeline.selectedClipIds) ? timeline.selectedClipIds : [])
+
+  const results = []
+  const pushItem = (item) => {
+    if (results.length >= limit) return
+    if (!itemMatchesQuery(item, query)) return
+    results.push(item)
+  }
+
+  if (kinds.has('tracks')) {
+    for (const track of tracks) {
+      pushItem({
+        kind: 'track',
+        id: track?.id,
+        name: track?.name || track?.label || track?.id,
+        type: track?.type || 'unknown',
+        index: track?.index ?? tracks.indexOf(track),
+        locked: Boolean(track?.locked),
+        muted: Boolean(track?.muted),
+        hidden: Boolean(track?.hidden || track?.visible === false),
+      })
+    }
+  }
+
+  if (kinds.has('clips')) {
+    for (const clip of Array.isArray(timeline.clips) ? timeline.clips : []) {
+      const start = getClipStart(clip)
+      const end = getClipEnd(clip)
+      const asset = assetsById.get(clip?.assetId)
+      const track = tracksById.get(clip?.trackId)
+      const enabled = clip?.enabled !== false
+      const hasTransform = hasNonDefaultTransform(clip?.transform)
+      const hasKeys = clipHasKeyframes(clip)
+      const hasFx = clipHasEffects(clip)
+      if (typeFilter && String(clip?.type || '').toLowerCase() !== typeFilter) continue
+      if (trackIdFilter && clip?.trackId !== trackIdFilter) continue
+      if (labelColorFilter && normalizeClipLabelColor(clip?.labelColor) !== labelColorFilter) continue
+      if (timeSeconds !== null && !(start <= timeSeconds && end > timeSeconds)) continue
+      if (startSeconds !== null && end < startSeconds) continue
+      if (endSeconds !== null && start > endSeconds) continue
+      if (filter === 'disabled' && enabled) continue
+      if (filter === 'enabled' && !enabled) continue
+      if (filter === 'selected' && !selectedIds.has(clip?.id)) continue
+      if (filter === 'visual' && !['video', 'image', 'text', 'shape', 'adjustment'].includes(String(clip?.type || '').toLowerCase())) continue
+      if (filter === 'audio' && String(clip?.type || '').toLowerCase() !== 'audio') continue
+      if (filter === 'labeled' && !clip?.labelColor) continue
+      if (filter === 'transformed' && !hasTransform) continue
+      if (filter === 'keyframed' && !hasKeys) continue
+      if (filter === 'effects' && !hasFx) continue
+      if (args.hasTransform === true && !hasTransform) continue
+      if (args.hasKeyframes === true && !hasKeys) continue
+      if (args.hasEffects === true && !hasFx) continue
+      pushItem({
+        kind: 'clip',
+        id: clip?.id,
+        name: clip?.name || clip?.assetName || asset?.name || clip?.id,
+        type: clip?.type || 'unknown',
+        trackId: clip?.trackId || null,
+        trackName: track?.name || track?.label || '',
+        assetId: clip?.assetId || null,
+        assetName: asset?.name || clip?.assetName || '',
+        startTime: roundTime(start),
+        endTime: roundTime(end),
+        duration: roundTime(getClipDuration(clip)),
+        timecode: `${formatTimelineTimecode(start, fps)}-${formatTimelineTimecode(end, fps)}`,
+        enabled,
+        selected: selectedIds.has(clip?.id),
+        labelColor: clip?.labelColor || '',
+        hasTransform,
+        hasKeyframes: hasKeys,
+        hasEffects: hasFx,
+      })
+    }
+  }
+
+  if (kinds.has('markers')) {
+    for (const marker of Array.isArray(timeline.markers) ? timeline.markers : []) {
+      const time = toFiniteNumber(marker?.time ?? marker?.timeSeconds, 0)
+      if (startSeconds !== null && time < startSeconds) continue
+      if (endSeconds !== null && time > endSeconds) continue
+      if (labelColorFilter && normalizeClipLabelColor(marker?.color) !== labelColorFilter) continue
+      pushItem({
+        kind: 'marker',
+        id: marker?.id,
+        name: marker?.label || marker?.name || marker?.id,
+        label: marker?.label || marker?.name || '',
+        color: marker?.color || '',
+        timeSeconds: roundTime(time),
+        timecode: formatTimelineTimecode(time, fps),
+      })
+    }
+  }
+
+  if (kinds.has('transitions')) {
+    for (const transition of Array.isArray(timeline.transitions) ? timeline.transitions : []) {
+      const start = toFiniteNumber(transition?.startTime ?? transition?.time, 0)
+      const duration = toFiniteNumber(transition?.duration, 0)
+      const end = start + duration
+      if (startSeconds !== null && end < startSeconds) continue
+      if (endSeconds !== null && start > endSeconds) continue
+      pushItem({
+        kind: 'transition',
+        id: transition?.id,
+        name: transition?.name || transition?.type || transition?.id,
+        type: transition?.type || 'unknown',
+        startTime: roundTime(start),
+        duration: roundTime(duration),
+        timecode: `${formatTimelineTimecode(start, fps)}-${formatTimelineTimecode(end, fps)}`,
+        fromClipId: transition?.fromClipId || transition?.clipAId || null,
+        toClipId: transition?.toClipId || transition?.clipBId || null,
+      })
+    }
+  }
+
+  if (kinds.has('assets')) {
+    for (const asset of assets) {
+      const assetType = String(asset?.type || '').toLowerCase()
+      if (typeFilter && assetType !== typeFilter) continue
+      pushItem({
+        kind: 'asset',
+        id: asset?.id,
+        name: asset?.name || asset?.id,
+        type: asset?.type || 'unknown',
+        folderId: asset?.folderId || null,
+        status: asset?.generationStatus || asset?.status || 'none',
+        path: asset?.absolutePath || asset?.path || '',
+        duration: Number.isFinite(Number(asset?.duration)) ? roundTime(asset.duration) : null,
+        width: Number(asset?.width) || null,
+        height: Number(asset?.height) || null,
+      })
+    }
+  }
+
+  return {
+    action: 'find_timeline_items',
+    query,
+    filters: {
+      kinds: Array.from(kinds),
+      filter: filter || null,
+      type: typeFilter || null,
+      trackId: trackIdFilter || null,
+      labelColor: labelColorFilter || null,
+      timeSeconds,
+      startSeconds,
+      endSeconds,
+    },
+    count: results.length,
+    limitApplied: results.length >= limit,
+    timeline: {
+      id: timeline.id,
+      name: timeline.name,
+      fps,
+      duration: roundTime(timeline.duration),
+    },
+    items: results,
+  }
+}
+
+function fileUrlToPath(urlValue = '') {
+  const raw = String(urlValue || '').trim()
+  if (!raw.startsWith('file:')) return ''
+  try {
+    const url = new URL(raw)
+    let pathname = decodeURIComponent(url.pathname || '')
+    if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1)
+    return pathname.replace(/\//g, path.sep)
+  } catch {
+    return ''
+  }
+}
+
+function resolveAssetLocalPath(asset = {}, projectPath = '') {
+  const candidates = [
+    asset.absolutePath,
+    asset.filePath,
+    asset.sourcePath,
+    asset.localPath,
+    asset.path,
+    asset.settings?.absolutePath,
+    asset.settings?.sourcePath,
+    asset.settings?.path,
+    asset.url,
+  ].map((value) => String(value || '').trim()).filter(Boolean)
+
+  for (const candidate of candidates) {
+    if (/^https?:\/\//i.test(candidate) || candidate.startsWith('blob:') || candidate.startsWith('data:')) continue
+    const fromUrl = candidate.startsWith('file:') ? fileUrlToPath(candidate) : candidate
+    if (!fromUrl) continue
+    if (path.isAbsolute(fromUrl)) return path.normalize(fromUrl)
+    if (projectPath) return path.normalize(path.join(projectPath, fromUrl))
+  }
+  return ''
+}
+
+function inspectLocalFilePath(filePath = '') {
+  const normalized = String(filePath || '').trim()
+  if (!normalized) return { path: '', exists: false, missingReason: 'noLocalPath' }
+  try {
+    const stat = fsSync.statSync(normalized)
+    return {
+      path: normalized,
+      exists: true,
+      isFile: stat.isFile(),
+      isDirectory: stat.isDirectory(),
+      size: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+      zeroBytes: stat.isFile() && stat.size <= 0,
+    }
+  } catch (error) {
+    return {
+      path: normalized,
+      exists: false,
+      missingReason: error?.code || error?.message || 'missing',
+    }
+  }
+}
+
+function checkMediaHealth(snapshot, args = {}) {
+  const projectPath = String(snapshot?.project?.path || '').trim()
+  const timeline = snapshot?.currentTimeline || null
+  const assets = Array.isArray(snapshot?.assets) ? snapshot.assets : []
+  const clips = Array.isArray(timeline?.clips) ? timeline.clips : []
+  const limit = clampLimit(args.limit, 100, 1000)
+  const includeUnused = args.includeUnused !== false
+  const assetIdsUsedByClips = new Set(clips.map((clip) => clip?.assetId).filter(Boolean))
+  const assetsById = new Map(assets.map((asset) => [asset?.id, asset]).filter(([id]) => id))
+  const checkedAssets = []
+  const missingFiles = []
+  const zeroByteFiles = []
+  const noLocalPath = []
+
+  for (const asset of assets) {
+    const localPath = resolveAssetLocalPath(asset, projectPath)
+    const file = inspectLocalFilePath(localPath)
+    const entry = {
+      id: asset?.id,
+      name: asset?.name || asset?.id,
+      type: asset?.type || 'unknown',
+      folderId: asset?.folderId || null,
+      status: asset?.generationStatus || asset?.status || 'none',
+      usedByTimeline: assetIdsUsedByClips.has(asset?.id),
+      path: localPath,
+      file,
+    }
+    checkedAssets.push(entry)
+    if (!localPath) noLocalPath.push(entry)
+    else if (!file.exists) missingFiles.push(entry)
+    else if (file.zeroBytes) zeroByteFiles.push(entry)
+  }
+
+  const clipsMissingAssets = clips
+    .filter((clip) => isAssetBackedClip(clip) && clip?.assetId && !assetsById.has(clip.assetId))
+    .map((clip) => ({
+      id: clip?.id,
+      name: clip?.name || clip?.assetName || clip?.id,
+      type: clip?.type || 'unknown',
+      assetId: clip?.assetId,
+      trackId: clip?.trackId || null,
+      startTime: roundTime(getClipStart(clip)),
+      duration: roundTime(getClipDuration(clip)),
+    }))
+
+  const unusedAssets = includeUnused
+    ? checkedAssets.filter((asset) => !asset.usedByTimeline)
+    : []
+
+  const blockers = []
+  if (missingFiles.length > 0) blockers.push(`${missingFiles.length} asset file${missingFiles.length === 1 ? '' : 's'} missing on disk`)
+  if (zeroByteFiles.length > 0) blockers.push(`${zeroByteFiles.length} asset file${zeroByteFiles.length === 1 ? '' : 's'} are zero bytes`)
+  if (clipsMissingAssets.length > 0) blockers.push(`${clipsMissingAssets.length} timeline clip${clipsMissingAssets.length === 1 ? '' : 's'} reference missing asset IDs`)
+
+  const warnings = []
+  if (noLocalPath.length > 0) warnings.push(`${noLocalPath.length} asset${noLocalPath.length === 1 ? '' : 's'} have no local path to check`)
+  if (unusedAssets.length > 0) warnings.push(`${unusedAssets.length} asset${unusedAssets.length === 1 ? '' : 's'} are not used by the active timeline`)
+
+  return {
+    action: 'check_media_health',
+    projectPath,
+    timeline: timeline ? {
+      id: timeline.id,
+      name: timeline.name,
+      clipCount: clips.length,
+    } : null,
+    ready: blockers.length === 0,
+    assetCount: assets.length,
+    checkedAssetCount: checkedAssets.length,
+    blockers,
+    warnings,
+    counts: {
+      missingFiles: missingFiles.length,
+      zeroByteFiles: zeroByteFiles.length,
+      noLocalPath: noLocalPath.length,
+      clipsMissingAssets: clipsMissingAssets.length,
+      unusedAssets: unusedAssets.length,
+    },
+    missingFiles: missingFiles.slice(0, limit),
+    zeroByteFiles: zeroByteFiles.slice(0, limit),
+    noLocalPath: noLocalPath.slice(0, limit),
+    clipsMissingAssets: clipsMissingAssets.slice(0, limit),
+    unusedAssets: unusedAssets.slice(0, limit),
+    suggestedNextActions: [
+      missingFiles.length > 0 ? 'Use relink_asset with previewOnly first for each missing asset, or import replacement media and replace clips intentionally.' : null,
+      clipsMissingAssets.length > 0 ? 'Use find_timeline_items or inspect_clip to locate clips referencing missing asset IDs.' : null,
+      unusedAssets.length > 0 ? 'Use move_unused_assets_to_folder with previewOnly before organizing unused assets.' : null,
+    ].filter(Boolean),
+  }
+}
+
+function findLatestRenderFile(snapshot, args = {}) {
+  const projectPath = String(snapshot?.project?.path || '').trim()
+  const rendersDir = String(args.rendersDir || (projectPath ? path.join(projectPath, 'renders') : '')).trim()
+  if (!rendersDir) return ''
+  const exts = new Set(normalizeStringList(args.extensions || args.extension || ['mp4', 'mov', 'webm', 'mkv', 'fcpxml', 'xml'])
+    .map((ext) => ext.toLowerCase().replace(/^\./, '')))
+  const found = []
+  const walk = (dir, depth = 0) => {
+    if (depth > 4 || found.length > 5000) return
+    let entries = []
+    try {
+      entries = fsSync.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(fullPath, depth + 1)
+        continue
+      }
+      const ext = path.extname(entry.name).replace(/^\./, '').toLowerCase()
+      if (!exts.has(ext)) continue
+      try {
+        const stat = fsSync.statSync(fullPath)
+        found.push({ path: fullPath, modifiedMs: stat.mtimeMs, size: stat.size })
+      } catch {
+        // Ignore files that disappear while scanning.
+      }
+    }
+  }
+  walk(rendersDir, 0)
+  found.sort((a, b) => b.modifiedMs - a.modifiedMs)
+  return found[0]?.path || ''
+}
+
+function parseFfprobeRate(value = '') {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  if (!raw.includes('/')) {
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) && parsed > 0 ? roundTime(parsed) : null
+  }
+  const [num, den] = raw.split('/').map(Number)
+  if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) return null
+  return roundTime(num / den)
+}
+
+function inspectExportFile(snapshot, args = {}) {
+  const requestedPath = String(args.path || args.filePath || args.outputPath || '').trim()
+  const filePath = requestedPath || findLatestRenderFile(snapshot, args)
+  if (!filePath) {
+    return {
+      error: 'Provide an export file path, or open a saved project with files in its renders folder.',
+      suggestedArguments: { path: 'C:\\path\\to\\export.mp4' },
+    }
+  }
+
+  const file = inspectLocalFilePath(filePath)
+  const result = {
+    action: 'inspect_export_file',
+    path: filePath,
+    exists: file.exists,
+    file,
+    ready: Boolean(file.exists && file.isFile && !file.zeroBytes),
+    warnings: [],
+    blockers: [],
+    ffprobe: null,
+  }
+  if (!file.exists) result.blockers.push('Export file does not exist.')
+  if (file.exists && !file.isFile) result.blockers.push('Path is not a file.')
+  if (file.zeroBytes) result.blockers.push('Export file is zero bytes.')
+  if (result.blockers.length > 0) {
+    result.ready = false
+    return result
+  }
+
+  const probe = spawnSync('ffprobe', [
+    '-v', 'quiet',
+    '-print_format', 'json',
+    '-show_format',
+    '-show_streams',
+    filePath,
+  ], { encoding: 'utf8', windowsHide: true })
+  if (probe.status !== 0 || !probe.stdout) {
+    result.warnings.push('ffprobe is not available or could not read this file; returning basic filesystem QC only.')
+    result.ffprobeAvailable = false
+    return result
+  }
+
+  try {
+    const parsed = JSON.parse(probe.stdout)
+    const streams = Array.isArray(parsed.streams) ? parsed.streams : []
+    const videoStreams = streams.filter((stream) => stream.codec_type === 'video')
+    const audioStreams = streams.filter((stream) => stream.codec_type === 'audio')
+    const primaryVideo = videoStreams[0] || null
+    result.ffprobeAvailable = true
+    result.ffprobe = {
+      duration: Number.isFinite(Number(parsed.format?.duration)) ? roundTime(parsed.format.duration) : null,
+      bitrate: Number.isFinite(Number(parsed.format?.bit_rate)) ? Number(parsed.format.bit_rate) : null,
+      formatName: parsed.format?.format_name || '',
+      streamCount: streams.length,
+      video: primaryVideo ? {
+        codec: primaryVideo.codec_name || '',
+        width: primaryVideo.width || null,
+        height: primaryVideo.height || null,
+        fps: parseFfprobeRate(primaryVideo.avg_frame_rate || primaryVideo.r_frame_rate),
+        pixFmt: primaryVideo.pix_fmt || '',
+      } : null,
+      audio: audioStreams.map((stream) => ({
+        codec: stream.codec_name || '',
+        channels: stream.channels || null,
+        sampleRate: stream.sample_rate ? Number(stream.sample_rate) : null,
+      })),
+    }
+
+    const targetWidth = Number(args.width || args.expectedWidth)
+    const targetHeight = Number(args.height || args.expectedHeight)
+    const targetCodec = String(args.videoCodec || args.expectedVideoCodec || '').toLowerCase()
+    const targetDuration = Number(args.durationSeconds || args.expectedDurationSeconds)
+    if (Number.isFinite(targetWidth) && result.ffprobe.video?.width !== targetWidth) {
+      result.warnings.push(`Video width is ${result.ffprobe.video?.width}, expected ${targetWidth}.`)
+    }
+    if (Number.isFinite(targetHeight) && result.ffprobe.video?.height !== targetHeight) {
+      result.warnings.push(`Video height is ${result.ffprobe.video?.height}, expected ${targetHeight}.`)
+    }
+    if (targetCodec && !String(result.ffprobe.video?.codec || '').toLowerCase().includes(targetCodec.replace(/^h\./, 'h'))) {
+      result.warnings.push(`Video codec is ${result.ffprobe.video?.codec || 'unknown'}, expected ${targetCodec}.`)
+    }
+    if (Number.isFinite(targetDuration) && Math.abs((result.ffprobe.duration || 0) - targetDuration) > 0.15) {
+      result.warnings.push(`Duration is ${result.ffprobe.duration}s, expected about ${targetDuration}s.`)
+    }
+  } catch (error) {
+    result.warnings.push(`ffprobe output could not be parsed: ${error?.message || String(error)}`)
+  }
+
+  return result
 }
 
 function sanitizeExportBaseName(value) {
@@ -2492,6 +3463,137 @@ function checkExportReadiness(snapshot, args = {}) {
         ? ['Export can start, but review warnings first if this is a final delivery.', 'Use export_timeline when ready.']
         : ['Ready for H.264 HD delivery export.', 'Use export_timeline to start the render.'],
     generatedAt: new Date().toISOString(),
+  }
+}
+
+function chooseDeliveryBatchSizeTarget(args = {}, baseTarget = 'h264_720p') {
+  const resolution = String(args.resolution || args.size || '').trim().toLowerCase()
+  if (resolution.includes('1080') || resolution === 'hd') {
+    if (baseTarget.includes('square')) return 'h264_square_1080'
+    if (baseTarget.includes('vertical') || baseTarget.includes('9x16')) return 'h264_vertical_1080'
+    return 'h264_hd'
+  }
+  if (resolution.includes('720')) {
+    if (baseTarget.includes('square')) return 'h264_square_720'
+    if (baseTarget.includes('vertical') || baseTarget.includes('9x16')) return 'h264_vertical_720'
+    return 'h264_720p'
+  }
+  return baseTarget
+}
+
+function normalizeDeliveryBatchTargetEntry(entry, index, sharedArgs = {}, filenamePrefix = '') {
+  let targetArgs = {}
+  let label = `target_${index + 1}`
+
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+    targetArgs = { ...entry }
+    label = String(entry.label || entry.name || entry.target || entry.aspectRatio || label)
+  } else {
+    const raw = String(entry || 'h264_hd').trim()
+    const normalized = raw.toLowerCase().replace(/\s+/g, '').replace(/_/g, '-')
+    if (['16:9', '16x9', 'horizontal', 'landscape', 'widescreen'].includes(normalized)) {
+      targetArgs = { target: chooseDeliveryBatchSizeTarget(sharedArgs, 'h264_hd'), aspectRatio: '16:9' }
+      label = '16x9'
+    } else if (['1:1', '1x1', 'square'].includes(normalized)) {
+      targetArgs = { target: chooseDeliveryBatchSizeTarget(sharedArgs, 'h264_square_720'), aspectRatio: '1:1' }
+      label = '1x1'
+    } else if (['9:16', '9x16', 'vertical', 'portrait'].includes(normalized)) {
+      targetArgs = { target: chooseDeliveryBatchSizeTarget(sharedArgs, 'h264_vertical_720'), aspectRatio: '9:16' }
+      label = '9x16'
+    } else {
+      targetArgs = { target: raw || 'h264_hd' }
+      label = raw || 'h264_hd'
+    }
+  }
+
+  const merged = {
+    ...sharedArgs,
+    ...targetArgs,
+  }
+  if (!merged.filename && filenamePrefix) {
+    merged.filename = sanitizeExportBaseName(`${filenamePrefix}_${String(index + 1).padStart(2, '0')}_${label}`)
+  }
+  delete merged.previewOnly
+  delete merged.targets
+  delete merged.presets
+  delete merged.stopOnError
+  delete merged.limit
+  delete merged.filenamePrefix
+  return merged
+}
+
+function buildExportDeliveryBatchPlan(snapshot, args = {}) {
+  const project = snapshot?.project || null
+  const timeline = snapshot?.currentTimeline || null
+  if (!project || !timeline) {
+    return { error: 'Open a saved ComfyStudio project and timeline before exporting.' }
+  }
+
+  const rawTargets = Array.isArray(args.targets) && args.targets.length > 0
+    ? args.targets
+    : Array.isArray(args.presets) && args.presets.length > 0
+      ? args.presets
+      : [args.target || 'h264_hd']
+  const limit = Math.min(12, Math.max(1, Math.floor(toFiniteNumber(args.limit, 6))))
+  const sharedKeys = [
+    'range',
+    'startSeconds',
+    'endSeconds',
+    'includeAudio',
+    'videoCodec',
+    'codec',
+    'format',
+    'audioCodec',
+    'resolution',
+    'fps',
+    'crf',
+    'bitrateKbps',
+    'audioBitrateKbps',
+    'useHardwareEncoder',
+    'useProxyMedia',
+    'useDirectFramePipe',
+    'deliveryFraming',
+    'framing',
+    'qualityMode',
+    'encoderPreset',
+    'encoderSpeed',
+    'nvencPreset',
+  ]
+  const sharedArgs = {}
+  for (const key of sharedKeys) {
+    if (Object.prototype.hasOwnProperty.call(args, key)) sharedArgs[key] = args[key]
+  }
+
+  const safeProjectName = sanitizeExportBaseName(project.name || 'ComfyStudio')
+  const safeTimelineName = sanitizeExportBaseName(timeline.name || 'Timeline')
+  const filenamePrefix = sanitizeExportBaseName(args.filenamePrefix || `${safeProjectName}_${safeTimelineName}`)
+
+  const targets = rawTargets.slice(0, limit).map((entry, index) => {
+    const targetArgs = normalizeDeliveryBatchTargetEntry(entry, index, sharedArgs, filenamePrefix)
+    const readiness = checkExportReadiness(snapshot, targetArgs)
+    const plan = readiness?.error ? null : resolveExportDeliveryPlan(snapshot, targetArgs)
+    const blockers = readiness?.error ? [readiness.error] : readiness?.blockers || []
+    return {
+      index,
+      entry,
+      args: targetArgs,
+      readiness,
+      plan: plan && !plan.error ? plan : null,
+      blockers,
+      warningCount: readiness?.warnings?.length || 0,
+      noteCount: readiness?.notes?.length || 0,
+    }
+  })
+
+  return {
+    action: 'export_delivery_batch',
+    targetCount: targets.length,
+    readyCount: targets.filter((target) => target.blockers.length === 0).length,
+    blockedCount: targets.filter((target) => target.blockers.length > 0).length,
+    targets,
+    truncated: rawTargets.length > limit,
+    requestedCount: rawTargets.length,
+    limit,
   }
 }
 
@@ -4472,6 +5574,66 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'get_mcp_recipes',
+      description: 'Return practical MCP agent recipes and recommended workflows for ComfyStudio. This is a clearer alias for get_ai_review_passes and should be used when a user asks what the MCP can do.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'find_timeline_items',
+      description: 'Search the active timeline and project assets for clips, tracks, markers, transitions, or assets by name, type, time range, track, color, enabled state, transforms, keyframes, or effects. Read-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Text to search across IDs, names, labels, track names, asset names, colors, and statuses.' },
+          kind: { type: 'string', description: 'Single kind to search: clips, tracks, markers, transitions, assets, or all.' },
+          kinds: { type: 'array', items: { type: 'string' }, description: 'Kinds to search: clips, tracks, markers, transitions, assets, or all.' },
+          filter: { type: 'string', enum: ['disabled', 'enabled', 'selected', 'visual', 'audio', 'labeled', 'transformed', 'keyframed', 'effects'], description: 'Optional timeline clip filter.' },
+          type: { type: 'string', description: 'Optional clip or asset type such as video, image, audio, text, shape, adjustment.' },
+          trackId: { type: 'string', description: 'Only return clips on this track.' },
+          timeSeconds: { type: 'number', description: 'Only return clips covering this time.' },
+          startSeconds: { type: 'number', description: 'Range start for clips, markers, and transitions.' },
+          endSeconds: { type: 'number', description: 'Range end for clips, markers, and transitions.' },
+          labelColor: { type: 'string', description: 'Only return clips or markers with this #RRGGBB label/marker color.' },
+          hasTransform: { type: 'boolean', description: 'When true, only return clips with non-default transforms.' },
+          hasKeyframes: { type: 'boolean', description: 'When true, only return clips with keyframes.' },
+          hasEffects: { type: 'boolean', description: 'When true, only return clips with effects.' },
+          limit: { type: 'integer', description: 'Maximum items to return. Defaults to 100.' },
+        },
+      },
+    },
+    {
+      name: 'check_media_health',
+      description: 'Check active project media health: missing files, zero-byte files, assets without local paths, clips referencing missing asset IDs, and unused active-timeline assets. Read-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          includeUnused: { type: 'boolean', description: 'Include assets not used by the active timeline. Defaults to true.' },
+          limit: { type: 'integer', description: 'Maximum entries per issue list. Defaults to 100.' },
+        },
+      },
+    },
+    {
+      name: 'inspect_export_file',
+      description: 'Inspect an exported media/XML file on disk. If ffprobe is installed, returns codec, duration, resolution, FPS, audio, and expected-target warnings. If path is omitted, tries the latest file in the project renders folder.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute file path to inspect.' },
+          filePath: { type: 'string', description: 'Alias for path.' },
+          outputPath: { type: 'string', description: 'Alias for path.' },
+          rendersDir: { type: 'string', description: 'Optional renders directory to scan when path is omitted.' },
+          extensions: { type: 'array', items: { type: 'string' }, description: 'Extensions to consider for latest render lookup. Defaults to mp4/mov/webm/mkv/fcpxml/xml.' },
+          width: { type: 'integer', description: 'Expected video width for QC warning.' },
+          height: { type: 'integer', description: 'Expected video height for QC warning.' },
+          videoCodec: { type: 'string', description: 'Expected video codec for QC warning, e.g. h264.' },
+          durationSeconds: { type: 'number', description: 'Expected duration for QC warning.' },
+        },
+      },
+    },
+    {
       name: 'diagnose_comfyui_connection',
       description: 'Diagnose the local ComfyUI connection used by ComfyStudio. Checks the configured localhost port, ComfyUI API endpoints, launcher state, port owner, likely install mode such as portable/Desktop/Docker/manual, and returns support-friendly next steps.',
       inputSchema: {
@@ -4512,6 +5674,46 @@ function createToolDefinitions() {
           },
           timeoutMs: { type: 'integer', description: 'Request timeout per probe in milliseconds. Defaults to 4500, max 30000.' },
           previewOnly: { type: 'boolean', description: 'When true, returns the proposed repair without changing ComfyStudio. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'guide_comfyui_setup',
+      description: 'Beginner-friendly ComfyStudio-to-ComfyUI setup wizard. Diagnoses the current connection, probes common local ComfyUI ports, explains what to do for Portable/Desktop/Docker/manual installs, and can preview or apply the safe port-setting fix when ComfyUI is found on a different port.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          installType: {
+            type: 'string',
+            enum: ['auto', 'portable', 'desktop', 'docker', 'manual', 'unknown'],
+            description: 'What kind of ComfyUI install the user has. Use auto/unknown when unsure.',
+          },
+          port: {
+            type: 'integer',
+            description: 'Optional ComfyUI port the user sees in their browser/terminal, for example 8188.',
+          },
+          candidatePorts: {
+            type: 'array',
+            items: { type: 'integer' },
+            description: 'Optional extra localhost ports to probe. Common ComfyUI ports are included automatically.',
+          },
+          timeoutMs: {
+            type: 'integer',
+            description: 'Request timeout per probe in milliseconds. Defaults to 4500, max 30000.',
+          },
+          applyFix: {
+            type: 'boolean',
+            description: 'When true and previewOnly=false, update ComfyStudio to the reachable ComfyUI port if a safe port mismatch is found. Defaults to false.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, diagnose and propose the setup/fix without changing ComfyStudio. Defaults to true.',
+          },
+          nodeClasses: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional ComfyUI node class names to validate after the connection is healthy, such as KSampler or LoadImage.',
+          },
         },
       },
     },
@@ -5504,6 +6706,295 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'undo',
+      description: 'Undo the latest ComfyStudio timeline edit or sequence/project-structure edit. Scope can be auto, timeline, or project. Low-risk and mirrors the app undo stack.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', enum: ['auto', 'timeline', 'project'], description: 'Which undo stack to use. Defaults to auto, choosing the most recent available stack.' },
+          previewOnly: { type: 'boolean', description: 'When true, reports what would be undone without changing anything.' },
+        },
+      },
+    },
+    {
+      name: 'redo',
+      description: 'Redo the latest ComfyStudio timeline edit or sequence/project-structure edit. Scope can be auto, timeline, or project. Low-risk and mirrors the app redo stack.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', enum: ['auto', 'timeline', 'project'], description: 'Which redo stack to use. Defaults to auto, choosing the most recent available stack.' },
+          previewOnly: { type: 'boolean', description: 'When true, reports what would be redone without changing anything.' },
+        },
+      },
+    },
+    {
+      name: 'set_playhead',
+      description: 'Move the active timeline playhead to a seconds value, timecode, or frame. Useful before inspecting frames, staging generation, or setting ranges.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timeSeconds: { type: 'number', description: 'Target playhead time in seconds.' },
+          time: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Alias for timeSeconds, or a timecode string.' },
+          timecode: { type: 'string', description: 'Target timecode such as 00:01:21:08.' },
+          frame: { type: 'integer', description: 'Target frame number when seconds/timecode are omitted.' },
+          snapToFrame: { type: 'boolean', description: 'When true, snap to the nearest timeline frame. Defaults to true.' },
+          previewOnly: { type: 'boolean', description: 'When true, reports the target time without moving the playhead.' },
+        },
+      },
+    },
+    {
+      name: 'select_clips',
+      description: 'Select timeline clips by ID, current selection, filter, track, time, type, label color, or name search. Can optionally move the playhead to the first selected clip.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Single clip ID to select.' },
+          clipIds: { type: 'array', items: { type: 'string' }, description: 'Clip IDs to select.' },
+          filter: { type: 'string', enum: ['selected', 'disabled', 'enabled', 'visual', 'audio', 'labeled', 'colored'], description: 'Optional clip filter when explicit IDs are omitted.' },
+          type: { type: 'string', description: 'Optional clip type filter, for example video, image, audio, text, shape, or adjustment.' },
+          trackId: { type: 'string', description: 'Only select clips on this track.' },
+          timeSeconds: { type: 'number', description: 'Only select clips covering this timeline time.' },
+          timecode: { type: 'string', description: 'Only select clips covering this timeline timecode.' },
+          nameIncludes: { type: 'string', description: 'Only select clips whose clip name, asset name, or ID contains this text.' },
+          labelColor: { type: 'string', description: 'Only select clips with this #RRGGBB label color.' },
+          movePlayheadToStart: { type: 'boolean', description: 'When true, move the playhead to the first selected clip start.' },
+          clear: { type: 'boolean', description: 'When true with no matches, clears the selection.' },
+          limit: { type: 'integer', description: 'Safety limit for matched clips. Defaults to 200.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns matching clips without selecting them.' },
+        },
+      },
+    },
+    {
+      name: 'select_assets',
+      description: 'Select/preview project assets by ID, name, type, folder, status, or latest match. ComfyStudio currently previews the first matched asset.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          assetId: { type: 'string', description: 'Single asset ID to preview/select.' },
+          assetIds: { type: 'array', items: { type: 'string' }, description: 'Asset IDs to match.' },
+          assetName: { type: 'string', description: 'Exact or partial asset name to match.' },
+          assetNames: { type: 'array', items: { type: 'string' }, description: 'Asset names to match.' },
+          type: { type: 'string', enum: ['video', 'image', 'audio', 'mask'], description: 'Optional asset type filter.' },
+          folderId: { type: 'string', description: 'Only match assets inside this folder.' },
+          rootOnly: { type: 'boolean', description: 'Only match assets currently in the asset root.' },
+          latest: { type: 'boolean', description: 'When true, only return the newest matching asset.' },
+          nameIncludes: { type: 'string', description: 'Optional asset name search.' },
+          status: { type: 'string', description: 'Optional generation/status filter.' },
+          setPreview: { type: 'boolean', description: 'When true, preview the first matched asset. Defaults to true.' },
+          limit: { type: 'integer', description: 'Safety limit for matched assets. Defaults to 200.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns matching assets without changing the preview.' },
+        },
+      },
+    },
+    {
+      name: 'create_project_checkpoint',
+      description: 'Create an in-memory MCP safety checkpoint of the open project/timeline/assets for this app session. Use before risky AI edits; this does not create a saved project copy on disk.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'Short human label for the checkpoint.' },
+          name: { type: 'string', description: 'Alias for label.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the checkpoint plan without storing it.' },
+        },
+      },
+    },
+    {
+      name: 'restore_project_checkpoint',
+      description: 'Preview or restore an in-memory MCP project checkpoint created during this ComfyStudio session. Defaults to previewOnly because it can replace current timeline/asset state.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          checkpointId: { type: 'string', description: 'Checkpoint ID to restore. If omitted, restores the latest checkpoint.' },
+          id: { type: 'string', description: 'Alias for checkpointId.' },
+          saveProject: { type: 'boolean', description: 'When true on apply, save the restored state to the project file. Defaults to false.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the restore plan without changing the project. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'import_asset_from_path',
+      description: 'Preview or import a local media file path into the active ComfyStudio project assets folder. Applies the same copy/import path as the UI import button and can place the new asset into an asset folder.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute local file path to import.' },
+          filePath: { type: 'string', description: 'Alias for path.' },
+          sourcePath: { type: 'string', description: 'Alias for path.' },
+          category: { type: 'string', enum: ['video', 'audio', 'images', 'image'], description: 'Optional category. If omitted, inferred from extension.' },
+          folderId: { type: 'string', description: 'Optional existing asset folder ID for the imported asset.' },
+          folderPath: { oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], description: 'Optional folder path to create/reuse before assigning the imported asset.' },
+          folderName: { type: 'string', description: 'Single folder name alias for folderPath.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the import plan without copying the file. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'relink_asset',
+      description: 'Preview or relink an existing ComfyStudio asset record to a different local file path. Useful after check_media_health finds missing media. This updates ComfyStudio project metadata only; it does not copy media. Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          assetId: { type: 'string', description: 'Asset ID to relink.' },
+          assetName: { type: 'string', description: 'Exact or partial asset name to relink when assetId is omitted.' },
+          path: { type: 'string', description: 'Absolute replacement local file path.' },
+          filePath: { type: 'string', description: 'Alias for path.' },
+          sourcePath: { type: 'string', description: 'Alias for path.' },
+          setPreview: { type: 'boolean', description: 'When true on apply, preview the relinked asset. Defaults to true.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the relink plan without changing the project. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'set_clip_style',
+      description: 'Preview or batch-update simple clip styling: label color, enabled state, transform fields, crop, blur, blend mode, and motion blur settings. Use for broad AI timeline polish passes. Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Single clip ID to update.' },
+          clipIds: { type: 'array', items: { type: 'string' }, description: 'Clip IDs to update.' },
+          filter: { type: 'string', enum: ['selected', 'disabled', 'enabled', 'visual', 'audio', 'labeled', 'colored'], description: 'Optional target filter when IDs are omitted.' },
+          trackId: { type: 'string', description: 'Only update clips on this track.' },
+          type: { type: 'string', description: 'Only update clips of this type.' },
+          nameIncludes: { type: 'string', description: 'Only update clips whose name/asset/id contains this text.' },
+          labelColor: { type: 'string', description: 'Set/clear timeline clip label color as #RRGGBB. Empty string clears.' },
+          enabled: { type: 'boolean', description: 'Enable or disable matched clips.' },
+          transform: { type: 'object', description: 'Transform updates such as positionX, positionY, scaleX, scaleY, rotation, rotationX, rotationY, opacity, blur, blendMode, crop fields, or motion blur fields.' },
+          transformDelta: { type: 'object', description: 'Relative transform changes such as positionX/positionY deltas.' },
+          positionX: { type: 'number' },
+          positionY: { type: 'number' },
+          scaleX: { type: 'number' },
+          scaleY: { type: 'number' },
+          rotation: { type: 'number' },
+          opacity: { type: 'number' },
+          blur: { type: 'number' },
+          blendMode: { type: 'string', description: 'Blend mode such as normal, screen, overlay, multiply, add, etc.' },
+          motionBlurEnabled: { type: 'boolean' },
+          motionBlurMode: { type: 'string', enum: ['auto', 'velocity', 'sampled'] },
+          motionBlurSamples: { type: 'number' },
+          motionBlurShutter: { type: 'number' },
+          limit: { type: 'integer', description: 'Safety limit for matched clips. Defaults to 100.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the style plan without changing clips. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'run_mcp_action_plan',
+      description: 'Preview or run a small ordered batch of approved ComfyStudio MCP write actions. Use this when an agent has already planned several safe steps and wants one checkpointed apply pass. Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          steps: {
+            type: 'array',
+            description: 'Ordered MCP write-tool steps. Each step accepts tool/name/action and arguments/payload.',
+            items: {
+              type: 'object',
+              properties: {
+                tool: { type: 'string', description: 'MCP write tool name, e.g. set_playhead, add_text_clip, add_shape_clip.' },
+                name: { type: 'string', description: 'Alias for tool.' },
+                action: { type: 'string', description: 'Alias for tool.' },
+                arguments: { type: 'object', description: 'Tool arguments.' },
+                payload: { type: 'object', description: 'Alias for arguments.' },
+              },
+            },
+          },
+          label: { type: 'string', description: 'Optional label for the plan/checkpoint.' },
+          createCheckpointFirst: { type: 'boolean', description: 'Create an in-memory checkpoint before applying. Defaults to true.' },
+          stopOnError: { type: 'boolean', description: 'Stop applying after the first failed step. Defaults to true.' },
+          previewOnly: { type: 'boolean', description: 'When true, validates and returns the plan without running it. Defaults to true.' },
+        },
+        required: ['steps'],
+      },
+    },
+    {
+      name: 'set_in_out_range',
+      description: 'Set, preview, or clear the active timeline In/Out range. Useful before export_timeline/export_delivery_batch when the user asks for only part of the edit.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          startSeconds: { type: 'number', description: 'In point in seconds.' },
+          endSeconds: { type: 'number', description: 'Out point in seconds.' },
+          start: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Alias for startSeconds or a timecode string.' },
+          end: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Alias for endSeconds or a timecode string.' },
+          durationSeconds: { type: 'number', description: 'Duration from start to out, or backward from out to in.' },
+          fromSelection: { type: 'boolean', description: 'Set range to cover the currently selected timeline clips.' },
+          clear: { type: 'boolean', description: 'Clear both In and Out points.' },
+          clearIn: { type: 'boolean', description: 'Clear only the In point.' },
+          clearOut: { type: 'boolean', description: 'Clear only the Out point.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the range plan without changing In/Out points.' },
+        },
+      },
+    },
+    {
+      name: 'create_project',
+      description: 'Preview or create a new ComfyStudio project in the configured Projects folder. Applying opens the new empty project. Defaults to previewOnly so agents cannot accidentally create folders without approval.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Name for the new project folder/project.',
+          },
+          projectName: {
+            type: 'string',
+            description: 'Alias for name.',
+          },
+          title: {
+            type: 'string',
+            description: 'Alias for name.',
+          },
+          width: {
+            type: 'integer',
+            description: 'Optional project width. Defaults to ComfyStudio new-project defaults.',
+          },
+          height: {
+            type: 'integer',
+            description: 'Optional project height. Defaults to ComfyStudio new-project defaults.',
+          },
+          fps: {
+            type: 'number',
+            description: 'Optional project frame rate. Defaults to ComfyStudio new-project defaults.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the project creation plan without creating a folder. Defaults to true.',
+          },
+        },
+      },
+    },
+    {
+      name: 'duplicate_project',
+      description: 'Preview or duplicate a ComfyStudio project folder. Defaults to the current open project, copies the whole folder, remaps saved paths, creates a sibling copy, and opens the duplicate on apply.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sourceProjectPath: {
+            type: 'string',
+            description: 'Optional absolute path to the source project folder. Defaults to the current open project.',
+          },
+          projectPath: {
+            type: 'string',
+            description: 'Alias for sourceProjectPath.',
+          },
+          path: {
+            type: 'string',
+            description: 'Alias for sourceProjectPath.',
+          },
+          sourceProjectName: {
+            type: 'string',
+            description: 'Optional recent-project name to duplicate if no path is supplied.',
+          },
+          projectName: {
+            type: 'string',
+            description: 'Alias for sourceProjectName.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the duplicate plan without copying any folder. Defaults to true.',
+          },
+        },
+      },
+    },
+    {
       name: 'create_timeline',
       description: 'Preview or create a new ComfyStudio sequence/timeline with a name, optional dimensions, fps, duration, and optional switch-to-new-sequence behavior. Defaults to previewOnly; applying is undoable in ComfyStudio.',
       inputSchema: {
@@ -5762,6 +7253,45 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'move_unused_assets_to_folder',
+      description: 'Preview or move unused project assets into an asset-panel folder without deleting files. Checks all saved project timelines plus the live active timeline, then moves only assets not referenced by any clip/effect metadata. Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          targetFolderPath: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Destination folder path. Defaults to "Unused Assets". Missing folders are created on apply.',
+          },
+          folderPath: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Alias for targetFolderPath.',
+          },
+          targetFolderId: { type: 'string', description: 'Existing destination folder ID.' },
+          targetRoot: { type: 'boolean', description: 'Move matching unused assets back to the asset root instead of a folder.' },
+          rootOnly: { type: 'boolean', description: 'Only consider currently-root-level unused assets.' },
+          type: { type: 'string', description: 'Optional asset type filter such as image, video, or audio.' },
+          nameIncludes: { type: 'string', description: 'Optional case-insensitive name substring filter.' },
+          workflowId: { type: 'string', description: 'Optional workflow ID filter.' },
+          filter: {
+            type: 'string',
+            enum: ['solid_colors', 'constants', 'generated', 'imported'],
+            description: 'Optional preset filter. Use constants/solid_colors for MCP-created color constants.',
+          },
+          constantsOnly: { type: 'boolean', description: 'Only include solid color/constant assets.' },
+          solidColorsOnly: { type: 'boolean', description: 'Alias for constantsOnly.' },
+          targetFolderColor: { type: 'string', description: 'Optional #RRGGBB color for a newly-created destination folder.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the exact unused-asset move plan without changing the project. Defaults to true.' },
+          limit: { type: 'integer', description: 'Maximum assets this call may move. Defaults to 100.' },
+        },
+      },
+    },
+    {
       name: 'add_track',
       description: 'Create a new timeline track. Video tracks are added at the top of the stack, which is useful before adding another text/title layer. Undoable in ComfyStudio.',
       inputSchema: {
@@ -5785,6 +7315,210 @@ function createToolDefinitions() {
             type: 'boolean',
             description: 'When true, returns the track creation plan without changing the timeline.',
           },
+        },
+      },
+    },
+    {
+      name: 'update_track',
+      description: 'Preview or update an existing timeline track: rename it, mute/unmute, lock/unlock, show/hide, change audio channels, or reorder within its video/audio group. Undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          trackId: { type: 'string', description: 'Track ID from get_timeline.' },
+          name: { type: 'string', description: 'Optional new track name.' },
+          muted: { type: 'boolean', description: 'Mute/unmute the track.' },
+          locked: { type: 'boolean', description: 'Lock/unlock the track.' },
+          visible: { type: 'boolean', description: 'Show/hide the track.' },
+          channels: { type: 'string', enum: ['mono', 'stereo'], description: 'Audio channel layout for audio tracks.' },
+          index: { type: 'integer', description: 'Optional new index within the track type group. For video, 0 is the top video layer.' },
+          newIndex: { type: 'integer', description: 'Alias for index.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the track update plan without changing the timeline. Defaults to true.' },
+        },
+        required: ['trackId'],
+      },
+    },
+    {
+      name: 'remove_track',
+      description: 'Preview or remove a timeline track and all clips on it. ComfyStudio protects the last track of each type. Use previewOnly first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          trackId: { type: 'string', description: 'Track ID from get_timeline.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the removal plan without changing the timeline. Defaults to true.' },
+        },
+        required: ['trackId'],
+      },
+    },
+    {
+      name: 'switch_timeline',
+      description: 'Preview or switch the active ComfyStudio sequence/timeline. Useful when an agent creates review timelines and then needs to work inside one.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timelineId: { type: 'string', description: 'Timeline ID from get_project or get_timeline.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the switch plan without changing the active timeline. Defaults to true.' },
+        },
+        required: ['timelineId'],
+      },
+    },
+    {
+      name: 'rename_timeline',
+      description: 'Preview or rename a sequence/timeline. Undoable through project history/save state.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timelineId: { type: 'string', description: 'Timeline ID from get_project.' },
+          name: { type: 'string', description: 'New sequence name.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the rename plan without changing the project. Defaults to true.' },
+        },
+        required: ['timelineId', 'name'],
+      },
+    },
+    {
+      name: 'duplicate_timeline',
+      description: 'Preview or duplicate an existing sequence/timeline, optionally rename it and switch to it. Useful before risky AI edits.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timelineId: { type: 'string', description: 'Timeline ID to duplicate. Defaults should be supplied by the agent from get_project/get_timeline.' },
+          name: { type: 'string', description: 'Optional name for the duplicate.' },
+          switchToTimeline: { type: 'boolean', description: 'When true, make the duplicate active after creating it.' },
+          activate: { type: 'boolean', description: 'Alias for switchToTimeline.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the duplicate plan without changing the project. Defaults to true.' },
+        },
+        required: ['timelineId'],
+      },
+    },
+    {
+      name: 'delete_timeline',
+      description: 'Preview or delete a sequence/timeline from the project. Destructive; use previewOnly first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timelineId: { type: 'string', description: 'Timeline ID to delete.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the delete plan without changing the project. Defaults to true.' },
+        },
+        required: ['timelineId'],
+      },
+    },
+    {
+      name: 'add_transition',
+      description: 'Preview or add a native ComfyStudio transition. Use clipAId+clipBId for a between-clips transition on the same track, or clipId+edge for an in/out edge transition. Undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipAId: { type: 'string', description: 'First clip ID for a between-clips transition.' },
+          clipBId: { type: 'string', description: 'Second clip ID for a between-clips transition.' },
+          clipId: { type: 'string', description: 'Single clip ID for an edge transition.' },
+          edge: { type: 'string', enum: ['in', 'out'], description: 'Edge for a single-clip transition. Defaults to in.' },
+          transitionType: { type: 'string', enum: ['dissolve', 'fade-black', 'fade-white', 'wipe-left', 'wipe-right', 'wipe-up', 'wipe-down', 'slide-left', 'slide-right', 'slide-up', 'slide-down', 'zoom-in', 'zoom-out', 'blur'], description: 'Transition type. Defaults to dissolve for between clips.' },
+          type: { type: 'string', description: 'Alias for transitionType.' },
+          durationSeconds: { type: 'number', description: 'Transition duration in seconds. Defaults to 0.5.' },
+          duration: { type: 'number', description: 'Alias for durationSeconds.' },
+          alignment: { type: 'string', enum: ['start', 'center', 'end'], description: 'Between-transition alignment. Defaults to center.' },
+          settings: { type: 'object', description: 'Optional transition settings such as zoomAmount, blurAmount, split, or alignment.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the transition plan without changing the timeline. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'update_transition',
+      description: 'Preview or update a native transition type, duration, alignment, or settings. Undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          transitionId: { type: 'string', description: 'Transition ID from get_timeline includeTransitions=true.' },
+          transitionType: { type: 'string', enum: ['dissolve', 'fade-black', 'fade-white', 'wipe-left', 'wipe-right', 'wipe-up', 'wipe-down', 'slide-left', 'slide-right', 'slide-up', 'slide-down', 'zoom-in', 'zoom-out', 'blur'], description: 'Optional new transition type.' },
+          type: { type: 'string', description: 'Alias for transitionType.' },
+          durationSeconds: { type: 'number', description: 'Optional duration in seconds.' },
+          duration: { type: 'number', description: 'Alias for durationSeconds.' },
+          alignment: { type: 'string', enum: ['start', 'center', 'end'], description: 'Optional between-transition alignment.' },
+          settings: { type: 'object', description: 'Optional transition settings.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the update plan without changing the timeline. Defaults to true.' },
+        },
+        required: ['transitionId'],
+      },
+    },
+    {
+      name: 'remove_transitions',
+      description: 'Preview or remove one or more native ComfyStudio transitions. Undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          transitionId: { type: 'string', description: 'Single transition ID.' },
+          transitionIds: { type: 'array', items: { type: 'string' }, description: 'Transition IDs to remove.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the removal plan without changing the timeline. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'move_clips',
+      description: 'Preview or move one or more clips to a track and/or start time. Use for AI timeline layout cleanup, review lanes, and repositioning generated assets. Undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Single clip ID to move.' },
+          clips: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                clipId: { type: 'string' },
+                trackId: { type: 'string' },
+                startSeconds: { type: 'number' },
+              },
+            },
+            description: 'Batch move entries.',
+          },
+          trackId: { type: 'string', description: 'Target track ID for a single move or shared batch target.' },
+          startSeconds: { type: 'number', description: 'Target start time in seconds for a single move.' },
+          startTime: { type: 'number', description: 'Alias for startSeconds.' },
+          resolveOverlaps: { type: 'boolean', description: 'When true, use ComfyStudio overwrite/overlap resolution. Defaults to false.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the move plan without changing the timeline. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'trim_clips',
+      description: 'Preview or update clip timing/trim values for one or more clips. Supports startSeconds, durationSeconds, trimStartSeconds, and trimEndSeconds. Undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Single clip ID to trim.' },
+          clips: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                clipId: { type: 'string' },
+                startSeconds: { type: 'number' },
+                durationSeconds: { type: 'number' },
+                trimStartSeconds: { type: 'number' },
+                trimEndSeconds: { type: 'number' },
+              },
+            },
+            description: 'Batch trim entries.',
+          },
+          startSeconds: { type: 'number', description: 'New clip start time for a single clip.' },
+          durationSeconds: { type: 'number', description: 'New clip duration for a single clip.' },
+          trimStartSeconds: { type: 'number', description: 'New source trim start for a single clip.' },
+          trimEndSeconds: { type: 'number', description: 'New source trim end for a single clip.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the trim plan without changing the timeline. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'delete_clips',
+      description: 'Preview or delete timeline clips by ID or simple filter. Supports ripple delete. Destructive but undoable in ComfyStudio; use previewOnly first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Single clip ID to delete.' },
+          clipIds: { type: 'array', items: { type: 'string' }, description: 'Clip IDs to delete.' },
+          filter: { type: 'string', enum: ['disabled', 'selected', 'labeled'], description: 'Optional delete target filter.' },
+          ripple: { type: 'boolean', description: 'When true, ripple-delete the target clips and close gaps on their tracks.' },
+          limit: { type: 'integer', description: 'Safety limit for matched clips. Defaults to 100.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the delete plan without changing the timeline. Defaults to true.' },
         },
       },
     },
@@ -5898,6 +7632,32 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'replace_clip_with_asset',
+      description: 'Preview or replace an existing video/image/audio timeline clip with another project asset while preserving its timeline slot, transform, label color, effects, and keyframes by default. The old asset is not deleted. Defaults to previewOnly and is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Timeline clip ID to replace. If omitted, ComfyStudio must have exactly one selected clip.' },
+          targetClipId: { type: 'string', description: 'Alias for clipId.' },
+          assetId: { type: 'string', description: 'Replacement asset ID from get_assets.' },
+          replacementAssetId: { type: 'string', description: 'Alias for assetId.' },
+          assetName: { type: 'string', description: 'Replacement asset name or partial name if assetId is omitted.' },
+          replacementAssetName: { type: 'string', description: 'Alias for assetName.' },
+          latestGenerated: { type: 'boolean', description: 'When true, use the newest matching generated asset if assetId/assetName are omitted.' },
+          type: { type: 'string', enum: ['video', 'image', 'audio'], description: 'Optional replacement asset type filter.' },
+          assetType: { type: 'string', enum: ['video', 'image', 'audio'], description: 'Alias for type.' },
+          workflowId: { type: 'string', description: 'Optional workflow ID filter when resolving latestGenerated, such as ltx23-i2v or wan22-i2v.' },
+          name: { type: 'string', description: 'Optional new clip name. Defaults to the replacement asset name.' },
+          preserveDuration: { type: 'boolean', description: 'Keep the original timeline duration. Defaults to true.' },
+          fitToAssetDuration: { type: 'boolean', description: 'When true, change the timeline duration to the replacement asset duration when known.' },
+          resetTrim: { type: 'boolean', description: 'Reset source in/out to the start of the replacement asset. Defaults to true.' },
+          preserveTrim: { type: 'boolean', description: 'Alias for resetTrim=false.' },
+          durationSeconds: { type: 'number', description: 'Optional replacement duration when preserveDuration=false.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the replacement plan without changing the timeline. Defaults to true.' },
+        },
+      },
+    },
+    {
       name: 'add_solid_color',
       description: 'Preview or create a solid-color image asset, optionally placing it on the active timeline as a color/black constant. Useful for black plates under opacity fades, color backgrounds, and simple matte layers. Defaults to previewOnly; applying writes a PNG asset to the project and timeline placement is undoable in ComfyStudio.',
       inputSchema: {
@@ -5985,6 +7745,61 @@ function createToolDefinitions() {
             type: 'boolean',
             description: 'When true, returns the solid creation/placement plan without writing a file or changing the timeline. Defaults to true.',
           },
+        },
+      },
+    },
+    {
+      name: 'add_adjustment_clip',
+      description: 'Preview or create a ComfyStudio adjustment clip on a video track. Adjustment clips apply color/blur/GLSL/keyframed effects to clips below them. Use previewOnly first; applying is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Optional adjustment clip name. Defaults to Adjustment Layer.' },
+          trackId: { type: 'string', description: 'Optional existing video track ID. Defaults to the first unlocked video track unless createTrack is true.' },
+          createTrack: { type: 'boolean', description: 'When true and trackId is omitted, create a new top video track for the adjustment clip.' },
+          newTrack: { type: 'boolean', description: 'Alias for createTrack.' },
+          trackName: { type: 'string', description: 'Optional new top video track name when createTrack is true.' },
+          trackStrategy: { type: 'string', enum: ['existing', 'new', 'newTopTrack'], description: 'Use new/newTopTrack to create a new top video track.' },
+          startSeconds: { type: 'number', description: 'Timeline start time in seconds. Defaults to current playhead.' },
+          startTime: { type: 'number', description: 'Alias for startSeconds.' },
+          durationSeconds: { type: 'number', description: 'Clip duration in seconds. Defaults to 5.' },
+          duration: { type: 'number', description: 'Alias for durationSeconds.' },
+          enabled: { type: 'boolean', description: 'Whether the new adjustment clip is enabled. Defaults to true.' },
+          adjustments: {
+            type: 'object',
+            description: 'Initial color/blur settings. Global keys: brightness, contrast, saturation, gain, gamma, offset, hue, blur. Tonal groups: shadows, midtones, highlights.',
+          },
+          brightness: { type: 'number', description: 'Exposure/brightness, -100 to 100.' },
+          contrast: { type: 'number', description: 'Contrast, -100 to 100.' },
+          saturation: { type: 'number', description: 'Saturation, -100 to 100.' },
+          gain: { type: 'number', description: 'Gain, -100 to 100.' },
+          gamma: { type: 'number', description: 'Gamma, -100 to 100.' },
+          offset: { type: 'number', description: 'Offset, -100 to 100.' },
+          hue: { type: 'number', description: 'Hue rotation in degrees, -180 to 180.' },
+          blur: { type: 'number', description: 'Adjustment blur amount in pixels, 0 to 50.' },
+          shadows: { type: 'object', description: 'Optional shadows tonal adjustment group.' },
+          midtones: { type: 'object', description: 'Optional midtones tonal adjustment group.' },
+          highlights: { type: 'object', description: 'Optional highlights tonal adjustment group.' },
+          transform: {
+            type: 'object',
+            description: 'Optional transform for the adjustment layer itself: opacity, blendMode, position, scale, rotation, blur, crop, 2.5D, or motion blur fields.',
+          },
+          keyframes: {
+            type: 'array',
+            description: 'Optional explicit visual keyframes for transform, opacity, blur, crop, and color adjustment properties. For GLSL effects on the adjustment clip, create the clip first, then use add_glsl_effect/update_glsl_effect.',
+            items: {
+              type: 'object',
+              properties: {
+                property: { type: 'string', enum: MCP_CLIP_KEYFRAME_PROPERTIES },
+                timeSeconds: { type: 'number', description: 'Clip-relative keyframe time in seconds.' },
+                value: { type: 'number' },
+                easing: { type: 'string', description: 'Easing name or cubicBezier(x1,y1,x2,y2).' },
+              },
+              required: ['property', 'timeSeconds', 'value'],
+            },
+          },
+          replaceKeyframes: { type: 'boolean', description: 'When true, replace existing keyframes for properties included in keyframes.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the creation plan without changing the timeline. Defaults to true.' },
         },
       },
     },
@@ -6555,6 +8370,110 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'list_glsl_effects',
+      description: 'List the GLSL/GPU-backed clip effects ComfyStudio can add through MCP, including supported parameter keys, ranges, defaults, and presets. Use this before adding or changing GLSL effects.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          includeParams: { type: 'boolean', description: 'Include parameter definitions. Defaults to true.' },
+          includePresets: { type: 'boolean', description: 'Include presets. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'add_glsl_effect',
+      description: 'Add a GLSL/GPU-backed effect to a visual clip. Supports presets, static parameter settings, and optional effect-parameter keyframes. Defaults to previewOnly; applying is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Target visual clip ID from get_timeline. If omitted, uses the single selected visual clip.' },
+          effectType: { type: 'string', enum: MCP_GLSL_EFFECT_IDS, description: 'GLSL effect type to add. Use list_glsl_effects for parameters and presets.' },
+          presetId: { type: 'string', description: 'Optional preset ID or label for the chosen effect.' },
+          settings: {
+            type: 'object',
+            description: 'Effect parameter values by key, such as { amount: 40 }, { speed: 8 }, { samples: 16 }, or { look: 3 }. Unknown keys are rejected.',
+          },
+          enabled: { type: 'boolean', description: 'Whether the new effect starts enabled. Defaults to true.' },
+          replaceExisting: { type: 'boolean', description: 'When true, remove existing effects of the same type on this clip before adding the new one.' },
+          insertIndex: { type: 'integer', description: 'Optional effect stack index. Defaults to the end/top of the stack.' },
+          keyframes: {
+            type: 'array',
+            description: 'Optional effect-parameter keyframes. property/param must be one of the effect settings from list_glsl_effects.',
+            items: {
+              type: 'object',
+              properties: {
+                param: { type: 'string', description: 'Effect parameter key, e.g. amount, speed, motionBlur, blend, or scanlines.' },
+                property: { type: 'string', description: 'Alias for param.' },
+                timeSeconds: { type: 'number', description: 'Clip-relative keyframe time in seconds.' },
+                value: { type: 'number' },
+                easing: { type: 'string' },
+              },
+              required: ['timeSeconds', 'value'],
+            },
+          },
+          replaceKeyframes: { type: 'boolean', description: 'When true, replace existing keyframes for the included effect parameters.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the add plan without changing the timeline. Defaults to true.' },
+        },
+        required: ['effectType'],
+      },
+    },
+    {
+      name: 'update_glsl_effect',
+      description: 'Update an existing GLSL effect on a visual clip: enabled state, preset, static settings, or effect-parameter keyframes. Identify the target by effectId, or by effectType if only one/latest matching effect is intended. Defaults to previewOnly; applying is undoable.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Target visual clip ID from get_timeline. If omitted, uses the single selected visual clip.' },
+          effectId: { type: 'string', description: 'Existing effect ID from get_timeline/inspect_clip.' },
+          effectType: { type: 'string', enum: MCP_GLSL_EFFECT_IDS, description: 'Fallback target selector. If multiple effects of this type exist, the latest one is updated.' },
+          presetId: { type: 'string', description: 'Optional preset ID or label to merge into settings before explicit settings.' },
+          settings: {
+            type: 'object',
+            description: 'Effect parameter updates by key. Unknown keys are rejected.',
+          },
+          enabled: { type: 'boolean', description: 'Set enabled/disabled state for the effect.' },
+          keyframes: {
+            type: 'array',
+            description: 'Optional effect-parameter keyframes. property/param must be one of the effect settings from list_glsl_effects.',
+            items: {
+              type: 'object',
+              properties: {
+                param: { type: 'string', description: 'Effect parameter key.' },
+                property: { type: 'string', description: 'Alias for param.' },
+                timeSeconds: { type: 'number', description: 'Clip-relative keyframe time in seconds.' },
+                value: { type: 'number' },
+                easing: { type: 'string' },
+              },
+              required: ['timeSeconds', 'value'],
+            },
+          },
+          clearKeyframes: {
+            oneOf: [
+              { type: 'boolean' },
+              { type: 'string', enum: ['all'] },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'Clear all or selected effect-parameter keyframes before applying new ones.',
+          },
+          replaceKeyframes: { type: 'boolean', description: 'When true, replace existing keyframes for the included effect parameters.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the update plan without changing the timeline. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'remove_glsl_effect',
+      description: 'Remove an existing GLSL effect from a visual clip and clear its effect-parameter keyframes. Identify the target by effectId, or by effectType when there is one/latest matching effect. Defaults to previewOnly; applying is undoable.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipId: { type: 'string', description: 'Target visual clip ID from get_timeline. If omitted, uses the single selected visual clip.' },
+          effectId: { type: 'string', description: 'Existing effect ID from get_timeline/inspect_clip.' },
+          effectType: { type: 'string', enum: MCP_GLSL_EFFECT_IDS, description: 'Fallback target selector.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the removal plan without changing the timeline. Defaults to true.' },
+        },
+      },
+    },
+    {
       name: 'set_clip_keyframes',
       description: 'Preview or set explicit keyframes on an existing visual timeline clip. Use this for video/image/text/shape fades, dips to black, moves, scale/rotation, 2.5D rotation, blur, crop reveals, color-adjustment animation, and shape size/style animation. Defaults to previewOnly; applying is undoable in ComfyStudio.',
       inputSchema: {
@@ -6609,6 +8528,47 @@ function createToolDefinitions() {
           },
         },
         required: ['clipId'],
+      },
+    },
+    {
+      name: 'add_dip_to_black',
+      description: 'Preview or apply dip-to-black opacity fades between adjacent visual clips. Accepts explicit clip pairs, a clipIds list, selected clips, or all adjacent clips on a track. This only writes opacity keyframes; use add_solid_color first if a black plate is needed underneath. Defaults to previewOnly and is undoable in ComfyStudio.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          clipPairs: {
+            type: 'array',
+            description: 'Explicit clip pairs. Each item can use outClipId/inClipId or clipAId/clipBId.',
+            items: {
+              type: 'object',
+              properties: {
+                outClipId: { type: 'string' },
+                inClipId: { type: 'string' },
+                clipAId: { type: 'string' },
+                clipBId: { type: 'string' },
+              },
+            },
+          },
+          pairs: {
+            type: 'array',
+            description: 'Alias for clipPairs.',
+            items: { type: 'object' },
+          },
+          clipIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Clips to pair in timeline order. Each adjacent pair gets a dip.',
+          },
+          trackId: { type: 'string', description: 'When clipIds are omitted, apply to adjacent visual clips on this track.' },
+          filter: { type: 'string', enum: ['selected', 'track'], description: 'Use selected clips or the requested track.' },
+          selected: { type: 'boolean', description: 'When true and clipIds are omitted, use selected clips.' },
+          allAdjacent: { type: 'boolean', description: 'When true, build pairs from all adjacent visual clips, optionally limited by trackId.' },
+          durationSeconds: { type: 'number', description: 'Fade duration for each side of the dip. Defaults to 0.5 seconds.' },
+          fadeDurationSeconds: { type: 'number', description: 'Alias for durationSeconds.' },
+          easing: { type: 'string', description: 'Easing for the opacity keyframes. Defaults to easeInOut.' },
+          replaceOpacityKeyframes: { type: 'boolean', description: 'When true, clear existing opacity keyframes on affected clips before applying the dip.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the opacity keyframe plan without changing the timeline. Defaults to true.' },
+        },
       },
     },
     {
@@ -6700,6 +8660,63 @@ function createToolDefinitions() {
             type: 'boolean',
             description: 'When true, returns the export plan without starting the export.',
           },
+        },
+      },
+    },
+    {
+      name: 'export_fcpxml',
+      description: 'Preview or export the active ComfyStudio timeline as Final Cut Pro XML for Resolve, Final Cut, or Premiere interchange. Writes to the project renders folder unless outputPath is provided.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filename: {
+            type: 'string',
+            description: 'Optional output filename without extension. Defaults to project_timeline_timestamp.',
+          },
+          outputPath: {
+            type: 'string',
+            description: 'Optional absolute .fcpxml output path. If omitted, writes to the project renders folder.',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the FCPXML export plan without writing a file. Defaults to true.',
+          },
+        },
+      },
+    },
+    {
+      name: 'export_delivery_batch',
+      description: 'Preview or run several delivery exports in sequence, such as 16:9, 1:1 square, and 9:16 vertical versions of the same range. Each target uses the normal export_timeline worker and readiness checks. Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          targets: {
+            type: 'array',
+            description: 'Delivery target entries. Items can be strings like h264_720p, h264_square_720, h264_vertical_720, 16:9, 1:1, or objects with export_timeline settings.',
+            items: {
+              oneOf: [
+                { type: 'string' },
+                { type: 'object' },
+              ],
+            },
+          },
+          presets: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Alias for targets when using string target names.',
+          },
+          range: { type: 'string', enum: ['full', 'custom'], description: 'Shared export range. Defaults to full.' },
+          startSeconds: { type: 'number', description: 'Shared custom range start.' },
+          endSeconds: { type: 'number', description: 'Shared custom range end.' },
+          includeAudio: { type: 'boolean', description: 'Shared include-audio setting. Defaults to true.' },
+          videoCodec: { type: 'string', enum: ['h264', 'h265'], description: 'Shared video codec. Defaults to h264.' },
+          crf: { type: 'number', description: 'Shared CRF quality. Defaults to export_timeline behavior.' },
+          useHardwareEncoder: { type: 'boolean', description: 'Shared hardware encoder setting.' },
+          deliveryFraming: { type: 'string', enum: ['fit', 'fill', 'center_crop'], description: 'Shared framing override. Square/vertical targets default to fill.' },
+          filenamePrefix: { type: 'string', description: 'Optional filename prefix for every export. Target suffixes are appended automatically.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns all export plans without rendering. Defaults to true.' },
+          stopOnError: { type: 'boolean', description: 'When true, stop the batch if one export fails. Defaults to true.' },
+          limit: { type: 'integer', description: 'Maximum number of exports. Defaults to 6, max 12.' },
         },
       },
     },
@@ -6888,7 +8905,7 @@ class ComfyStudioMcpServer {
               name: 'comfystudio',
               version: this.version,
             },
-            instructions: 'You are connected to ComfyStudio. Use diagnose_comfyui_connection, repair_comfyui_connection, set_comfyui_connection, control_comfyui_launcher, get_comfyui_launcher_logs, validate_comfyui_nodes, list_comfystudio_workflows, and inspect_comfystudio_workflow for local ComfyUI setup/support questions. Use get_ai_review_passes to choose safe review workflows. Use the tools to inspect the open project, timeline, assets, generation status, music-video workflow state, the composed timeline frame at the playhead, sampled visual timeline ranges, and top-visible shot pages for fast-cut edit review. Use create_timeline with previewOnly first when the user wants a new sequence/timeline for an alternate edit, review selects, generated variations, or a fresh AI-built layout. Use create_asset_folder with previewOnly first when a generation batch or AI-built layout should keep its source assets organized in a named/nested asset folder. Use move_assets_to_folder with previewOnly first when assets should be cleaned up or moved into a folder, for example rootOnly + constantsOnly into a Constants folder. Use queue_prompt_generation_batch with previewOnly first when the user wants new images or videos generated from a written brief; show prompts, workflows, counts, seeds, resolution, duration, FPS, and output folder, then apply only after approval. Use prepare_generation_from_timeline_context with previewOnly first when the user wants to turn a timeline frame into a Generate-tab image-to-video or keyframe request; applying it only captures the frame and prefills Generate. Use queue_prepared_generation with previewOnly first and explicit user approval before queueing a staged Generate request. Use queue_timeline_generation_batch with previewOnly first when the user asks for multiple variations or multiple workflows from the same timeline frame; show workflow counts and seeds, then apply only after approval. Use add_asset_to_timeline with previewOnly first when the user wants one generated/imported asset placed back into the edit, or add_assets_to_timeline with previewOnly first when placing multiple results as review lanes or a sequential strip. Use add_solid_color with previewOnly first when the user needs black/color constants or background plates; it can create a bottom video track so solids sit behind the edit. Use add_text_clip, add_shape_clip, update_text_clip, and update_shape_clip with previewOnly first for titles, lower thirds, lines, boxes, circles, frames, graphic accents, and simple motion graphics; use motionBlurEnabled/motionBlurSamples/motionBlurShutter on fast animated layers when requested. Use set_clip_keyframes with previewOnly first for visual clip fades, dips to black, moves, blur, crop reveals, and color/transform/shape style automation. Queue tools use the same path as the ComfyStudio Queue button and may spend credits or start local GPU work depending on the selected workflow. The write actions currently exposed are ComfyUI connection settings, ComfyUI launcher start/stop/restart, asset folder creation, asset folder cleanup/move operations, sequence/timeline creation, clip label coloring, clip enable/disable, timeline marker creation/removal/property updates, text/title/shape clip creation and updates, visual clip keyframes, solid color asset/clip creation, media asset placement, prompt-based generation queueing, preparing/queueing Generate from a timeline frame, and starting timeline delivery exports through ComfyStudio export worker. Timeline/sequence, clip/marker/text/shape/media/keyframe actions are undoable in ComfyStudio; export writes a new render file to disk.',
+            instructions: 'You are connected to ComfyStudio. Use guide_comfyui_setup first for beginner local ComfyUI setup questions like "How do I connect ComfyStudio to ComfyUI?"; it diagnoses, probes likely ports, gives Portable/Desktop/Docker/manual steps, and previews safe port fixes. Use diagnose_comfyui_connection, repair_comfyui_connection, set_comfyui_connection, control_comfyui_launcher, get_comfyui_launcher_logs, validate_comfyui_nodes, list_comfystudio_workflows, and inspect_comfystudio_workflow for deeper local ComfyUI setup/support questions. Use get_mcp_recipes or get_ai_review_passes to choose safe review workflows. Use find_timeline_items before targeting timeline clips, tracks, markers, transitions, or project assets from a natural-language request. Use check_media_health before delivery/relinking work, relink_asset with previewOnly before changing asset paths, and inspect_export_file after rendering when the user asks whether a file exists or has the expected codec, duration, FPS, or dimensions. Use run_mcp_action_plan with previewOnly before applying an approved multi-step edit in one checkpointed pass. Use the tools to inspect the open project, timeline, assets, generation status, music-video workflow state, the composed timeline frame at the playhead, sampled visual timeline ranges, and top-visible shot pages for fast-cut edit review. Use create_project with previewOnly first when the user wants a fresh ComfyStudio project, and use duplicate_project with previewOnly first before risky AI experiments on an existing project. Use create_timeline with previewOnly first when the user wants a new sequence/timeline for an alternate edit, review selects, generated variations, or a fresh AI-built layout; use switch_timeline, rename_timeline, duplicate_timeline, and delete_timeline with previewOnly first for sequence management. Use update_track and remove_track with previewOnly first for track cleanup, locking/muting/showing tracks, renaming, and layer order. Use add_transition, update_transition, and remove_transitions with previewOnly first for native dissolves, fades, wipes, slides, zooms, blur transitions, and dip-to-black style edits. Use move_clips, trim_clips, and delete_clips with previewOnly first for timeline edit operations such as cleanup passes, staggered layouts, trims, and ripple deletes. Use create_asset_folder with previewOnly first when a generation batch or AI-built layout should keep its source assets organized in a named/nested asset folder. Use move_assets_to_folder with previewOnly first when assets should be cleaned up or moved into a folder, for example rootOnly + constantsOnly into a Constants folder. Use queue_prompt_generation_batch with previewOnly first when the user wants new images or videos generated from a written brief; show prompts, workflows, counts, seeds, resolution, duration, FPS, and output folder, then apply only after approval. Use prepare_generation_from_timeline_context with previewOnly first when the user wants to turn a timeline frame into a Generate-tab image-to-video or keyframe request; applying it only captures the frame and prefills Generate. Use queue_prepared_generation with previewOnly first and explicit user approval before queueing a staged Generate request. Use queue_timeline_generation_batch with previewOnly first when the user asks for multiple variations or multiple workflows from the same timeline frame; show workflow counts and seeds, then apply only after approval. Use add_asset_to_timeline with previewOnly first when the user wants one generated/imported asset placed back into the edit, or add_assets_to_timeline with previewOnly first when placing multiple results as review lanes or a sequential strip. Use add_solid_color with previewOnly first when the user needs black/color constants or background plates; it can create a bottom video track so solids sit behind the edit. Use add_adjustment_clip with previewOnly first when the user wants a color look, blur, GLSL effect, camera shake, vignette, grain, or keyframed treatment applied to multiple clips below a single adjustment layer. Use add_text_clip, add_shape_clip, update_text_clip, and update_shape_clip with previewOnly first for titles, lower thirds, lines, boxes, circles, frames, graphic accents, and simple motion graphics; use motionBlurEnabled/motionBlurSamples/motionBlurShutter on fast animated layers when requested. Use list_glsl_effects, add_glsl_effect, update_glsl_effect, and remove_glsl_effect with previewOnly first for GPU effects such as camera shake, directional blur, lens blur, fisheye, chroma warp, digital glitch, film grain, film look, flicker, VHS, and vignette; effect parameters can also be keyframed, including when the target clip is an adjustment clip. Use set_clip_keyframes with previewOnly first for visual clip fades, dips to black, moves, blur, crop reveals, and color/transform/shape style automation. Use export_fcpxml with previewOnly first when the user wants an interchange XML for Resolve, Final Cut, or Premiere. Queue tools use the same path as the ComfyStudio Queue button and may spend credits or start local GPU work depending on the selected workflow. The write actions currently exposed are ComfyUI setup guidance/settings, ComfyUI launcher start/stop/restart, project creation/duplication, asset folder creation, asset folder cleanup/move/relink operations, sequence/timeline creation and management, track management, native transitions, clip move/trim/delete operations, clip label coloring, clip enable/disable, timeline marker creation/removal/property updates, text/title/shape/adjustment clip creation and updates, GLSL effect add/update/remove operations, visual clip keyframes, solid color asset/clip creation, media asset placement, prompt-based generation queueing, preparing/queueing Generate from a timeline frame, checkpointed multi-step action plans, starting timeline delivery exports through ComfyStudio export worker, export-file QC, and FCPXML interchange export. Project creation/duplication writes project folders on disk; timeline/sequence, clip/marker/text/shape/adjustment/effect/media/keyframe actions are undoable in ComfyStudio; exports write new files to disk.',
           }
           break
         case 'ping':
@@ -6930,11 +8947,13 @@ class ComfyStudioMcpServer {
       'diagnose_comfyui_connection',
       'set_comfyui_connection',
       'repair_comfyui_connection',
+      'guide_comfyui_setup',
       'control_comfyui_launcher',
       'get_comfyui_launcher_logs',
       'validate_comfyui_nodes',
       'list_comfystudio_workflows',
       'inspect_comfystudio_workflow',
+      'list_glsl_effects',
     ])
     if (!hasSnapshot(snapshot) && !toolsAllowedWithoutProject.has(name)) {
       return errorResult('No ComfyStudio project is open yet.')
@@ -6995,12 +9014,26 @@ class ComfyStudioMcpServer {
       }
       case 'get_ai_review_passes':
         return textResult(buildAiReviewPasses(snapshot))
+      case 'get_mcp_recipes':
+        return textResult(buildAiReviewPasses(snapshot))
+      case 'find_timeline_items': {
+        const result = findTimelineItems(snapshot, args)
+        return result.error ? errorResult(result.error) : textResult(result)
+      }
+      case 'check_media_health':
+        return textResult(checkMediaHealth(snapshot, args))
+      case 'inspect_export_file': {
+        const result = inspectExportFile(snapshot, args)
+        return result.error ? errorResult(result.error) : textResult(result)
+      }
       case 'diagnose_comfyui_connection':
         return this.runComfyUIConnectionDiagnosis(args)
       case 'set_comfyui_connection':
         return this.setComfyUIConnectionTool(args)
       case 'repair_comfyui_connection':
         return this.repairComfyUIConnection(args)
+      case 'guide_comfyui_setup':
+        return this.guideComfyUISetup(args)
       case 'control_comfyui_launcher':
         return this.controlComfyUILauncherTool(args)
       case 'get_comfyui_launcher_logs':
@@ -7047,20 +9080,78 @@ class ComfyStudioMcpServer {
         return this.removeTimelineMarkers(snapshot, args)
       case 'set_timeline_marker_properties':
         return this.setTimelineMarkerProperties(snapshot, args)
+      case 'undo':
+        return this.runRendererActionTool('undo', args, { bridgeName: 'MCP undo bridge', suggestedTool: 'undo' })
+      case 'redo':
+        return this.runRendererActionTool('redo', args, { bridgeName: 'MCP redo bridge', suggestedTool: 'redo' })
+      case 'set_playhead':
+        return this.runRendererActionTool('set_playhead', args, { bridgeName: 'MCP playhead bridge', suggestedTool: 'set_playhead' })
+      case 'select_clips':
+        return this.runRendererActionTool('select_clips', args, { bridgeName: 'MCP clip selection bridge', suggestedTool: 'select_clips' })
+      case 'select_assets':
+        return this.runRendererActionTool('select_assets', args, { bridgeName: 'MCP asset selection bridge', suggestedTool: 'select_assets' })
+      case 'create_project_checkpoint':
+        return this.runRendererActionTool('create_project_checkpoint', args, { bridgeName: 'MCP checkpoint bridge', suggestedTool: 'create_project_checkpoint' })
+      case 'restore_project_checkpoint':
+        return this.runRendererActionTool('restore_project_checkpoint', args, { bridgeName: 'MCP checkpoint bridge', suggestedTool: 'restore_project_checkpoint', defaultPreviewOnly: true })
+      case 'import_asset_from_path':
+        return this.runRendererActionTool('import_asset_from_path', args, { bridgeName: 'MCP asset import bridge', suggestedTool: 'import_asset_from_path', defaultPreviewOnly: true })
+      case 'relink_asset':
+        return this.runRendererActionTool('relink_asset', args, { bridgeName: 'MCP asset relink bridge', suggestedTool: 'relink_asset', defaultPreviewOnly: true })
+      case 'set_clip_style':
+        return this.runRendererActionTool('set_clip_style', args, { bridgeName: 'MCP clip style bridge', suggestedTool: 'set_clip_style', defaultPreviewOnly: true })
+      case 'run_mcp_action_plan':
+        return this.runMcpActionPlan(snapshot, args)
+      case 'set_in_out_range':
+        return this.runRendererActionTool('set_in_out_range', args, { bridgeName: 'MCP in/out bridge', suggestedTool: 'set_in_out_range' })
+      case 'create_project':
+        return this.createProject(snapshot, args)
+      case 'duplicate_project':
+        return this.duplicateProject(snapshot, args)
       case 'create_timeline':
         return this.createTimeline(snapshot, args)
       case 'create_asset_folder':
         return this.createAssetFolder(snapshot, args)
       case 'move_assets_to_folder':
         return this.moveAssetsToFolder(snapshot, args)
+      case 'move_unused_assets_to_folder':
+        return this.moveUnusedAssetsToFolder(snapshot, args)
       case 'add_track':
         return this.addTrack(snapshot, args)
+      case 'update_track':
+        return this.updateTrack(snapshot, args)
+      case 'remove_track':
+        return this.removeTrack(snapshot, args)
+      case 'switch_timeline':
+        return this.switchTimeline(snapshot, args)
+      case 'rename_timeline':
+        return this.renameTimeline(snapshot, args)
+      case 'duplicate_timeline':
+        return this.duplicateTimeline(snapshot, args)
+      case 'delete_timeline':
+        return this.deleteTimeline(snapshot, args)
+      case 'add_transition':
+        return this.addTransition(snapshot, args)
+      case 'update_transition':
+        return this.updateTransition(snapshot, args)
+      case 'remove_transitions':
+        return this.removeTransitions(snapshot, args)
+      case 'move_clips':
+        return this.moveClips(snapshot, args)
+      case 'trim_clips':
+        return this.trimClips(snapshot, args)
+      case 'delete_clips':
+        return this.deleteClips(snapshot, args)
       case 'add_asset_to_timeline':
         return this.addAssetToTimeline(snapshot, args)
+      case 'replace_clip_with_asset':
+        return this.replaceClipWithAsset(snapshot, args)
       case 'add_solid_color':
         return this.addSolidColor(snapshot, args)
       case 'add_assets_to_timeline':
         return this.addAssetsToTimeline(snapshot, args)
+      case 'add_adjustment_clip':
+        return this.addAdjustmentClip(snapshot, args)
       case 'duplicate_clip':
         return this.duplicateClip(snapshot, args)
       case 'add_text_clip':
@@ -7071,10 +9162,24 @@ class ComfyStudioMcpServer {
         return this.addShapeClip(snapshot, args)
       case 'update_shape_clip':
         return this.updateShapeClip(snapshot, args)
+      case 'list_glsl_effects':
+        return this.listGlslEffects(args)
+      case 'add_glsl_effect':
+        return this.addGlslEffect(snapshot, args)
+      case 'update_glsl_effect':
+        return this.updateGlslEffect(snapshot, args)
+      case 'remove_glsl_effect':
+        return this.removeGlslEffect(snapshot, args)
       case 'set_clip_keyframes':
         return this.setClipKeyframes(snapshot, args)
+      case 'add_dip_to_black':
+        return this.addDipToBlack(snapshot, args)
       case 'export_timeline':
         return this.exportTimeline(snapshot, args)
+      case 'export_delivery_batch':
+        return this.exportDeliveryBatch(snapshot, args)
+      case 'export_fcpxml':
+        return this.exportFcpXml(snapshot, args)
       default:
         return errorResult(`Unknown tool: ${name}`)
     }
@@ -7213,6 +9318,243 @@ class ComfyStudioMcpServer {
     })
   }
 
+  getComfySetupInstallSteps(installType = 'unknown', diagnosis = null) {
+    const configuredPort = normalizeLocalPort(diagnosis?.connection?.port) || 8188
+    const mode = String(installType || 'unknown').toLowerCase()
+    const commonFirstStep = `ComfyStudio connects to ComfyUI by local URL, usually http://127.0.0.1:${configuredPort}. The important thing is that the port ComfyUI prints must match Settings > ComfyUI Connection in ComfyStudio.`
+
+    if (mode === 'portable') {
+      return [
+        commonFirstStep,
+        'Open your ComfyUI_windows_portable folder.',
+        'Run run_nvidia_gpu.bat if you have an NVIDIA GPU, or run_cpu.bat only if you must use CPU.',
+        'Wait until the terminal says something like "To see the GUI go to: http://127.0.0.1:8188".',
+        'Use that port in ComfyStudio Settings > ComfyUI Connection, or ask the MCP agent to apply the suggested port fix.',
+        'If ComfyStudio launches ComfyUI for you, configure Settings > ComfyUI Launcher to point at that same .bat file.',
+      ]
+    }
+
+    if (mode === 'desktop') {
+      return [
+        commonFirstStep,
+        'Open ComfyUI Desktop first and wait until it is fully running.',
+        'Find the local URL or port shown by ComfyUI Desktop.',
+        'Set the same port in ComfyStudio Settings > ComfyUI Connection.',
+        'If ComfyUI Desktop uses a different port after updates/restarts, run this setup guide again and let it repair the port mismatch.',
+      ]
+    }
+
+    if (mode === 'docker') {
+      return [
+        commonFirstStep,
+        'Make sure the Docker container publishes ComfyUI to the host, for example -p 8188:8188.',
+        'Inside Docker, ComfyUI often needs to listen on 0.0.0.0 so the host can reach it.',
+        'From Windows/macOS, ComfyStudio should still connect to localhost/127.0.0.1 on the published host port, not the container internal IP.',
+        'If ComfyUI returns HTTP 403, relaunch it with a permissive CORS/header setup or use the ComfyStudio launcher path when possible.',
+      ]
+    }
+
+    if (mode === 'manual') {
+      return [
+        commonFirstStep,
+        'Start ComfyUI manually from your terminal before opening or using ComfyStudio generation features.',
+        'Look for the URL ComfyUI prints, usually http://127.0.0.1:8188.',
+        'If you deliberately use another port, set that exact port in ComfyStudio Settings > ComfyUI Connection.',
+        'If ComfyStudio can see /system_stats but not /object_info, update ComfyUI and check custom-node import errors in the ComfyUI terminal.',
+      ]
+    }
+
+    return [
+      commonFirstStep,
+      'First start ComfyUI using whichever install you have: Desktop app, Windows portable .bat file, Docker container, or manual python main.py launch.',
+      'Copy the port from the local URL ComfyUI prints.',
+      'If ComfyStudio is on the wrong port, the MCP guide can propose the exact port change and apply it only after approval.',
+      'If you are not sure which install you have, tell the agent "I use portable", "I use desktop", "I use Docker", or "I started it manually" and run this guide again.',
+    ]
+  }
+
+  buildComfySetupUserMessage({ configured, reachable, probes, installType, previewOnly, appliedFix, validation }) {
+    const configuredBase = configured?.connection?.httpBase || 'the configured ComfyUI URL'
+    const reachableBase = reachable?.connection?.httpBase || ''
+    const portList = probes.map((probe) => `${probe.port}${probe.ok ? ' OK' : ''}`).join(', ')
+
+    if (configured?.connection?.ok) {
+      const nodeCount = configured?.api?.objectInfo?.nodeClassCount || 0
+      return [
+        `Good news: ComfyStudio is already connected to ComfyUI at ${configuredBase}.`,
+        nodeCount ? `ComfyUI returned ${nodeCount} node classes, so the API is responding correctly.` : 'The ComfyUI API is responding.',
+        validation?.validation?.checkedCount ? (
+          validation.validation.ok
+            ? 'The requested workflow nodes are available too.'
+            : `The connection works, but these requested nodes are missing: ${(validation.validation.missing || []).join(', ')}.`
+        ) : '',
+        'You can now use local ComfyUI workflows from ComfyStudio.',
+      ].filter(Boolean)
+    }
+
+    if (reachable) {
+      return [
+        `I found ComfyUI running at ${reachableBase}, but ComfyStudio is currently pointed at ${configuredBase}.`,
+        previewOnly
+          ? `No settings were changed. The safe fix is to set ComfyStudio's ComfyUI port to ${reachable.connection.port}.`
+          : appliedFix
+            ? `I updated ComfyStudio to use ${reachableBase}.`
+            : `No settings were changed because applyFix was not requested.`,
+        `Ports checked: ${portList}.`,
+        previewOnly
+          ? `Ask for approval, then call guide_comfyui_setup with applyFix=true and previewOnly=false, or call set_comfyui_connection with port ${reachable.connection.port}.`
+          : 'Run diagnose_comfyui_connection again to confirm everything is healthy.',
+      ]
+    }
+
+    return [
+      `I could not find a reachable ComfyUI server yet. Ports checked: ${portList || 'none'}.`,
+      `This usually means ComfyUI is not running, is running on a different port, or Docker/Desktop/Portable is not publishing a localhost server.`,
+      `Install type assumed: ${installType}.`,
+      'Start ComfyUI first, then run this guide again. If you can see the ComfyUI URL in a browser, pass its port to guide_comfyui_setup.',
+    ]
+  }
+
+  async guideComfyUISetup(args = {}) {
+    if (!this.diagnoseComfyUIConnection) {
+      return errorResult('ComfyUI setup guidance is not available. Restart ComfyStudio and try again.')
+    }
+
+    const timeoutMs = getNumberArg(args, 'timeoutMs', 4500, 1000, 30000)
+    const previewOnly = args.previewOnly !== false
+    const applyFix = args.applyFix === true
+    const requestedPort = normalizeLocalPort(args.port)
+    const configured = await this.diagnoseComfyUIConnection({ timeoutMs })
+    const configuredPort = normalizeLocalPort(configured?.connection?.port)
+    const requestedCandidates = Array.isArray(args.candidatePorts) ? args.candidatePorts : []
+    const candidatePorts = [...new Set([
+      requestedPort,
+      configuredPort,
+      ...requestedCandidates,
+      8188,
+      8189,
+      8190,
+      8191,
+      7860,
+    ].map(normalizeLocalPort).filter(Boolean))]
+
+    const probes = []
+    let reachable = configured?.connection?.ok ? configured : null
+    for (const port of candidatePorts) {
+      const diagnosis = port === configuredPort
+        ? configured
+        : await this.diagnoseComfyUIConnection({ port, timeoutMs })
+      const probe = {
+        port,
+        ok: Boolean(diagnosis?.connection?.ok),
+        httpBase: diagnosis?.connection?.httpBase || `http://127.0.0.1:${port}`,
+        summary: diagnosis?.summary || '',
+        nodeClassCount: diagnosis?.api?.objectInfo?.nodeClassCount || 0,
+        installMode: diagnosis?.installMode || null,
+        status: diagnosis?.api?.systemStats?.status || diagnosis?.api?.objectInfo?.status || null,
+        error: diagnosis?.api?.objectInfo?.error || diagnosis?.api?.systemStats?.error || '',
+      }
+      probes.push(probe)
+      if (!reachable && diagnosis?.connection?.ok) {
+        reachable = diagnosis
+      }
+    }
+
+    const installTypeArg = String(args.installType || 'auto').trim().toLowerCase()
+    const detectedMode = configured?.installMode?.mode || reachable?.installMode?.mode || 'unknown'
+    const installType = installTypeArg && installTypeArg !== 'auto' ? installTypeArg : detectedMode
+    const setupSteps = this.getComfySetupInstallSteps(installType, configured)
+
+    let update = null
+    let appliedFix = false
+    const reachablePort = normalizeLocalPort(reachable?.connection?.port)
+    const needsPortFix = Boolean(reachable?.connection?.ok && reachablePort && configuredPort && reachablePort !== configuredPort)
+    if (needsPortFix && this.setComfyUIConnection) {
+      update = await this.setComfyUIConnection({
+        port: reachablePort,
+        previewOnly: previewOnly || !applyFix,
+      })
+      appliedFix = applyFix && previewOnly === false && update?.success !== false
+    }
+
+    let validation = null
+    const nodeClasses = Array.isArray(args.nodeClasses)
+      ? args.nodeClasses.map((value) => String(value || '').trim()).filter(Boolean)
+      : []
+    if (reachable?.connection?.ok && nodeClasses.length > 0 && this.validateComfyUINodes) {
+      validation = await this.validateComfyUINodes({
+        port: reachablePort,
+        timeoutMs,
+        nodeClasses,
+      })
+    }
+
+    const connected = Boolean((!needsPortFix && configured?.connection?.ok) || appliedFix)
+    const summary = connected
+      ? 'ComfyStudio is connected to ComfyUI.'
+      : reachable
+        ? 'ComfyUI is running, but ComfyStudio needs a port-setting fix.'
+        : 'ComfyUI was not found on the checked local ports.'
+
+    const result = {
+      action: 'guide_comfyui_setup',
+      previewOnly,
+      summary,
+      connected,
+      needsPortFix,
+      appliedFix,
+      installType,
+      configured: {
+        summary: configured?.summary || '',
+        connection: configured?.connection || null,
+        api: configured?.api || null,
+        launcher: configured?.launcher || null,
+        installMode: configured?.installMode || null,
+        recommendations: configured?.recommendations || [],
+      },
+      reachable: reachable ? {
+        summary: reachable.summary || '',
+        connection: reachable.connection || null,
+        nodeClassCount: reachable?.api?.objectInfo?.nodeClassCount || 0,
+      } : null,
+      probes,
+      proposedChange: needsPortFix ? {
+        from: configured?.connection?.httpBase || null,
+        to: reachable?.connection?.httpBase || null,
+        port: reachablePort,
+        update,
+      } : null,
+      setupSteps,
+      validation,
+      assistantMessage: this.buildComfySetupUserMessage({
+        configured,
+        reachable,
+        probes,
+        installType,
+        previewOnly,
+        appliedFix,
+        validation,
+      }),
+      nextActions: connected
+        ? [
+          'Open Generate and run a small local workflow test.',
+          'If a workflow fails, inspect that workflow with inspect_comfystudio_workflow or validate_comfyui_nodes for missing custom nodes.',
+        ]
+        : reachable
+          ? [
+            previewOnly
+              ? `Ask the user for approval, then apply the safe port fix to ${reachable?.connection?.httpBase}.`
+              : 'Re-run diagnose_comfyui_connection to confirm the configured port is now healthy.',
+          ]
+          : [
+            "Start ComfyUI using the setup steps for the user's install type.",
+            'If the user can open ComfyUI in a browser, ask for the port in that URL and run guide_comfyui_setup again with that port.',
+          ],
+    }
+
+    return textResult(result)
+  }
+
   async controlComfyUILauncherTool(args = {}) {
     if (!this.controlComfyLauncher) {
       return errorResult('ComfyUI launcher control is not available. Restart ComfyStudio and try again.')
@@ -7301,6 +9643,187 @@ class ComfyStudioMcpServer {
     } catch (error) {
       return errorResult(`Could not inspect ComfyStudio workflow: ${error?.message || String(error)}`)
     }
+  }
+
+  async runRendererActionTool(action, args = {}, options = {}) {
+    const bridgeName = options.bridgeName || 'MCP action bridge'
+    const suggestedTool = options.suggestedTool || action
+    if (!this.performAction) {
+      return errorResult(`${bridgeName} is not available. Restart ComfyStudio and try again.`)
+    }
+    const payload = { ...(args || {}) }
+    if (typeof options.defaultPreviewOnly === 'boolean' && typeof payload.previewOnly !== 'boolean') {
+      payload.previewOnly = options.defaultPreviewOnly
+    }
+
+    try {
+      const result = await this.performAction({ action, payload })
+      const previewOnly = result?.previewOnly === true || payload.previewOnly === true
+      return textResult({
+        success: previewOnly ? undefined : result?.success !== false,
+        previewOnly,
+        action,
+        message: result?.message || (previewOnly
+          ? `${suggestedTool} plan returned by ComfyStudio.`
+          : `${suggestedTool} applied through ComfyStudio.`),
+        result,
+        suggestedApplyCall: previewOnly ? {
+          tool: suggestedTool,
+          arguments: {
+            ...payload,
+            previewOnly: false,
+          },
+        } : undefined,
+      })
+    } catch (error) {
+      return errorResult(`${suggestedTool} failed: ${error?.message || String(error)}`)
+    }
+  }
+
+  normalizeActionPlanSteps(args = {}) {
+    const rawSteps = Array.isArray(args.steps) ? args.steps : []
+    const steps = rawSteps.slice(0, MCP_ACTION_PLAN_MAX_STEPS).map((step, index) => {
+      const tool = String(step?.tool || step?.name || step?.action || '').trim()
+      const stepArgs = step?.arguments && typeof step.arguments === 'object'
+        ? step.arguments
+        : step?.payload && typeof step.payload === 'object'
+          ? step.payload
+          : {}
+      const allowed = MCP_ACTION_PLAN_WRITABLE_TOOLS.has(tool)
+      return {
+        index,
+        tool,
+        allowed,
+        arguments: stepArgs,
+        problem: tool
+          ? allowed
+            ? ''
+            : `Tool ${tool} is not allowed in run_mcp_action_plan.`
+          : 'Step is missing a tool/name/action.',
+      }
+    })
+    return {
+      steps,
+      rawCount: rawSteps.length,
+      truncated: rawSteps.length > MCP_ACTION_PLAN_MAX_STEPS,
+      invalidSteps: steps.filter((step) => !step.allowed),
+    }
+  }
+
+  async runMcpActionPlan(snapshot, args = {}) {
+    const plan = this.normalizeActionPlanSteps(args)
+    const previewOnly = args.previewOnly !== false
+    const label = String(args.label || args.name || 'MCP action plan').trim().slice(0, 120) || 'MCP action plan'
+
+    if (plan.steps.length === 0) {
+      return errorResult('Provide at least one action-plan step.')
+    }
+    if (plan.invalidSteps.length > 0) {
+      return textResult({
+        success: false,
+        previewOnly: true,
+        action: 'run_mcp_action_plan',
+        message: 'Action plan contains unsupported steps. No actions were run.',
+        label,
+        invalidSteps: plan.invalidSteps,
+        steps: plan.steps,
+      })
+    }
+
+    if (previewOnly) {
+      return textResult({
+        previewOnly: true,
+        action: 'run_mcp_action_plan',
+        message: `Action plan validated. ${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'} would run after approval.`,
+        label,
+        stepCount: plan.steps.length,
+        rawStepCount: plan.rawCount,
+        truncated: plan.truncated,
+        createCheckpointFirst: args.createCheckpointFirst !== false,
+        stopOnError: args.stopOnError !== false,
+        steps: plan.steps,
+        suggestedApplyCall: {
+          tool: 'run_mcp_action_plan',
+          arguments: {
+            ...args,
+            previewOnly: false,
+          },
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP action-plan bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const results = []
+    let checkpoint = null
+    if (args.createCheckpointFirst !== false) {
+      const checkpointResult = await this.callTool('create_project_checkpoint', {
+        label,
+        previewOnly: false,
+      })
+      let parsedCheckpoint = null
+      try {
+        parsedCheckpoint = JSON.parse(checkpointResult?.content?.[0]?.text || 'null')
+      } catch {
+        parsedCheckpoint = null
+      }
+      checkpoint = parsedCheckpoint || checkpointResult
+      results.push({
+        index: -1,
+        tool: 'create_project_checkpoint',
+        success: !checkpointResult?.isError && parsedCheckpoint?.success !== false,
+        result: checkpoint,
+      })
+      if (checkpointResult?.isError && args.stopOnError !== false) {
+        return textResult({
+          success: false,
+          action: 'run_mcp_action_plan',
+          message: 'Action plan stopped because the safety checkpoint could not be created.',
+          checkpoint,
+          results,
+        })
+      }
+    }
+
+    const stopOnError = args.stopOnError !== false
+    for (const step of plan.steps) {
+      const stepArgs = {
+        ...(step.arguments || {}),
+        previewOnly: step.arguments?.previewOnly === true ? true : false,
+      }
+      const response = await this.callTool(step.tool, stepArgs)
+      let parsed = null
+      try {
+        parsed = JSON.parse(response?.content?.[0]?.text || 'null')
+      } catch {
+        parsed = null
+      }
+      const success = !response?.isError && parsed?.success !== false
+      results.push({
+        index: step.index,
+        tool: step.tool,
+        success,
+        previewOnly: parsed?.previewOnly === true || stepArgs.previewOnly === true,
+        result: parsed || response,
+      })
+      if (!success && stopOnError) break
+    }
+
+    const failedCount = results.filter((result) => result.index >= 0 && result.success === false).length
+    return textResult({
+      success: failedCount === 0,
+      action: 'run_mcp_action_plan',
+      message: failedCount === 0
+        ? `Ran ${plan.steps.length} action-plan step${plan.steps.length === 1 ? '' : 's'}.`
+        : `Action plan ran with ${failedCount} failed step${failedCount === 1 ? '' : 's'}.`,
+      label,
+      checkpoint,
+      stepCount: plan.steps.length,
+      failedCount,
+      results,
+    })
   }
 
   async prepareGenerationFromTimelineContext(snapshot, args = {}) {
@@ -8147,6 +10670,62 @@ class ComfyStudioMcpServer {
     })
   }
 
+  async createProject(snapshot, args = {}) {
+    if (!this.performAction) {
+      return errorResult('MCP project bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const previewOnly = args.previewOnly !== false
+    const result = await this.performAction({
+      action: 'create_project',
+      payload: {
+        ...args,
+        previewOnly,
+      },
+    })
+
+    return textResult({
+      success: !previewOnly,
+      action: 'create_project',
+      message: previewOnly
+        ? 'Project creation plan only. No project folder was created.'
+        : 'Project created and opened.',
+      result,
+      suggestedApplyCall: previewOnly ? {
+        tool: 'create_project',
+        arguments: { ...args, previewOnly: false },
+      } : undefined,
+    })
+  }
+
+  async duplicateProject(snapshot, args = {}) {
+    if (!this.performAction) {
+      return errorResult('MCP project bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const previewOnly = args.previewOnly !== false
+    const result = await this.performAction({
+      action: 'duplicate_project',
+      payload: {
+        ...args,
+        previewOnly,
+      },
+    })
+
+    return textResult({
+      success: !previewOnly,
+      action: 'duplicate_project',
+      message: previewOnly
+        ? 'Project duplicate plan only. No project folder was copied.'
+        : 'Project duplicated and opened.',
+      result,
+      suggestedApplyCall: previewOnly ? {
+        tool: 'duplicate_project',
+        arguments: { ...args, previewOnly: false },
+      } : undefined,
+    })
+  }
+
   async addTrack(snapshot, args = {}) {
     const timeline = snapshot.currentTimeline || null
     if (!timeline) return errorResult('No current timeline is available.')
@@ -8186,6 +10765,612 @@ class ComfyStudioMcpServer {
     return textResult({
       success: true,
       action: 'add_track',
+      plan,
+      result,
+    })
+  }
+
+  async updateTrack(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    const trackId = String(args.trackId || args.id || '').trim()
+    if (!trackId) return errorResult('Provide trackId from get_timeline.')
+    const track = (timeline.tracks || []).find((candidate) => candidate?.id === trackId)
+    if (!track) return errorResult(`Track ${trackId} was not found.`)
+
+    const updates = {}
+    if (Object.prototype.hasOwnProperty.call(args, 'name')) updates.name = String(args.name || '').trim().slice(0, 80)
+    if (Object.prototype.hasOwnProperty.call(args, 'muted')) updates.muted = args.muted === true
+    if (Object.prototype.hasOwnProperty.call(args, 'locked')) updates.locked = args.locked === true
+    if (Object.prototype.hasOwnProperty.call(args, 'visible')) updates.visible = args.visible !== false
+    if (track.type === 'audio' && Object.prototype.hasOwnProperty.call(args, 'channels')) {
+      updates.channels = String(args.channels || '').trim().toLowerCase() === 'mono' ? 'mono' : 'stereo'
+    }
+    const requestedIndex = Number(args.index ?? args.newIndex)
+    const hasIndex = Number.isFinite(requestedIndex)
+    if (Object.keys(updates).length === 0 && !hasIndex) {
+      return errorResult('Provide at least one update: name, muted, locked, visible, channels, or index.')
+    }
+
+    const plan = {
+      track: trackRef(track),
+      updates,
+      newIndex: hasIndex ? Math.max(0, Math.floor(requestedIndex)) : null,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'update_track',
+        message: 'Track update plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'update_track',
+          arguments: { ...args, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP track bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'update_track',
+      payload: { ...args, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'update_track',
+      plan,
+      result,
+    })
+  }
+
+  async removeTrack(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    const trackId = String(args.trackId || args.id || '').trim()
+    if (!trackId) return errorResult('Provide trackId from get_timeline.')
+    const track = (timeline.tracks || []).find((candidate) => candidate?.id === trackId)
+    if (!track) return errorResult(`Track ${trackId} was not found.`)
+    const clipsOnTrack = (timeline.clips || []).filter((clip) => clip?.trackId === trackId)
+
+    const plan = {
+      track: trackRef(track),
+      removedClipCount: clipsOnTrack.length,
+      clips: clipsOnTrack.slice(0, 50).map(clipRef),
+      clipLimitApplied: clipsOnTrack.length > 50,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'remove_track',
+        message: 'Track removal plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'remove_track',
+          arguments: { trackId, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP track bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'remove_track',
+      payload: { trackId, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'remove_track',
+      plan,
+      result,
+    })
+  }
+
+  async switchTimeline(snapshot, args = {}) {
+    const timelineId = String(args.timelineId || args.id || '').trim()
+    if (!timelineId) return errorResult('Provide timelineId.')
+    const timeline = (snapshot.timelines || []).find((candidate) => candidate?.id === timelineId)
+    if (!timeline) return errorResult(`Timeline ${timelineId} was not found.`)
+
+    const plan = { timeline: timelineRef(timeline, snapshot.project?.settings || {}) }
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'switch_timeline',
+        message: 'Timeline switch plan only. The active timeline was not changed.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'switch_timeline',
+          arguments: { timelineId, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP timeline bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'switch_timeline',
+      payload: { timelineId, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'switch_timeline',
+      plan,
+      result,
+    })
+  }
+
+  async renameTimeline(snapshot, args = {}) {
+    const timelineId = String(args.timelineId || args.id || '').trim()
+    const name = String(args.name || args.timelineName || args.sequenceName || '').trim().replace(/\s+/g, ' ').slice(0, 120)
+    if (!timelineId) return errorResult('Provide timelineId.')
+    if (!name) return errorResult('Provide a new timeline name.')
+    const timeline = (snapshot.timelines || []).find((candidate) => candidate?.id === timelineId)
+    if (!timeline) return errorResult(`Timeline ${timelineId} was not found.`)
+
+    const plan = {
+      before: timelineRef(timeline, snapshot.project?.settings || {}),
+      name,
+    }
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'rename_timeline',
+        message: 'Timeline rename plan only. No project change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'rename_timeline',
+          arguments: { timelineId, name, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP timeline bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'rename_timeline',
+      payload: { timelineId, name, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'rename_timeline',
+      plan,
+      result,
+    })
+  }
+
+  async duplicateTimeline(snapshot, args = {}) {
+    const timelineId = String(args.timelineId || args.id || '').trim()
+    if (!timelineId) return errorResult('Provide timelineId.')
+    const timeline = (snapshot.timelines || []).find((candidate) => candidate?.id === timelineId)
+    if (!timeline) return errorResult(`Timeline ${timelineId} was not found.`)
+
+    const name = String(args.name || args.timelineName || args.sequenceName || '').trim().replace(/\s+/g, ' ').slice(0, 120)
+    const plan = {
+      source: timelineRef(timeline, snapshot.project?.settings || {}),
+      name: name || `${timeline.name || 'Timeline'} copy`,
+      switchToTimeline: args.switchToTimeline === true || args.activate === true,
+    }
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'duplicate_timeline',
+        message: 'Timeline duplicate plan only. No project change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'duplicate_timeline',
+          arguments: { ...args, timelineId, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP timeline bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'duplicate_timeline',
+      payload: { ...args, timelineId, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'duplicate_timeline',
+      plan,
+      result,
+    })
+  }
+
+  async deleteTimeline(snapshot, args = {}) {
+    const timelineId = String(args.timelineId || args.id || '').trim()
+    if (!timelineId) return errorResult('Provide timelineId.')
+    const timeline = (snapshot.timelines || []).find((candidate) => candidate?.id === timelineId)
+    if (!timeline) return errorResult(`Timeline ${timelineId} was not found.`)
+
+    const plan = {
+      timeline: timelineRef(timeline, snapshot.project?.settings || {}),
+      warning: 'Deleting a timeline removes that sequence from the project.',
+    }
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'delete_timeline',
+        message: 'Timeline delete plan only. No project change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'delete_timeline',
+          arguments: { timelineId, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP timeline bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'delete_timeline',
+      payload: { timelineId, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'delete_timeline',
+      plan,
+      result,
+    })
+  }
+
+  async addTransition(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    let transitionType
+    try {
+      transitionType = normalizeMcpTransitionType(args.transitionType || args.type || (args.clipId ? 'fade-black' : 'dissolve'))
+    } catch (error) {
+      return errorResult(error.message)
+    }
+    const durationSeconds = normalizeMcpTransitionDuration(args.durationSeconds ?? args.duration, 0.5)
+    const clipAId = String(args.clipAId || '').trim()
+    const clipBId = String(args.clipBId || '').trim()
+    const clipId = String(args.clipId || '').trim()
+    const edge = normalizeMcpTransitionEdge(args.edge)
+    const settings = buildMcpTransitionSettings(args)
+    const kind = clipAId && clipBId ? 'between' : 'edge'
+
+    let plan
+    if (kind === 'between') {
+      const clipA = (timeline.clips || []).find((clip) => clip?.id === clipAId)
+      const clipB = (timeline.clips || []).find((clip) => clip?.id === clipBId)
+      if (!clipA || !clipB) return errorResult('Both clipAId and clipBId must refer to clips on the active timeline.')
+      if (clipA.trackId !== clipB.trackId) return errorResult('Between transitions require two clips on the same track.')
+      plan = {
+        kind,
+        transitionType,
+        durationSeconds,
+        settings,
+        clipA: clipRef(clipA),
+        clipB: clipRef(clipB),
+        track: trackRef(getTrackById(timeline, clipA.trackId)),
+        existingTransition: transitionRef((timeline.transitions || []).find((transition) => (
+          (transition.clipAId === clipAId && transition.clipBId === clipBId)
+          || (transition.clipAId === clipBId && transition.clipBId === clipAId)
+        ))),
+      }
+    } else {
+      if (!clipId) return errorResult('Provide clipId plus edge, or clipAId and clipBId.')
+      const clip = (timeline.clips || []).find((candidate) => candidate?.id === clipId)
+      if (!clip) return errorResult(`Clip ${clipId} was not found.`)
+      plan = {
+        kind,
+        transitionType,
+        durationSeconds,
+        edge,
+        settings,
+        clip: clipRef(clip),
+        track: trackRef(getTrackById(timeline, clip.trackId)),
+        existingTransition: transitionRef((timeline.transitions || []).find((transition) => (
+          transition.kind === 'edge' && transition.clipId === clipId && transition.edge === edge
+        ))),
+      }
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'add_transition',
+        message: 'Transition add plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'add_transition',
+          arguments: { ...args, transitionType, durationSeconds, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP transition bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'add_transition',
+      payload: { ...args, transitionType, durationSeconds, settings, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'add_transition',
+      plan,
+      result,
+    })
+  }
+
+  async updateTransition(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    const transitionId = String(args.transitionId || args.id || '').trim()
+    if (!transitionId) return errorResult('Provide transitionId from get_timeline includeTransitions=true.')
+    const transition = (timeline.transitions || []).find((candidate) => candidate?.id === transitionId)
+    if (!transition) return errorResult(`Transition ${transitionId} was not found.`)
+
+    const updates = {}
+    if (args.transitionType || args.type) {
+      try {
+        updates.type = normalizeMcpTransitionType(args.transitionType || args.type)
+      } catch (error) {
+        return errorResult(error.message)
+      }
+    }
+    if (args.durationSeconds !== undefined || args.duration !== undefined) {
+      updates.duration = normalizeMcpTransitionDuration(args.durationSeconds ?? args.duration, transition.duration || 0.5)
+    }
+    const settings = buildMcpTransitionSettings(args)
+    if (Object.keys(settings).length > 0) updates.settings = settings
+    if (Object.keys(updates).length === 0) return errorResult('Provide at least one update: transitionType, durationSeconds, alignment, or settings.')
+
+    const plan = {
+      before: transitionRef(transition),
+      updates,
+      afterEstimate: {
+        ...transitionRef(transition),
+        type: updates.type || transition.type,
+        duration: roundTime(updates.duration ?? transition.duration),
+        settings: {
+          ...(transition.settings || {}),
+          ...(updates.settings || {}),
+        },
+      },
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'update_transition',
+        message: 'Transition update plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'update_transition',
+          arguments: { ...args, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP transition bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'update_transition',
+      payload: { ...args, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'update_transition',
+      plan,
+      result,
+    })
+  }
+
+  async removeTransitions(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    const transitionIds = normalizeMcpIdList(args.transitionIds || args.transitionId || args.ids || args.id)
+    if (transitionIds.length === 0) return errorResult('Provide transitionId or transitionIds.')
+    const transitionsById = new Map((timeline.transitions || []).map((transition) => [transition.id, transition]))
+    const targets = transitionIds.map((id) => transitionsById.get(id)).filter(Boolean)
+    const missingTransitionIds = transitionIds.filter((id) => !transitionsById.has(id))
+    const plan = {
+      transitionCount: targets.length,
+      missingTransitionIds,
+      transitions: targets.map(transitionRef),
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'remove_transitions',
+        message: 'Transition removal plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'remove_transitions',
+          arguments: { transitionIds: targets.map((transition) => transition.id), previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP transition bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'remove_transitions',
+      payload: { transitionIds, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'remove_transitions',
+      plan,
+      result,
+    })
+  }
+
+  async moveClips(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    const entries = Array.isArray(args.clips) ? args.clips : [{ ...args }]
+    const plans = entries.map((entry) => {
+      const clipId = String(entry?.clipId || entry?.id || '').trim()
+      const clip = (timeline.clips || []).find((candidate) => candidate?.id === clipId)
+      if (!clip) return { clipId, error: 'Clip not found.' }
+      const targetTrackId = String(entry.trackId || args.trackId || clip.trackId || '').trim()
+      const track = getTrackById(timeline, targetTrackId)
+      if (!track) return { clipId, error: `Track ${targetTrackId} was not found.` }
+      if (track.locked) return { clipId, error: `Track ${targetTrackId} is locked.` }
+      const startValue = entry.startSeconds ?? entry.startTime ?? args.startSeconds ?? args.startTime ?? clip.startTime
+      return {
+        clip: clipRef(clip),
+        targetTrack: trackRef(track),
+        startSeconds: roundTime(Math.max(0, Number(startValue) || 0)),
+        previousTrackId: clip.trackId,
+        previousStartSeconds: roundTime(getClipStart(clip)),
+      }
+    })
+    const errors = plans.filter((plan) => plan.error)
+    if (errors.length > 0) return errorResult(`Could not build move plan: ${errors.map((entry) => `${entry.clipId || 'unknown'} ${entry.error}`).join('; ')}`)
+
+    const plan = {
+      moveCount: plans.length,
+      resolveOverlaps: args.resolveOverlaps === true,
+      moves: plans,
+    }
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'move_clips',
+        message: 'Clip move plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'move_clips',
+          arguments: { ...args, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP clip edit bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'move_clips',
+      payload: { ...args, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'move_clips',
+      plan,
+      result,
+    })
+  }
+
+  async trimClips(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    const entries = Array.isArray(args.clips) ? args.clips : [{ ...args }]
+    const plans = entries.map((entry) => {
+      const clipId = String(entry?.clipId || entry?.id || '').trim()
+      const clip = (timeline.clips || []).find((candidate) => candidate?.id === clipId)
+      if (!clip) return { clipId, error: 'Clip not found.' }
+      const updates = {}
+      if (entry.startSeconds !== undefined || entry.startTime !== undefined) updates.startTime = roundTime(Math.max(0, Number(entry.startSeconds ?? entry.startTime) || 0))
+      if (entry.durationSeconds !== undefined || entry.duration !== undefined) {
+        const duration = Number(entry.durationSeconds ?? entry.duration)
+        if (!Number.isFinite(duration) || duration <= 0) return { clipId, error: 'durationSeconds must be greater than 0.' }
+        updates.duration = roundTime(duration)
+      }
+      if (entry.trimStartSeconds !== undefined || entry.trimStart !== undefined) updates.trimStart = Math.max(0, Number(entry.trimStartSeconds ?? entry.trimStart) || 0)
+      if (entry.trimEndSeconds !== undefined || entry.trimEnd !== undefined) updates.trimEnd = Math.max(0, Number(entry.trimEndSeconds ?? entry.trimEnd) || 0)
+      if (Object.keys(updates).length === 0) return { clipId, error: 'No trim updates were provided.' }
+      return {
+        clip: clipRef(clip),
+        before: {
+          startTime: roundTime(getClipStart(clip)),
+          duration: roundTime(getClipDuration(clip)),
+          trimStart: roundTime(toFiniteNumber(clip.trimStart, 0)),
+          trimEnd: Number.isFinite(Number(clip.trimEnd)) ? roundTime(Number(clip.trimEnd)) : null,
+        },
+        updates,
+      }
+    })
+    const errors = plans.filter((plan) => plan.error)
+    if (errors.length > 0) return errorResult(`Could not build trim plan: ${errors.map((entry) => `${entry.clipId || 'unknown'} ${entry.error}`).join('; ')}`)
+
+    const plan = {
+      trimCount: plans.length,
+      trims: plans,
+    }
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'trim_clips',
+        message: 'Clip trim plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'trim_clips',
+          arguments: { ...args, previewOnly: false },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP clip edit bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'trim_clips',
+      payload: { ...args, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'trim_clips',
+      plan,
+      result,
+    })
+  }
+
+  async deleteClips(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+
+    let clipIds = normalizeMcpIdList(args.clipIds || args.clipId || args.ids || args.id)
+    const filter = String(args.filter || '').trim().toLowerCase()
+    if (clipIds.length === 0 && filter) {
+      if (filter === 'disabled') clipIds = (timeline.clips || []).filter((clip) => clip?.enabled === false).map((clip) => clip.id)
+      if (filter === 'selected') clipIds = Array.isArray(timeline.selectedClipIds) ? timeline.selectedClipIds : []
+      if (filter === 'labeled') clipIds = (timeline.clips || []).filter((clip) => clip?.labelColor).map((clip) => clip.id)
+    }
+    clipIds = [...new Set(clipIds)]
+    if (clipIds.length === 0) return errorResult('Provide clipId/clipIds, or filter disabled, selected, or labeled.')
+
+    const limit = clampLimit(args.limit, 100, 1000)
+    if (clipIds.length > limit) return errorResult(`delete_clips matched ${clipIds.length} clips, above limit ${limit}.`)
+    const clipsById = new Map((timeline.clips || []).map((clip) => [clip.id, clip]))
+    const targets = clipIds.map((id) => clipsById.get(id)).filter(Boolean)
+    const missingClipIds = clipIds.filter((id) => !clipsById.has(id))
+    const plan = {
+      deleteCount: targets.length,
+      ripple: args.ripple === true,
+      filter: filter || null,
+      missingClipIds,
+      clips: targets.map(clipRef),
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'delete_clips',
+        message: 'Clip delete plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'delete_clips',
+          arguments: {
+            clipIds: targets.map((clip) => clip.id),
+            ripple: args.ripple === true,
+            limit,
+            previewOnly: false,
+          },
+        },
+      })
+    }
+
+    if (!this.performAction) return errorResult('MCP clip edit bridge is not available. Restart ComfyStudio and try again.')
+    const result = await this.performAction({
+      action: 'delete_clips',
+      payload: { ...args, clipIds, previewOnly: false },
+    })
+    return textResult({
+      success: true,
+      action: 'delete_clips',
       plan,
       result,
     })
@@ -8349,6 +11534,41 @@ class ComfyStudioMcpServer {
     })
   }
 
+  async moveUnusedAssetsToFolder(_snapshot, args = {}) {
+    if (!this.performAction) {
+      return errorResult('MCP unused asset cleanup bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const previewOnly = args.previewOnly !== false
+    try {
+      const result = await this.performAction({
+        action: 'move_unused_assets_to_folder',
+        payload: {
+          ...args,
+          previewOnly,
+        },
+      })
+      return textResult({
+        success: previewOnly ? undefined : true,
+        previewOnly,
+        action: 'move_unused_assets_to_folder',
+        message: result?.message || (previewOnly
+          ? 'Unused asset cleanup plan returned by ComfyStudio.'
+          : 'Unused assets moved by ComfyStudio.'),
+        result,
+        suggestedApplyCall: previewOnly ? {
+          tool: 'move_unused_assets_to_folder',
+          arguments: {
+            ...args,
+            previewOnly: false,
+          },
+        } : undefined,
+      })
+    } catch (error) {
+      return errorResult(`Could not prepare unused asset cleanup: ${error?.message || String(error)}`)
+    }
+  }
+
   async addAssetToTimeline(snapshot, args = {}) {
     const plan = resolveAssetTimelinePlacementPlan(snapshot, args)
     if (plan.error) return errorResult(plan.error)
@@ -8393,6 +11613,41 @@ class ComfyStudioMcpServer {
       plan,
       result,
     })
+  }
+
+  async replaceClipWithAsset(_snapshot, args = {}) {
+    if (!this.performAction) {
+      return errorResult('MCP clip replacement bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const previewOnly = args.previewOnly !== false
+    try {
+      const result = await this.performAction({
+        action: 'replace_clip_with_asset',
+        payload: {
+          ...args,
+          previewOnly,
+        },
+      })
+      return textResult({
+        success: previewOnly ? undefined : true,
+        previewOnly,
+        action: 'replace_clip_with_asset',
+        message: result?.message || (previewOnly
+          ? 'Clip replacement plan returned by ComfyStudio.'
+          : 'Clip replaced through ComfyStudio.'),
+        result,
+        suggestedApplyCall: previewOnly ? {
+          tool: 'replace_clip_with_asset',
+          arguments: {
+            ...args,
+            previewOnly: false,
+          },
+        } : undefined,
+      })
+    } catch (error) {
+      return errorResult(`Could not replace clip with asset: ${error?.message || String(error)}`)
+    }
   }
 
   async addSolidColor(snapshot, args = {}) {
@@ -8498,6 +11753,56 @@ class ComfyStudioMcpServer {
       success: true,
       action: 'add_assets_to_timeline',
       message: 'Assets placed on the timeline through ComfyStudio.',
+      plan,
+      result,
+    })
+  }
+
+  async addAdjustmentClip(snapshot, args = {}) {
+    const plan = resolveAdjustmentClipPlan(snapshot, args)
+    if (plan.error) return errorResult(plan.error)
+
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+      name: plan.name,
+      trackId: plan.createTrack ? undefined : plan.track?.id,
+      createTrack: plan.createTrack,
+      trackName: plan.createTrack ? plan.track?.name : undefined,
+      startSeconds: plan.startSeconds,
+      durationSeconds: plan.durationSeconds,
+      enabled: plan.enabled,
+      adjustments: plan.adjustments,
+      transform: plan.transform || undefined,
+      keyframes: plan.keyframes,
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'add_adjustment_clip',
+        message: 'Adjustment clip creation plan only. No timeline change was made.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'add_adjustment_clip',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP adjustment clip bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'add_adjustment_clip',
+      payload: applyArgs,
+    })
+
+    return textResult({
+      success: true,
+      action: 'add_adjustment_clip',
+      message: 'Adjustment clip created through ComfyStudio.',
       plan,
       result,
     })
@@ -8765,6 +12070,100 @@ class ComfyStudioMcpServer {
     })
   }
 
+  async listGlslEffects(args = {}) {
+    if (this.performAction) {
+      try {
+        const result = await this.performAction({
+          action: 'list_glsl_effects',
+          payload: args,
+        })
+        return textResult(result)
+      } catch (error) {
+        return errorResult(`Could not list GLSL effects: ${error?.message || String(error)}`)
+      }
+    }
+
+    return textResult({
+      warning: 'Renderer effect registry is not available. Restart ComfyStudio for full parameter details.',
+      effectIds: MCP_GLSL_EFFECT_IDS,
+    })
+  }
+
+  async addGlslEffect(snapshot, args = {}) {
+    const resolved = getEffectClipForMcp(snapshot, args.clipId)
+    if (resolved.error) return errorResult(resolved.error)
+
+    if (!this.performAction) {
+      return errorResult('MCP effect bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'add_glsl_effect',
+      payload: {
+        ...args,
+        previewOnly: args.previewOnly !== false,
+      },
+    })
+
+    return textResult({
+      success: args.previewOnly === false ? true : undefined,
+      previewOnly: args.previewOnly !== false,
+      action: 'add_glsl_effect',
+      before: summarizeEffectClipForMcp(resolved.clip),
+      result,
+    })
+  }
+
+  async updateGlslEffect(snapshot, args = {}) {
+    const resolved = getEffectClipForMcp(snapshot, args.clipId)
+    if (resolved.error) return errorResult(resolved.error)
+
+    if (!this.performAction) {
+      return errorResult('MCP effect bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'update_glsl_effect',
+      payload: {
+        ...args,
+        previewOnly: args.previewOnly !== false,
+      },
+    })
+
+    return textResult({
+      success: args.previewOnly === false ? true : undefined,
+      previewOnly: args.previewOnly !== false,
+      action: 'update_glsl_effect',
+      before: summarizeEffectClipForMcp(resolved.clip),
+      result,
+    })
+  }
+
+  async removeGlslEffect(snapshot, args = {}) {
+    const resolved = getEffectClipForMcp(snapshot, args.clipId)
+    if (resolved.error) return errorResult(resolved.error)
+
+    if (!this.performAction) {
+      return errorResult('MCP effect bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'remove_glsl_effect',
+      payload: {
+        ...args,
+        previewOnly: args.previewOnly !== false,
+      },
+    })
+
+    return textResult({
+      success: args.previewOnly === false ? true : undefined,
+      previewOnly: args.previewOnly !== false,
+      action: 'remove_glsl_effect',
+      before: summarizeEffectClipForMcp(resolved.clip),
+      result,
+    })
+  }
+
   async setClipKeyframes(snapshot, args = {}) {
     const timeline = snapshot.currentTimeline || null
     if (!timeline) return errorResult('No current timeline is available.')
@@ -8840,6 +12239,42 @@ class ComfyStudioMcpServer {
     })
   }
 
+  async addDipToBlack(_snapshot, args = {}) {
+    if (!this.performAction) {
+      return errorResult('MCP dip-to-black bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const previewOnly = args.previewOnly !== false
+    try {
+      const result = await this.performAction({
+        action: 'add_dip_to_black',
+        payload: {
+          ...args,
+          previewOnly,
+        },
+      })
+
+      return textResult({
+        success: previewOnly ? undefined : true,
+        previewOnly,
+        action: 'add_dip_to_black',
+        message: result?.message || (previewOnly
+          ? 'Dip-to-black opacity keyframe plan returned by ComfyStudio.'
+          : 'Dip-to-black opacity keyframes applied through ComfyStudio.'),
+        result,
+        suggestedApplyCall: previewOnly ? {
+          tool: 'add_dip_to_black',
+          arguments: {
+            ...args,
+            previewOnly: false,
+          },
+        } : undefined,
+      })
+    } catch (error) {
+      return errorResult(`Could not add dip-to-black keyframes: ${error?.message || String(error)}`)
+    }
+  }
+
   async exportTimeline(snapshot, args = {}) {
     const readiness = checkExportReadiness(snapshot, args)
     if (readiness.error) return errorResult(readiness.error)
@@ -8891,6 +12326,152 @@ class ComfyStudioMcpServer {
       action: 'export_timeline',
       message: 'Export started in the ComfyStudio export worker.',
       ...exportPlan,
+      result,
+    })
+  }
+
+  async exportDeliveryBatch(snapshot, args = {}) {
+    const batchPlan = buildExportDeliveryBatchPlan(snapshot, args)
+    if (batchPlan.error) return errorResult(batchPlan.error)
+
+    const previewOnly = args.previewOnly !== false
+    const applyArgs = {
+      ...args,
+      previewOnly: false,
+    }
+
+    if (previewOnly) {
+      return textResult({
+        previewOnly: true,
+        action: 'export_delivery_batch',
+        message: 'Batch export plan only. No renders were started.',
+        plan: batchPlan,
+        suggestedApplyCall: {
+          tool: 'export_delivery_batch',
+          arguments: applyArgs,
+        },
+      })
+    }
+
+    if (batchPlan.blockedCount > 0) {
+      return textResult({
+        success: false,
+        action: 'export_delivery_batch',
+        message: `Batch export was not started because ${batchPlan.blockedCount} target${batchPlan.blockedCount === 1 ? ' has' : 's have'} blockers.`,
+        plan: batchPlan,
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP batch export bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const stopOnError = args.stopOnError !== false
+    const results = []
+    for (const target of batchPlan.targets) {
+      const targetResult = await this.exportTimeline(snapshot, {
+        ...target.args,
+        previewOnly: false,
+      })
+      let parsed = null
+      try {
+        parsed = JSON.parse(targetResult?.content?.[0]?.text || 'null')
+      } catch {
+        parsed = null
+      }
+      results.push({
+        index: target.index,
+        filename: target.plan?.settings?.filename || target.args.filename || '',
+        target: target.plan?.settings || target.args,
+        success: targetResult?.isError ? false : parsed?.success !== false,
+        result: parsed || targetResult,
+      })
+      if (stopOnError && (targetResult?.isError || parsed?.success === false)) break
+    }
+
+    const failedCount = results.filter((result) => result.success === false).length
+    return textResult({
+      success: failedCount === 0,
+      action: 'export_delivery_batch',
+      message: failedCount === 0
+        ? `Started ${results.length} delivery export${results.length === 1 ? '' : 's'} through ComfyStudio.`
+        : `Started ${results.length} delivery export${results.length === 1 ? '' : 's'}, with ${failedCount} failure${failedCount === 1 ? '' : 's'}.`,
+      plan: batchPlan,
+      results,
+    })
+  }
+
+  async exportFcpXml(snapshot, args = {}) {
+    const timeline = snapshot.currentTimeline || null
+    if (!timeline) return errorResult('No current timeline is available.')
+    const projectPath = String(snapshot.project?.path || '').trim()
+    if (!projectPath) return errorResult('Open a saved project before exporting FCPXML.')
+
+    const assetsById = new Map((snapshot.assets || []).map((asset) => [asset.id, asset]))
+    const exportableClips = (timeline.clips || []).filter((clip) => {
+      if (clip?.enabled === false) return false
+      if (!['video', 'audio', 'image'].includes(String(clip?.type || '').toLowerCase())) return false
+      const asset = assetsById.get(clip.assetId)
+      return Boolean(asset?.absolutePath || asset?.path)
+    })
+    if (exportableClips.length === 0) {
+      return errorResult('No media clips with project file paths are available for FCPXML export.')
+    }
+
+    const filename = String(args.filename || `${snapshot.project?.name || 'ComfyStudio'}_${timeline.name || 'Timeline'}`).trim()
+    const outputPath = String(args.outputPath || '').trim()
+    const plan = {
+      projectPath,
+      outputPath: outputPath || 'project renders folder',
+      filename: filename || `${snapshot.project?.name || 'ComfyStudio'}_${timeline.name || 'Timeline'}`,
+      timeline: {
+        id: timeline.id,
+        name: timeline.name,
+        width: timeline.width,
+        height: timeline.height,
+        fps: timeline.fps,
+        duration: timeline.duration,
+      },
+      exportableClipCount: exportableClips.length,
+      skippedClipCount: (timeline.clips || []).length - exportableClips.length,
+      note: 'FCPXML exports media clips with project file paths plus static transform data where supported.',
+    }
+
+    if (args.previewOnly !== false) {
+      return textResult({
+        previewOnly: true,
+        action: 'export_fcpxml',
+        message: 'FCPXML export plan only. No file was written.',
+        plan,
+        suggestedApplyCall: {
+          tool: 'export_fcpxml',
+          arguments: {
+            filename,
+            ...(outputPath ? { outputPath } : {}),
+            previewOnly: false,
+          },
+        },
+      })
+    }
+
+    if (!this.performAction) {
+      return errorResult('MCP FCPXML export bridge is not available. Restart ComfyStudio and try again.')
+    }
+
+    const result = await this.performAction({
+      action: 'export_fcpxml',
+      payload: {
+        filename,
+        outputPath,
+        previewOnly: false,
+      },
+    })
+
+    return textResult({
+      success: true,
+      action: 'export_fcpxml',
+      message: 'FCPXML exported through ComfyStudio.',
+      plan,
       result,
     })
   }

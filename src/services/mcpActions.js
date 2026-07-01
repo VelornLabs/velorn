@@ -1,14 +1,20 @@
 import useTimelineStore from '../stores/timelineStore'
-import useProjectStore from '../stores/projectStore'
+import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useAssetsStore from '../stores/assetsStore'
 import { useFrameForAIStore } from '../stores/frameForAIStore'
 import { captureTimelineFrameAt, getTopmostVideoOrImageClipAtTime } from '../utils/captureTimelineFrame'
 import { generateColorMatteBlob } from '../utils/overlayGenerators'
 import { DEFAULT_SHAPE_PROPERTIES, getShapeDisplayName, normalizeShapeProperties } from '../utils/shapes'
+import { EFFECT_TYPES, getEffectPropertyId, getEffectTypeDefinition } from '../utils/effects'
+import { normalizeAdjustmentSettings } from '../utils/adjustments'
 import { saveLocalComfyConnectionPort } from './localComfyConnection'
-import { writeGeneratedOverlayToProject } from './fileSystem'
+import { getAbsoluteFileUrl, importAsset, writeGeneratedOverlayToProject } from './fileSystem'
+import buildFcpXml from './fcpxmlExporter'
 
 export const MCP_ACTION_BRIDGE_VERSION = 2
+
+const MCP_PROJECT_CHECKPOINTS = new Map()
+const MCP_PROJECT_CHECKPOINT_LIMIT = 20
 
 function normalizeClipLabelColor(color) {
   const value = String(color || '').trim()
@@ -36,6 +42,20 @@ function summarizeClip(clip) {
     startTime: Number(clip.startTime) || 0,
     duration: Number(clip.duration) || 0,
     labelColor: clip.labelColor || '',
+  }
+}
+
+function summarizeClipWithAsset(clip, asset = null) {
+  return {
+    ...summarizeClip(clip),
+    assetId: clip?.assetId || null,
+    asset: asset ? summarizeAsset(asset) : null,
+    enabled: clip?.enabled !== false,
+    trimStart: Number(clip?.trimStart) || 0,
+    trimEnd: Number.isFinite(Number(clip?.trimEnd)) ? Number(clip.trimEnd) : null,
+    sourceDuration: clip?.sourceDuration === Infinity ? 'Infinity' : (Number.isFinite(Number(clip?.sourceDuration)) ? Number(clip.sourceDuration) : null),
+    transform: clip?.transform || {},
+    keyframes: clip?.keyframes || {},
   }
 }
 
@@ -107,6 +127,18 @@ function sanitizeExportBaseName(value) {
     || 'ComfyStudio_Timeline'
 }
 
+function isAbsoluteMcpFilePath(filePath) {
+  const value = String(filePath || '')
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('/')
+}
+
+function getTimelineEndTimeForMcp(clips = [], fallback = 0) {
+  return Math.max(
+    Number(fallback) || 0,
+    ...(clips || []).map((clip) => (Number(clip.startTime) || 0) + (Number(clip.duration) || 0))
+  )
+}
+
 function summarizeMarker(marker) {
   return {
     id: marker.id,
@@ -126,6 +158,253 @@ function summarizeTrack(track) {
     visible: track.visible !== false,
     role: track.role || null,
     channels: track.channels || null,
+  }
+}
+
+function normalizeProjectName(value) {
+  const name = String(value || '').trim().replace(/\s+/g, ' ').slice(0, 120)
+  if (!name) throw new Error('Provide a project name.')
+  if (/[<>:"/\\|?*\x00-\x1f]/.test(name)) {
+    throw new Error('Project name contains characters that are not allowed in folder names.')
+  }
+  return name
+}
+
+function normalizeProjectDimension(value, fallback) {
+  const parsed = Number(value)
+  if (Number.isFinite(parsed) && parsed > 0) return Math.max(16, Math.round(parsed))
+  return Math.max(16, Math.round(Number(fallback) || 1920))
+}
+
+function normalizeProjectFps(value, fallback) {
+  const parsed = Number(value)
+  if (Number.isFinite(parsed) && parsed > 0) return Math.min(240, Math.max(1, parsed))
+  const fallbackFps = Number(fallback)
+  return Number.isFinite(fallbackFps) && fallbackFps > 0 ? fallbackFps : 24
+}
+
+function getProjectDefaultResolution(projectState = {}) {
+  const preset = RESOLUTION_PRESETS.find((item) => item.name === (projectState.defaultResolution || 'HD 1080p'))
+    || RESOLUTION_PRESETS[0]
+  return preset || { width: 1920, height: 1080 }
+}
+
+function summarizeProject(project, projectHandle = null) {
+  if (!project) return null
+  return {
+    name: project.name || '',
+    path: typeof projectHandle === 'string' ? projectHandle : null,
+    created: project.created || null,
+    modified: project.modified || null,
+    width: Number(project.settings?.width) || null,
+    height: Number(project.settings?.height) || null,
+    fps: Number(project.settings?.fps) || null,
+    timelineCount: Array.isArray(project.timelines) ? project.timelines.length : 0,
+    assetCount: Array.isArray(project.assets) ? project.assets.length : 0,
+    currentTimelineId: project.currentTimelineId || null,
+  }
+}
+
+async function resolveProjectPath(baseDir, projectName) {
+  if (typeof baseDir === 'string' && window.electronAPI?.pathJoin) {
+    return window.electronAPI.pathJoin(baseDir, projectName)
+  }
+  return null
+}
+
+async function buildCreateProjectPlan(payload = {}) {
+  const projectState = useProjectStore.getState()
+  const name = normalizeProjectName(payload.name || payload.projectName || payload.title)
+  const defaultResolution = getProjectDefaultResolution(projectState)
+  const width = normalizeProjectDimension(payload.width, defaultResolution.width)
+  const height = normalizeProjectDimension(payload.height, defaultResolution.height)
+  const fps = normalizeProjectFps(payload.fps, projectState.defaultFps ?? FPS_PRESETS.find((item) => item.value === 24)?.value ?? 24)
+  const defaultProjectsHandle = projectState.defaultProjectsHandle
+  if (!defaultProjectsHandle) {
+    throw new Error('No default projects folder is set. Choose a projects folder in ComfyStudio before creating projects through MCP.')
+  }
+
+  const targetPath = await resolveProjectPath(defaultProjectsHandle, name)
+  const targetExists = targetPath && window.electronAPI?.exists
+    ? await window.electronAPI.exists(targetPath)
+    : false
+
+  return {
+    action: 'create_project',
+    previewOnly: payload.previewOnly !== false,
+    name,
+    width,
+    height,
+    fps,
+    defaultProjectsLocation: projectState.defaultProjectsLocation || (typeof defaultProjectsHandle === 'string' ? defaultProjectsHandle : ''),
+    targetPath,
+    targetExists: Boolean(targetExists),
+    willOpenProject: true,
+  }
+}
+
+async function handleCreateProject(payload = {}) {
+  const projectState = useProjectStore.getState()
+  const plan = await buildCreateProjectPlan(payload)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'create_project',
+      message: plan.targetExists
+        ? 'Project creation plan only. The target folder already exists, so applying this would be rejected.'
+        : 'Project creation plan only. No project was created.',
+      plan,
+    }
+  }
+
+  if (plan.targetExists) {
+    throw new Error(`Project folder already exists: ${plan.targetPath || plan.name}. Choose a different project name.`)
+  }
+
+  const project = await projectState.createProject?.({
+    name: plan.name,
+    width: plan.width,
+    height: plan.height,
+    fps: plan.fps,
+  })
+  if (!project) {
+    const error = useProjectStore.getState().error
+    throw new Error(error || 'Could not create the project.')
+  }
+
+  const nextState = useProjectStore.getState()
+  return {
+    created: true,
+    action: 'create_project',
+    project: summarizeProject(nextState.currentProject || project, nextState.currentProjectHandle),
+    currentTimelineId: nextState.currentTimelineId || null,
+  }
+}
+
+function buildDuplicateProjectSource(payload = {}) {
+  const projectState = useProjectStore.getState()
+  const explicitPath = String(payload.sourceProjectPath || payload.projectPath || payload.path || '').trim()
+  const requestedName = String(payload.sourceProjectName || payload.projectName || '').trim().toLowerCase()
+  const currentPath = typeof projectState.currentProjectHandle === 'string' ? projectState.currentProjectHandle : ''
+  const currentName = String(projectState.currentProject?.name || '').trim()
+
+  if (explicitPath) {
+    return {
+      name: String(payload.sourceProjectName || payload.projectName || currentName || '').trim() || null,
+      path: explicitPath,
+      source: 'explicit path',
+    }
+  }
+
+  if (requestedName) {
+    const recent = (projectState.recentProjects || []).find((project) => (
+      String(project?.name || '').trim().toLowerCase() === requestedName
+    ))
+    if (recent?.path) {
+      return {
+        name: recent.name || null,
+        path: recent.path,
+        source: 'recent project',
+      }
+    }
+  }
+
+  if (currentPath) {
+    return {
+      name: currentName || null,
+      path: currentPath,
+      source: 'current project',
+    }
+  }
+
+  return {
+    name: null,
+    path: '',
+    source: '',
+  }
+}
+
+async function buildDuplicateProjectPlan(payload = {}) {
+  if (!window.electronAPI) {
+    throw new Error('Project duplication through MCP is only available in the desktop app.')
+  }
+  const source = buildDuplicateProjectSource(payload)
+  if (!source.path) {
+    throw new Error('Provide sourceProjectPath/sourceProjectName, or open the project you want to duplicate first.')
+  }
+
+  const sourceExists = window.electronAPI.exists
+    ? await window.electronAPI.exists(source.path)
+    : true
+  const sourceFolderName = window.electronAPI.pathBasename
+    ? await window.electronAPI.pathBasename(source.path)
+    : ''
+  const sourceName = source.name || sourceFolderName || 'Project'
+  let predictedName = `${sourceName} copy`
+  let predictedPath = null
+  if (window.electronAPI.pathDirname && window.electronAPI.pathJoin) {
+    const parentPath = await window.electronAPI.pathDirname(source.path)
+    let index = 1
+    predictedPath = await window.electronAPI.pathJoin(parentPath, predictedName)
+    while (window.electronAPI.exists && await window.electronAPI.exists(predictedPath)) {
+      index += 1
+      predictedName = `${sourceName} copy ${index}`
+      predictedPath = await window.electronAPI.pathJoin(parentPath, predictedName)
+    }
+  }
+
+  return {
+    action: 'duplicate_project',
+    previewOnly: payload.previewOnly !== false,
+    sourceProject: {
+      name: sourceName,
+      path: source.path,
+      source: source.source,
+      exists: Boolean(sourceExists),
+    },
+    predictedDuplicate: {
+      name: predictedName,
+      path: predictedPath,
+    },
+    willOpenDuplicate: true,
+    note: 'Uses ComfyStudio duplicate behavior: copies the whole project folder, remaps saved paths, creates a sibling "copy" project, and opens it.',
+  }
+}
+
+async function handleDuplicateProject(payload = {}) {
+  const projectState = useProjectStore.getState()
+  const plan = await buildDuplicateProjectPlan(payload)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'duplicate_project',
+      message: 'Project duplicate plan only. No project folder was copied.',
+      plan,
+    }
+  }
+
+  if (!plan.sourceProject.exists) {
+    throw new Error(`Source project folder was not found: ${plan.sourceProject.path}`)
+  }
+
+  const duplicated = await projectState.duplicateProject?.({
+    name: plan.sourceProject.name,
+    path: plan.sourceProject.path,
+  })
+  if (!duplicated) {
+    const error = useProjectStore.getState().error
+    throw new Error(error || 'Could not duplicate the project.')
+  }
+
+  const nextState = useProjectStore.getState()
+  return {
+    duplicated: true,
+    action: 'duplicate_project',
+    project: summarizeProject(nextState.currentProject || duplicated, nextState.currentProjectHandle),
+    predictedDuplicate: plan.predictedDuplicate,
+    currentTimelineId: nextState.currentTimelineId || null,
   }
 }
 
@@ -253,6 +532,30 @@ const TRANSFORM_BLEND_MODES = new Set([
 ])
 
 const CLIP_VISUAL_KEYFRAME_TYPES = new Set(['video', 'image', 'text', 'shape', 'adjustment', 'caption', 'captions'])
+const GLSL_EFFECT_TYPES = EFFECT_TYPES.filter((effect) => String(effect?.id || '').startsWith('glsl'))
+const GLSL_EFFECT_TYPE_IDS = new Set(GLSL_EFFECT_TYPES.map((effect) => effect.id))
+const GLSL_EFFECT_ALIASES = new Map([
+  ['camerashake', 'glslCameraShake'],
+  ['shake', 'glslCameraShake'],
+  ['directionalblur', 'glslDirectionalBlur'],
+  ['motionblur', 'glslDirectionalBlur'],
+  ['lensblur', 'glslLensBlur'],
+  ['bokeh', 'glslLensBlur'],
+  ['fisheye', 'glslFisheye'],
+  ['chromawarp', 'glslChromaWarp'],
+  ['chromaticaberration', 'glslChromaWarp'],
+  ['digitalglitch', 'glslDigitalGlitch'],
+  ['glitch', 'glslDigitalGlitch'],
+  ['sharpen', 'glslSharpen'],
+  ['filmgrain', 'glslFilmGrain'],
+  ['grain', 'glslFilmGrain'],
+  ['filmlook', 'glslFilmLook'],
+  ['look', 'glslFilmLook'],
+  ['flicker', 'glslFlicker'],
+  ['vhs', 'glslVhsLook'],
+  ['vhslook', 'glslVhsLook'],
+  ['vignette', 'glslVignette'],
+])
 
 const SHAPE_KEYFRAME_NUMBER_FIELDS = {
   width: [DEFAULT_SHAPE_PROPERTIES.width, 1, 20000],
@@ -498,6 +801,7 @@ function buildTextClipSummary(clip) {
     enabled: clip.enabled !== false,
     textProperties: clip.textProperties || {},
     transform: clip.transform || {},
+    effects: (clip.effects || []).map(summarizeClipEffect).filter(Boolean),
     titleAnimation: clip.titleAnimation || null,
     keyframes: clip.keyframes || {},
   }
@@ -519,6 +823,19 @@ function buildShapeClipSummary(clip) {
     enabled: clip.enabled !== false,
     shapeProperties: clip.shapeProperties || {},
     transform: clip.transform || {},
+    effects: (clip.effects || []).map(summarizeClipEffect).filter(Boolean),
+    keyframes: clip.keyframes || {},
+  }
+}
+
+function buildAdjustmentClipSummary(clip) {
+  if (!clip) return null
+  return {
+    ...summarizeClip(clip),
+    enabled: clip.enabled !== false,
+    adjustments: normalizeAdjustmentSettings(clip.adjustments || {}),
+    transform: clip.transform || {},
+    effects: (clip.effects || []).map(summarizeClipEffect).filter(Boolean),
     keyframes: clip.keyframes || {},
   }
 }
@@ -530,6 +847,270 @@ function getShapeClipById(state, clipId) {
   if (!clip) throw new Error(`Shape clip ${id} was not found.`)
   if (clip.type !== 'shape') throw new Error(`Clip ${id} is a ${clip.type || 'unknown'} clip, not a shape clip.`)
   return clip
+}
+
+function normalizeAdjustmentClipSettings(payload = {}) {
+  const source = {
+    ...(payload.adjustments && typeof payload.adjustments === 'object' ? payload.adjustments : {}),
+  }
+  for (const key of ['brightness', 'contrast', 'saturation', 'gain', 'gamma', 'offset', 'hue', 'blur']) {
+    if (hasOwn(payload, key)) source[key] = payload[key]
+  }
+  for (const group of ['shadows', 'midtones', 'highlights']) {
+    if (payload[group] && typeof payload[group] === 'object') source[group] = payload[group]
+  }
+  return normalizeAdjustmentSettings(source)
+}
+
+function normalizeEffectLookupKey(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function getGlslEffectDefinition(effectType) {
+  const raw = String(effectType || '').trim()
+  if (!raw) throw new Error('Provide effectType for the GLSL effect.')
+  const direct = getEffectTypeDefinition(raw)
+  if (direct && GLSL_EFFECT_TYPE_IDS.has(direct.id)) return direct
+  const lookup = normalizeEffectLookupKey(raw)
+  const aliasedId = GLSL_EFFECT_ALIASES.get(lookup)
+  if (aliasedId) return getEffectTypeDefinition(aliasedId)
+  const matched = GLSL_EFFECT_TYPES.find((effect) => (
+    normalizeEffectLookupKey(effect.id) === lookup
+    || normalizeEffectLookupKey(effect.label) === lookup
+  ))
+  if (matched) return matched
+  throw new Error(`Unsupported GLSL effect "${raw}". Use list_glsl_effects for valid effectType IDs.`)
+}
+
+function summarizeGlslEffectDefinition(effect) {
+  return {
+    id: effect.id,
+    label: effect.label,
+    category: effect.category,
+    description: effect.description,
+    defaults: effect.defaults || {},
+    params: (effect.params || []).map((param) => ({
+      key: param.key,
+      label: param.label,
+      type: param.type || 'number',
+      min: param.min,
+      max: param.max,
+      step: param.step,
+      unit: param.unit || '',
+    })),
+    presets: (effect.presets || []).map((preset) => ({
+      id: preset.id,
+      label: preset.label,
+      settings: preset.settings || {},
+    })),
+  }
+}
+
+function summarizeClipEffect(effect) {
+  if (!effect) return null
+  const definition = getEffectTypeDefinition(effect.type)
+  return {
+    id: effect.id,
+    type: effect.type,
+    label: definition?.label || effect.type,
+    enabled: effect.enabled !== false,
+    settings: effect.settings || {},
+  }
+}
+
+function buildEffectClipSummary(clip) {
+  if (!clip) return null
+  return {
+    ...summarizeClip(clip),
+    enabled: clip.enabled !== false,
+    effects: (clip.effects || []).map(summarizeClipEffect).filter(Boolean),
+    keyframes: clip.keyframes || {},
+  }
+}
+
+function getClipByIdForEffects(state, clipId) {
+  const selectedIds = Array.isArray(state.selectedClipIds) ? state.selectedClipIds.filter(Boolean) : []
+  const id = String(clipId || '').trim() || (selectedIds.length === 1 ? selectedIds[0] : '')
+  if (!id) throw new Error('Provide clipId for the target clip, or select exactly one visual clip in ComfyStudio.')
+  const clip = (state.clips || []).find((candidate) => candidate.id === id)
+  if (!clip) throw new Error(`Clip ${id} was not found.`)
+  const clipType = String(clip.type || '').toLowerCase()
+  if (!CLIP_VISUAL_KEYFRAME_TYPES.has(clipType)) {
+    throw new Error(`Clip ${id} is a ${clip.type || 'unknown'} clip. GLSL effects currently support visual clips, not audio clips.`)
+  }
+  return clip
+}
+
+function collectEffectSettingsInput(payload = {}, effectDefinition = null) {
+  const source = {
+    ...(payload.settings && typeof payload.settings === 'object' ? payload.settings : {}),
+  }
+  for (const param of effectDefinition?.params || []) {
+    if (hasOwn(payload, param.key)) source[param.key] = payload[param.key]
+  }
+  return source
+}
+
+function normalizeEffectToggleValue(value) {
+  if (typeof value === 'boolean') return value ? 1 : 0
+  const raw = String(value).trim().toLowerCase()
+  if (['true', 'on', 'yes', 'enabled'].includes(raw)) return 1
+  if (['false', 'off', 'no', 'disabled'].includes(raw)) return 0
+  return Number(value) ? 1 : 0
+}
+
+function normalizeEffectParamValue(param, value, fallback) {
+  if (param.type === 'toggle') return normalizeEffectToggleValue(value)
+  return clampNumber(value, fallback ?? 0, param.min ?? -100000, param.max ?? 100000)
+}
+
+function getEffectPresetSettings(effectDefinition, presetId) {
+  const id = String(presetId || '').trim()
+  if (!id) return {}
+  const lookup = normalizeEffectLookupKey(id)
+  const preset = (effectDefinition.presets || []).find((candidate) => (
+    normalizeEffectLookupKey(candidate.id) === lookup
+    || normalizeEffectLookupKey(candidate.label) === lookup
+  ))
+  if (!preset) {
+    throw new Error(`Preset "${id}" was not found for ${effectDefinition.id}. Use list_glsl_effects for valid preset IDs.`)
+  }
+  return preset.settings || {}
+}
+
+function normalizeGlslEffectSettings(effectDefinition, {
+  existingSettings = {},
+  inputSettings = {},
+  presetId = '',
+  includeDefaults = false,
+} = {}) {
+  const paramMap = new Map((effectDefinition.params || []).map((param) => [param.key, param]))
+  const unknown = Object.keys(inputSettings || {}).filter((key) => !paramMap.has(key))
+  if (unknown.length > 0) {
+    throw new Error(`Unsupported setting(s) for ${effectDefinition.id}: ${unknown.join(', ')}. Supported settings: ${[...paramMap.keys()].join(', ')}.`)
+  }
+
+  const merged = {
+    ...(includeDefaults ? (effectDefinition.defaults || {}) : {}),
+    ...(existingSettings || {}),
+    ...getEffectPresetSettings(effectDefinition, presetId),
+    ...(inputSettings || {}),
+  }
+  const normalized = {}
+  for (const param of effectDefinition.params || []) {
+    if (!hasOwn(merged, param.key)) continue
+    normalized[param.key] = normalizeEffectParamValue(param, merged[param.key], effectDefinition.defaults?.[param.key])
+  }
+  return normalized
+}
+
+function resolveGlslEffectTarget(clip, payload = {}) {
+  const effects = (clip.effects || []).filter((effect) => GLSL_EFFECT_TYPE_IDS.has(effect.type))
+  const effectId = String(payload.effectId || payload.id || '').trim()
+  if (effectId) {
+    const effect = effects.find((candidate) => candidate.id === effectId)
+    if (!effect) throw new Error(`GLSL effect ${effectId} was not found on clip ${clip.id}.`)
+    return effect
+  }
+
+  const effectType = String(payload.effectType || payload.type || '').trim()
+  if (effectType) {
+    const definition = getGlslEffectDefinition(effectType)
+    const matches = effects.filter((effect) => effect.type === definition.id)
+    if (matches.length === 0) throw new Error(`Clip ${clip.id} does not have a ${definition.id} effect yet.`)
+    return matches[matches.length - 1]
+  }
+
+  if (effects.length === 1) return effects[0]
+  if (effects.length === 0) throw new Error(`Clip ${clip.id} has no GLSL effects.`)
+  throw new Error(`Clip ${clip.id} has ${effects.length} GLSL effects. Provide effectId or effectType.`)
+}
+
+function normalizeGlslEffectKeyframes(payload = {}, effectDefinition, effectId = '') {
+  const paramMap = new Map((effectDefinition.params || []).map((param) => [param.key, param]))
+  const rawKeyframes = Array.isArray(payload.keyframes) ? payload.keyframes : []
+  return rawKeyframes.map((entry) => {
+    const paramKey = String(entry?.param || entry?.parameter || entry?.property || '').trim()
+    const param = paramMap.get(paramKey)
+    if (!param) {
+      throw new Error(`Unsupported keyframed setting "${paramKey}" for ${effectDefinition.id}. Supported settings: ${[...paramMap.keys()].join(', ')}.`)
+    }
+    const timeSeconds = Number(entry?.timeSeconds ?? entry?.time)
+    if (!Number.isFinite(timeSeconds) || timeSeconds < 0) {
+      throw new Error(`Invalid keyframe time for ${paramKey}.`)
+    }
+    return {
+      param: paramKey,
+      property: effectId ? getEffectPropertyId(effectId, paramKey) : `effect.<new>.${paramKey}`,
+      timeSeconds,
+      value: normalizeEffectParamValue(param, entry?.value, effectDefinition.defaults?.[paramKey]),
+      easing: String(entry?.easing || 'easeInOut').slice(0, 120),
+    }
+  })
+}
+
+function normalizeGlslEffectClearParams(clearKeyframes, effectDefinition) {
+  if (!clearKeyframes) return []
+  const paramKeys = new Set((effectDefinition.params || []).map((param) => param.key))
+  const requested = clearKeyframes === true || clearKeyframes === 'all'
+    ? [...paramKeys]
+    : Array.isArray(clearKeyframes)
+      ? clearKeyframes.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
+  for (const paramKey of requested) {
+    if (!paramKeys.has(paramKey)) {
+      throw new Error(`Unsupported clearKeyframes setting "${paramKey}" for ${effectDefinition.id}.`)
+    }
+  }
+  return [...new Set(requested)]
+}
+
+function clearGlslEffectKeyframes(clipId, effectId, params = []) {
+  const cleared = params.map((paramKey) => getEffectPropertyId(effectId, paramKey))
+  if (cleared.length === 0) return []
+  useTimelineStore.setState((currentState) => ({
+    clips: (currentState.clips || []).map((clip) => {
+      if (clip.id !== clipId) return clip
+      const nextKeyframes = { ...(clip.keyframes || {}) }
+      for (const property of cleared) {
+        delete nextKeyframes[property]
+      }
+      return { ...clip, keyframes: nextKeyframes }
+    }),
+  }))
+  return cleared
+}
+
+function clearAllKeyframesForEffect(clipId, effectId) {
+  const prefix = `effect.${effectId}.`
+  let cleared = []
+  useTimelineStore.setState((currentState) => ({
+    clips: (currentState.clips || []).map((clip) => {
+      if (clip.id !== clipId) return clip
+      const nextKeyframes = { ...(clip.keyframes || {}) }
+      cleared = Object.keys(nextKeyframes).filter((property) => property.startsWith(prefix))
+      for (const property of cleared) {
+        delete nextKeyframes[property]
+      }
+      return { ...clip, keyframes: nextKeyframes }
+    }),
+  }))
+  return cleared
+}
+
+function applyGlslEffectKeyframes(state, clipId, effectId, keyframes = [], replaceKeyframes = false) {
+  if (keyframes.length === 0) return []
+  const hydrated = keyframes.map((keyframe) => ({
+    ...keyframe,
+    property: getEffectPropertyId(effectId, keyframe.param),
+  }))
+  if (replaceKeyframes) {
+    clearGlslEffectKeyframes(clipId, effectId, [...new Set(hydrated.map((keyframe) => keyframe.param))])
+  }
+  for (const keyframe of hydrated) {
+    state.setKeyframe?.(clipId, keyframe.property, keyframe.timeSeconds, keyframe.value, keyframe.easing, { saveHistory: false })
+  }
+  return hydrated
 }
 
 function findDefaultTextTrack(state, requestedTrackId = '') {
@@ -675,6 +1256,7 @@ function buildClipKeyframeSummary(clip) {
     ...summarizeClip(clip),
     enabled: clip.enabled !== false,
     transform: clip.transform || {},
+    effects: (clip.effects || []).map(summarizeClipEffect).filter(Boolean),
     textProperties: clip.type === 'text' ? (clip.textProperties || {}) : undefined,
     shapeProperties: clip.type === 'shape' ? (clip.shapeProperties || {}) : undefined,
     keyframes: clip.keyframes || {},
@@ -777,6 +1359,188 @@ function handleSetClipKeyframes(payload = {}) {
       appliedKeyframes,
       replaceKeyframes: payload.replaceKeyframes === true,
     },
+  }
+}
+
+function resolveDipToBlackClipPairs(payload = {}, state = useTimelineStore.getState()) {
+  const clips = state.clips || []
+  const clipsById = new Map(clips.map((clip) => [clip.id, clip]))
+  const explicitPairs = Array.isArray(payload.pairs) ? payload.pairs : (Array.isArray(payload.clipPairs) ? payload.clipPairs : [])
+
+  if (explicitPairs.length > 0) {
+    return explicitPairs.map((pair, index) => {
+      const outClipId = String(pair?.outClipId || pair?.clipAId || pair?.fromClipId || pair?.firstClipId || '').trim()
+      const inClipId = String(pair?.inClipId || pair?.clipBId || pair?.toClipId || pair?.secondClipId || '').trim()
+      const outClip = clipsById.get(outClipId)
+      const inClip = clipsById.get(inClipId)
+      if (!outClip || !inClip) {
+        return { index, error: `Pair ${index + 1} references a missing clip.` }
+      }
+      return { index, outClip, inClip }
+    })
+  }
+
+  let clipIds = normalizeStringList(payload.clipIds || payload.clipId || payload.ids || payload.id)
+  const filter = String(payload.filter || '').trim().toLowerCase()
+  if (clipIds.length === 0 && (filter === 'selected' || payload.selected === true)) {
+    clipIds = normalizeStringList(state.selectedClipIds || [])
+  }
+
+  let targetClips = clipIds.length > 0
+    ? clipIds.map((clipId) => clipsById.get(clipId)).filter(Boolean)
+    : []
+
+  if (targetClips.length === 0 && (payload.trackId || payload.allAdjacent === true || filter === 'track')) {
+    const requestedTrackId = String(payload.trackId || '').trim()
+    targetClips = clips.filter((clip) => {
+      if (requestedTrackId && clip.trackId !== requestedTrackId) return false
+      return clip.enabled !== false && CLIP_VISUAL_KEYFRAME_TYPES.has(String(clip.type || '').toLowerCase())
+    })
+  }
+
+  targetClips = targetClips
+    .filter((clip) => clip && CLIP_VISUAL_KEYFRAME_TYPES.has(String(clip.type || '').toLowerCase()))
+    .sort((a, b) => {
+      if (a.trackId !== b.trackId) return String(a.trackId || '').localeCompare(String(b.trackId || ''))
+      return (Number(a.startTime) || 0) - (Number(b.startTime) || 0)
+    })
+
+  if (targetClips.length < 2) {
+    throw new Error('Provide at least two visual clip IDs, explicit clip pairs, selected clips, or a trackId for add_dip_to_black.')
+  }
+
+  const pairs = []
+  for (let index = 0; index < targetClips.length - 1; index += 1) {
+    pairs.push({
+      index,
+      outClip: targetClips[index],
+      inClip: targetClips[index + 1],
+    })
+  }
+  return pairs
+}
+
+function buildDipToBlackPlan(payload = {}) {
+  const state = useTimelineStore.getState()
+  const fps = Number(state.timelineFps) || 24
+  const requestedDuration = Number(payload.durationSeconds ?? payload.duration ?? payload.fadeDurationSeconds ?? payload.fadeDuration)
+  const defaultDuration = Number.isFinite(requestedDuration) && requestedDuration > 0 ? requestedDuration : 0.5
+  const easing = String(payload.easing || 'easeInOut').slice(0, 120)
+  const replaceOpacityKeyframes = payload.replaceOpacityKeyframes === true || payload.replaceKeyframes === true
+  const pairs = resolveDipToBlackClipPairs(payload, state)
+  const errors = pairs.filter((pair) => pair.error)
+  if (errors.length > 0) {
+    return {
+      action: 'add_dip_to_black',
+      success: false,
+      errors,
+      pairCount: 0,
+      keyframesByClip: [],
+    }
+  }
+
+  const keyframesByClip = new Map()
+  for (const pair of pairs) {
+    const outDuration = Math.max(1 / fps, Number(pair.outClip.duration) || (1 / fps))
+    const inDuration = Math.max(1 / fps, Number(pair.inClip.duration) || (1 / fps))
+    const outFade = roundToTimelineFrame(Math.min(defaultDuration, outDuration), fps)
+    const inFade = roundToTimelineFrame(Math.min(defaultDuration, inDuration), fps)
+    const outStart = roundToTimelineFrame(Math.max(0, outDuration - outFade), fps)
+    const outEnd = roundToTimelineFrame(outDuration, fps)
+    const inStart = 0
+    const inEnd = roundToTimelineFrame(inFade, fps)
+
+    const outKeyframes = [
+      { property: 'opacity', timeSeconds: outStart, value: 100, easing },
+      { property: 'opacity', timeSeconds: outEnd, value: 0, easing },
+    ]
+    const inKeyframes = [
+      { property: 'opacity', timeSeconds: inStart, value: 0, easing },
+      { property: 'opacity', timeSeconds: inEnd, value: 100, easing },
+    ]
+
+    if (!keyframesByClip.has(pair.outClip.id)) keyframesByClip.set(pair.outClip.id, [])
+    if (!keyframesByClip.has(pair.inClip.id)) keyframesByClip.set(pair.inClip.id, [])
+    keyframesByClip.get(pair.outClip.id).push(...outKeyframes)
+    keyframesByClip.get(pair.inClip.id).push(...inKeyframes)
+  }
+
+  const dedupedKeyframesByClip = [...keyframesByClip.entries()].map(([clipId, keyframes]) => {
+    const clip = (state.clips || []).find((candidate) => candidate.id === clipId)
+    const seen = new Set()
+    const deduped = keyframes
+      .sort((a, b) => a.timeSeconds - b.timeSeconds)
+      .filter((keyframe) => {
+        const key = `${keyframe.property}:${keyframe.timeSeconds}:${keyframe.value}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+    return {
+      clip: summarizeClip(clip),
+      keyframes: normalizeClipKeyframes({ keyframes: deduped }, clip),
+    }
+  })
+
+  return {
+    action: 'add_dip_to_black',
+    previewOnly: payload.previewOnly !== false,
+    pairCount: pairs.length,
+    fadeDurationSeconds: roundToTimelineFrame(defaultDuration, fps),
+    replaceOpacityKeyframes,
+    easing,
+    pairs: pairs.map((pair) => ({
+      index: pair.index,
+      outClip: summarizeClip(pair.outClip),
+      inClip: summarizeClip(pair.inClip),
+      editPointSeconds: roundToTimelineFrame(Number(pair.outClip.startTime || 0) + Number(pair.outClip.duration || 0), fps),
+    })),
+    keyframesByClip: dedupedKeyframesByClip,
+    note: 'This helper only writes opacity keyframes. Put a black plate or empty black background underneath if lower layers should not show through.',
+  }
+}
+
+function handleAddDipToBlack(payload = {}) {
+  const plan = buildDipToBlackPlan(payload)
+  if (plan.success === false) return plan
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'add_dip_to_black',
+      message: `Dip-to-black plan only. ${plan.pairCount} edit point${plan.pairCount === 1 ? '' : 's'} would get opacity fades.`,
+      plan,
+    }
+  }
+
+  const state = useTimelineStore.getState()
+  state.saveToHistory?.()
+  const clearedClipIds = []
+  if (plan.replaceOpacityKeyframes) {
+    for (const entry of plan.keyframesByClip) {
+      if (entry.clip?.id) {
+        clearClipKeyframes(entry.clip.id, ['opacity'])
+        clearedClipIds.push(entry.clip.id)
+      }
+    }
+  }
+  const applied = []
+  for (const entry of plan.keyframesByClip) {
+    if (!entry.clip?.id) continue
+    applied.push({
+      clipId: entry.clip.id,
+      keyframes: applyClipKeyframes(useTimelineStore.getState(), entry.clip.id, entry.keyframes, false),
+    })
+  }
+
+  return {
+    success: true,
+    action: 'add_dip_to_black',
+    message: `Applied dip-to-black opacity fades to ${plan.pairCount} edit point${plan.pairCount === 1 ? '' : 's'}.`,
+    pairCount: plan.pairCount,
+    fadeDurationSeconds: plan.fadeDurationSeconds,
+    clearedClipIds,
+    applied,
   }
 }
 
@@ -1253,6 +2017,596 @@ function handleAddTrack(payload = {}) {
     trackCount: (nextState.tracks || []).length,
     videoTrackCount: (nextState.tracks || []).filter((candidate) => candidate.type === 'video').length,
     audioTrackCount: (nextState.tracks || []).filter((candidate) => candidate.type === 'audio').length,
+  }
+}
+
+function summarizeTransition(transition) {
+  if (!transition) return null
+  return {
+    id: transition.id,
+    kind: transition.kind || (transition.clipId ? 'edge' : 'between'),
+    type: transition.type || 'dissolve',
+    duration: Number(transition.duration) || 0,
+    clipAId: transition.clipAId || null,
+    clipBId: transition.clipBId || null,
+    clipId: transition.clipId || null,
+    edge: transition.edge || null,
+    settings: safeClone(transition.settings || {}),
+  }
+}
+
+function normalizeTransitionType(value) {
+  const normalized = String(value || 'dissolve').trim().toLowerCase()
+  return normalized || 'dissolve'
+}
+
+function normalizeTransitionEdge(value) {
+  return String(value || 'in').trim().toLowerCase() === 'out' ? 'out' : 'in'
+}
+
+function normalizeTransitionDuration(value, fallback = 0.5) {
+  const parsed = Number(value)
+  if (Number.isFinite(parsed) && parsed > 0) return Math.min(10, parsed)
+  return fallback
+}
+
+function normalizeTransitionSettings(payload = {}) {
+  const settings = payload.settings && typeof payload.settings === 'object'
+    ? safeClone(payload.settings)
+    : {}
+  const alignment = String(payload.alignment || settings.alignment || '').trim().toLowerCase()
+  if (['start', 'center', 'end'].includes(alignment)) settings.alignment = alignment
+  return settings
+}
+
+function handleAddTransition(payload = {}) {
+  const state = useTimelineStore.getState()
+  const clips = state.clips || []
+  const transitions = state.transitions || []
+  const clipAId = String(payload.clipAId || '').trim()
+  const clipBId = String(payload.clipBId || '').trim()
+  const clipId = String(payload.clipId || '').trim()
+  const transitionType = normalizeTransitionType(payload.transitionType || payload.type)
+  const duration = normalizeTransitionDuration(payload.durationSeconds ?? payload.duration, 0.5)
+  const edge = normalizeTransitionEdge(payload.edge)
+  const settings = normalizeTransitionSettings(payload)
+  const kind = clipAId && clipBId ? 'between' : 'edge'
+
+  if (kind === 'between') {
+    const clipA = clips.find((clip) => clip.id === clipAId)
+    const clipB = clips.find((clip) => clip.id === clipBId)
+    if (!clipA || !clipB) throw new Error('Both clipAId and clipBId must refer to clips on the active timeline.')
+    if (clipA.trackId !== clipB.trackId) throw new Error('Between transitions require two clips on the same track.')
+    if (payload.previewOnly !== false) {
+      return {
+        previewOnly: true,
+        action: 'add_transition',
+        kind,
+        transitionType,
+        durationSeconds: duration,
+        settings,
+        clipA: summarizeClip(clipA),
+        clipB: summarizeClip(clipB),
+        existingTransition: summarizeTransition(transitions.find((transition) => (
+          (transition.clipAId === clipAId && transition.clipBId === clipBId)
+          || (transition.clipAId === clipBId && transition.clipBId === clipAId)
+        ))),
+      }
+    }
+
+    const created = state.addTransition?.(clipAId, clipBId, transitionType, duration)
+    if (!created) throw new Error('Could not add the transition. Check clip timing and available handles.')
+    if (Object.keys(settings).length > 0) {
+      useTimelineStore.getState().updateTransition?.(created.id, {
+        type: transitionType,
+        duration,
+        settings,
+      })
+    }
+    const nextTransition = (useTimelineStore.getState().transitions || []).find((transition) => transition.id === created.id) || created
+    return {
+      created: true,
+      transition: summarizeTransition(nextTransition),
+      transitionCount: (useTimelineStore.getState().transitions || []).length,
+    }
+  }
+
+  if (!clipId) throw new Error('Provide clipId plus edge for an edge transition, or clipAId and clipBId for a between transition.')
+  const clip = clips.find((candidate) => candidate.id === clipId)
+  if (!clip) throw new Error(`Clip ${clipId} was not found.`)
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'add_transition',
+      kind,
+      transitionType,
+      durationSeconds: duration,
+      edge,
+      settings,
+      clip: summarizeClip(clip),
+      existingTransition: summarizeTransition(transitions.find((transition) => (
+        transition.kind === 'edge' && transition.clipId === clipId && transition.edge === edge
+      ))),
+    }
+  }
+
+  const created = state.addEdgeTransition?.(clipId, edge, transitionType, duration)
+  if (!created) throw new Error('Could not add the edge transition. Check clip duration and transition settings.')
+  if (Object.keys(settings).length > 0) {
+    useTimelineStore.getState().updateTransition?.(created.id, {
+      type: transitionType,
+      duration,
+      settings,
+    })
+  }
+  const nextTransition = (useTimelineStore.getState().transitions || []).find((transition) => transition.id === created.id) || created
+  return {
+    created: true,
+    transition: summarizeTransition(nextTransition),
+    transitionCount: (useTimelineStore.getState().transitions || []).length,
+  }
+}
+
+function handleUpdateTransition(payload = {}) {
+  const transitionId = String(payload.transitionId || payload.id || '').trim()
+  if (!transitionId) throw new Error('Provide transitionId.')
+
+  const state = useTimelineStore.getState()
+  const current = (state.transitions || []).find((transition) => transition.id === transitionId)
+  if (!current) throw new Error(`Transition ${transitionId} was not found.`)
+
+  const updates = {}
+  if (payload.transitionType || payload.type) updates.type = normalizeTransitionType(payload.transitionType || payload.type)
+  if (payload.durationSeconds !== undefined || payload.duration !== undefined) {
+    updates.duration = normalizeTransitionDuration(payload.durationSeconds ?? payload.duration, Number(current.duration) || 0.5)
+  }
+  const settings = normalizeTransitionSettings(payload)
+  if (Object.keys(settings).length > 0) updates.settings = settings
+
+  if (Object.keys(updates).length === 0) {
+    throw new Error('Provide at least one transition update: type, durationSeconds, alignment, or settings.')
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'update_transition',
+      before: summarizeTransition(current),
+      updates,
+      afterEstimate: {
+        ...summarizeTransition(current),
+        type: updates.type || current.type,
+        duration: updates.duration ?? current.duration,
+        settings: {
+          ...(current.settings || {}),
+          ...(updates.settings || {}),
+        },
+      },
+    }
+  }
+
+  state.updateTransition?.(transitionId, updates)
+  const next = (useTimelineStore.getState().transitions || []).find((transition) => transition.id === transitionId)
+  return {
+    updated: Boolean(next),
+    transition: summarizeTransition(next),
+  }
+}
+
+function handleRemoveTransitions(payload = {}) {
+  const transitionIds = normalizeStringList(payload.transitionIds || payload.transitionId || payload.ids || payload.id)
+  if (transitionIds.length === 0) throw new Error('Provide transitionId or transitionIds.')
+
+  const state = useTimelineStore.getState()
+  const transitions = state.transitions || []
+  const transitionsById = new Map(transitions.map((transition) => [transition.id, transition]))
+  const targets = transitionIds.map((id) => transitionsById.get(id)).filter(Boolean)
+  const missingTransitionIds = transitionIds.filter((id) => !transitionsById.has(id))
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'remove_transitions',
+      transitionCount: targets.length,
+      missingTransitionIds,
+      transitions: targets.map(summarizeTransition),
+    }
+  }
+
+  targets.forEach((transition) => {
+    useTimelineStore.getState().removeTransition?.(transition.id)
+  })
+  return {
+    removedCount: targets.length,
+    missingTransitionIds,
+    removedTransitionIds: targets.map((transition) => transition.id),
+    transitionCount: (useTimelineStore.getState().transitions || []).length,
+  }
+}
+
+function normalizeClipEditEntries(payload = {}) {
+  const entries = Array.isArray(payload.clips) || Array.isArray(payload.updates)
+    ? (payload.clips || payload.updates)
+    : [{ ...payload }]
+  return entries
+    .map((entry) => ({
+      ...entry,
+      clipId: String(entry?.clipId || entry?.id || '').trim(),
+    }))
+    .filter((entry) => entry.clipId)
+}
+
+function handleMoveClips(payload = {}) {
+  const state = useTimelineStore.getState()
+  const clips = state.clips || []
+  const tracks = state.tracks || []
+  const fps = Number(state.timelineFps) || 24
+  const entries = normalizeClipEditEntries(payload)
+  if (entries.length === 0) throw new Error('Provide clipId or clips with clipId.')
+  if (entries.length > 100) throw new Error('move_clips is limited to 100 clips per call.')
+
+  const plans = entries.map((entry) => {
+    const clip = clips.find((candidate) => candidate.id === entry.clipId)
+    if (!clip) return { clipId: entry.clipId, error: 'Clip not found.' }
+    const trackId = String(entry.trackId || payload.trackId || clip.trackId || '').trim()
+    const track = tracks.find((candidate) => candidate.id === trackId)
+    if (!track) return { clipId: entry.clipId, error: `Track ${trackId} was not found.` }
+    if (track.locked) return { clipId: entry.clipId, error: `Track ${trackId} is locked.` }
+    const startValue = entry.startSeconds ?? entry.startTime ?? payload.startSeconds ?? payload.startTime ?? clip.startTime
+    const startSeconds = roundToTimelineFrame(Math.max(0, Number(startValue) || 0), fps)
+    return {
+      clip: summarizeClip(clip),
+      targetTrack: summarizeTrack(track),
+      startSeconds,
+      previousStartSeconds: Number(clip.startTime) || 0,
+      previousTrackId: clip.trackId || null,
+    }
+  })
+  const errors = plans.filter((plan) => plan.error)
+  if (errors.length > 0) {
+    return {
+      success: false,
+      action: 'move_clips',
+      errors,
+      validMoveCount: plans.length - errors.length,
+    }
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'move_clips',
+      resolveOverlaps: payload.resolveOverlaps === true,
+      moveCount: plans.length,
+      moves: plans,
+    }
+  }
+
+  state.saveToHistory?.()
+  plans.forEach((plan) => {
+    useTimelineStore.getState().moveClip?.(plan.clip.id, plan.targetTrack.id, plan.startSeconds, payload.resolveOverlaps === true)
+  })
+  const nextClips = useTimelineStore.getState().clips || []
+  return {
+    movedCount: plans.length,
+    clips: plans.map((plan) => summarizeClip(nextClips.find((clip) => clip.id === plan.clip.id) || plan.clip)),
+  }
+}
+
+function handleTrimClips(payload = {}) {
+  const state = useTimelineStore.getState()
+  const clips = state.clips || []
+  const fps = Number(state.timelineFps) || 24
+  const entries = normalizeClipEditEntries(payload)
+  if (entries.length === 0) throw new Error('Provide clipId or clips with clipId.')
+  if (entries.length > 100) throw new Error('trim_clips is limited to 100 clips per call.')
+
+  const plans = entries.map((entry) => {
+    const clip = clips.find((candidate) => candidate.id === entry.clipId)
+    if (!clip) return { clipId: entry.clipId, error: 'Clip not found.' }
+    const updates = {}
+    if (entry.startSeconds !== undefined || entry.startTime !== undefined) {
+      updates.startTime = roundToTimelineFrame(Math.max(0, Number(entry.startSeconds ?? entry.startTime) || 0), fps)
+    }
+    if (entry.durationSeconds !== undefined || entry.duration !== undefined) {
+      const duration = Number(entry.durationSeconds ?? entry.duration)
+      if (!Number.isFinite(duration) || duration <= 0) return { clipId: entry.clipId, error: 'durationSeconds must be greater than 0.' }
+      updates.duration = roundToTimelineFrame(duration, fps)
+    }
+    if (entry.trimStartSeconds !== undefined || entry.trimStart !== undefined) {
+      updates.trimStart = Math.max(0, Number(entry.trimStartSeconds ?? entry.trimStart) || 0)
+    }
+    if (entry.trimEndSeconds !== undefined || entry.trimEnd !== undefined) {
+      updates.trimEnd = Math.max(0, Number(entry.trimEndSeconds ?? entry.trimEnd) || 0)
+    }
+    if (Object.keys(updates).length === 0) return { clipId: entry.clipId, error: 'No trim/timing updates were provided.' }
+    return {
+      clip: summarizeClip(clip),
+      before: {
+        startTime: Number(clip.startTime) || 0,
+        duration: Number(clip.duration) || 0,
+        trimStart: Number(clip.trimStart) || 0,
+        trimEnd: Number(clip.trimEnd) || null,
+      },
+      updates,
+    }
+  })
+  const errors = plans.filter((plan) => plan.error)
+  if (errors.length > 0) {
+    return {
+      success: false,
+      action: 'trim_clips',
+      errors,
+      validTrimCount: plans.length - errors.length,
+    }
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'trim_clips',
+      trimCount: plans.length,
+      trims: plans,
+    }
+  }
+
+  state.saveToHistory?.()
+  plans.forEach((plan) => {
+    useTimelineStore.getState().updateClipTrim?.(plan.clip.id, plan.updates)
+  })
+  const nextClips = useTimelineStore.getState().clips || []
+  return {
+    trimmedCount: plans.length,
+    clips: plans.map((plan) => summarizeClip(nextClips.find((clip) => clip.id === plan.clip.id) || plan.clip)),
+  }
+}
+
+function resolveDeleteClipIds(payload = {}, clips = []) {
+  const explicit = normalizeStringList(payload.clipIds || payload.clipId || payload.ids || payload.id)
+  if (explicit.length > 0) return explicit
+  const filter = String(payload.filter || '').trim().toLowerCase()
+  if (filter === 'disabled') return clips.filter((clip) => clip.enabled === false).map((clip) => clip.id)
+  if (filter === 'selected') return normalizeStringList(useTimelineStore.getState().selectedClipIds || [])
+  if (filter === 'labeled') return clips.filter((clip) => clip.labelColor).map((clip) => clip.id)
+  return []
+}
+
+function handleDeleteClips(payload = {}) {
+  const state = useTimelineStore.getState()
+  const clips = state.clips || []
+  const clipIds = [...new Set(resolveDeleteClipIds(payload, clips))]
+  if (clipIds.length === 0) throw new Error('Provide clipId/clipIds, or use filter "disabled", "selected", or "labeled".')
+  const limit = Math.max(1, Math.min(1000, Number(payload.limit) || 100))
+  if (clipIds.length > limit) throw new Error(`delete_clips matched ${clipIds.length} clips, above limit ${limit}.`)
+
+  const clipsById = new Map(clips.map((clip) => [clip.id, clip]))
+  const targets = clipIds.map((id) => clipsById.get(id)).filter(Boolean)
+  const missingClipIds = clipIds.filter((id) => !clipsById.has(id))
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'delete_clips',
+      deleteCount: targets.length,
+      ripple: payload.ripple === true,
+      filter: payload.filter || null,
+      missingClipIds,
+      clips: targets.map(summarizeClip),
+    }
+  }
+
+  if (payload.ripple === true) {
+    state.rippleDeleteClipIds?.(targets.map((clip) => clip.id))
+  } else {
+    targets.forEach((clip) => {
+      useTimelineStore.getState().removeClip?.(clip.id)
+    })
+  }
+  return {
+    deletedCount: targets.length,
+    ripple: payload.ripple === true,
+    missingClipIds,
+    deletedClipIds: targets.map((clip) => clip.id),
+    clipCount: (useTimelineStore.getState().clips || []).length,
+  }
+}
+
+function handleUpdateTrack(payload = {}) {
+  const state = useTimelineStore.getState()
+  const trackId = String(payload.trackId || payload.id || '').trim()
+  if (!trackId) throw new Error('Provide trackId.')
+  const current = (state.tracks || []).find((track) => track.id === trackId)
+  if (!current) throw new Error(`Track ${trackId} was not found.`)
+
+  const updates = {}
+  if (Object.prototype.hasOwnProperty.call(payload, 'name')) updates.name = String(payload.name || '').trim().slice(0, 80)
+  if (Object.prototype.hasOwnProperty.call(payload, 'muted')) updates.muted = payload.muted === true
+  if (Object.prototype.hasOwnProperty.call(payload, 'locked')) updates.locked = payload.locked === true
+  if (Object.prototype.hasOwnProperty.call(payload, 'visible')) updates.visible = payload.visible !== false
+  if (current.type === 'audio' && Object.prototype.hasOwnProperty.call(payload, 'channels')) updates.channels = normalizeAudioChannels(payload.channels)
+  const newIndex = Number(payload.index ?? payload.newIndex)
+  const shouldReorder = Number.isFinite(newIndex)
+  if (Object.keys(updates).length === 0 && !shouldReorder) {
+    throw new Error('Provide a track update such as name, muted, locked, visible, channels, or index.')
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'update_track',
+      before: summarizeTrack(current),
+      updates,
+      newIndex: shouldReorder ? Math.max(0, Math.floor(newIndex)) : null,
+    }
+  }
+
+  state.saveToHistory?.()
+  useTimelineStore.setState((currentState) => {
+    let tracks = (currentState.tracks || []).map((track) => (
+      track.id === trackId
+        ? { ...track, ...updates }
+        : track
+    ))
+    if (shouldReorder) {
+      const updatedTrack = tracks.find((track) => track.id === trackId)
+      const sameType = tracks.filter((track) => track.type === updatedTrack.type)
+      const otherType = tracks.filter((track) => track.type !== updatedTrack.type)
+      const currentIndex = sameType.findIndex((track) => track.id === trackId)
+      const clampedIndex = Math.max(0, Math.min(sameType.length - 1, Math.floor(newIndex)))
+      if (currentIndex >= 0 && currentIndex !== clampedIndex) {
+        const reordered = [...sameType]
+        const [removed] = reordered.splice(currentIndex, 1)
+        reordered.splice(clampedIndex, 0, removed)
+        const videoTracks = updatedTrack.type === 'video' ? reordered : otherType.filter((track) => track.type === 'video')
+        const audioTracks = updatedTrack.type === 'audio' ? reordered : otherType.filter((track) => track.type === 'audio')
+        tracks = [...videoTracks, ...audioTracks]
+      }
+    }
+    return { tracks }
+  })
+  const next = (useTimelineStore.getState().tracks || []).find((track) => track.id === trackId)
+  return {
+    updated: true,
+    track: summarizeTrack(next),
+  }
+}
+
+function handleRemoveTrack(payload = {}) {
+  const state = useTimelineStore.getState()
+  const trackId = String(payload.trackId || payload.id || '').trim()
+  if (!trackId) throw new Error('Provide trackId.')
+  const track = (state.tracks || []).find((candidate) => candidate.id === trackId)
+  if (!track) throw new Error(`Track ${trackId} was not found.`)
+  const clipsOnTrack = (state.clips || []).filter((clip) => clip.trackId === trackId)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'remove_track',
+      track: summarizeTrack(track),
+      removedClipCount: clipsOnTrack.length,
+      clips: clipsOnTrack.slice(0, 50).map(summarizeClip),
+      clipLimitApplied: clipsOnTrack.length > 50,
+    }
+  }
+
+  const removed = state.removeTrack?.(trackId)
+  if (!removed) throw new Error('Could not remove the track. ComfyStudio may be protecting the last track of that type.')
+  return {
+    removed: true,
+    trackId,
+    removedClipCount: clipsOnTrack.length,
+    trackCount: (useTimelineStore.getState().tracks || []).length,
+  }
+}
+
+async function handleSwitchTimeline(payload = {}) {
+  const timelineId = String(payload.timelineId || payload.id || '').trim()
+  if (!timelineId) throw new Error('Provide timelineId.')
+  const projectState = useProjectStore.getState()
+  const timelines = projectState.currentProject?.timelines || []
+  const timeline = timelines.find((candidate) => candidate.id === timelineId)
+  if (!timeline) throw new Error(`Timeline ${timelineId} was not found.`)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'switch_timeline',
+      timeline: summarizeTimeline(timeline, projectState.currentProject?.settings || {}),
+    }
+  }
+
+  const switched = await projectState.switchTimeline?.(timelineId)
+  return {
+    switched: Boolean(switched),
+    timeline: summarizeTimeline(timeline, projectState.currentProject?.settings || {}),
+  }
+}
+
+function handleRenameTimeline(payload = {}) {
+  const timelineId = String(payload.timelineId || payload.id || '').trim()
+  const name = normalizeTimelineName(payload.name || payload.timelineName || payload.sequenceName, '')
+  if (!timelineId) throw new Error('Provide timelineId.')
+  if (!name) throw new Error('Provide a new timeline name.')
+  const projectState = useProjectStore.getState()
+  const timelines = projectState.currentProject?.timelines || []
+  const timeline = timelines.find((candidate) => candidate.id === timelineId)
+  if (!timeline) throw new Error(`Timeline ${timelineId} was not found.`)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'rename_timeline',
+      before: summarizeTimeline(timeline, projectState.currentProject?.settings || {}),
+      name,
+    }
+  }
+
+  projectState.renameTimeline?.(timelineId, name)
+  const next = (useProjectStore.getState().currentProject?.timelines || []).find((candidate) => candidate.id === timelineId)
+  return {
+    renamed: true,
+    timeline: summarizeTimeline(next || { ...timeline, name }, projectState.currentProject?.settings || {}),
+  }
+}
+
+async function handleDuplicateTimeline(payload = {}) {
+  const timelineId = String(payload.timelineId || payload.id || '').trim()
+  if (!timelineId) throw new Error('Provide timelineId.')
+  const projectState = useProjectStore.getState()
+  const timelines = projectState.currentProject?.timelines || []
+  const timeline = timelines.find((candidate) => candidate.id === timelineId)
+  if (!timeline) throw new Error(`Timeline ${timelineId} was not found.`)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'duplicate_timeline',
+      source: summarizeTimeline(timeline, projectState.currentProject?.settings || {}),
+      switchToTimeline: payload.switchToTimeline === true || payload.activate === true,
+    }
+  }
+
+  const duplicate = projectState.duplicateTimeline?.(timelineId)
+  if (!duplicate) throw new Error('Could not duplicate the timeline.')
+  if (payload.name || payload.timelineName || payload.sequenceName) {
+    projectState.renameTimeline?.(duplicate.id, normalizeTimelineName(payload.name || payload.timelineName || payload.sequenceName, duplicate.name))
+  }
+  let switched = false
+  if (payload.switchToTimeline === true || payload.activate === true) {
+    switched = await projectState.switchTimeline?.(duplicate.id)
+  }
+  const next = (useProjectStore.getState().currentProject?.timelines || []).find((candidate) => candidate.id === duplicate.id) || duplicate
+  return {
+    duplicated: true,
+    switched: Boolean(switched),
+    timeline: summarizeTimeline(next, projectState.currentProject?.settings || {}),
+  }
+}
+
+function handleDeleteTimeline(payload = {}) {
+  const timelineId = String(payload.timelineId || payload.id || '').trim()
+  if (!timelineId) throw new Error('Provide timelineId.')
+  const projectState = useProjectStore.getState()
+  const timelines = projectState.currentProject?.timelines || []
+  const timeline = timelines.find((candidate) => candidate.id === timelineId)
+  if (!timeline) throw new Error(`Timeline ${timelineId} was not found.`)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'delete_timeline',
+      timeline: summarizeTimeline(timeline, projectState.currentProject?.settings || {}),
+      warning: 'Deleting a timeline removes that sequence from the project.',
+    }
+  }
+
+  const deleted = projectState.deleteTimeline?.(timelineId)
+  if (!deleted) throw new Error('Could not delete the timeline. ComfyStudio may be protecting the last sequence.')
+  return {
+    deleted: true,
+    timelineId,
+    timelineCount: (useProjectStore.getState().currentProject?.timelines || []).length,
   }
 }
 
@@ -2001,6 +3355,186 @@ async function handleMoveAssetsToFolder(payload = {}) {
   }
 }
 
+function collectMcpAssetIds(value, usedAssetIds, depth = 0) {
+  if (!value || depth > 5) return
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectMcpAssetIds(item, usedAssetIds, depth + 1))
+    return
+  }
+  if (typeof value !== 'object') return
+
+  Object.entries(value).forEach(([key, entryValue]) => {
+    const normalizedKey = String(key || '').toLowerCase()
+    if ((normalizedKey === 'assetid' || normalizedKey.endsWith('assetid')) && typeof entryValue === 'string' && entryValue.trim()) {
+      usedAssetIds.add(entryValue.trim())
+      return
+    }
+    if (entryValue && typeof entryValue === 'object') {
+      collectMcpAssetIds(entryValue, usedAssetIds, depth + 1)
+    }
+  })
+}
+
+function getUsedAssetIdsAcrossProject() {
+  const projectState = useProjectStore.getState()
+  const timelineState = useTimelineStore.getState()
+  const project = projectState.currentProject || null
+  const currentTimelineId = projectState.currentTimelineId || project?.currentTimelineId || null
+  const usedAssetIds = new Set()
+
+  for (const timeline of project?.timelines || []) {
+    const clips = timeline?.id === currentTimelineId
+      ? (timelineState.clips || [])
+      : (timeline?.clips || [])
+    for (const clip of clips || []) {
+      collectMcpAssetIds(clip, usedAssetIds)
+    }
+  }
+
+  if (!project?.timelines?.length) {
+    for (const clip of timelineState.clips || []) {
+      collectMcpAssetIds(clip, usedAssetIds)
+    }
+  }
+
+  return usedAssetIds
+}
+
+function buildMoveUnusedAssetsToFolderPlan(payload = {}) {
+  if (!useProjectStore.getState().currentProject) {
+    throw new Error('Open a saved project before organizing unused assets.')
+  }
+
+  const assets = useAssetsStore.getState().assets || []
+  const folders = useAssetsStore.getState().folders || []
+  const usedAssetIds = getUsedAssetIdsAcrossProject()
+  const target = resolveAssetMoveTarget({
+    ...payload,
+    targetFolderPath: payload.targetFolderPath ?? payload.folderPath ?? payload.targetPath ?? payload.path ?? payload.folderName ?? 'Unused Assets',
+  })
+  const typeFilters = normalizeStringList(payload.types || payload.type || payload.assetType).map((type) => type.toLowerCase())
+  const workflowIds = normalizeStringList(payload.workflowIds || payload.workflowId).map((id) => id.toLowerCase())
+  const query = String(payload.nameIncludes || payload.nameContains || payload.search || payload.query || '').trim().toLowerCase()
+  const filter = String(payload.filter || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+  const constantsOnly = payload.constantsOnly === true
+    || payload.solidColorsOnly === true
+    || payload.solidOnly === true
+    || ['constant', 'constants', 'solid', 'solids', 'solidcolor', 'solidcolors'].includes(filter)
+  const rootOnly = payload.rootOnly === true || payload.sourceRoot === true || payload.fromRoot === true
+  const statuses = normalizeStringList(payload.statuses || payload.status).map((status) => status.toLowerCase())
+
+  let candidates = assets
+    .filter((asset) => asset?.id && !usedAssetIds.has(asset.id))
+    .filter((asset) => !rootOnly || (asset?.folderId || null) === null)
+
+  if (typeFilters.length > 0) {
+    candidates = candidates.filter((asset) => typeFilters.includes(String(asset?.type || '').toLowerCase()))
+  }
+  if (workflowIds.length > 0) {
+    candidates = candidates.filter((asset) => workflowIds.includes(getAssetWorkflowId(asset)))
+  }
+  if (query) {
+    candidates = candidates.filter((asset) => String(asset?.name || '').toLowerCase().includes(query))
+  }
+  if (constantsOnly) {
+    candidates = candidates.filter(isMcpSolidColorAsset)
+  }
+  if (filter === 'generated') candidates = candidates.filter((asset) => asset?.isImported !== true)
+  if (filter === 'imported') candidates = candidates.filter((asset) => asset?.isImported === true)
+  if (statuses.length > 0) {
+    candidates = candidates.filter((asset) => statuses.includes(String(asset?.generationStatus || asset?.status || 'none').toLowerCase()))
+  }
+
+  const order = String(payload.order || payload.sortOrder || 'oldest_first').trim().toLowerCase()
+  candidates = candidates.sort((a, b) => order === 'newest_first'
+    ? getAssetMoveCreatedTime(b) - getAssetMoveCreatedTime(a)
+    : getAssetMoveCreatedTime(a) - getAssetMoveCreatedTime(b))
+
+  const targetFolderId = target.targetWillBeCreated ? '__new_target_folder__' : (target.targetFolderId || null)
+  const unchangedAssets = target.targetWillBeCreated
+    ? []
+    : candidates.filter((asset) => (asset?.folderId || null) === targetFolderId)
+  const assetsToMove = target.targetWillBeCreated
+    ? candidates
+    : candidates.filter((asset) => (asset?.folderId || null) !== targetFolderId)
+
+  const limit = Math.min(1000, Math.max(1, Math.floor(Number(payload.limit) || 100)))
+  if (assetsToMove.length > limit) {
+    throw new Error(`Matched ${assetsToMove.length} unused assets, above limit ${limit}. Pass a higher limit intentionally if this is expected.`)
+  }
+
+  return {
+    action: 'move_unused_assets_to_folder',
+    previewOnly: payload.previewOnly !== false,
+    targetFolderId: target.targetFolderId,
+    targetFolder: target.targetFolder,
+    targetFolderPath: target.targetFolderPath,
+    targetRoot: target.targetFolderId === null && !target.targetWillBeCreated,
+    targetWillBeCreated: target.targetWillBeCreated,
+    createTargetFolderPlan: target.createPlan,
+    totalAssetCount: assets.length,
+    usedAssetCount: usedAssetIds.size,
+    unusedCandidateCount: candidates.length,
+    moveCount: assetsToMove.length,
+    unchangedCount: unchangedAssets.length,
+    filters: {
+      typeFilters,
+      workflowIds,
+      query,
+      filter,
+      constantsOnly,
+      rootOnly,
+      statuses,
+    },
+    assets: assetsToMove.map(summarizeAssetForMove),
+    unchangedAssets: unchangedAssets.slice(0, 50).map(summarizeAssetForMove),
+    usedAssetIds: [...usedAssetIds],
+    folderCount: folders.length,
+  }
+}
+
+async function handleMoveUnusedAssetsToFolder(payload = {}) {
+  const plan = buildMoveUnusedAssetsToFolderPlan(payload)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'move_unused_assets_to_folder',
+      message: plan.moveCount === 0
+        ? 'No matching unused assets need to move.'
+        : `Unused asset cleanup plan only. ${plan.moveCount} asset${plan.moveCount === 1 ? '' : 's'} would move.`,
+      plan,
+    }
+  }
+
+  if (plan.moveCount === 0) {
+    return {
+      success: false,
+      action: 'move_unused_assets_to_folder',
+      message: 'No matching unused assets need to move.',
+      plan,
+    }
+  }
+
+  const result = await handleMoveAssetsToFolder({
+    ...payload,
+    assetIds: plan.assets.map((asset) => asset.id),
+    targetFolderId: plan.targetWillBeCreated ? undefined : (plan.targetFolderId || null),
+    targetFolderPath: plan.targetFolderPath,
+    targetRoot: plan.targetRoot,
+    previewOnly: false,
+    limit: Math.max(Number(payload.limit) || 100, plan.moveCount),
+  })
+
+  return {
+    success: true,
+    action: 'move_unused_assets_to_folder',
+    message: `Moved ${result.movedCount || plan.moveCount} unused asset${(result.movedCount || plan.moveCount) === 1 ? '' : 's'}.`,
+    plan,
+    result,
+  }
+}
+
 function summarizeAsset(asset) {
   return {
     id: asset.id,
@@ -2020,6 +3554,179 @@ function summarizeAsset(asset) {
     audioEnabled: typeof asset.audioEnabled === 'boolean' ? asset.audioEnabled : null,
     generationStatus: asset.generationStatus || asset.status || 'none',
     createdAt: asset.createdAt || asset.imported || null,
+  }
+}
+
+function getMcpAssetDuration(asset) {
+  const parsed = Number(asset?.duration ?? asset?.settings?.duration)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function getMcpAssetSourceFps(asset) {
+  const parsed = Number(asset?.fps ?? asset?.settings?.fps)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function isMcpVisualMediaType(type) {
+  return ['video', 'image'].includes(String(type || '').toLowerCase())
+}
+
+function isMcpReplaceableClipType(type) {
+  return ['video', 'image', 'audio'].includes(String(type || '').toLowerCase())
+}
+
+function resolveMcpClipForReplacement(state, payload = {}) {
+  const explicitId = String(payload.clipId || payload.targetClipId || payload.id || '').trim()
+  if (explicitId) {
+    const clip = (state.clips || []).find((candidate) => candidate.id === explicitId)
+    if (!clip) throw new Error(`Clip ${explicitId} was not found.`)
+    return clip
+  }
+
+  const selectedIds = normalizeStringList(state.selectedClipIds || [])
+  if (selectedIds.length === 1) {
+    const clip = (state.clips || []).find((candidate) => candidate.id === selectedIds[0])
+    if (clip) return clip
+  }
+  if (selectedIds.length > 1) {
+    throw new Error('Multiple clips are selected. Provide clipId so the replacement target is explicit.')
+  }
+
+  throw new Error('Provide clipId, or select exactly one timeline clip before calling replace_clip_with_asset.')
+}
+
+function buildReplaceClipWithAssetPlan(payload = {}) {
+  const state = useTimelineStore.getState()
+  const clip = resolveMcpClipForReplacement(state, payload)
+  const track = (state.tracks || []).find((candidate) => candidate.id === clip.trackId) || null
+  const asset = resolveMcpTimelineAsset({
+    ...payload,
+    assetId: payload.assetId || payload.replacementAssetId,
+    assetName: payload.assetName || payload.replacementAssetName,
+    latestGenerated: payload.latestGenerated ?? payload.latestReplacement ?? payload.latest,
+  })
+  const clipType = String(clip.type || '').toLowerCase()
+  const assetType = String(asset.type || '').toLowerCase()
+
+  if (!isMcpReplaceableClipType(clipType)) {
+    throw new Error(`Clip ${clip.id} is a ${clip.type || 'unknown'} clip. replace_clip_with_asset supports video, image, and audio clips.`)
+  }
+  if (!isMcpReplaceableClipType(assetType)) {
+    throw new Error(`Asset ${asset.id} is a ${asset.type || 'unknown'} asset. Use a video, image, or audio asset.`)
+  }
+  if (track?.type === 'audio' && assetType !== 'audio') {
+    throw new Error('Audio timeline clips can only be replaced with audio assets.')
+  }
+  if (track?.type === 'video' && !isMcpVisualMediaType(assetType)) {
+    throw new Error('Video timeline clips can only be replaced with video or image assets.')
+  }
+  if (clipType === 'audio' && assetType !== 'audio') {
+    throw new Error('Audio clips can only be replaced with audio assets.')
+  }
+  if (isMcpVisualMediaType(clipType) && !isMcpVisualMediaType(assetType)) {
+    throw new Error('Visual clips can only be replaced with video or image assets.')
+  }
+
+  const fps = Number(state.timelineFps) || 24
+  const assetDuration = getMcpAssetDuration(asset)
+  const sourceDuration = assetType === 'image' ? Infinity : (assetDuration || Number(clip.duration) || 5)
+  const fitToAssetDuration = payload.fitToAssetDuration === true || payload.useAssetDuration === true
+  const preserveDuration = payload.preserveDuration !== false && !fitToAssetDuration
+  const requestedDuration = Number(payload.durationSeconds ?? payload.duration)
+  const duration = roundToTimelineFrame(
+    preserveDuration
+      ? Math.max(1 / fps, Number(clip.duration) || (1 / fps))
+      : Math.max(1 / fps, Number.isFinite(requestedDuration) && requestedDuration > 0
+        ? requestedDuration
+        : (assetType === 'image' ? 5 : (assetDuration || Number(clip.duration) || 5))),
+    fps
+  )
+  const resetTrim = payload.preserveTrim === true ? false : payload.resetTrim !== false
+  const trimStart = resetTrim ? 0 : Math.max(0, Number(clip.trimStart) || 0)
+  const timeScale = Math.max(0.0001, Number(clip.sourceTimeScale || clip.speed || 1) || 1)
+  const unclampedTrimEnd = resetTrim
+    ? trimStart + duration * timeScale
+    : (Number.isFinite(Number(clip.trimEnd)) ? Number(clip.trimEnd) : trimStart + duration * timeScale)
+  const trimEnd = assetType === 'image'
+    ? trimStart + duration * timeScale
+    : Math.max(trimStart + (1 / fps) * timeScale, Math.min(sourceDuration, unclampedTrimEnd))
+
+  const updates = {
+    assetId: asset.id,
+    name: String(payload.name || '').trim() || asset.name || clip.name,
+    type: assetType,
+    duration,
+    sourceDuration,
+    trimStart,
+    trimEnd,
+    sourceFps: assetType === 'video' ? getMcpAssetSourceFps(asset) : null,
+    timelineFps: fps,
+    url: asset.url,
+    thumbnail: asset.url,
+    cacheStatus: clip.cacheStatus === 'cached' ? 'invalid' : clip.cacheStatus,
+    cacheProgress: 0,
+    cacheUrl: null,
+    cachePath: null,
+    metadata: {
+      ...(safeClone(clip.metadata) || {}),
+      replacedByMcp: true,
+      replacedAt: new Date().toISOString(),
+      previousAssetId: clip.assetId || null,
+      replacementAssetId: asset.id,
+      sourceTool: 'replace_clip_with_asset',
+    },
+  }
+  const nextClip = { ...clip, ...updates }
+
+  return {
+    action: 'replace_clip_with_asset',
+    previewOnly: payload.previewOnly !== false,
+    preserveDuration,
+    resetTrim,
+    track: track ? summarizeTrack(track) : null,
+    before: summarizeClipWithAsset(clip),
+    replacementAsset: summarizeAsset(asset),
+    after: summarizeClipWithAsset(nextClip, asset),
+    updates,
+  }
+}
+
+function handleReplaceClipWithAsset(payload = {}) {
+  const plan = buildReplaceClipWithAssetPlan(payload)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'replace_clip_with_asset',
+      message: 'Clip replacement plan only. No timeline change was made.',
+      plan: {
+        ...plan,
+        updates: undefined,
+      },
+    }
+  }
+
+  const state = useTimelineStore.getState()
+  state.saveToHistory?.()
+  useTimelineStore.setState((currentState) => ({
+    clips: (currentState.clips || []).map((clip) => (
+      clip.id === plan.before.id ? { ...clip, ...plan.updates } : clip
+    )),
+    selectedClipIds: [plan.before.id],
+    selectedTransitionId: null,
+    selectedMarkerId: null,
+    selectedGap: null,
+  }))
+
+  const nextClip = (useTimelineStore.getState().clips || []).find((clip) => clip.id === plan.before.id)
+  return {
+    success: true,
+    action: 'replace_clip_with_asset',
+    message: `Replaced ${plan.before.name || plan.before.id} with ${plan.replacementAsset.name || plan.replacementAsset.id}.`,
+    preserveDuration: plan.preserveDuration,
+    resetTrim: plan.resetTrim,
+    clip: summarizeClipWithAsset(nextClip),
+    replacementAsset: plan.replacementAsset,
   }
 }
 
@@ -3192,6 +4899,97 @@ function handleAddShapeClip(payload = {}) {
   }
 }
 
+function handleAddAdjustmentClip(payload = {}) {
+  const state = useTimelineStore.getState()
+  const shouldCreateTrack = payload.createTrack === true
+    || payload.newTrack === true
+    || ['new', 'newtop', 'newtrack', 'newtoptrack', 'top'].includes(String(payload.trackStrategy || payload.placementTrack || '').trim().toLowerCase().replace(/[\s_-]+/g, ''))
+  const requestedTrackId = String(payload.trackId || '').trim()
+  const tracks = Array.isArray(state.tracks) ? state.tracks : []
+  let track = null
+  if (!shouldCreateTrack || requestedTrackId) {
+    track = requestedTrackId
+      ? tracks.find((candidate) => candidate.id === requestedTrackId)
+      : tracks.find((candidate) => candidate.type === 'video' && candidate.locked !== true)
+    if (!track) throw new Error(requestedTrackId ? `Track ${requestedTrackId} was not found.` : 'No unlocked video track is available for an adjustment clip.')
+    if (track.type !== 'video') throw new Error(`Track ${requestedTrackId || track.id} is not a video track.`)
+    if (track.locked) throw new Error(`Track ${track.id} is locked.`)
+  } else {
+    track = {
+      id: null,
+      name: String(payload.trackName || payload.name || 'Adjustment Layer').trim().slice(0, 80) || 'Adjustment Layer',
+      type: 'video',
+      locked: false,
+      muted: false,
+      visible: true,
+    }
+  }
+  const startSeconds = Number(payload.startSeconds ?? payload.startTime)
+  const startTime = Number.isFinite(startSeconds)
+    ? Math.max(0, startSeconds)
+    : Number(state.playheadPosition) || 0
+  const duration = clampNumber(payload.durationSeconds ?? payload.duration, 5, 1 / (Number(state.timelineFps) || 24), 3600)
+  const adjustments = normalizeAdjustmentClipSettings(payload)
+  const { updates: transformUpdates, deltas: transformDeltas } = normalizeTransformUpdates(payload)
+  const keyframes = normalizeClipKeyframes(payload, { type: 'adjustment', duration })
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'add_adjustment_clip',
+      message: 'Adjustment clip creation plan only. No timeline change was made.',
+      plan: {
+        name: String(payload.name || 'Adjustment Layer').trim().slice(0, 160) || 'Adjustment Layer',
+        track: summarizeTrack(track),
+        createTrack: shouldCreateTrack && !requestedTrackId,
+        startSeconds: startTime,
+        durationSeconds: duration,
+        enabled: payload.enabled !== false,
+        adjustments,
+        transform: transformUpdates,
+        transformDelta: transformDeltas,
+        keyframes,
+      },
+    }
+  }
+
+  let targetTrack = track
+  let createdTrack = null
+  if (shouldCreateTrack && !requestedTrackId) {
+    state.saveToHistory?.()
+    targetTrack = useTimelineStore.getState().addTrack?.('video', {
+      name: track.name || 'Adjustment Layer',
+      position: 'top',
+    })
+    if (!targetTrack) throw new Error('Could not create a target video track for the adjustment clip.')
+    createdTrack = targetTrack
+  }
+
+  const newClip = useTimelineStore.getState().addAdjustmentClip?.(targetTrack.id, startTime, {
+    name: String(payload.name || 'Adjustment Layer').trim().slice(0, 160) || 'Adjustment Layer',
+    duration,
+    enabled: payload.enabled !== false,
+    adjustments,
+    saveHistory: !createdTrack,
+  })
+  if (!newClip) throw new Error('Could not create adjustment clip.')
+
+  const nextTransform = resolveNextTransform(newClip.transform || {}, transformUpdates, transformDeltas)
+  if (Object.keys(transformUpdates).length > 0 || Object.keys(transformDeltas).length > 0) {
+    useTimelineStore.getState().updateClipTransform?.(newClip.id, nextTransform, false)
+  }
+  const appliedKeyframes = applyClipKeyframes(useTimelineStore.getState(), newClip.id, keyframes, payload.replaceKeyframes === true)
+
+  return {
+    created: true,
+    action: 'add_adjustment_clip',
+    clip: buildAdjustmentClipSummary((useTimelineStore.getState().clips || []).find((clip) => clip.id === newClip.id) || newClip),
+    track: summarizeTrack(targetTrack),
+    createdTrack: createdTrack ? summarizeTrack(createdTrack) : null,
+    appliedKeyframes,
+  }
+}
+
 function handleUpdateShapeClip(payload = {}) {
   const state = useTimelineStore.getState()
   const currentClip = getShapeClipById(state, payload.clipId)
@@ -3283,6 +5081,212 @@ function handleUpdateShapeClip(payload = {}) {
       clearedKeyframes,
       appliedKeyframes,
     },
+  }
+}
+
+function handleListGlslEffects(payload = {}) {
+  const includePresets = payload.includePresets !== false
+  const includeParams = payload.includeParams !== false
+  return {
+    effects: GLSL_EFFECT_TYPES.map((effect) => {
+      const summary = summarizeGlslEffectDefinition(effect)
+      if (!includePresets) delete summary.presets
+      if (!includeParams) delete summary.params
+      return summary
+    }),
+  }
+}
+
+function handleAddGlslEffect(payload = {}) {
+  const state = useTimelineStore.getState()
+  const currentClip = getClipByIdForEffects(state, payload.clipId)
+  const effectDefinition = getGlslEffectDefinition(payload.effectType || payload.type)
+  const inputSettings = collectEffectSettingsInput(payload, effectDefinition)
+  const settings = normalizeGlslEffectSettings(effectDefinition, {
+    inputSettings,
+    presetId: payload.presetId || payload.preset,
+    includeDefaults: true,
+  })
+  const keyframes = normalizeGlslEffectKeyframes(payload, effectDefinition)
+  const existingEffects = currentClip.effects || []
+  const replaceExisting = payload.replaceExisting === true
+  const replacedEffectIds = replaceExisting
+    ? existingEffects.filter((effect) => effect.type === effectDefinition.id).map((effect) => effect.id).filter(Boolean)
+    : []
+  const insertIndexRaw = Number(payload.insertIndex)
+  const insertIndex = Number.isFinite(insertIndexRaw)
+    ? Math.max(0, Math.min(existingEffects.length, Math.floor(insertIndexRaw)))
+    : existingEffects.length
+  const effectId = `effect-${Date.now()}`
+  const newEffect = {
+    id: effectId,
+    type: effectDefinition.id,
+    enabled: payload.enabled !== false,
+    settings,
+  }
+  const previewEffects = [
+    ...(replaceExisting ? existingEffects.filter((effect) => effect.type !== effectDefinition.id) : existingEffects),
+  ]
+  previewEffects.splice(insertIndex, 0, newEffect)
+  const previewClip = {
+    ...currentClip,
+    effects: previewEffects,
+  }
+
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: 'add_glsl_effect',
+      message: 'GLSL effect add plan only. No timeline change was made.',
+      before: buildEffectClipSummary(currentClip),
+      after: buildEffectClipSummary(previewClip),
+      requested: {
+        effectType: effectDefinition.id,
+        presetId: payload.presetId || payload.preset || '',
+        settings,
+        keyframes,
+        replaceExisting,
+      },
+    }
+  }
+
+  state.saveToHistory?.()
+  useTimelineStore.setState((currentState) => ({
+    clips: (currentState.clips || []).map((clip) => {
+      if (clip.id !== currentClip.id) return clip
+      const currentEffects = Array.isArray(clip.effects) ? clip.effects : []
+      const nextEffects = replaceExisting
+        ? currentEffects.filter((effect) => effect.type !== effectDefinition.id)
+        : [...currentEffects]
+      nextEffects.splice(Math.min(insertIndex, nextEffects.length), 0, newEffect)
+      return {
+        ...clip,
+        effects: nextEffects,
+        cacheStatus: clip.cacheStatus === 'cached' ? 'invalid' : clip.cacheStatus,
+      }
+    }),
+  }))
+  const appliedKeyframes = applyGlslEffectKeyframes(
+    useTimelineStore.getState(),
+    currentClip.id,
+    effectId,
+    keyframes,
+    payload.replaceKeyframes === true
+  )
+  const clearedReplacedKeyframes = replacedEffectIds.flatMap((id) => clearAllKeyframesForEffect(currentClip.id, id))
+  const updatedClip = (useTimelineStore.getState().clips || []).find((clip) => clip.id === currentClip.id)
+
+  return {
+    created: true,
+    action: 'add_glsl_effect',
+    clip: buildEffectClipSummary(updatedClip),
+    effect: summarizeClipEffect(newEffect),
+    appliedKeyframes,
+    clearedReplacedKeyframes,
+  }
+}
+
+function handleUpdateGlslEffect(payload = {}) {
+  const state = useTimelineStore.getState()
+  const currentClip = getClipByIdForEffects(state, payload.clipId)
+  const currentEffect = resolveGlslEffectTarget(currentClip, payload)
+  const effectDefinition = getGlslEffectDefinition(currentEffect.type)
+  const inputSettings = collectEffectSettingsInput(payload, effectDefinition)
+  const settings = normalizeGlslEffectSettings(effectDefinition, {
+    existingSettings: currentEffect.settings || {},
+    inputSettings,
+    presetId: payload.presetId || payload.preset,
+  })
+  const hasEnabledUpdate = hasOwn(payload, 'enabled')
+  const keyframes = normalizeGlslEffectKeyframes(payload, effectDefinition, currentEffect.id)
+  const clearParams = normalizeGlslEffectClearParams(payload.clearKeyframes || payload.clearKeyframesForParams, effectDefinition)
+  const nextEffect = {
+    ...currentEffect,
+    ...(hasEnabledUpdate ? { enabled: payload.enabled !== false } : {}),
+    settings,
+  }
+  const previewClip = {
+    ...currentClip,
+    effects: (currentClip.effects || []).map((effect) => effect.id === currentEffect.id ? nextEffect : effect),
+  }
+
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: 'update_glsl_effect',
+      message: 'GLSL effect update plan only. No timeline change was made.',
+      before: buildEffectClipSummary(currentClip),
+      after: buildEffectClipSummary(previewClip),
+      requested: {
+        effectId: currentEffect.id,
+        effectType: currentEffect.type,
+        presetId: payload.presetId || payload.preset || '',
+        settings,
+        enabled: hasEnabledUpdate ? payload.enabled !== false : currentEffect.enabled !== false,
+        keyframes,
+        clearKeyframes: clearParams,
+      },
+    }
+  }
+
+  state.saveToHistory?.()
+  useTimelineStore.getState().updateEffect?.(currentClip.id, currentEffect.id, {
+    ...(hasEnabledUpdate ? { enabled: payload.enabled !== false } : {}),
+    settings,
+  }, false)
+  const clearedKeyframes = clearGlslEffectKeyframes(currentClip.id, currentEffect.id, clearParams)
+  const appliedKeyframes = applyGlslEffectKeyframes(
+    useTimelineStore.getState(),
+    currentClip.id,
+    currentEffect.id,
+    keyframes,
+    payload.replaceKeyframes === true
+  )
+  const updatedClip = (useTimelineStore.getState().clips || []).find((clip) => clip.id === currentClip.id)
+  const updatedEffect = (updatedClip?.effects || []).find((effect) => effect.id === currentEffect.id) || nextEffect
+
+  return {
+    updated: true,
+    action: 'update_glsl_effect',
+    clip: buildEffectClipSummary(updatedClip),
+    effect: summarizeClipEffect(updatedEffect),
+    requested: {
+      clearedKeyframes,
+      appliedKeyframes,
+    },
+  }
+}
+
+function handleRemoveGlslEffect(payload = {}) {
+  const state = useTimelineStore.getState()
+  const currentClip = getClipByIdForEffects(state, payload.clipId)
+  const currentEffect = resolveGlslEffectTarget(currentClip, payload)
+  const previewClip = {
+    ...currentClip,
+    effects: (currentClip.effects || []).filter((effect) => effect.id !== currentEffect.id),
+  }
+
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: 'remove_glsl_effect',
+      message: 'GLSL effect removal plan only. No timeline change was made.',
+      before: buildEffectClipSummary(currentClip),
+      after: buildEffectClipSummary(previewClip),
+      effect: summarizeClipEffect(currentEffect),
+    }
+  }
+
+  useTimelineStore.getState().removeEffect?.(currentClip.id, currentEffect.id)
+  const clearedKeyframes = clearAllKeyframesForEffect(currentClip.id, currentEffect.id)
+  const updatedClip = (useTimelineStore.getState().clips || []).find((clip) => clip.id === currentClip.id)
+
+  return {
+    removed: true,
+    action: 'remove_glsl_effect',
+    clip: buildEffectClipSummary(updatedClip),
+    effect: summarizeClipEffect(currentEffect),
+    clearedKeyframes,
   }
 }
 
@@ -3412,6 +5416,94 @@ async function handleExportTimeline(payload = {}) {
       qualityMode: options.qualityMode,
     },
     worker: result,
+  }
+}
+
+async function handleExportFcpXml(payload = {}) {
+  const api = typeof window !== 'undefined' ? window.electronAPI : null
+  if (!api?.writeFile || !api?.pathJoin || !api?.createDirectory) {
+    throw new Error('FCPXML export is only available in the desktop app.')
+  }
+
+  const projectState = useProjectStore.getState()
+  const timelineState = useTimelineStore.getState()
+  const assetsState = useAssetsStore.getState()
+  const projectPath = projectState.currentProjectHandle
+  if (typeof projectPath !== 'string' || !projectPath) {
+    throw new Error('Open a saved project before exporting FCPXML.')
+  }
+
+  const project = projectState.currentProject || {}
+  const timelineSettings = typeof projectState.getCurrentTimelineSettings === 'function'
+    ? projectState.getCurrentTimelineSettings()
+    : (project.settings || {})
+  const currentTimeline = (project.timelines || []).find((timeline) => timeline.id === projectState.currentTimelineId)
+  const timelineName = currentTimeline?.name || payload.timelineName || 'Timeline'
+  const resolvedAssets = await Promise.all((assetsState.assets || []).map(async (asset) => {
+    if (!asset?.path) return { ...asset, absolutePath: asset.absolutePath || '' }
+    const absolutePath = isAbsoluteMcpFilePath(asset.path)
+      ? asset.path
+      : await api.pathJoin(projectPath, asset.path)
+    return {
+      ...asset,
+      absolutePath,
+      hasAudio: asset.hasAudio ?? asset.settings?.hasAudio,
+    }
+  }))
+  const exportableAssetIds = new Set(resolvedAssets.filter((asset) => asset.absolutePath).map((asset) => asset.id))
+  const exportableClipCount = (timelineState.clips || []).filter((clip) => (
+    clip?.enabled !== false
+    && ['video', 'audio', 'image'].includes(clip?.type)
+    && exportableAssetIds.has(clip.assetId)
+  )).length
+  if (exportableClipCount === 0) {
+    throw new Error('No media clips with project file paths are available for FCPXML export.')
+  }
+
+  const width = Math.max(1, Math.round(Number(timelineSettings.width || project.settings?.width || 1920)))
+  const height = Math.max(1, Math.round(Number(timelineSettings.height || project.settings?.height || 1080)))
+  const fps = Math.max(1, Number(timelineSettings.fps || project.settings?.fps || timelineState.timelineFps || 24))
+  const timelineEnd = typeof timelineState.getTimelineEndTime === 'function'
+    ? timelineState.getTimelineEndTime()
+    : getTimelineEndTimeForMcp(timelineState.clips || [], timelineState.duration || currentTimeline?.duration || 0)
+  const xml = buildFcpXml({
+    projectName: project.name || 'ComfyStudio Project',
+    timelineName,
+    timelineSettings: { width, height, fps },
+    timeline: {
+      clips: timelineState.clips || [],
+      tracks: timelineState.tracks || [],
+      transitions: timelineState.transitions || [],
+      duration: timelineEnd,
+      timelineFps: fps,
+    },
+    assets: resolvedAssets,
+  })
+
+  const outputFolder = await api.pathJoin(projectPath, 'renders')
+  await api.createDirectory(outputFolder)
+  const outputPath = String(payload.outputPath || '').trim()
+    || await api.pathJoin(
+      outputFolder,
+      `${sanitizeExportBaseName(payload.filename || `${project.name || 'ComfyStudio'}_${timelineName}`)}_${Date.now()}.fcpxml`
+    )
+  const writeResult = await api.writeFile(outputPath, xml, { encoding: 'utf8' })
+  if (!writeResult?.success) {
+    throw new Error(writeResult?.error || 'Failed to write FCPXML file.')
+  }
+
+  return {
+    exported: true,
+    action: 'export_fcpxml',
+    outputPath,
+    clipCount: exportableClipCount,
+    timeline: {
+      name: timelineName,
+      width,
+      height,
+      fps,
+      duration: timelineEnd,
+    },
   }
 }
 
@@ -3731,8 +5823,903 @@ async function handleInspectTimelineRange(payload = {}) {
   return result
 }
 
+function parseMcpTimeValue(value, fps = 24) {
+  if (value === null || typeof value === 'undefined' || value === '') return null
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  if (/^-?\d+(\.\d+)?$/.test(raw)) {
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  const parts = raw.split(':').map((part) => Number(part))
+  if (parts.some((part) => !Number.isFinite(part))) return null
+  if (parts.length === 4) {
+    const [hours, minutes, seconds, frames] = parts
+    return (hours * 3600) + (minutes * 60) + seconds + (frames / Math.max(1, fps))
+  }
+  if (parts.length === 3) {
+    const [hours, minutes, seconds] = parts
+    return (hours * 3600) + (minutes * 60) + seconds
+  }
+  if (parts.length === 2) {
+    const [minutes, seconds] = parts
+    return (minutes * 60) + seconds
+  }
+  return null
+}
+
+function getMcpRequestedTime(payload = {}, keys = ['timeSeconds', 'time', 'seconds']) {
+  const fps = Number(useTimelineStore.getState().timelineFps) || 24
+  if (Number.isFinite(Number(payload.frame))) return Number(payload.frame) / fps
+  for (const key of keys) {
+    if (hasOwn(payload, key)) {
+      const parsed = parseMcpTimeValue(payload[key], fps)
+      if (parsed !== null) return parsed
+    }
+  }
+  if (hasOwn(payload, 'timecode')) {
+    const parsed = parseMcpTimeValue(payload.timecode, fps)
+    if (parsed !== null) return parsed
+  }
+  return null
+}
+
+function inferMcpAssetCategory(filePath = '', requestedCategory = '') {
+  const requested = String(requestedCategory || '').trim().toLowerCase()
+  if (['video', 'audio', 'images'].includes(requested)) return requested
+  if (requested === 'image') return 'images'
+  const ext = String(filePath || '').trim().split(/[\\/]/).pop()?.split('.').pop()?.toLowerCase() || ''
+  if (['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v'].includes(ext)) return 'video'
+  if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'aif', 'aiff'].includes(ext)) return 'audio'
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff'].includes(ext)) return 'images'
+  throw new Error('Could not infer asset type from file extension. Provide category="video", "audio", or "images".')
+}
+
+function getMcpAssetCreatedTime(asset = {}) {
+  const raw = asset.createdAt || asset.imported || asset.created || asset.modified || ''
+  const parsed = raw ? Date.parse(raw) : NaN
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function resolveMcpAssetTargets(payload = {}) {
+  const assets = useAssetsStore.getState().assets || []
+  const explicitIds = normalizeStringList(payload.assetIds || payload.assetId || payload.ids || payload.id)
+  const explicitNames = normalizeStringList(payload.assetNames || payload.assetName || payload.names || payload.name)
+  let candidates = []
+  const missingAssetIds = []
+  const missingAssetNames = []
+
+  if (explicitIds.length > 0 || explicitNames.length > 0) {
+    const byId = new Map(assets.map((asset) => [asset?.id, asset]).filter(([id]) => id))
+    const seen = new Set()
+    for (const assetId of explicitIds) {
+      const asset = byId.get(assetId)
+      if (!asset) {
+        missingAssetIds.push(assetId)
+        continue
+      }
+      if (!seen.has(asset.id)) {
+        candidates.push(asset)
+        seen.add(asset.id)
+      }
+    }
+    for (const assetName of explicitNames) {
+      const lookup = String(assetName || '').trim().toLowerCase()
+      const asset = assets.find((candidate) => String(candidate?.name || '').trim().toLowerCase() === lookup)
+        || assets.find((candidate) => String(candidate?.name || '').trim().toLowerCase().includes(lookup))
+      if (!asset) {
+        missingAssetNames.push(assetName)
+        continue
+      }
+      if (!seen.has(asset.id)) {
+        candidates.push(asset)
+        seen.add(asset.id)
+      }
+    }
+  } else {
+    candidates = assets.slice()
+  }
+
+  const typeFilters = normalizeStringList(payload.types || payload.type || payload.assetType).map((type) => {
+    const normalized = type.toLowerCase()
+    return normalized === 'images' ? 'image' : normalized
+  })
+  if (typeFilters.length > 0) {
+    candidates = candidates.filter((asset) => typeFilters.includes(String(asset?.type || '').toLowerCase()))
+  }
+
+  const folderId = String(payload.folderId || payload.sourceFolderId || '').trim()
+  if (folderId) {
+    candidates = candidates.filter((asset) => (asset?.folderId || null) === folderId)
+  } else if (payload.rootOnly === true || payload.sourceRoot === true) {
+    candidates = candidates.filter((asset) => !asset?.folderId)
+  }
+
+  const query = String(payload.nameIncludes || payload.nameContains || payload.search || payload.query || '').trim().toLowerCase()
+  if (query) {
+    candidates = candidates.filter((asset) => String(asset?.name || '').toLowerCase().includes(query))
+  }
+
+  const statusFilters = normalizeStringList(payload.statuses || payload.status).map((status) => status.toLowerCase())
+  if (statusFilters.length > 0) {
+    candidates = candidates.filter((asset) => statusFilters.includes(String(asset?.generationStatus || asset?.status || 'none').toLowerCase()))
+  }
+
+  const latest = payload.latest === true || payload.latestGenerated === true || String(payload.filter || '').toLowerCase() === 'latest'
+  candidates = candidates
+    .filter((asset) => asset?.id)
+    .sort((a, b) => getMcpAssetCreatedTime(b) - getMcpAssetCreatedTime(a))
+  if (latest && candidates.length > 1) candidates = candidates.slice(0, 1)
+
+  return {
+    assets: candidates,
+    missingAssetIds,
+    missingAssetNames,
+  }
+}
+
+function resolveMcpClipTargets(payload = {}, state = useTimelineStore.getState()) {
+  const clips = state.clips || []
+  const explicitIds = normalizeStringList(payload.clipIds || payload.clipId || payload.ids || payload.id)
+  const clipsById = new Map(clips.map((clip) => [clip.id, clip]))
+  let candidates = []
+  const missingClipIds = []
+
+  if (explicitIds.length > 0) {
+    const seen = new Set()
+    for (const clipId of explicitIds) {
+      const clip = clipsById.get(clipId)
+      if (!clip) {
+        missingClipIds.push(clipId)
+        continue
+      }
+      if (!seen.has(clip.id)) {
+        candidates.push(clip)
+        seen.add(clip.id)
+      }
+    }
+  } else if (payload.selected === true || String(payload.filter || '').trim().toLowerCase() === 'selected') {
+    candidates = normalizeStringList(state.selectedClipIds || []).map((clipId) => clipsById.get(clipId)).filter(Boolean)
+  } else {
+    candidates = clips.slice()
+  }
+
+  const filter = String(payload.filter || payload.mode || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (filter === 'disabled') candidates = candidates.filter((clip) => clip.enabled === false)
+  if (filter === 'enabled') candidates = candidates.filter((clip) => clip.enabled !== false)
+  if (filter === 'visual') candidates = candidates.filter((clip) => CLIP_VISUAL_KEYFRAME_TYPES.has(String(clip.type || '').toLowerCase()))
+  if (filter === 'audio') candidates = candidates.filter((clip) => String(clip.type || '').toLowerCase() === 'audio')
+  if (filter === 'labeled' || filter === 'colored') candidates = candidates.filter((clip) => Boolean(clip.labelColor))
+
+  const typeFilters = normalizeStringList(payload.types || payload.type || payload.clipType).map((type) => type.toLowerCase())
+  if (typeFilters.length > 0) {
+    candidates = candidates.filter((clip) => typeFilters.includes(String(clip.type || '').toLowerCase()))
+  }
+
+  const trackId = String(payload.trackId || '').trim()
+  if (trackId) candidates = candidates.filter((clip) => clip.trackId === trackId)
+
+  const assetId = String(payload.assetId || '').trim()
+  if (assetId) candidates = candidates.filter((clip) => clip.assetId === assetId)
+
+  const labelColor = normalizeClipLabelColor(payload.labelColor || payload.clipLabelColor || '')
+  if (labelColor) candidates = candidates.filter((clip) => normalizeClipLabelColor(clip.labelColor) === labelColor)
+
+  const query = String(payload.nameIncludes || payload.nameContains || payload.search || payload.query || '').trim().toLowerCase()
+  if (query) {
+    candidates = candidates.filter((clip) => (
+      String(clip.name || '').toLowerCase().includes(query)
+      || String(clip.assetName || '').toLowerCase().includes(query)
+      || String(clip.id || '').toLowerCase().includes(query)
+    ))
+  }
+
+  const timeSeconds = getMcpRequestedTime(payload, ['timeSeconds', 'time', 'atSeconds'])
+  if (timeSeconds !== null) {
+    candidates = candidates.filter((clip) => {
+      const start = Number(clip.startTime) || 0
+      const end = start + (Number(clip.duration) || 0)
+      return start <= timeSeconds && end > timeSeconds
+    })
+  }
+
+  candidates = candidates.filter((clip) => clip?.id)
+  const order = String(payload.order || 'timeline').trim().toLowerCase()
+  if (order === 'top' || order === 'topmost') {
+    const tracks = state.tracks || []
+    const trackIndex = new Map(tracks.map((track, index) => [track.id, index]))
+    candidates.sort((a, b) => (trackIndex.get(a.trackId) ?? 9999) - (trackIndex.get(b.trackId) ?? 9999))
+  } else {
+    candidates.sort((a, b) => {
+      if (a.trackId !== b.trackId) return String(a.trackId || '').localeCompare(String(b.trackId || ''))
+      return (Number(a.startTime) || 0) - (Number(b.startTime) || 0)
+    })
+  }
+
+  return {
+    clips: candidates,
+    missingClipIds,
+    filter,
+  }
+}
+
+function getMcpUndoRedoAvailability() {
+  const timelineState = useTimelineStore.getState()
+  const projectState = useProjectStore.getState()
+  return {
+    timeline: {
+      canUndo: Boolean(timelineState.canUndo?.()),
+      canRedo: Boolean(timelineState.canRedo?.()),
+      lastChangedAt: Number(timelineState.historyLastChangedAt) || 0,
+    },
+    project: {
+      canUndo: Boolean(projectState.canUndoTimelineStructureChange?.()),
+      canRedo: Boolean(projectState.canRedoTimelineStructureChange?.()),
+      lastChangedAt: Number(projectState.projectHistoryLastChangedAt) || 0,
+    },
+  }
+}
+
+function chooseMcpUndoRedoScope(direction = 'undo', requestedScope = 'auto') {
+  const availability = getMcpUndoRedoAvailability()
+  const scope = String(requestedScope || 'auto').trim().toLowerCase()
+  const capability = direction === 'redo' ? 'canRedo' : 'canUndo'
+  if (scope === 'timeline' || scope === 'clip' || scope === 'edit') return { scope: 'timeline', availability }
+  if (scope === 'project' || scope === 'structure' || scope === 'sequence') return { scope: 'project', availability }
+  const timelineAvailable = availability.timeline[capability]
+  const projectAvailable = availability.project[capability]
+  if (timelineAvailable && projectAvailable) {
+    return {
+      scope: availability.project.lastChangedAt > availability.timeline.lastChangedAt ? 'project' : 'timeline',
+      availability,
+    }
+  }
+  if (timelineAvailable) return { scope: 'timeline', availability }
+  if (projectAvailable) return { scope: 'project', availability }
+  return { scope: 'none', availability }
+}
+
+function handleUndoRedo(payload = {}) {
+  const direction = String(payload.direction || payload.action || 'undo').trim().toLowerCase() === 'redo' ? 'redo' : 'undo'
+  const { scope, availability } = chooseMcpUndoRedoScope(direction, payload.scope || 'auto')
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: direction,
+      chosenScope: scope,
+      availability,
+      message: scope === 'none' ? `Nothing available to ${direction}.` : `${direction} would apply to ${scope} history.`,
+    }
+  }
+  if (scope === 'none') {
+    return {
+      success: false,
+      action: direction,
+      chosenScope: scope,
+      availability,
+      message: `Nothing available to ${direction}.`,
+    }
+  }
+
+  const timelineState = useTimelineStore.getState()
+  const projectState = useProjectStore.getState()
+  const applied = scope === 'project'
+    ? (direction === 'redo'
+      ? Boolean(projectState.redoTimelineStructureChange?.())
+      : Boolean(projectState.undoTimelineStructureChange?.()))
+    : (direction === 'redo'
+      ? Boolean(timelineState.redo?.())
+      : Boolean(timelineState.undo?.()))
+
+  return {
+    success: applied,
+    action: direction,
+    scope,
+    availabilityBefore: availability,
+    availabilityAfter: getMcpUndoRedoAvailability(),
+  }
+}
+
+function handleSetPlayhead(payload = {}) {
+  const state = useTimelineStore.getState()
+  const fps = Number(state.timelineFps) || 24
+  const requestedTime = getMcpRequestedTime(payload, ['timeSeconds', 'time', 'seconds', 'atSeconds'])
+  if (requestedTime === null) throw new Error('Provide timeSeconds, timecode, or frame for set_playhead.')
+  const timeSeconds = roundToTimelineFrame(Math.max(0, requestedTime), fps)
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: 'set_playhead',
+      currentTimeSeconds: Number(state.playheadPosition) || 0,
+      nextTimeSeconds: timeSeconds,
+    }
+  }
+  state.setPlayheadPosition?.(timeSeconds, { snap: payload.snapToFrame !== false })
+  return {
+    success: true,
+    action: 'set_playhead',
+    timeSeconds,
+  }
+}
+
+function handleSelectClips(payload = {}) {
+  const state = useTimelineStore.getState()
+  const { clips, missingClipIds, filter } = resolveMcpClipTargets(payload, state)
+  const limit = Math.min(1000, Math.max(1, Math.floor(Number(payload.limit) || 200)))
+  if (clips.length > limit) throw new Error(`Matched ${clips.length} clips, above limit ${limit}. Pass a higher limit intentionally if this is expected.`)
+  const clear = payload.clear === true || payload.clearSelection === true
+  const clipIds = clips.map((clip) => clip.id)
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: 'select_clips',
+      clear,
+      filter,
+      selectedClipIds: clipIds,
+      clipCount: clipIds.length,
+      missingClipIds,
+      clips: clips.map(summarizeClip),
+    }
+  }
+  if (clear && clipIds.length === 0) {
+    state.clearSelection?.()
+  } else {
+    state.selectClips?.(clipIds)
+  }
+  if ((payload.movePlayheadToStart === true || payload.goToStart === true) && clips[0]) {
+    state.setPlayheadPosition?.(Number(clips[0].startTime) || 0, { snap: true })
+  }
+  return {
+    success: true,
+    action: 'select_clips',
+    selectedClipIds: clear && clipIds.length === 0 ? [] : clipIds,
+    clipCount: clipIds.length,
+    missingClipIds,
+    clips: clips.map(summarizeClip),
+  }
+}
+
+function handleSelectAssets(payload = {}) {
+  const { assets, missingAssetIds, missingAssetNames } = resolveMcpAssetTargets(payload)
+  const limit = Math.min(1000, Math.max(1, Math.floor(Number(payload.limit) || 200)))
+  if (assets.length > limit) throw new Error(`Matched ${assets.length} assets, above limit ${limit}. Pass a higher limit intentionally if this is expected.`)
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: 'select_assets',
+      selectedAssetIds: assets.map((asset) => asset.id),
+      assetCount: assets.length,
+      missingAssetIds,
+      missingAssetNames,
+      assets: assets.map(summarizeAsset),
+    }
+  }
+  if (payload.setPreview !== false && assets[0]) {
+    useAssetsStore.getState().setPreview?.(assets[0])
+  }
+  return {
+    success: true,
+    action: 'select_assets',
+    selectedAssetIds: assets.map((asset) => asset.id),
+    previewAssetId: payload.setPreview !== false ? (assets[0]?.id || null) : null,
+    assetCount: assets.length,
+    missingAssetIds,
+    missingAssetNames,
+    assets: assets.map(summarizeAsset),
+  }
+}
+
+function buildProjectCheckpointSnapshot(label = '') {
+  const projectState = useProjectStore.getState()
+  const timelineState = useTimelineStore.getState()
+  const assetsState = useAssetsStore.getState()
+  const project = projectState.currentProject
+  if (!project) throw new Error('Open a project before creating an MCP checkpoint.')
+
+  const currentTimelineId = projectState.currentTimelineId || project.currentTimelineId
+  const currentTimelineData = timelineState.getProjectData?.() || {}
+  const timelines = (project.timelines || []).map((timeline) => (
+    timeline.id === currentTimelineId
+      ? { ...timeline, ...safeClone(currentTimelineData), modified: new Date().toISOString() }
+      : safeClone(timeline)
+  ))
+
+  return {
+    id: `checkpoint-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    label: String(label || 'MCP checkpoint').slice(0, 120),
+    createdAt: new Date().toISOString(),
+    projectHandle: projectState.currentProjectHandle,
+    currentTimelineId,
+    project: safeClone({ ...project, timelines, currentTimelineId }),
+    assetsState: {
+      assets: safeClone(assetsState.assets || []),
+      folders: safeClone(assetsState.folders || []),
+      assetCounter: assetsState.assetCounter || 1,
+      folderCounter: assetsState.folderCounter || 1,
+      currentPreviewId: assetsState.currentPreview?.id || null,
+    },
+    timelineUi: {
+      playheadPosition: Number(timelineState.playheadPosition) || 0,
+      inPoint: timelineState.inPoint ?? null,
+      outPoint: timelineState.outPoint ?? null,
+      selectedClipIds: safeClone(timelineState.selectedClipIds || []),
+      selectedTransitionId: timelineState.selectedTransitionId || null,
+      selectedMarkerId: timelineState.selectedMarkerId || null,
+    },
+  }
+}
+
+function handleCreateProjectCheckpoint(payload = {}) {
+  const checkpoint = buildProjectCheckpointSnapshot(payload.label || payload.name || '')
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: 'create_project_checkpoint',
+      message: 'Project checkpoint plan only. No checkpoint was stored.',
+      checkpoint: {
+        id: checkpoint.id,
+        label: checkpoint.label,
+        createdAt: checkpoint.createdAt,
+        timelineCount: checkpoint.project?.timelines?.length || 0,
+        assetCount: checkpoint.assetsState.assets.length,
+      },
+      existingCheckpointCount: MCP_PROJECT_CHECKPOINTS.size,
+    }
+  }
+
+  MCP_PROJECT_CHECKPOINTS.set(checkpoint.id, checkpoint)
+  while (MCP_PROJECT_CHECKPOINTS.size > MCP_PROJECT_CHECKPOINT_LIMIT) {
+    const oldest = MCP_PROJECT_CHECKPOINTS.keys().next().value
+    MCP_PROJECT_CHECKPOINTS.delete(oldest)
+  }
+  return {
+    success: true,
+    action: 'create_project_checkpoint',
+    checkpointId: checkpoint.id,
+    label: checkpoint.label,
+    createdAt: checkpoint.createdAt,
+    checkpointCount: MCP_PROJECT_CHECKPOINTS.size,
+    message: 'Created an in-memory MCP project checkpoint for this ComfyStudio session.',
+  }
+}
+
+async function handleRestoreProjectCheckpoint(payload = {}) {
+  const requestedId = String(payload.checkpointId || payload.id || '').trim()
+  const checkpoint = requestedId
+    ? MCP_PROJECT_CHECKPOINTS.get(requestedId)
+    : [...MCP_PROJECT_CHECKPOINTS.values()][MCP_PROJECT_CHECKPOINTS.size - 1]
+  if (!checkpoint) {
+    throw new Error(requestedId
+      ? `Checkpoint ${requestedId} was not found.`
+      : 'No MCP project checkpoints exist in this app session.')
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'restore_project_checkpoint',
+      message: 'Checkpoint restore plan only. No project state was changed.',
+      checkpoint: {
+        id: checkpoint.id,
+        label: checkpoint.label,
+        createdAt: checkpoint.createdAt,
+        currentTimelineId: checkpoint.currentTimelineId,
+        timelineCount: checkpoint.project?.timelines?.length || 0,
+        assetCount: checkpoint.assetsState?.assets?.length || 0,
+      },
+      suggestedApplyPayload: {
+        checkpointId: checkpoint.id,
+        previewOnly: false,
+      },
+    }
+  }
+
+  const project = safeClone(checkpoint.project)
+  const assets = safeClone(checkpoint.assetsState?.assets || [])
+  const folders = safeClone(checkpoint.assetsState?.folders || [])
+  const currentTimelineId = checkpoint.currentTimelineId || project?.currentTimelineId || project?.timelines?.[0]?.id || null
+  const timeline = (project?.timelines || []).find((candidate) => candidate.id === currentTimelineId) || project?.timelines?.[0] || null
+  if (!project || !timeline) throw new Error('Checkpoint is missing project or timeline data.')
+
+  const currentPreview = assets.find((asset) => asset.id === checkpoint.assetsState?.currentPreviewId) || null
+  useAssetsStore.setState({
+    assets,
+    folders,
+    assetCounter: checkpoint.assetsState?.assetCounter || Math.max(1, assets.length + 1),
+    folderCounter: checkpoint.assetsState?.folderCounter || Math.max(1, folders.length + 1),
+    currentPreview,
+  })
+  useProjectStore.setState({
+    currentProject: project,
+    currentProjectHandle: checkpoint.projectHandle,
+    currentTimelineId,
+  })
+  useTimelineStore.getState().loadFromProject(timeline, assets, timeline.fps || project.settings?.fps || 24)
+  useTimelineStore.setState({
+    playheadPosition: checkpoint.timelineUi?.playheadPosition || 0,
+    inPoint: checkpoint.timelineUi?.inPoint ?? null,
+    outPoint: checkpoint.timelineUi?.outPoint ?? null,
+    selectedClipIds: checkpoint.timelineUi?.selectedClipIds || [],
+    selectedTransitionId: checkpoint.timelineUi?.selectedTransitionId || null,
+    selectedMarkerId: checkpoint.timelineUi?.selectedMarkerId || null,
+  })
+
+  const savedProject = payload.saveProject === true && typeof useProjectStore.getState().saveProject === 'function'
+    ? await useProjectStore.getState().saveProject()
+    : null
+
+  return {
+    success: true,
+    action: 'restore_project_checkpoint',
+    checkpointId: checkpoint.id,
+    label: checkpoint.label,
+    restoredTimelineId: currentTimelineId,
+    savedProject: Boolean(savedProject),
+    message: savedProject
+      ? 'Restored the MCP checkpoint and saved the project file.'
+      : 'Restored the MCP checkpoint in the open ComfyStudio session.',
+  }
+}
+
+async function resolveMcpFolderIdForImportedAsset(payload = {}) {
+  const folderId = String(payload.folderId || '').trim()
+  if (folderId) {
+    const folder = (useAssetsStore.getState().folders || []).find((candidate) => candidate?.id === folderId)
+    if (!folder) throw new Error(`Asset folder ${folderId} was not found.`)
+    return folderId
+  }
+  const folderPath = payload.folderPath || payload.targetFolderPath || payload.folderName || payload.folder
+  if (!folderPath) return null
+  const created = await handleCreateAssetFolder({
+    path: folderPath,
+    color: payload.folderColor || '',
+    previewOnly: false,
+  })
+  return created.folderId || null
+}
+
+async function handleImportAssetFromPath(payload = {}) {
+  const sourcePath = String(payload.path || payload.filePath || payload.sourcePath || '').trim()
+  if (!sourcePath) throw new Error('Provide path, filePath, or sourcePath for import_asset_from_path.')
+  if (!useProjectStore.getState().currentProjectHandle) throw new Error('Open a saved ComfyStudio project before importing assets.')
+  if (!isAbsoluteMcpFilePath(sourcePath)) throw new Error('Provide an absolute local file path to import.')
+  const category = inferMcpAssetCategory(sourcePath, payload.category || payload.type || payload.assetType)
+
+  let exists = true
+  if (typeof window !== 'undefined' && window.electronAPI?.exists) {
+    exists = await window.electronAPI.exists(sourcePath)
+  }
+  if (!exists) throw new Error(`File does not exist: ${sourcePath}`)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'import_asset_from_path',
+      message: 'Asset import plan only. No file was copied.',
+      sourcePath,
+      category,
+      targetFolder: payload.folderId || payload.folderPath || payload.folderName || null,
+      suggestedApplyPayload: {
+        ...payload,
+        category,
+        previewOnly: false,
+      },
+    }
+  }
+
+  const folderId = await resolveMcpFolderIdForImportedAsset(payload)
+  const projectHandle = useProjectStore.getState().currentProjectHandle
+  const imported = await importAsset(projectHandle, sourcePath, category)
+  const url = imported.absolutePath ? await getAbsoluteFileUrl(imported.absolutePath) : imported.url
+  const asset = useAssetsStore.getState().addAsset({
+    ...imported,
+    url: url || imported.url || null,
+    folderId,
+    sourceTool: 'import_asset_from_path',
+    settings: {
+      ...(imported.settings || {}),
+      importedViaMcp: true,
+      sourcePath,
+    },
+  })
+  const savedProject = typeof useProjectStore.getState().saveProject === 'function'
+    ? await useProjectStore.getState().saveProject()
+    : null
+  return {
+    success: true,
+    action: 'import_asset_from_path',
+    message: 'Imported local file into the active ComfyStudio project.',
+    sourcePath,
+    category,
+    folderId,
+    asset: summarizeAsset(asset),
+    savedProject: Boolean(savedProject),
+  }
+}
+
+async function handleRelinkAsset(payload = {}) {
+  const newPath = String(payload.path || payload.filePath || payload.sourcePath || '').trim()
+  if (!newPath) throw new Error('Provide path, filePath, or sourcePath for relink_asset.')
+  if (!isAbsoluteMcpFilePath(newPath)) throw new Error('Provide an absolute local file path to relink an asset.')
+
+  const { assets, missingAssetIds, missingAssetNames } = resolveMcpAssetTargets({
+    assetId: payload.assetId || payload.id,
+    assetName: payload.assetName || payload.name,
+    assetIds: payload.assetIds,
+    assetNames: payload.assetNames,
+    latest: payload.latest,
+    nameIncludes: payload.nameIncludes,
+    type: payload.type,
+    limit: payload.limit,
+  })
+  if (assets.length === 0) throw new Error('No matching asset found for relink_asset.')
+  if (assets.length > 1) throw new Error(`Matched ${assets.length} assets. Provide a single assetId for relink_asset.`)
+
+  let exists = true
+  if (typeof window !== 'undefined' && window.electronAPI?.exists) {
+    exists = await window.electronAPI.exists(newPath)
+  }
+  if (!exists) throw new Error(`Replacement file does not exist: ${newPath}`)
+
+  const asset = assets[0]
+  const inferredCategory = inferMcpAssetCategory(newPath, payload.category || payload.type || asset.type)
+  const inferredType = inferredCategory === 'images' ? 'image' : inferredCategory
+  const currentType = String(asset.type || '').toLowerCase()
+  if (currentType && inferredType && currentType !== inferredType && payload.allowTypeChange !== true) {
+    throw new Error(`Replacement file looks like ${inferredType}, but asset ${asset.id} is ${currentType}. Pass allowTypeChange=true if that is intentional.`)
+  }
+
+  const url = await getAbsoluteFileUrl(newPath)
+  const updates = {
+    absolutePath: newPath,
+    path: newPath,
+    url: url || null,
+    isImported: true,
+    type: payload.allowTypeChange === true ? inferredType : asset.type,
+    relinkedAt: new Date().toISOString(),
+    playbackCachePath: undefined,
+    playbackCacheUrl: undefined,
+    playbackCacheStatus: undefined,
+    proxyPath: undefined,
+    proxyUrl: undefined,
+    proxyStatus: undefined,
+    sprite: undefined,
+    poster: undefined,
+    settings: {
+      ...(asset.settings || {}),
+      relinkedViaMcp: true,
+      relinkedFromPath: asset.absolutePath || asset.path || '',
+      sourcePath: newPath,
+    },
+  }
+
+  const plan = {
+    action: 'relink_asset',
+    asset: summarizeAsset(asset),
+    newPath,
+    inferredType,
+    missingAssetIds,
+    missingAssetNames,
+    updates: {
+      absolutePath: updates.absolutePath,
+      path: updates.path,
+      isImported: updates.isImported,
+      type: updates.type,
+    },
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      message: 'Asset relink plan only. No project metadata was changed.',
+      ...plan,
+      suggestedApplyPayload: {
+        ...payload,
+        previewOnly: false,
+      },
+    }
+  }
+
+  useAssetsStore.getState().updateAsset(asset.id, updates)
+  const updatedAsset = (useAssetsStore.getState().assets || []).find((candidate) => candidate?.id === asset.id) || { ...asset, ...updates }
+  if (payload.setPreview !== false && typeof useAssetsStore.getState().setPreview === 'function') {
+    useAssetsStore.getState().setPreview(updatedAsset)
+  }
+  const savedProject = typeof useProjectStore.getState().saveProject === 'function'
+    ? await useProjectStore.getState().saveProject()
+    : null
+
+  return {
+    success: true,
+    action: 'relink_asset',
+    message: 'Relinked asset to the replacement local file path.',
+    asset: summarizeAsset(updatedAsset),
+    previousPath: asset.absolutePath || asset.path || '',
+    newPath,
+    savedProject: Boolean(savedProject),
+  }
+}
+
+function handleSetClipStyle(payload = {}) {
+  const state = useTimelineStore.getState()
+  const { clips, missingClipIds, filter } = resolveMcpClipTargets(payload, state)
+  const limit = Math.min(1000, Math.max(1, Math.floor(Number(payload.limit) || 100)))
+  if (clips.length === 0) throw new Error('No matching clips found for set_clip_style.')
+  if (clips.length > limit) throw new Error(`Matched ${clips.length} clips, above limit ${limit}. Pass a higher limit intentionally if this is expected.`)
+
+  const { updates: transformUpdates, deltas: transformDeltas } = normalizeTransformUpdates(payload)
+  const hasTransformUpdates = Object.keys(transformUpdates).length > 0 || Object.keys(transformDeltas).length > 0
+  const labelWasProvided = hasOwn(payload, 'labelColor') || hasOwn(payload, 'clipLabelColor') || hasOwn(payload, 'timelineColor')
+  const labelColor = labelWasProvided ? normalizeClipLabelColor(payload.labelColor || payload.clipLabelColor || payload.timelineColor || '') : ''
+  if (labelWasProvided && (payload.labelColor || payload.clipLabelColor || payload.timelineColor) && !labelColor) {
+    throw new Error('Invalid label color. Use a hex color like #f97316, or an empty string to clear labels.')
+  }
+  const enabledWasProvided = hasOwn(payload, 'enabled')
+  if (!hasTransformUpdates && !labelWasProvided && !enabledWasProvided) {
+    throw new Error('Provide transform updates, labelColor, or enabled for set_clip_style.')
+  }
+
+  const plan = {
+    action: 'set_clip_style',
+    clipCount: clips.length,
+    filter,
+    missingClipIds,
+    changes: {
+      transform: hasTransformUpdates ? { updates: transformUpdates, deltas: transformDeltas } : null,
+      labelColor: labelWasProvided ? labelColor : undefined,
+      enabled: enabledWasProvided ? Boolean(payload.enabled) : undefined,
+    },
+    clips: clips.map((clip) => ({
+      ...summarizeClip(clip),
+      enabled: clip.enabled !== false,
+      transform: clip.transform || {},
+    })),
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      message: 'Clip style plan only. No timeline change was made.',
+      plan,
+      suggestedApplyPayload: {
+        ...payload,
+        previewOnly: false,
+      },
+    }
+  }
+
+  const targetIds = new Set(clips.map((clip) => clip.id))
+  state.saveToHistory?.()
+  useTimelineStore.setState((currentState) => ({
+    clips: (currentState.clips || []).map((clip) => {
+      if (!targetIds.has(clip.id)) return clip
+      const nextClip = { ...clip }
+      if (hasTransformUpdates) {
+        nextClip.transform = resolveNextTransform(clip.transform || {}, transformUpdates, transformDeltas)
+      }
+      if (labelWasProvided) nextClip.labelColor = labelColor
+      if (enabledWasProvided) nextClip.enabled = Boolean(payload.enabled)
+      return nextClip
+    }),
+  }))
+
+  const updatedClips = (useTimelineStore.getState().clips || []).filter((clip) => targetIds.has(clip.id))
+  return {
+    success: true,
+    action: 'set_clip_style',
+    clipCount: updatedClips.length,
+    missingClipIds,
+    changes: plan.changes,
+    clips: updatedClips.map((clip) => ({
+      ...summarizeClip(clip),
+      enabled: clip.enabled !== false,
+      transform: clip.transform || {},
+    })),
+  }
+}
+
+function handleSetInOutRange(payload = {}) {
+  const state = useTimelineStore.getState()
+  const fps = Number(state.timelineFps) || 24
+  const clear = payload.clear === true || payload.clearRange === true
+  const clearIn = clear || payload.clearIn === true
+  const clearOut = clear || payload.clearOut === true
+  let inPoint = null
+  let outPoint = null
+
+  if (payload.fromSelection === true || String(payload.from || '').toLowerCase() === 'selection') {
+    const selectedIds = new Set(normalizeStringList(state.selectedClipIds || []))
+    const selectedClips = (state.clips || []).filter((clip) => selectedIds.has(clip.id))
+    if (selectedClips.length === 0) throw new Error('No selected clips are available for fromSelection range.')
+    inPoint = Math.min(...selectedClips.map((clip) => Number(clip.startTime) || 0))
+    outPoint = Math.max(...selectedClips.map((clip) => (Number(clip.startTime) || 0) + (Number(clip.duration) || 0)))
+  } else if (!clear) {
+    const start = parseMcpTimeValue(payload.startSeconds ?? payload.start ?? payload.inSeconds ?? payload.inPoint ?? payload.inTimecode, fps)
+    const end = parseMcpTimeValue(payload.endSeconds ?? payload.end ?? payload.outSeconds ?? payload.outPoint ?? payload.outTimecode, fps)
+    const duration = Number(payload.durationSeconds ?? payload.duration)
+    if (start !== null) inPoint = start
+    if (end !== null) outPoint = end
+    if (inPoint !== null && outPoint === null && Number.isFinite(duration) && duration > 0) outPoint = inPoint + duration
+    if (outPoint !== null && inPoint === null && Number.isFinite(duration) && duration > 0) inPoint = Math.max(0, outPoint - duration)
+  }
+
+  if (!clear && !clearIn && !clearOut && inPoint === null && outPoint === null) {
+    throw new Error('Provide start/end, duration, fromSelection=true, or clear=true for set_in_out_range.')
+  }
+
+  const nextIn = clearIn ? null : (inPoint !== null ? roundToTimelineFrame(Math.max(0, inPoint), fps) : state.inPoint)
+  const nextOut = clearOut ? null : (outPoint !== null ? roundToTimelineFrame(Math.max(0, outPoint), fps) : state.outPoint)
+  if (nextIn !== null && nextOut !== null && nextOut <= nextIn) {
+    throw new Error('Out point must be after in point.')
+  }
+
+  if (payload.previewOnly === true) {
+    return {
+      previewOnly: true,
+      action: 'set_in_out_range',
+      current: { inPoint: state.inPoint, outPoint: state.outPoint },
+      next: { inPoint: nextIn, outPoint: nextOut },
+      rangeSeconds: nextIn !== null && nextOut !== null ? nextOut - nextIn : null,
+    }
+  }
+
+  if (clear) {
+    state.clearInOutPoints?.()
+  } else {
+    if (clearIn) state.clearInPoint?.()
+    if (clearOut) state.clearOutPoint?.()
+    if (nextIn !== state.inPoint && nextIn !== null) state.setInPoint?.(nextIn)
+    if (nextOut !== state.outPoint && nextOut !== null) state.setOutPoint?.(nextOut)
+  }
+
+  const nextState = useTimelineStore.getState()
+  return {
+    success: true,
+    action: 'set_in_out_range',
+    inPoint: nextState.inPoint,
+    outPoint: nextState.outPoint,
+    rangeSeconds: nextState.inPoint !== null && nextState.outPoint !== null
+      ? nextState.outPoint - nextState.inPoint
+      : null,
+  }
+}
+
 async function handleMcpAction(request = {}) {
   switch (request.action) {
+    case 'undo':
+    case 'redo':
+    case 'undo_redo':
+      return handleUndoRedo({
+        ...(request.payload || {}),
+        direction: request.action === 'undo_redo'
+          ? (request.payload?.direction || request.payload?.action || 'undo')
+          : request.action,
+      })
+    case 'set_playhead':
+      return handleSetPlayhead(request.payload || {})
+    case 'select_clips':
+      return handleSelectClips(request.payload || {})
+    case 'select_assets':
+      return handleSelectAssets(request.payload || {})
+    case 'create_project_checkpoint':
+      return handleCreateProjectCheckpoint(request.payload || {})
+    case 'restore_project_checkpoint':
+      return handleRestoreProjectCheckpoint(request.payload || {})
+    case 'import_asset_from_path':
+      return handleImportAssetFromPath(request.payload || {})
+    case 'relink_asset':
+      return handleRelinkAsset(request.payload || {})
+    case 'set_clip_style':
+      return handleSetClipStyle(request.payload || {})
+    case 'set_in_out_range':
+      return handleSetInOutRange(request.payload || {})
+    case 'create_project':
+      return handleCreateProject(request.payload || {})
+    case 'duplicate_project':
+      return handleDuplicateProject(request.payload || {})
+    case 'list_glsl_effects':
+      return handleListGlslEffects(request.payload || {})
     case 'set_clip_label_color':
       return handleSetClipLabelColor(request.payload || {})
     case 'set_clips_enabled':
@@ -3761,10 +6748,38 @@ async function handleMcpAction(request = {}) {
       return handleCreateAssetFolder(request.payload || {})
     case 'move_assets_to_folder':
       return handleMoveAssetsToFolder(request.payload || {})
+    case 'move_unused_assets_to_folder':
+      return handleMoveUnusedAssetsToFolder(request.payload || {})
     case 'add_track':
       return handleAddTrack(request.payload || {})
+    case 'update_track':
+      return handleUpdateTrack(request.payload || {})
+    case 'remove_track':
+      return handleRemoveTrack(request.payload || {})
+    case 'switch_timeline':
+      return handleSwitchTimeline(request.payload || {})
+    case 'rename_timeline':
+      return handleRenameTimeline(request.payload || {})
+    case 'duplicate_timeline':
+      return handleDuplicateTimeline(request.payload || {})
+    case 'delete_timeline':
+      return handleDeleteTimeline(request.payload || {})
+    case 'add_transition':
+      return handleAddTransition(request.payload || {})
+    case 'update_transition':
+      return handleUpdateTransition(request.payload || {})
+    case 'remove_transitions':
+      return handleRemoveTransitions(request.payload || {})
+    case 'move_clips':
+      return handleMoveClips(request.payload || {})
+    case 'trim_clips':
+      return handleTrimClips(request.payload || {})
+    case 'delete_clips':
+      return handleDeleteClips(request.payload || {})
     case 'add_asset_to_timeline':
       return handleAddAssetToTimeline(request.payload || {})
+    case 'replace_clip_with_asset':
+      return handleReplaceClipWithAsset(request.payload || {})
     case 'add_assets_to_timeline':
       return handleAddAssetsToTimeline(request.payload || {})
     case 'add_solid_color':
@@ -3779,12 +6794,24 @@ async function handleMcpAction(request = {}) {
       return handleAddShapeClip(request.payload || {})
     case 'update_shape_clip':
       return handleUpdateShapeClip(request.payload || {})
+    case 'add_adjustment_clip':
+      return handleAddAdjustmentClip(request.payload || {})
+    case 'add_glsl_effect':
+      return handleAddGlslEffect(request.payload || {})
+    case 'update_glsl_effect':
+      return handleUpdateGlslEffect(request.payload || {})
+    case 'remove_glsl_effect':
+      return handleRemoveGlslEffect(request.payload || {})
     case 'set_clip_keyframes':
       return handleSetClipKeyframes(request.payload || {})
+    case 'add_dip_to_black':
+      return handleAddDipToBlack(request.payload || {})
     case 'set_comfyui_connection':
       return handleSetComfyUIConnection(request.payload || {})
     case 'export_timeline':
       return handleExportTimeline(request.payload || {})
+    case 'export_fcpxml':
+      return handleExportFcpXml(request.payload || {})
     default:
       throw new Error(`Unknown MCP action: ${request.action || 'unknown'}`)
   }
