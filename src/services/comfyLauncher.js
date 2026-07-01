@@ -34,7 +34,7 @@ const INITIAL_CONFIG = Object.freeze({
   macAppPath: '',
   macAppLaunchHidden: true,
   autoStart: false,
-  stopOnQuit: true,
+  stopOnQuit: false,
   startupTimeoutMs: 120_000,
   extraArgs: '',
   disableAutoLaunch: true,

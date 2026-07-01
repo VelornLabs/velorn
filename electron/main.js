@@ -2374,6 +2374,22 @@ async function createWindow() {
     if (!ownsRunning) return
 
     event.preventDefault()
+    // When the user has turned off "Stop ComfyUI when ComfyStudio quits",
+    // skip the dialog and just detach so ComfyUI keeps running.
+    if (cachedLauncherConfig.stopOnQuit === false) {
+      launcherQuitConfirmed = true
+      try {
+        await comfyLauncher.detach()
+      } catch (error) {
+        console.warn('[comfyLauncher] detach during close failed:', error?.message || error)
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.close()
+      } else {
+        app.quit()
+      }
+      return
+    }
     try {
       const choice = await dialog.showMessageBox(mainWindow, {
         type: 'question',
@@ -2556,6 +2572,47 @@ ipcMain.handle('fs:readFileAsBuffer', async (event, filePath) => {
     const data = await fs.readFile(filePath)
     const slice = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
     return { success: true, data: slice }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// Extract a single frame from a video file as PNG bytes. Used as a
+// fallback when the renderer's <video> element can't decode the
+// file (e.g. HEVC/H.265 on Linux Chromium which has no H.265
+// decoder bundled). Spawns ffmpeg-static so it works for any
+// codec ffmpeg supports without needing per-codec fallback in
+// the renderer.
+ipcMain.handle('media:extractFrame', async (event, { filePath, timeSeconds = 0, width = null, height = null } = {}) => {
+  if (!filePath || typeof filePath !== 'string') {
+    return { success: false, error: 'filePath required' }
+  }
+  if (!ffmpegPath) {
+    return { success: false, error: 'ffmpeg binary not available' }
+  }
+  try {
+    const safeTime = Math.max(0, Number(timeSeconds) || 0)
+    const args = ['-y', '-ss', String(safeTime), '-i', filePath, '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png']
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      args.push('-vf', `scale=${Math.round(width)}:${Math.round(height)}`)
+    }
+    args.push('-')
+    const result = await new Promise((resolve) => {
+      const proc = spawn(ffmpegPath, args, { windowsHide: true })
+      const chunks = []
+      let stderr = ''
+      proc.stdout.on('data', (c) => chunks.push(c))
+      proc.stderr.on('data', (c) => { stderr += c.toString() })
+      proc.on('error', (err) => resolve({ success: false, error: err.message }))
+      proc.on('close', (code) => {
+        if (code !== 0) {
+          resolve({ success: false, error: `ffmpeg exited with code ${code}: ${stderr.slice(-400)}` })
+          return
+        }
+        resolve({ success: true, data: Buffer.concat(chunks) })
+      })
+    })
+    return result
   } catch (err) {
     return { success: false, error: err.message }
   }
@@ -4810,6 +4867,18 @@ app.on('before-quit', async (event) => {
   if (!ownsRunning) return
 
   event.preventDefault()
+  // When the user has turned off "Stop ComfyUI when ComfyStudio quits",
+  // skip the dialog and just detach so ComfyUI keeps running.
+  if (cachedLauncherConfig.stopOnQuit === false) {
+    try {
+      await comfyLauncher.detach()
+    } catch (error) {
+      console.warn('[comfyLauncher] detach during before-quit failed:', error?.message || error)
+    }
+    launcherQuitConfirmed = true
+    app.quit()
+    return
+  }
   try {
     const choice = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : null, {
       type: 'question',
