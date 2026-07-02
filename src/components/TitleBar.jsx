@@ -14,6 +14,11 @@ const TOP_TABS = [
   { id: 'export', label: 'Export' },
 ]
 
+const HIDDEN_TOP_TAB_IDS = new Set([
+  'flow-ai',
+  'mog',
+])
+
 function TitleBar({
   projectName,
   activeTab = 'editor',
@@ -21,7 +26,7 @@ function TitleBar({
   centerInsetLeft = 0,
   centerInsetRight = 0,
 }) {
-  const tabs = TOP_TABS
+  const tabs = TOP_TABS.filter((tab) => !HIDDEN_TOP_TAB_IDS.has(tab.id))
   const [windowState, setWindowState] = useState({
     isMaximized: false,
     isFullScreen: false,
