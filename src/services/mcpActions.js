@@ -6817,13 +6817,17 @@ async function handleMcpAction(request = {}) {
   }
 }
 
+export async function runMcpAction(action, payload = {}) {
+  return handleMcpAction({ action, payload })
+}
+
 export function startMcpActionBridge() {
   const api = typeof window !== 'undefined' ? window.electronAPI?.mcp : null
   if (!api?.onAction || !api?.sendActionResult) return () => {}
 
   return api.onAction(async (request = {}) => {
     try {
-      const result = await handleMcpAction(request)
+      const result = await runMcpAction(request.action, request.payload || {})
       api.sendActionResult({ id: request.id, success: true, result })
     } catch (error) {
       api.sendActionResult({

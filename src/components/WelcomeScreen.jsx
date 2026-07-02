@@ -646,6 +646,16 @@ function WelcomeScreen() {
               }}
             />
             <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-screen"
+              style={{
+                background: [
+                  'linear-gradient(90deg, rgba(3, 6, 16, 0.74) 0%, rgba(3, 6, 16, 0.22) 20%, rgba(3, 6, 16, 0) 42%, rgba(3, 6, 16, 0) 58%, rgba(3, 6, 16, 0.24) 80%, rgba(3, 6, 16, 0.76) 100%)',
+                  'linear-gradient(180deg, rgba(3, 6, 16, 0.22) 0%, rgba(3, 6, 16, 0) 28%, rgba(3, 6, 16, 0.18) 64%, rgba(3, 6, 16, 0.68) 100%)',
+                  'radial-gradient(ellipse at center, rgba(3, 6, 16, 0) 0%, rgba(3, 6, 16, 0) 42%, rgba(3, 6, 16, 0.22) 72%, rgba(3, 6, 16, 0.48) 100%)',
+                ].join(', '),
+              }}
+            />
+            <div
               className="absolute right-[34.1%] whitespace-nowrap text-right text-[7.5px] font-semibold uppercase tracking-[0.22em] text-[#f2d590]/90 pointer-events-none"
               style={{
                 top: 'clamp(228px, 26.6vh, 296px)',

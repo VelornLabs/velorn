@@ -7,6 +7,7 @@ import GenerationMonitorChip from './GenerationMonitorChip'
 const TOP_TABS = [
   { id: 'editor', label: 'Editor' },
   { id: 'generate', label: 'Generate' },
+  { id: 'agent', label: 'Agent' },
   { id: 'flow-ai', label: 'Flow AI' },
   { id: 'mog', label: 'MoGraph' },
   { id: 'stock', label: 'Stock' },
@@ -15,6 +16,7 @@ const TOP_TABS = [
 ]
 
 const HIDDEN_TOP_TAB_IDS = new Set([
+  'agent',
   'flow-ai',
   'mog',
 ])

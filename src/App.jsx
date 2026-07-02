@@ -4,7 +4,7 @@ import TitleBar from './components/TitleBar'
 import ExportPanel from './components/ExportPanel'
 import GenerateWorkspace from './components/GenerateWorkspace'
 import FlowAIWorkspace from './components/FlowAIWorkspace'
-import LLMAssistantWorkspace from './components/LLMAssistantWorkspace'
+import AgentWorkspace from './components/AgentWorkspace'
 import MOGWorkspace from './components/MOGWorkspace'
 import StockPanel from './components/StockPanel'
 import WorkspaceErrorBoundary from './components/WorkspaceErrorBoundary'
@@ -284,7 +284,7 @@ function App() {
     } catch (_) { /* ignore */ }
   }, [])
 
-  const isFullScreenTab = mainTab === 'export' || mainTab === 'generate' || mainTab === 'flow-ai' || mainTab === 'mog' || mainTab === 'llm-assistant' || mainTab === 'stock' || mainTab === 'comfyui'
+  const isFullScreenTab = mainTab === 'export' || mainTab === 'generate' || mainTab === 'agent' || mainTab === 'flow-ai' || mainTab === 'mog' || mainTab === 'llm-assistant' || mainTab === 'stock' || mainTab === 'comfyui'
   // Editor layout insets (used for content when on Editor, and always for tab bar so it doesn't shift)
   const editorLeftInset = leftPanelExpanded ? ICON_BAR_WIDTH + leftPanelWidth : ICON_BAR_WIDTH
   const editorRightInset = inspectorExpanded ? ICON_BAR_WIDTH + inspectorWidth : ICON_BAR_WIDTH
@@ -581,8 +581,8 @@ function App() {
         {mainTab === "stock" && (
           <StockPanel />
         )}
-        {mainTab === "llm-assistant" && (
-          <LLMAssistantWorkspace />
+        {mainTab === "agent" && (
+          <AgentWorkspace />
         )}
         {/* Editor tab: unmount when hidden so video/canvas preview resources are released before Generate opens. */}
         {mainTab === "editor" && (

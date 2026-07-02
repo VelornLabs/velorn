@@ -22,6 +22,15 @@ class LMStudioService {
     this.apiToken = token
   }
 
+  setBaseUrl(url) {
+    const nextUrl = String(url || '').trim().replace(/\/+$/, '')
+    this.baseUrl = nextUrl || LMSTUDIO_BASE
+  }
+
+  getBaseUrl() {
+    return this.baseUrl
+  }
+
   /**
    * Get headers for API requests
    */
@@ -51,7 +60,13 @@ class LMStudioService {
           method: 'GET',
           headers: this.getHeaders(),
         })
-        return v0Response.ok
+        if (v0Response.ok) return true
+
+        const openAiResponse = await fetch(`${this.baseUrl}/v1/models`, {
+          method: 'GET',
+          headers: this.getHeaders(),
+        })
+        return openAiResponse.ok
       }
       return response.ok
     } catch (error) {
@@ -77,14 +92,23 @@ class LMStudioService {
           headers: this.getHeaders(),
         })
       }
+
+      if (!response.ok) {
+        response = await fetch(`${this.baseUrl}/v1/models`, {
+          method: 'GET',
+          headers: this.getHeaders(),
+        })
+      }
       
       if (!response.ok) {
         throw new Error(`Failed to list models: ${response.statusText}`)
       }
       
       const data = await response.json()
-      // v1 returns { data: [...] }, v0 returns { data: [...] } or just [...]
-      return data.data || data || []
+      // LM Studio and OpenAI-compatible endpoints return { data: [...] };
+      // older endpoints may return the array directly.
+      const models = data.data || data || []
+      return Array.isArray(models) ? models : []
     } catch (error) {
       console.error('Error listing models:', error)
       throw error
