@@ -43,8 +43,14 @@ const PRELOAD_LOOKAHEAD = 2.5
 const PLAYBACK_DIAG_KEY = 'comfystudio-playback-diag'
 const SCRUB_ACTIVE_WINDOW_MS = 220
 const SCRUB_SETTLE_DELAY_MS = SCRUB_ACTIVE_WINDOW_MS + 45
-const SCRUB_SEEK_MIN_INTERVAL_MS = 75
 const SCRUB_READY_TOLERANCE = 0.18
+// If a scrub seek never presents a frame (element evicted, src cleared),
+// allow a replacement seek after this long instead of blocking the element.
+const SCRUB_SEEK_STALL_MS = 400
+// How long playback may hold the previous frame while a visible clip's
+// media is not yet drawable (cold element at a cut, mid-seek decoder dip)
+// before black is allowed through.
+const PLAYBACK_UNREADY_HOLD_MS = 400
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 
@@ -472,7 +478,8 @@ function CanvasPreviewRenderer({
   const deferredDrawRafRef = useRef(0)
   const scrubSettleTimerRef = useRef(0)
   const scrubPreviewStateRef = useRef({ lastPlayhead: 0, activeUntil: 0 })
-  const scrubSeekThrottleRef = useRef(new Map())
+  const scrubPendingSeeksRef = useRef(new WeakMap())
+  const unreadyHoldUntilRef = useRef(0)
   const hasPaintedFrameRef = useRef(false)
   const lastPreloadTimeRef = useRef(0)
   const lastDrawTimeRef = useRef(null)
@@ -590,6 +597,33 @@ function CanvasPreviewRenderer({
         drawFrameRef.current?.()
       })
     }, 40)
+  }, [])
+
+  // Completion-driven scrub seeking: at most one in-flight seek per video
+  // element. Assigning currentTime restarts an in-flight seek, so a fixed
+  // throttle re-issued per mousemove starves frame presentation whenever
+  // per-seek decode latency exceeds the throttle interval — the preview
+  // freezes for the whole drag. Waiting for the seek to present, repainting,
+  // and letting the next drawFrame retarget tracks the playhead at whatever
+  // rate the decoder can actually sustain. 'seeked' fires on demux, not
+  // presentation, so prefer requestVideoFrameCallback (same pattern as
+  // exporter.js).
+  const issueScrubSeek = useCallback((video, targetTime) => {
+    const pendingSeeks = scrubPendingSeeksRef.current
+    const pending = pendingSeeks.get(video)
+    const nowMs = getNowMs()
+    if (pending && nowMs - pending.issuedAt < SCRUB_SEEK_STALL_MS) return
+    pendingSeeks.set(video, { issuedAt: nowMs })
+    const finish = () => {
+      pendingSeeks.delete(video)
+      drawFrameRef.current?.()
+    }
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      video.requestVideoFrameCallback(() => finish())
+    } else {
+      video.addEventListener('seeked', finish, { once: true })
+    }
+    video.currentTime = targetTime
   }, [])
 
   const applyAdvancedAdjustmentsToCanvas = useCallback((sourceCanvas, settings, width, height, extraBlurPx = null) => {
@@ -760,7 +794,7 @@ function CanvasPreviewRenderer({
         const video = videoCache.getVideoElement({ ...clip, url: clipUrl })
         if (!video) {
           offCtx.restore()
-          return
+          return 'unready'
         }
         const transitionPlayback = getClipPlaybackTimingAtTimeline(clip, time, 0.01, {
           allowHandles: !!transitionStyle,
@@ -798,7 +832,7 @@ function CanvasPreviewRenderer({
         }
         if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
           offCtx.restore()
-          return
+          return 'unready'
         }
         sourceWidth = video.videoWidth || width
         sourceHeight = video.videoHeight || height
@@ -807,7 +841,8 @@ function CanvasPreviewRenderer({
         const image = getImageForUrl(clipUrl)
         if (!image) {
           offCtx.restore()
-          return
+          // Still decoding → hold; permanently failed → let it stay absent.
+          return imageCacheRef.current.get(clipUrl)?.failed ? undefined : 'unready'
         }
         sourceWidth = image.naturalWidth || width
         sourceHeight = image.naturalHeight || height
@@ -964,11 +999,24 @@ function CanvasPreviewRenderer({
       const url = resolvePreviewUrl(clip, getAssetById, state.useProxyPlaybackForAssets)
       if (!url) return
       const video = videoCache.getVideoElement({ ...clip, url }, true)
-      if (!video || video.readyState < 1 || isActive) return
+      if (!video || isActive) return
       const targetTimelineTime = isForward ? clipStart : clipEnd
       const targetTime = getClipPlaybackTimeAtTimeline(clip, targetTimelineTime)
-      if (Math.abs((video.currentTime || 0) - targetTime) > 0.03) {
-        video.currentTime = targetTime
+      if (video.readyState >= 1) {
+        if (Math.abs((video.currentTime || 0) - targetTime) > 0.03) {
+          video.currentTime = targetTime
+        }
+      } else if (video.dataset.parkSeekPending !== '1') {
+        // Cold element: park it at the clip's entry frame the moment its
+        // metadata arrives instead of waiting for a later 250ms preload
+        // pass — by then the cut may already be on screen.
+        video.dataset.parkSeekPending = '1'
+        video.addEventListener('loadedmetadata', () => {
+          delete video.dataset.parkSeekPending
+          if (Math.abs((video.currentTime || 0) - targetTime) > 0.03) {
+            video.currentTime = targetTime
+          }
+        }, { once: true })
       }
     })
   }, [])
@@ -1055,12 +1103,7 @@ function CanvasPreviewRenderer({
           : (seekDriven ? 0.12 : ((isTransitionClip && state.isPlaying && !loopSeekHoldActive) ? 0.16 : 0.025))
         if (Math.abs((video.currentTime || 0) - targetTime) > readyTolerance) {
           if (state.isScrubbingPreview) {
-            const throttleKey = clip.id || clip.assetId || clipUrl
-            const lastSeekAt = scrubSeekThrottleRef.current.get(throttleKey) || 0
-            if (nowMs - lastSeekAt >= SCRUB_SEEK_MIN_INTERVAL_MS) {
-              video.currentTime = targetTime
-              scrubSeekThrottleRef.current.set(throttleKey, nowMs)
-            }
+            issueScrubSeek(video, targetTime)
             scheduleDeferredDraw('scrub-video-seek')
             if (video.readyState >= 2 && video.videoWidth && video.videoHeight) continue
             return
@@ -1112,6 +1155,7 @@ function CanvasPreviewRenderer({
     stageCtx.fillStyle = '#000000'
     stageCtx.fillRect(0, 0, width, height)
 
+    let sawUnreadyVisual = false
     for (const entry of visualClips) {
       const { clip } = entry
       if (!clip) continue
@@ -1120,7 +1164,8 @@ function CanvasPreviewRenderer({
         continue
       }
       if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text' || clip.type === 'shape') {
-        drawVisualClip(stageCtx, entry, time, transitionInfo, { ...state, width, height, fps }, frameIndex)
+        const status = drawVisualClip(stageCtx, entry, time, transitionInfo, { ...state, width, height, fps }, frameIndex)
+        if (status === 'unready') sawUnreadyVisual = true
       }
     }
 
@@ -1132,6 +1177,22 @@ function CanvasPreviewRenderer({
       stageCtx.fillStyle = type === 'fade-white' ? '#FFFFFF' : '#000000'
       stageCtx.fillRect(0, 0, width, height)
       stageCtx.restore()
+    }
+
+    // A clip that should be visible couldn't draw yet (cold element at a
+    // cut, mid-seek decoder dip, image still decoding). Blitting now would
+    // flash the black stage and poison the held frame, so keep the previous
+    // frame on screen briefly — the rAF loop retries every tick while
+    // playing. Bounded so a permanently broken source degrades to black
+    // instead of freezing playback on a stale frame.
+    if (state.isPlaying && sawUnreadyVisual && hasPaintedFrameRef.current && lastFrameCanvasRef.current) {
+      if (!unreadyHoldUntilRef.current) {
+        unreadyHoldUntilRef.current = nowMs + PLAYBACK_UNREADY_HOLD_MS
+        logCanvasDiag('unready-hold:start', { time: Number(time.toFixed(3)) })
+      }
+      if (nowMs < unreadyHoldUntilRef.current) return
+    } else if (!sawUnreadyVisual && unreadyHoldUntilRef.current) {
+      unreadyHoldUntilRef.current = 0
     }
 
     ctx.clearRect(0, 0, width, height)
@@ -1149,7 +1210,7 @@ function CanvasPreviewRenderer({
     if (loopSeekHoldActive) {
       loopSeekHoldUntilRef.current = 0
     }
-  }, [applyAdjustmentLayer, drawVisualClip, preloadVideosAroundTime, safeFps, safeHeight, safeWidth, scheduleDeferredDraw])
+  }, [applyAdjustmentLayer, drawVisualClip, issueScrubSeek, preloadVideosAroundTime, safeFps, safeHeight, safeWidth, scheduleDeferredDraw])
 
   drawFrameRef.current = drawFrame
 
@@ -1160,7 +1221,6 @@ function CanvasPreviewRenderer({
     if (isPlaying) {
       scrubState.lastPlayhead = currentPlayhead
       scrubState.activeUntil = 0
-      scrubSeekThrottleRef.current.clear()
       if (scrubSettleTimerRef.current) {
         window.clearTimeout(scrubSettleTimerRef.current)
         scrubSettleTimerRef.current = 0
@@ -1181,6 +1241,22 @@ function CanvasPreviewRenderer({
       drawFrameRef.current?.()
     }, SCRUB_SETTLE_DELAY_MS)
   }, [isPlaying, playheadPosition])
+
+  // Timeline dispatches this on scrub mouseup. Exit scrub mode and run the
+  // strict-tolerance draw immediately instead of waiting out the settle
+  // timer, so the released frame commits as fast as the seek can resolve.
+  useEffect(() => {
+    const handleScrubEnd = () => {
+      scrubPreviewStateRef.current.activeUntil = 0
+      if (scrubSettleTimerRef.current) {
+        window.clearTimeout(scrubSettleTimerRef.current)
+        scrubSettleTimerRef.current = 0
+      }
+      drawFrameRef.current?.()
+    }
+    window.addEventListener('comfystudio:timeline-scrub-end', handleScrubEnd)
+    return () => window.removeEventListener('comfystudio:timeline-scrub-end', handleScrubEnd)
+  }, [])
 
   useEffect(() => {
     let animationFrame = 0

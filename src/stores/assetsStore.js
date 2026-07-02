@@ -577,6 +577,17 @@ export const useAssetsStore = create(
       nextState.folderCounter = projectFolderCounter
     }
     set(nextState)
+
+    // playbackCacheUrl/proxyUrl are session-only (stripped by getProjectData
+    // and reset above), and until now were only rehydrated when an Assets
+    // panel tile scrolled into view. That left cold sessions previewing the
+    // original long-GOP sources, which seek slowly (frozen scrub) and decode
+    // late at cuts (black flashes). Warm the URLs in the background.
+    if (projectHandle) {
+      get().hydratePlaybackMediaUrls(projectHandle).catch((err) => {
+        console.warn('Background playback media hydration failed:', err)
+      })
+    }
   },
 
   /**
@@ -831,6 +842,61 @@ export const useAssetsStore = create(
     }
 
     return updates
+  },
+
+  /**
+   * Hydrate session-only playbackCacheUrl/proxyUrl for every video asset that
+   * has the corresponding file on disk. Same exists()-checked URL logic as
+   * hydrateAssetBrowserMedia, minus the poster work (no ffmpeg spawns) — this
+   * only resolves file URLs, so it's cheap enough to run for a whole project.
+   * @param {string} projectPath - Project directory path
+   * @param {object} options - { concurrency?: number }
+   */
+  hydratePlaybackMediaUrls: async (projectPath, options = {}) => {
+    if (!projectPath || typeof window === 'undefined' || !window.electronAPI?.isElectron) return
+    const candidates = get().assets.filter((asset) => (
+      asset?.type === 'video'
+      && (
+        (!asset.playbackCacheUrl && asset.playbackCachePath)
+        || (!asset.proxyUrl && asset.proxyPath)
+      )
+    ))
+    if (candidates.length === 0) return
+
+    const { getProjectFileUrl } = await import('../services/fileSystem')
+    const concurrency = Math.max(1, Math.min(4, Number(options.concurrency) || 3))
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < candidates.length) {
+        const asset = candidates[cursor]
+        cursor += 1
+        const updates = {}
+        if (!asset.playbackCacheUrl && asset.playbackCachePath) {
+          try {
+            const absolutePath = await window.electronAPI.pathJoin(projectPath, asset.playbackCachePath)
+            if (await window.electronAPI.exists(absolutePath)) {
+              updates.playbackCacheUrl = await getProjectFileUrl(projectPath, asset.playbackCachePath)
+            }
+          } catch (err) {
+            console.warn(`Failed to hydrate playback cache URL for ${asset.name}:`, err)
+          }
+        }
+        if (!asset.proxyUrl && asset.proxyPath) {
+          try {
+            const absolutePath = await window.electronAPI.pathJoin(projectPath, asset.proxyPath)
+            if (await window.electronAPI.exists(absolutePath)) {
+              updates.proxyUrl = await getProjectFileUrl(projectPath, asset.proxyPath)
+            }
+          } catch (err) {
+            console.warn(`Failed to hydrate proxy URL for ${asset.name}:`, err)
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          get().updateAsset(asset.id, updates)
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, () => worker()))
   },
 
   /**

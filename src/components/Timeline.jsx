@@ -1863,6 +1863,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     const handleMouseUp = () => {
       stopAutoScroll()
       setIsScrubbing(false)
+      // Let the preview renderer commit the precise frame immediately
+      // instead of waiting out its scrub-settle timer.
+      window.dispatchEvent(new CustomEvent('comfystudio:timeline-scrub-end'))
     }
 
     // Add listeners to window so dragging works even outside the timeline
