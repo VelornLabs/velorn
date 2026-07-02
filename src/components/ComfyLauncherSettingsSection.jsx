@@ -206,7 +206,7 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
           <div className="mt-2 flex items-start gap-2 rounded bg-sky-500/10 border border-sky-500/30 px-2 py-1.5 text-[11px] text-sky-200">
             <ExternalLink className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
             <div>
-              ComfyUI is already running, but ComfyStudio didn't start it. Stop it from the window where you launched it and hit Start to let ComfyStudio manage it (you'll get auto-restarts after node-pack installs).
+              ComfyUI is already running, but Velorn didn't start it. Stop it from the window where you launched it and hit Start to let Velorn manage it (you'll get auto-restarts after node-pack installs).
             </div>
           </div>
         )}
@@ -267,11 +267,11 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
           </div>
           <div className="bg-sf-dark-800 border border-sf-dark-600 rounded px-3 py-2 text-xs text-sf-text-primary truncate min-h-[34px]">
             {config.macAppPath || (
-              <span className="italic text-sf-text-muted">No app configured. Pick ComfyUI.app to let ComfyStudio open it for you.</span>
+              <span className="italic text-sf-text-muted">No app configured. Pick ComfyUI.app to let Velorn open it for you.</span>
             )}
           </div>
           <p className="text-[11px] text-sf-text-muted mt-1.5">
-            ComfyStudio opens the Mac app, waits for the configured ComfyUI endpoint, and can ask macOS to quit or reopen it.
+            Velorn opens the Mac app, waits for the configured ComfyUI endpoint, and can ask macOS to quit or reopen it.
           </p>
           <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-sf-dark-700 bg-sf-dark-900 px-3 py-2.5">
             <div className="min-w-0">
@@ -302,7 +302,7 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
         </div>
         <div className="bg-sf-dark-800 border border-sf-dark-600 rounded px-3 py-2 text-xs text-sf-text-primary truncate min-h-[34px]">
           {config.launcherScript || (
-            <span className="italic text-sf-text-muted">No launcher configured. Pick your run_nvidia_gpu.bat (or equivalent) to let ComfyStudio start ComfyUI for you.</span>
+            <span className="italic text-sf-text-muted">No launcher configured. Pick your run_nvidia_gpu.bat (or equivalent) to let Velorn start ComfyUI for you.</span>
           )}
         </div>
         {candidates.length > 0 && (
@@ -339,8 +339,8 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
         <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold">Behavior</div>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm text-sf-text-primary">Auto-start ComfyUI when ComfyStudio launches</div>
-            <p className="text-[11px] text-sf-text-muted mt-0.5">Off by default. When on, ComfyStudio starts ComfyUI automatically as soon as the app opens.</p>
+            <div className="text-sm text-sf-text-primary">Auto-start ComfyUI when Velorn launches</div>
+            <p className="text-[11px] text-sf-text-muted mt-0.5">Off by default. When on, Velorn starts ComfyUI automatically as soon as the app opens.</p>
           </div>
           <Toggle
             checked={Boolean(config.autoStart)}
@@ -350,8 +350,8 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
         </div>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm text-sf-text-primary">Keep ComfyUI running after ComfyStudio quits</div>
-            <p className="text-[11px] text-sf-text-muted mt-0.5">When on, closing ComfyStudio leaves ComfyUI open in the background without asking.</p>
+            <div className="text-sm text-sf-text-primary">Keep ComfyUI running after Velorn quits</div>
+            <p className="text-[11px] text-sf-text-muted mt-0.5">When on, closing Velorn leaves ComfyUI open in the background without asking.</p>
           </div>
           <Toggle
             checked={config.stopOnQuit === false}
@@ -362,7 +362,7 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-sm text-sf-text-primary">Don't open ComfyUI in a browser tab on start</div>
-            <p className="text-[11px] text-sf-text-muted mt-0.5">On by default. ComfyStudio passes <code className="px-1 rounded bg-sf-dark-800">--disable-auto-launch</code> so the classic ComfyUI tab doesn't steal focus each time it boots.</p>
+            <p className="text-[11px] text-sf-text-muted mt-0.5">On by default. Velorn passes <code className="px-1 rounded bg-sf-dark-800">--disable-auto-launch</code> so the classic ComfyUI tab doesn't steal focus each time it boots.</p>
           </div>
           <Toggle
             checked={config.disableAutoLaunch !== false}
@@ -388,7 +388,7 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
             }}
             className="w-32 bg-sf-dark-800 border border-sf-dark-600 rounded px-2 py-1.5 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
           />
-          <p className="text-[11px] text-sf-text-muted mt-1">If ComfyUI hasn't responded on /system_stats within this many seconds after launch, ComfyStudio will give up and stop the process.</p>
+          <p className="text-[11px] text-sf-text-muted mt-1">If ComfyUI hasn't responded on /system_stats within this many seconds after launch, Velorn will give up and stop the process.</p>
         </div>
         <div>
           <label className="block text-[11px] text-sf-text-muted mb-1">Extra arguments</label>
@@ -439,7 +439,7 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
       <div className="flex items-start gap-2 text-[11px] text-sf-text-muted">
         <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
         <div>
-          ComfyStudio talks to ComfyUI on <code className="px-1 rounded bg-sf-dark-800">{state.httpBase || 'http://127.0.0.1:8188'}</code>. Change the port in
+          Velorn talks to ComfyUI on <code className="px-1 rounded bg-sf-dark-800">{state.httpBase || 'http://127.0.0.1:8188'}</code>. Change the port in
           <span className="mx-1 inline-flex items-center gap-1">
             <strong>ComfyUI Connection</strong>
           </span>

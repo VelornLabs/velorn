@@ -144,7 +144,7 @@ export const CURATED_NODE_PACKS = Object.freeze([
     installDirName: 'ComfyUI-Custom-Scripts',
     docsUrl: 'https://github.com/pythongosssss/ComfyUI-Custom-Scripts',
     requirementsStrategy: 'requirements-txt',
-    notes: 'Provides Show Text, which the caption workflow uses to expose the generated SRT text back to ComfyStudio.',
+    notes: 'Provides Show Text, which the caption workflow uses to expose the generated SRT text back to Velorn.',
     classTypes: ['ShowText|pysssss'],
   }),
   createAutoNodePack({

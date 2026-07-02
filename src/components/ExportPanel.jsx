@@ -290,13 +290,13 @@ function isAbsoluteFilePath(filePath) {
 }
 
 function sanitizeExportBaseName(value) {
-  return String(value || 'ComfyStudio_Timeline')
+  return String(value || 'Velorn_Timeline')
     .trim()
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
     .replace(/\s+/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '')
-    || 'ComfyStudio_Timeline'
+    || 'Velorn_Timeline'
 }
 
 function ExportPanel() {
@@ -1074,7 +1074,7 @@ function ExportPanel() {
                 type="button"
                 onClick={handleResetSettings}
                 className="flex items-center gap-1 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1 text-[10px] text-sf-text-muted transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
-                title="Reset export settings to the default ComfyStudio export setup"
+                title="Reset export settings to the default Velorn export setup"
               >
                 <RotateCcw className="h-3 w-3" />
                 Reset defaults

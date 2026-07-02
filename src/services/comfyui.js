@@ -46,7 +46,9 @@ export const CUSTOM_VIDEO_ENDPOINTS = Object.freeze({
   inputAudio: 'COMFYSTUDIO_AUDIO',
   outputVideo: 'COMFYSTUDIO_OUTPUT_VIDEO',
 })
-const COMFYSTUDIO_OUTPUT_RESIZE_TITLE = 'ComfyStudio Output Resize'
+const VELORN_OUTPUT_RESIZE_TITLE = 'Velorn Output Resize'
+const LEGACY_COMFYSTUDIO_OUTPUT_RESIZE_TITLE = 'ComfyStudio Output Resize'
+const OUTPUT_RESIZE_TITLES = [VELORN_OUTPUT_RESIZE_TITLE, LEGACY_COMFYSTUDIO_OUTPUT_RESIZE_TITLE]
 
 function parseNumericLike(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -170,13 +172,13 @@ export function addQwenImageEditResolutionControls(workflow, options = {}) {
     }
   }
 
-  let resizeNodeId = findNodeIdByTitle(workflow, COMFYSTUDIO_OUTPUT_RESIZE_TITLE)
+  let resizeNodeId = findOutputResizeNodeId(workflow)
   if (!resizeNodeId) {
     resizeNodeId = getUniqueWorkflowNodeId(workflow, 'comfystudio_output_resize')
     workflow[resizeNodeId] = {
       class_type: 'ImageScale',
       inputs: {},
-      _meta: { title: COMFYSTUDIO_OUTPUT_RESIZE_TITLE },
+      _meta: { title: VELORN_OUTPUT_RESIZE_TITLE },
     }
   }
 
@@ -192,7 +194,7 @@ export function addQwenImageEditResolutionControls(workflow, options = {}) {
   }
   resizeNode._meta = {
     ...(resizeNode._meta || {}),
-    title: resizeNode._meta?.title || COMFYSTUDIO_OUTPUT_RESIZE_TITLE,
+    title: VELORN_OUTPUT_RESIZE_TITLE,
   }
 
   const resizeRef = [resizeNodeId, 0]
@@ -210,12 +212,24 @@ export function addQwenImageEditResolutionControls(workflow, options = {}) {
 }
 
 function normalizeComfyStudioOutputResize(workflow) {
-  const resizeNodeId = findNodeIdByTitle(workflow, COMFYSTUDIO_OUTPUT_RESIZE_TITLE)
+  const resizeNodeId = findOutputResizeNodeId(workflow)
   const resizeNode = resizeNodeId ? workflow?.[resizeNodeId] : null
   if (resizeNode?.class_type === 'ImageScale' && resizeNode.inputs) {
     resizeNode.inputs.crop = 'center'
+    resizeNode._meta = {
+      ...(resizeNode._meta || {}),
+      title: VELORN_OUTPUT_RESIZE_TITLE,
+    }
   }
   return workflow
+}
+
+function findOutputResizeNodeId(workflow) {
+  for (const title of OUTPUT_RESIZE_TITLES) {
+    const nodeId = findNodeIdByTitle(workflow, title)
+    if (nodeId) return nodeId
+  }
+  return null
 }
 
 export function validateCustomKeyframeWorkflow(workflow, options = {}) {
@@ -1282,7 +1296,7 @@ export function modifyMaskWorkflow(workflow, options = {}) {
   const {
     inputFilename = '',       // The uploaded filename in ComfyUI
     textPrompt = '',          // What to segment (e.g., "person on the left")
-    outputPrefix = 'ComfyStudioMask',  // Output filename prefix
+    outputPrefix = 'VelornMask',  // Output filename prefix
     scoreThreshold = 0.04,    // Detection sensitivity (lower = more sensitive)
     frameIdx = 0,             // Which frame to use for initial detection
   } = options;
@@ -1344,7 +1358,7 @@ export function modifyWAN22Workflow(workflow, options = {}) {
     frames = 81,
     fps = 16,
     seed = Math.floor(Math.random() * 1000000000000),
-    filenamePrefix = 'video/ComfyStudio_wan',
+    filenamePrefix = 'video/Velorn_wan',
     qualityPreset = 'balanced', // balanced | face-lock
   } = options
 
@@ -1742,11 +1756,11 @@ export function modifyMultipleAnglesWorkflow(workflow, options = {}) {
     }
   }
 
-  // Update save prefixes to ComfyStudio
+  // Update save prefixes to Velorn
   const saveNodes = { '31': 'close_up', '34': 'wide_shot', '36': '45_right', '38': '90_right', '47': '90_left', '41': 'aerial_view', '43': 'low_angle', '45': '45_left' }
   for (const [nodeId, suffix] of Object.entries(saveNodes)) {
     if (modified[nodeId]) {
-      modified[nodeId].inputs.filename_prefix = `ComfyStudio-${suffix}`
+      modified[nodeId].inputs.filename_prefix = `Velorn-${suffix}`
     }
   }
 
@@ -1945,7 +1959,7 @@ export function modifyQwenImageEdit2509Workflow(workflow, options = {}) {
     }
     // Save Image: set prefix
     if (cls === 'SaveImage' && node.inputs && 'filename_prefix' in node.inputs) {
-      node.inputs.filename_prefix = filenamePrefix || node.inputs.filename_prefix || 'image/ComfyStudio_edit'
+      node.inputs.filename_prefix = filenamePrefix || node.inputs.filename_prefix || 'image/Velorn_edit'
     }
   }
 
@@ -3227,7 +3241,7 @@ export function modifyMusicWorkflow(workflow, options = {}) {
   }
   // Output prefix (node 107)
   if (modified['107']) {
-    modified['107'].inputs.filename_prefix = 'audio/ComfyStudio'
+    modified['107'].inputs.filename_prefix = 'audio/Velorn'
   }
 
   return modified

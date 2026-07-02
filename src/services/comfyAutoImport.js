@@ -67,7 +67,7 @@ function appendLauncherLog(stream, text) {
 // avoid unbounded growth in long sessions.
 const MAX_SIGNATURES = 2000
 const importedSignatures = new Set()
-const COMFYSTUDIO_MANAGED_OUTPUT_RE = /^(director_job_|comfystudio_job_|flow_ai_|topaz_video_upscale_|ComfyStudioMask_)/i
+const COMFYSTUDIO_MANAGED_OUTPUT_RE = /^(director_job_|comfystudio_job_|flow_ai_|topaz_video_upscale_|ComfyStudioMask_|VelornMask_)/i
 const MAX_ELIGIBLE_PROMPT_IDS = 300
 const eligibleUnmanagedPromptIds = new Set()
 let runtimeOptions = {}

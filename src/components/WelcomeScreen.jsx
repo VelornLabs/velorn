@@ -476,7 +476,7 @@ function WelcomeScreen() {
           <div className="max-w-md w-full mx-4">
           {/* Branding */}
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold text-sf-text-primary">ComfyStudio</h1>
+            <h1 className="text-4xl font-bold text-sf-text-primary">Velorn</h1>
           </div>
           
           {/* Browser Support Warning - only show in web mode */}
@@ -487,7 +487,7 @@ function WelcomeScreen() {
                 <div>
                   <p className="text-sm text-sf-text-primary font-medium">Browser Not Supported</p>
                   <p className="text-xs text-sf-text-muted mt-1">
-                    ComfyStudio requires the File System Access API. Please use Google Chrome or Microsoft Edge.
+                    Velorn requires the File System Access API. Please use Google Chrome or Microsoft Edge.
                   </p>
                 </div>
               </div>
@@ -498,7 +498,7 @@ function WelcomeScreen() {
           <div className="bg-sf-dark-900 border border-sf-dark-700 rounded-xl p-6">
             <h2 className="text-lg font-semibold text-sf-text-primary mb-2 text-center">Set Up Your Workspace</h2>
             <p className="text-sm text-sf-text-muted mb-6">
-              Choose a folder where your ComfyStudio projects and media will be stored. Each project will have its own subfolder with all assets and imported media organized inside.
+              Choose a folder where your Velorn projects and media will be stored. Each project will have its own subfolder with all assets and imported media organized inside.
             </p>
             
             {/* Current Location Display */}
@@ -561,7 +561,7 @@ function WelcomeScreen() {
   const headerContent = (
     <>
       <div className="flex items-center gap-4">
-        <h1 className="text-xl font-bold text-sf-text-primary drop-shadow">ComfyStudio</h1>
+        <h1 className="text-xl font-bold text-sf-text-primary drop-shadow">Velorn</h1>
         <div className="flex items-center gap-1.5">
           <ComfyLauncherChip />
           <button

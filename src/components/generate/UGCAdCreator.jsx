@@ -1807,7 +1807,7 @@ function shotHasNoDialogue(shot) {
 
 function buildExternalLlmPrompt(data, currentScript) {
   return [
-    'Write a ComfyStudio Director Mode script for an editable UGC-style social ad using this exact structure.',
+    'Write a Velorn Director Mode script for an editable UGC-style social ad using this exact structure.',
     '',
     'Return only the script. Do not include explanation, markdown, or notes.',
     '',
@@ -1854,7 +1854,7 @@ function buildExternalLlmPrompt(data, currentScript) {
     '- Make it feel like a real creator made it on their phone, not a polished brand commercial.',
     '- Include human reaction, product handling, and creator dialogue in every shot unless the format is hands-only ASMR.',
     '- Keep product, creator, and environment identity consistent with references when references are available.',
-    '- Do not ask ComfyStudio to render captions or text into images.',
+    '- Do not ask Velorn to render captions or text into images.',
     '- Avoid split screens, collages, storyboard grids, watermarks, fake app UI, random letters, and fake typography.',
     '- Avoid medical, financial, or legal overclaims. Keep proof believable and conversational.',
     '',
@@ -2932,13 +2932,13 @@ export default function UGCAdCreator({
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-sf-text-muted">ComfyStudio bridge</span>
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-sf-text-muted">Velorn bridge</span>
                 <span className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeBadge.className}`}>
                   {bridgeBadge.label}
                 </span>
               </div>
               <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-                Adds a Send to ComfyStudio button inside ComfyUI. Import JSON stays available as the fallback.
+                Adds a Send to Velorn button inside ComfyUI. Import JSON stays available as the fallback.
               </p>
               {bridgeMessage && (
                 <div className={`mt-2 text-[10px] ${bridgeInstalled ? 'text-emerald-300' : bridgeState === 'unavailable' ? 'text-amber-200' : 'text-sf-text-secondary'}`}>
@@ -2952,7 +2952,7 @@ export default function UGCAdCreator({
                 onClick={handleInstallYoloMusicCustomKeyframeBridge}
                 disabled={!canInstallBridge || yoloCustomKeyframeBridgeBusy}
                 className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-800 disabled:text-sf-text-muted"
-                title={bridgeState === 'unavailable' ? 'Choose a ComfyUI folder or configure the launcher first.' : 'Install the bundled ComfyStudio Bridge into ComfyUI custom_nodes.'}
+                title={bridgeState === 'unavailable' ? 'Choose a ComfyUI folder or configure the launcher first.' : 'Install the bundled Velorn Bridge into ComfyUI custom_nodes.'}
               >
                 {yoloCustomKeyframeBridgeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
                 {bridgeInstalled ? 'Installed' : 'Install Bridge'}
@@ -3130,7 +3130,7 @@ export default function UGCAdCreator({
             <span className="ugc-kicker">The Vibe</span>
             <h2 className="ugc-section-title">Make it look like a friend posted it.</h2>
             <p className="ugc-section-copy">
-              Pick the kind of post, write the hook, and tell ComfyStudio what is being sold. The workflow turns that into editable dialogue, keyframes, video clips, and a timeline.
+              Pick the kind of post, write the hook, and tell Velorn what is being sold. The workflow turns that into editable dialogue, keyframes, video clips, and a timeline.
             </p>
           </div>
 

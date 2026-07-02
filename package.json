@@ -28,7 +28,7 @@
     "video-editing",
     "electron"
   ],
-  "author": "ComfyStudio contributors",
+  "author": "Velorn contributors",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JaimeIsMe/comfystudio.git"
@@ -69,7 +69,7 @@
   },
   "build": {
     "appId": "com.comfystudio.app",
-    "productName": "ComfyStudio",
+    "productName": "Velorn",
     "copyright": "Copyright © 2024-2026",
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
@@ -161,7 +161,7 @@
       ],
       "icon": "build/icons",
       "category": "Video",
-      "maintainer": "ComfyStudio contributors <opensource@comfystudio.app>",
+      "maintainer": "Velorn contributors <opensource@velorn.ai>",
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
     },
     "nsis": {

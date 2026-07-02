@@ -493,7 +493,7 @@ function buildLlmBrief({ draft, characters, locations }) {
     `  - ${location.slug}: ${location.name}. ${location.description || 'No description yet.'}`
   ))
 
-  return `You are writing and directing a short film for ComfyStudio.
+  return `You are writing and directing a short film for Velorn.
 
 Return a production-ready short film script and shot plan that can be parsed into dialogue audio, keyframes, videos, and an editor timeline.
 

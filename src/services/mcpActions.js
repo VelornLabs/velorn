@@ -117,14 +117,14 @@ function resolveMcpGenerationResolution(payload = {}) {
 }
 
 function sanitizeExportBaseName(value) {
-  return String(value || 'ComfyStudio_Timeline')
+  return String(value || 'Velorn_Timeline')
     .trim()
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
     .replace(/\s+/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 120)
-    || 'ComfyStudio_Timeline'
+    || 'Velorn_Timeline'
 }
 
 function isAbsoluteMcpFilePath(filePath) {
@@ -221,7 +221,7 @@ async function buildCreateProjectPlan(payload = {}) {
   const fps = normalizeProjectFps(payload.fps, projectState.defaultFps ?? FPS_PRESETS.find((item) => item.value === 24)?.value ?? 24)
   const defaultProjectsHandle = projectState.defaultProjectsHandle
   if (!defaultProjectsHandle) {
-    throw new Error('No default projects folder is set. Choose a projects folder in ComfyStudio before creating projects through MCP.')
+    throw new Error('No default projects folder is set. Choose a projects folder in Velorn before creating projects through MCP.')
   }
 
   const targetPath = await resolveProjectPath(defaultProjectsHandle, name)
@@ -368,7 +368,7 @@ async function buildDuplicateProjectPlan(payload = {}) {
       path: predictedPath,
     },
     willOpenDuplicate: true,
-    note: 'Uses ComfyStudio duplicate behavior: copies the whole project folder, remaps saved paths, creates a sibling "copy" project, and opens it.',
+    note: 'Uses Velorn duplicate behavior: copies the whole project folder, remaps saved paths, creates a sibling "copy" project, and opens it.',
   }
 }
 
@@ -931,7 +931,7 @@ function buildEffectClipSummary(clip) {
 function getClipByIdForEffects(state, clipId) {
   const selectedIds = Array.isArray(state.selectedClipIds) ? state.selectedClipIds.filter(Boolean) : []
   const id = String(clipId || '').trim() || (selectedIds.length === 1 ? selectedIds[0] : '')
-  if (!id) throw new Error('Provide clipId for the target clip, or select exactly one visual clip in ComfyStudio.')
+  if (!id) throw new Error('Provide clipId for the target clip, or select exactly one visual clip in Velorn.')
   const clip = (state.clips || []).find((candidate) => candidate.id === id)
   if (!clip) throw new Error(`Clip ${id} was not found.`)
   const clipType = String(clip.type || '').toLowerCase()
@@ -2491,7 +2491,7 @@ function handleRemoveTrack(payload = {}) {
   }
 
   const removed = state.removeTrack?.(trackId)
-  if (!removed) throw new Error('Could not remove the track. ComfyStudio may be protecting the last track of that type.')
+  if (!removed) throw new Error('Could not remove the track. Velorn may be protecting the last track of that type.')
   return {
     removed: true,
     trackId,
@@ -2602,7 +2602,7 @@ function handleDeleteTimeline(payload = {}) {
   }
 
   const deleted = projectState.deleteTimeline?.(timelineId)
-  if (!deleted) throw new Error('Could not delete the timeline. ComfyStudio may be protecting the last sequence.')
+  if (!deleted) throw new Error('Could not delete the timeline. Velorn may be protecting the last sequence.')
   return {
     deleted: true,
     timelineId,
@@ -5323,7 +5323,7 @@ async function handleExportTimeline(payload = {}) {
   const format = String(payload.format || 'mp4').toLowerCase() === 'mp4' ? 'mp4' : 'mp4'
   const videoCodec = String(payload.videoCodec || 'h264').toLowerCase() === 'h265' ? 'h265' : 'h264'
   const outputExtension = 'mp4'
-  const filename = sanitizeExportBaseName(payload.filename || `${project.name || 'ComfyStudio'}_export`)
+  const filename = sanitizeExportBaseName(payload.filename || `${project.name || 'Velorn'}_export`)
   const outputFolder = await api.pathJoin(projectPath, 'renders')
   await api.createDirectory(outputFolder)
   const defaultOutputPath = await api.pathJoin(outputFolder, `${filename}_${Date.now()}.${outputExtension}`)
@@ -5467,7 +5467,7 @@ async function handleExportFcpXml(payload = {}) {
     ? timelineState.getTimelineEndTime()
     : getTimelineEndTimeForMcp(timelineState.clips || [], timelineState.duration || currentTimeline?.duration || 0)
   const xml = buildFcpXml({
-    projectName: project.name || 'ComfyStudio Project',
+    projectName: project.name || 'Velorn Project',
     timelineName,
     timelineSettings: { width, height, fps },
     timeline: {
@@ -5485,7 +5485,7 @@ async function handleExportFcpXml(payload = {}) {
   const outputPath = String(payload.outputPath || '').trim()
     || await api.pathJoin(
       outputFolder,
-      `${sanitizeExportBaseName(payload.filename || `${project.name || 'ComfyStudio'}_${timelineName}`)}_${Date.now()}.fcpxml`
+      `${sanitizeExportBaseName(payload.filename || `${project.name || 'Velorn'}_${timelineName}`)}_${Date.now()}.fcpxml`
     )
   const writeResult = await api.writeFile(outputPath, xml, { encoding: 'utf8' })
   if (!writeResult?.success) {
@@ -6280,7 +6280,7 @@ function handleCreateProjectCheckpoint(payload = {}) {
     label: checkpoint.label,
     createdAt: checkpoint.createdAt,
     checkpointCount: MCP_PROJECT_CHECKPOINTS.size,
-    message: 'Created an in-memory MCP project checkpoint for this ComfyStudio session.',
+    message: 'Created an in-memory MCP project checkpoint for this Velorn session.',
   }
 }
 
@@ -6358,7 +6358,7 @@ async function handleRestoreProjectCheckpoint(payload = {}) {
     savedProject: Boolean(savedProject),
     message: savedProject
       ? 'Restored the MCP checkpoint and saved the project file.'
-      : 'Restored the MCP checkpoint in the open ComfyStudio session.',
+      : 'Restored the MCP checkpoint in the open Velorn session.',
   }
 }
 
@@ -6382,7 +6382,7 @@ async function resolveMcpFolderIdForImportedAsset(payload = {}) {
 async function handleImportAssetFromPath(payload = {}) {
   const sourcePath = String(payload.path || payload.filePath || payload.sourcePath || '').trim()
   if (!sourcePath) throw new Error('Provide path, filePath, or sourcePath for import_asset_from_path.')
-  if (!useProjectStore.getState().currentProjectHandle) throw new Error('Open a saved ComfyStudio project before importing assets.')
+  if (!useProjectStore.getState().currentProjectHandle) throw new Error('Open a saved Velorn project before importing assets.')
   if (!isAbsoluteMcpFilePath(sourcePath)) throw new Error('Provide an absolute local file path to import.')
   const category = inferMcpAssetCategory(sourcePath, payload.category || payload.type || payload.assetType)
 
@@ -6429,7 +6429,7 @@ async function handleImportAssetFromPath(payload = {}) {
   return {
     success: true,
     action: 'import_asset_from_path',
-    message: 'Imported local file into the active ComfyStudio project.',
+    message: 'Imported local file into the active Velorn project.',
     sourcePath,
     category,
     folderId,

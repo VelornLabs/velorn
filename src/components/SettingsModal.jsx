@@ -55,7 +55,7 @@ import {
 const AUTO_IMPORT_KEY = 'comfystudio-auto-import-comfy-outputs'
 const OUTPUT_DIRECTORY_SETTING_KEY = 'outputDirectory'
 const WORKFLOWS_DIRECTORY_SETTING_KEY = 'workflowsDirectory'
-const OUTPUT_DIRECTORY_PLACEHOLDER = 'C:\\Users\\...\\ComfyStudio\\outputs'
+const OUTPUT_DIRECTORY_PLACEHOLDER = 'C:\\Users\\...\\Velorn\\outputs'
 const WORKFLOWS_DIRECTORY_PLACEHOLDER = 'C:\\Users\\...\\ComfyUI\\workflow_API'
 
 const SETTINGS_SECTIONS = [
@@ -87,7 +87,7 @@ const SETTINGS_SECTIONS = [
     id: 'launcher',
     title: 'ComfyUI Launcher',
     icon: Power,
-    description: 'Let ComfyStudio start, stop, and restart your local ComfyUI process.',
+    description: 'Let Velorn start, stop, and restart your local ComfyUI process.',
   },
   {
     id: 'paths',
@@ -743,7 +743,7 @@ function GeneralTab({ initialSection = null }) {
           <div className="flex items-center justify-between rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
             <div>
               <label className="text-sm text-sf-text-primary">Reopen last project on startup</label>
-              <p className="text-[10px] text-sf-text-muted">When off, ComfyStudio opens to the project picker.</p>
+              <p className="text-[10px] text-sf-text-muted">When off, Velorn opens to the project picker.</p>
             </div>
             <button
               onClick={() => setReopenLastProjectOnStartup(!reopenLastProjectOnStartup)}
@@ -920,7 +920,7 @@ function GeneralTab({ initialSection = null }) {
           <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-sm font-medium text-sf-text-primary">ComfyStudio MCP server</div>
+                <div className="text-sm font-medium text-sf-text-primary">Velorn MCP server</div>
                 <p className="mt-1 text-[11px] text-sf-text-muted">
                   Local project access for AI agents. Agents can inspect and review the open project, troubleshoot local ComfyUI setup, use limited undoable timeline/text/effect actions, and start delivery exports.
                 </p>

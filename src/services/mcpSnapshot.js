@@ -215,7 +215,7 @@ export function buildMcpSnapshot() {
     return {
       schemaVersion: SNAPSHOT_VERSION,
       generatedAt: new Date().toISOString(),
-      app: { name: 'ComfyStudio' },
+      app: { name: 'Velorn' },
       project: null,
       timelines: [],
       currentTimeline: null,
@@ -252,7 +252,7 @@ export function buildMcpSnapshot() {
   return {
     schemaVersion: SNAPSHOT_VERSION,
     generatedAt: new Date().toISOString(),
-    app: { name: 'ComfyStudio' },
+    app: { name: 'Velorn' },
     project: {
       name: project.name,
       path: projectPath,

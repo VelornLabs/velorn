@@ -326,7 +326,7 @@ export default function GettingStartedModal({
                 Get from install to first generation
               </h2>
               <p className="mt-2 max-w-3xl text-sm text-sf-text-muted">
-                ComfyStudio can run local, cloud, and hybrid AI workflows. This guide keeps the first-run path simple: choose how you want to connect, prepare the workflows you need, then start creating.
+                Velorn can run local, cloud, and hybrid AI workflows. This guide keeps the first-run path simple: choose how you want to connect, prepare the workflows you need, then start creating.
               </p>
             </div>
             <button
@@ -347,7 +347,7 @@ export default function GettingStartedModal({
               {setupSummary}
             </div>
             <div className="rounded-full border border-sf-dark-700 bg-sf-dark-900 px-3 py-1 text-xs text-sf-text-secondary">
-              Reopen later from <span className="text-sf-text-primary">ComfyStudio &gt; Getting Started</span>
+              Reopen later from <span className="text-sf-text-primary">Velorn &gt; Getting Started</span>
             </div>
           </div>
         </div>
@@ -387,7 +387,7 @@ export default function GettingStartedModal({
                   <div className="max-w-2xl">
                     <div className="text-sm font-semibold text-sf-text-primary">Choose your setup path</div>
                     <p className="mt-1 text-xs leading-relaxed text-sf-text-secondary">
-                      Use <span className="text-sf-text-primary">Quick Start</span> if you want ComfyStudio to guide you through a starter kit. Use <span className="text-sf-text-primary">Bring Your Own ComfyUI</span> if you already have a custom ComfyUI install and just need ComfyStudio pointed at it.
+                      Use <span className="text-sf-text-primary">Quick Start</span> if you want Velorn to guide you through a starter kit. Use <span className="text-sf-text-primary">Bring Your Own ComfyUI</span> if you already have a custom ComfyUI install and just need Velorn pointed at it.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -443,7 +443,7 @@ export default function GettingStartedModal({
                 <ChecklistCard
                   icon={Server}
                   title="Local ComfyUI connection"
-                  description="ComfyStudio talks to a local ComfyUI server on localhost only. If generations fail immediately, check the saved port first."
+                  description="Velorn talks to a local ComfyUI server on localhost only. If generations fail immediately, check the saved port first."
                   statusTone={connectionState.status === 'success' ? 'success' : connectionState.status === 'warning' ? 'warning' : 'neutral'}
                   statusLabel={connectionState.status === 'success' ? 'Connected' : connectionState.status === 'warning' ? 'Check port' : 'Saved'}
                   detail={connectionState.message}
