@@ -561,7 +561,6 @@ function WelcomeScreen() {
   const headerContent = (
     <>
       <div className="flex items-center gap-4">
-        <h1 className="text-xl font-bold text-sf-text-primary drop-shadow">Velorn</h1>
         <div className="flex items-center gap-1.5">
           <ComfyLauncherChip />
           <button
