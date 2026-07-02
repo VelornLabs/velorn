@@ -2,6 +2,12 @@ export const THEME_STORAGE_KEY = 'comfystudio-theme'
 
 export const THEMES = [
   {
+    id: 'velorn',
+    label: 'Velorn',
+    description: 'Default brand theme with deep blues, violet, and readable old-gold accents',
+    preview: { bg: '#030610', surface: '#11172a', accent: '#987000', text: '#f4eef8' },
+  },
+  {
     id: 'midnight',
     label: 'Midnight',
     description: 'Neutral dark grey inspired by DaVinci Resolve',
@@ -33,7 +39,7 @@ export const THEMES = [
   },
 ]
 
-export const DEFAULT_THEME_ID = 'high-contrast'
+export const DEFAULT_THEME_ID = 'velorn'
 
 export function getStoredThemeId() {
   try {

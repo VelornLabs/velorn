@@ -698,7 +698,16 @@ function WelcomeScreen() {
         )}
         
         {/* Recent Projects Section */}
-        <div className="mb-8">
+        <div className="relative isolate mb-8">
+          {showHeroBackground && recentProjectsList.length > 0 && (
+            <div
+              className="pointer-events-none absolute -inset-x-7 -top-5 -bottom-6 z-0 rounded-[32px] border border-white/[0.05] shadow-[0_34px_100px_rgba(0,0,0,0.48)] backdrop-blur-[1.5px]"
+              style={{
+                background: 'radial-gradient(ellipse at center, rgba(3, 6, 16, 0.74) 0%, rgba(3, 6, 16, 0.62) 46%, rgba(3, 6, 16, 0.34) 74%, rgba(3, 6, 16, 0) 100%)',
+              }}
+            />
+          )}
+          <div className="relative z-10">
           <div className="flex items-end justify-between mb-4">
             {/* Dark glass pill behind the title cluster so it stays readable
                 over busy hero artwork without becoming a full-width bar. */}
@@ -914,6 +923,7 @@ function WelcomeScreen() {
               })}
             </div>
           )}
+          </div>
         </div>
         
         {/* Projects Location Info */}
