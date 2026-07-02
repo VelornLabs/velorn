@@ -592,11 +592,11 @@ function WelcomeScreen() {
       <div className="flex items-center gap-3">
         <button
           onClick={() => setGettingStartedOpen(true)}
-          className="flex items-center gap-2 px-3 py-2 hover:bg-sf-dark-800 rounded-lg text-sm text-sf-text-muted hover:text-sf-text-primary font-medium transition-colors"
-          title="Getting started: ComfyUI setup, API keys, workflows"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-sf-text-muted transition-colors hover:bg-sf-dark-800 hover:text-sf-text-primary"
+          title="Guide: setup, API keys, workflows"
+          aria-label="Open guide"
         >
           <Compass className="w-4 h-4" />
-          Getting started
         </button>
         <button
           onClick={openProjectFromPicker}
