@@ -87,7 +87,7 @@ const INSPECTOR_SETTINGS_SCOPE_LABELS = {
   [INSPECTOR_SETTINGS_SCOPE.ADJUSTMENTS]: 'color settings',
   [INSPECTOR_SETTINGS_SCOPE.TIMING]: 'timing settings',
 }
-const TRANSFORM_SETTINGS_KEYS = ['positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'scaleLinked', 'rotation', 'rotationX', 'rotationY', 'perspective', 'anchorX', 'anchorY', 'opacity', 'flipH', 'flipV', 'motionBlurEnabled', 'motionBlurMode', 'motionBlurSamples', 'motionBlurShutter', 'blendMode']
+const TRANSFORM_SETTINGS_KEYS = ['positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'scaleLinked', 'rotation', 'rotationX', 'rotationY', 'perspective', 'anchorX', 'anchorY', 'opacity', 'flipH', 'flipV', 'motionBlurEnabled', 'motionBlurMode', 'motionBlurPosition', 'motionBlurSamples', 'motionBlurShutter', 'motionBlurSharpness', 'blendMode']
 const CROP_SETTINGS_KEYS = ['cropTop', 'cropBottom', 'cropLeft', 'cropRight']
 const TONAL_ADJUSTMENT_GROUP_LABELS = {
   shadows: 'Shadows',
@@ -787,7 +787,7 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
       rotation: 0, rotationX: 0, rotationY: 0, perspective: 1200, anchorX: 50, anchorY: 50, opacity: 100,
       flipH: false, flipV: false,
       cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0,
-      motionBlurEnabled: false, motionBlurMode: 'auto', motionBlurSamples: 8, motionBlurShutter: 180,
+      motionBlurEnabled: false, motionBlurMode: 'auto', motionBlurPosition: 'center', motionBlurSamples: 8, motionBlurShutter: 180, motionBlurSharpness: 0,
       blendMode: 'normal',
       blur: 0,
     }
@@ -2048,8 +2048,13 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
     const mode = ['auto', 'velocity', 'sampled'].includes(String(transform.motionBlurMode || '').toLowerCase())
       ? String(transform.motionBlurMode).toLowerCase()
       : 'auto'
+    const shutterPosition = ['center', 'trail'].includes(String(transform.motionBlurPosition || '').toLowerCase())
+      ? String(transform.motionBlurPosition).toLowerCase()
+      : 'center'
     const samples = Math.max(2, Math.min(48, Math.round(Number(transform.motionBlurSamples) || 8)))
     const shutter = Math.max(1, Math.min(360, Math.round(Number(transform.motionBlurShutter) || 180)))
+    const sharpnessRaw = Number(transform.motionBlurSharpness)
+    const sharpnessPct = Math.round(Math.max(0, Math.min(1, Number.isFinite(sharpnessRaw) ? sharpnessRaw : 0)) * 100)
     const selectedMode = MOTION_BLUR_MODE_OPTIONS.find((option) => option.value === mode) || MOTION_BLUR_MODE_OPTIONS[0]
 
     return (
@@ -2098,6 +2103,39 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
 
           <div>
             <div className="flex justify-between mb-1">
+              <span className="text-[10px] text-sf-text-muted">Shutter Position</span>
+              <span className="text-[10px] text-sf-text-secondary">{shutterPosition === 'center' ? 'Centered' : 'Trailing'}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              <button
+                type="button"
+                onClick={() => handleTransformCommit('motionBlurPosition', 'center')}
+                className={`px-2 py-1 rounded text-[10px] transition-colors ${
+                  shutterPosition === 'center'
+                    ? 'bg-sf-accent/20 text-sf-accent border border-sf-accent/30'
+                    : 'bg-sf-dark-700 text-sf-text-muted hover:bg-sf-dark-600'
+                }`}
+                title="Camera-style shutter centered on the frame — symmetric blur (Resolve/AE default)"
+              >
+                Centered
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTransformCommit('motionBlurPosition', 'trail')}
+                className={`px-2 py-1 rounded text-[10px] transition-colors ${
+                  shutterPosition === 'trail'
+                    ? 'bg-sf-accent/20 text-sf-accent border border-sf-accent/30'
+                    : 'bg-sf-dark-700 text-sf-text-muted hover:bg-sf-dark-600'
+                }`}
+                title="Echo-style blur that trails behind the motion with a sharp current frame"
+              >
+                Trailing
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex justify-between mb-1">
               <span className="text-[10px] text-sf-text-muted">Samples</span>
               <span className="text-[10px] text-sf-text-secondary">{samples}</span>
             </div>
@@ -2130,6 +2168,25 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
               onMouseUp={(e) => handleTransformCommit('motionBlurShutter', parseInt(e.target.value, 10))}
               onDoubleClick={() => handleTransformCommit('motionBlurShutter', 180)}
               title="Double-click to reset to 180 deg"
+              className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-[10px] text-sf-text-muted">Sharpness</span>
+              <span className="text-[10px] text-sf-text-secondary">{sharpnessPct}%</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={sharpnessPct}
+              onChange={(e) => handleTransformChange('motionBlurSharpness', parseInt(e.target.value, 10) / 100)}
+              onMouseUp={(e) => handleTransformCommit('motionBlurSharpness', parseInt(e.target.value, 10) / 100)}
+              onDoubleClick={() => handleTransformCommit('motionBlurSharpness', 0)}
+              title="Blends an unblurred copy of the frame over the smear. 0% = physically correct motion blur. Double-click to reset."
               className="w-full h-1 bg-sf-dark-600 rounded-lg appearance-none cursor-pointer accent-sf-accent"
             />
           </div>
