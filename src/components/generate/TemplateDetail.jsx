@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowLeft, CheckCircle2, Download, ExternalLink, KeyRound, Loader2, Puzzle } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, Download, ExternalLink, KeyRound, Loader2, Puzzle, RefreshCw } from 'lucide-react'
 import { formatBytes } from '../../hooks/useWorkflowSetupFlow'
 import { formatUsageCount } from './TemplateCard'
 import { importComfyTemplate } from '../../services/templateImporter'
@@ -24,7 +24,7 @@ export default function TemplateDetail({ template, onBack = null, isConnected = 
   const importing = importState.phase === 'importing'
 
   const handleImport = async () => {
-    if (importing || alreadyImported) return
+    if (importing) return
     setImportState({ phase: 'importing', message: 'Starting import...', error: '' })
     try {
       await importComfyTemplate(template, {
@@ -168,6 +168,24 @@ export default function TemplateDetail({ template, onBack = null, isConnected = 
                 This template now appears under the {template.openSource ? 'Local' : 'Cloud'} tab.
                 Use its Set up button there to install what it needs.
               </div>
+              <button
+                type="button"
+                onClick={() => { void handleImport() }}
+                disabled={!isConnected}
+                className={`mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
+                  isConnected
+                    ? 'border-sf-dark-500 text-sf-text-secondary hover:border-sf-dark-400 hover:text-sf-text-primary'
+                    : 'cursor-not-allowed border-sf-dark-700 text-sf-text-muted'
+                }`}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Re-import latest version
+              </button>
+              {!isConnected && (
+                <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
+                  Start ComfyUI to re-import — conversion runs through your local install.
+                </div>
+              )}
             </>
           ) : importing ? (
             <>

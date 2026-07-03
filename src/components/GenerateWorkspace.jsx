@@ -21,9 +21,11 @@ import {
   IMPORTED_WORKFLOWS_CHANGED_EVENT,
   getImportedManifestById,
   getImportedManifests,
+  getImportedWorkflowEntry,
   isImportedWorkflowId,
   loadImportedWorkflowsFromDisk,
 } from '../config/importedWorkflowRegistry'
+import { applyImportedWorkflowBindings } from '../services/importedWorkflowBindings'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
 import useComfyUI from '../hooks/useComfyUI'
 import useAssetsStore from '../stores/assetsStore'
@@ -13177,7 +13179,14 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         }
         return new File([result.data], filename, { type: mimeType })
       }
-      const outputPrefix = (
+      const importedJobEntry = isImportedWorkflowId(job.workflowId) ? getImportedWorkflowEntry(job.workflowId) : null
+      const outputPrefix = importedJobEntry ? (
+        `${importedJobEntry.manifest?.outputType === 'image'
+          ? 'image'
+          : importedJobEntry.manifest?.outputType === 'audio'
+            ? 'audio'
+            : 'video'}/comfystudio_${outputToken}`
+      ) : (
         isSingleVideoWorkflowId(job.workflowId) ||
         job.workflowId === 'ltx23-t2v' ||
         job.workflowId === 'wan22-t2v' ||
@@ -13425,6 +13434,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           workflowJson = JSON.parse(String(job?.customWorkflow?.jsonText || ''))
         } catch (error) {
           throw new Error(`Custom workflow JSON is invalid: ${error?.message || error}`)
+        }
+      } else if (isImportedWorkflowId(job.workflowId)) {
+        const importedEntry = getImportedWorkflowEntry(job.workflowId)
+        const read = importedEntry?.workflowPath && window.electronAPI?.readFile
+          ? await window.electronAPI.readFile(importedEntry.workflowPath, { encoding: 'utf8' })
+          : null
+        if (!read?.success || !read.data) {
+          throw new Error(read?.error || 'Could not read the imported workflow file. Try re-importing the template.')
+        }
+        try {
+          workflowJson = JSON.parse(read.data)
+        } catch (error) {
+          throw new Error(`Imported workflow file is corrupt: ${error?.message || error}. Re-import the template.`)
         }
       } else {
         const workflowPath = BUILTIN_WORKFLOW_PATHS[job.workflowId]
@@ -13846,6 +13868,21 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           })
           break
         default:
+          if (importedJobEntry?.bindings) {
+            modifiedWorkflow = applyImportedWorkflowBindings(workflowJson, importedJobEntry.bindings, {
+              prompt: job.prompt,
+              negativePrompt: job.negativePrompt,
+              seed: job.seed,
+              inputImage: uploadedFilename,
+              inputVideo: uploadedVideoFilename,
+              assetFieldFilenames,
+              filenamePrefix: outputPrefix,
+            })
+            break
+          }
+          if (importedJobEntry) {
+            throw new Error('This imported template predates field bindings. Re-import it from the ComfyUI tab.')
+          }
           throw new Error('Unhandled workflow: ' + job.workflowId)
       }
 

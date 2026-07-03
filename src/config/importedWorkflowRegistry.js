@@ -120,6 +120,7 @@ function normalizeLoadedEntry(parsed, workflowPath) {
     manifest: parsed.manifest,
     pack: parsed.pack,
     recipes: Array.isArray(parsed.recipes) ? parsed.recipes : [],
+    bindings: parsed.bindings && typeof parsed.bindings === 'object' ? parsed.bindings : null,
     workflowPath,
     importedAt: Number(parsed.importedAt) || 0,
     source: parsed.source && typeof parsed.source === 'object' ? parsed.source : {},

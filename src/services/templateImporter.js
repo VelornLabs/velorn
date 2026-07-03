@@ -1,5 +1,6 @@
 import { comfyui } from './comfyui'
 import { getLocalComfyConnectionSync } from './localComfyConnection'
+import { detectImportedWorkflowBindings } from './importedWorkflowBindings'
 import {
   IMPORTED_WORKFLOW_ID_PREFIX,
   getImportedWorkflowStoragePaths,
@@ -97,7 +98,7 @@ function formatVramLabel(vramBytes) {
   return `${Math.ceil(numeric / (1024 ** 3))}GB+ VRAM`
 }
 
-function buildManifest(template, derived) {
+function buildManifest(template, derived, detection) {
   const workflowId = `${IMPORTED_WORKFLOW_ID_PREFIX}${template.name}`
   return {
     id: workflowId,
@@ -115,13 +116,11 @@ function buildManifest(template, derived) {
       ? formatVramLabel(template.vramBytes)
       : 'Requires API key',
     tags: [...template.tags, 'imported', template.name],
-    needsImage: derived.needsImage,
-    inputAssetType: derived.needsImage ? 'image' : undefined,
+    needsImage: detection.needsImage,
+    inputAssetType: detection.inputAssetType,
     outputType: derived.outputType,
-    fields: [],
-    // Phase 2 imports register + set up dependencies; queueing arrives with the
-    // generic field binding in phase 3.
-    runnable: false,
+    fields: detection.fields,
+    runnable: true,
     imported: true,
     templateName: template.name,
   }
@@ -212,7 +211,8 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
   )).map((classType) => ({ classType }))
 
   const derived = deriveCategoryAndOutput(template)
-  const manifest = buildManifest(template, derived)
+  const detection = detectImportedWorkflowBindings(apiWorkflow, template)
+  const manifest = buildManifest(template, derived, detection)
   const pack = {
     id: manifest.workflowId,
     displayName: template.title,
@@ -233,6 +233,7 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
     manifest,
     pack,
     recipes,
+    bindings: detection.bindings,
     importedAt: Date.now(),
     source: {
       workflowUrl: template.workflowUrl,
