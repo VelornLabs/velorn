@@ -32,6 +32,22 @@ import { clearDiskCacheUrl } from './VideoLayerRenderer'
 import EffectsStack from './effects/EffectsStack'
 import { isManagedEffectType } from '../utils/effects'
 import { FRAME_RATE, TRANSITION_TYPES, TRANSITION_DEFAULT_SETTINGS } from '../constants/transitions'
+
+// Clip speed UI: the store accepts 0.1x-8x continuously (timelineStore
+// clamps in updateClipSpeed). The slider is log-scaled so the slow-motion
+// half (0.1x-1x) gets half the travel instead of a sliver of a linear track.
+const CLIP_SPEED_MIN = 0.1
+const CLIP_SPEED_MAX = 8
+const CLIP_SPEED_PRESETS = [0.25, 0.5, 1, 2, 4]
+const speedToSliderPosition = (speed) => {
+  const clamped = Math.max(CLIP_SPEED_MIN, Math.min(CLIP_SPEED_MAX, Number(speed) || 1))
+  return Math.log(clamped / CLIP_SPEED_MIN) / Math.log(CLIP_SPEED_MAX / CLIP_SPEED_MIN)
+}
+const sliderPositionToSpeed = (position) => {
+  const clamped = Math.max(0, Math.min(1, Number(position) || 0))
+  const raw = CLIP_SPEED_MIN * Math.pow(CLIP_SPEED_MAX / CLIP_SPEED_MIN, clamped)
+  return Math.round(raw * 100) / 100
+}
 import {
   DEFAULT_LETTERBOX_ASPECT,
   LETTERBOX_ASPECT_PRESETS,
@@ -3139,25 +3155,44 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                   <div className="flex items-center gap-2">
                     <input
                       type="range"
-                      min="0.25"
-                      max="4"
-                      step="0.25"
-                      value={Number.isFinite(Number(selectedClip.speed)) ? Number(selectedClip.speed) : 1}
-                      onChange={(e) => updateClipSpeed(selectedClip.id, parseFloat(e.target.value) || 1, false)}
-                      onMouseUp={(e) => updateClipSpeed(selectedClip.id, parseFloat(e.target.value) || 1, true)}
+                      min="0"
+                      max="1"
+                      step="0.001"
+                      value={speedToSliderPosition(selectedClip.speed)}
+                      onChange={(e) => updateClipSpeed(selectedClip.id, sliderPositionToSpeed(parseFloat(e.target.value)), false)}
+                      onMouseUp={(e) => updateClipSpeed(selectedClip.id, sliderPositionToSpeed(parseFloat(e.target.value)), true)}
                       className="flex-1"
                     />
                     <input
                       type="number"
-                      min="0.25"
-                      max="4"
-                      step="0.25"
+                      min={CLIP_SPEED_MIN}
+                      max={CLIP_SPEED_MAX}
+                      step="0.01"
                       value={(Number.isFinite(Number(selectedClip.speed)) ? Number(selectedClip.speed) : 1).toFixed(2)}
                       onChange={(e) => updateClipSpeed(selectedClip.id, parseFloat(e.target.value) || 1, false)}
                       onBlur={(e) => updateClipSpeed(selectedClip.id, parseFloat(e.target.value) || 1, true)}
                       className="w-16 bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
                     />
                     <span className="text-[9px] text-sf-text-muted">x</span>
+                  </div>
+                  <div className="flex items-center gap-1 mt-1">
+                    {CLIP_SPEED_PRESETS.map((preset) => {
+                      const currentSpeed = Number.isFinite(Number(selectedClip.speed)) ? Number(selectedClip.speed) : 1
+                      const isActive = Math.abs(currentSpeed - preset) < 0.005
+                      return (
+                        <button
+                          key={preset}
+                          onClick={() => updateClipSpeed(selectedClip.id, preset, true)}
+                          className={`px-1.5 py-0.5 rounded text-[9px] border transition-colors ${
+                            isActive
+                              ? 'bg-sf-accent/20 border-sf-accent text-sf-accent'
+                              : 'bg-sf-dark-700 border-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary hover:border-sf-dark-500'
+                          }`}
+                        >
+                          {preset}x
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
 
