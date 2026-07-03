@@ -48,6 +48,7 @@ import {
 } from '../utils/yoloPlanning'
 import { checkWorkflowDependencies, buildMissingDependencyClipboardText } from '../services/workflowDependencies'
 import { openApiWorkflowInComfyUi, openBundledWorkflowInComfyUi } from '../services/workflowSetupManager'
+import { useWorkflowSetupFlow } from '../hooks/useWorkflowSetupFlow'
 import {
   getComfyLauncherSnapshot,
   isComfyLauncherAvailable,
@@ -4383,6 +4384,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     window.addEventListener(COMFY_PARTNER_KEY_CHANGED_EVENT, handler)
     return () => window.removeEventListener(COMFY_PARTNER_KEY_CHANGED_EVENT, handler)
   }, [runWorkflowDependencyCheck])
+
+  const workflowSetupFlow = useWorkflowSetupFlow({
+    dependencyCheck,
+    isConnected,
+    recheck: runWorkflowDependencyCheck,
+  })
 
   const validateDependenciesForQueue = useCallback(async (workflowIds, queueLabel) => {
     const normalizedIds = Array.from(new Set(
@@ -13993,6 +14000,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
   const workflowDetailActions = {
     onGenerate: handleGenerate,
+    onOpenApiKeyDialog: () => setApiKeyDialogOpen(true),
     onPreviewAssetIndexChange: (nextIndex) => {
       setLatestWorkflowPreview((prev) => {
         if (!prev || prev.workflowId !== selectedPreviewWorkflowId) return prev
@@ -14238,6 +14246,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     workflow={selectedWorkflowManifest}
                     values={workflowDetailValues}
                     actions={workflowDetailActions}
+                    setup={workflowSetupFlow}
                     disabled={isGenerateDisabled}
                     disabledReason={formError || (customGenerateNeedsSetup ? customGenerateDisabledReason : '')}
                     onBack={() => setWorkflowDetailOpen(false)}

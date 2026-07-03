@@ -4838,6 +4838,35 @@ ipcMain.handle('workflowSetup:checkFiles', async (_event, payload = {}) => {
   }
 })
 
+ipcMain.handle('workflowSetup:diskSpace', async (_event, payload = {}) => {
+  try {
+    const validation = await validateWorkflowSetupRootInternal(payload?.comfyRootPath)
+    if (!validation.isValid || !validation.modelsPath) {
+      return {
+        success: false,
+        error: validation.error || 'ComfyUI root is not configured.',
+        freeBytes: null,
+        totalBytes: null,
+      }
+    }
+
+    const stats = await fs.statfs(validation.modelsPath)
+    return {
+      success: true,
+      freeBytes: Number(stats.bavail) * Number(stats.bsize),
+      totalBytes: Number(stats.blocks) * Number(stats.bsize),
+      modelsPath: validation.modelsPath,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.message || 'Could not check free disk space.',
+      freeBytes: null,
+      totalBytes: null,
+    }
+  }
+})
+
 ipcMain.handle('workflowSetup:install', async (event, payload = {}) => {
   const validation = await validateWorkflowSetupRootInternal(payload?.comfyRootPath)
   if (!validation.isValid) {

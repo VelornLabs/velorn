@@ -1,14 +1,80 @@
-import { ArrowLeft, ChevronLeft, ChevronRight, Sparkles } from 'lucide-react'
+import { useState } from 'react'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Boxes,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  ExternalLink,
+  FolderSearch,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+  Sparkles,
+} from 'lucide-react'
 import WorkflowFieldRenderer from './WorkflowFieldRenderer'
+import { formatBytes } from '../../hooks/useWorkflowSetupFlow'
+
+function SetupItemList({ items, diskSpace, insufficientDiskSpace, totalDownloadBytes }) {
+  if (!Array.isArray(items) || items.length === 0) return null
+  return (
+    <div className="mt-2 space-y-1 rounded-lg border border-sf-dark-700 bg-sf-dark-800/60 p-2">
+      {items.map((item) => (
+        <div key={item.key} className="flex items-center gap-2 px-1 py-1 text-[11px]">
+          {item.kind === 'nodes' ? (
+            <Boxes className="h-3.5 w-3.5 shrink-0 text-sf-accent" />
+          ) : item.kind === 'model' ? (
+            <Download className="h-3.5 w-3.5 shrink-0 text-sf-accent" />
+          ) : (
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-yellow-400" />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sf-text-primary">{item.label}</div>
+            <div className="truncate text-[10px] text-sf-text-muted">
+              {item.detail}
+              {item.kind === 'nodes' ? ' · restart handled after install' : ''}
+              {!item.auto ? ' · manual step' : ''}
+            </div>
+          </div>
+          {item.docsUrl ? (
+            <a
+              href={item.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 text-sf-text-muted transition-colors hover:text-sf-text-primary"
+              aria-label={`Open instructions for ${item.label}`}
+            >
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          ) : null}
+          <div className="shrink-0 text-[10px] text-sf-text-muted">
+            {item.kind === 'model' ? (Number.isFinite(item.sizeBytes) ? formatBytes(item.sizeBytes) : 'Size unknown') : ''}
+          </div>
+        </div>
+      ))}
+      {diskSpace?.checked && Number.isFinite(diskSpace.freeBytes) && (
+        <div className={`border-t border-sf-dark-700 px-1 pt-1.5 text-[10px] ${insufficientDiskSpace ? 'text-sf-error' : 'text-sf-text-muted'}`}>
+          {insufficientDiskSpace
+            ? `Not enough disk space — needs ${formatBytes(totalDownloadBytes)}, ${formatBytes(diskSpace.freeBytes)} free on the ComfyUI drive.`
+            : `${formatBytes(diskSpace.freeBytes)} free on the ComfyUI drive.`}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function WorkflowDetail({
   workflow,
   values,
   actions,
+  setup = null,
   disabled = false,
   disabledReason = '',
   onBack = null,
 }) {
+  const [setupListOpen, setSetupListOpen] = useState(false)
   if (!workflow) {
     return (
       <div className="rounded-2xl border border-dashed border-sf-dark-700 bg-sf-dark-900/60 p-8 text-center text-sm text-sf-text-muted">
@@ -33,6 +99,14 @@ export default function WorkflowDetail({
     const wrappedIndex = (nextIndex + previewAssets.length) % previewAssets.length
     actions.onPreviewAssetIndexChange(wrappedIndex)
   }
+
+  const queueLabel = `Queue ${workflow.outputType === 'audio' ? 'Audio' : workflow.outputType === 'image' ? 'Image' : 'Video'}`
+  const setupMode = workflow.runnable && setup ? setup.mode : 'hidden'
+  const setupItems = setup?.items || []
+  const autoItemCount = setupItems.filter((item) => item.auto).length
+  const setupHeadline = setup && setup.totalDownloadBytes > 0
+    ? `Set up — ${formatBytes(setup.totalDownloadBytes)}${setup.unknownSizeCount > 0 ? '+' : ''} download`
+    : `Set up — ${autoItemCount} item${autoItemCount === 1 ? '' : 's'}`
 
   return (
     <div className="space-y-3">
@@ -169,19 +243,198 @@ export default function WorkflowDetail({
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={actions.onGenerate}
-          disabled={disabled || !workflow.runnable}
-          className={`mt-4 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors ${
-            disabled || !workflow.runnable
-              ? 'cursor-not-allowed bg-sf-dark-700 text-sf-text-muted'
-              : 'bg-sf-accent text-white hover:bg-sf-accent-hover'
-          }`}
-        >
-          <Sparkles className="h-4 w-4" />
-          Queue {workflow.outputType === 'audio' ? 'Audio' : workflow.outputType === 'image' ? 'Image' : 'Video'}
-        </button>
+        {setupMode === 'hidden' ? (
+          <button
+            type="button"
+            onClick={actions.onGenerate}
+            disabled={disabled || !workflow.runnable}
+            className={`mt-4 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors ${
+              disabled || !workflow.runnable
+                ? 'cursor-not-allowed bg-sf-dark-700 text-sf-text-muted'
+                : 'bg-sf-accent text-white hover:bg-sf-accent-hover'
+            }`}
+          >
+            <Sparkles className="h-4 w-4" />
+            {queueLabel}
+          </button>
+        ) : (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() => setSetupListOpen((open) => !open)}
+              className="flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1.5 text-[11px] text-sf-text-secondary transition-colors hover:text-sf-text-primary"
+            >
+              <span>
+                {setupItems.length} item{setupItems.length === 1 ? '' : 's'} needed before this workflow can run
+              </span>
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${setupListOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {setupListOpen && (
+              <SetupItemList
+                items={setupItems}
+                diskSpace={setup.diskSpace}
+                insufficientDiskSpace={setup.insufficientDiskSpace}
+                totalDownloadBytes={setup.totalDownloadBytes}
+              />
+            )}
+
+            {setup.error && (
+              <div className="mt-2 flex items-start justify-between gap-2 rounded-lg border border-sf-error/30 bg-sf-error/10 p-2 text-[11px] text-sf-error">
+                <span className="min-w-0 break-words">{setup.error}</span>
+                {setupMode === 'setup' && (
+                  <button
+                    type="button"
+                    onClick={setup.dismissError}
+                    className="shrink-0 text-sf-text-muted transition-colors hover:text-sf-text-primary"
+                  >
+                    Dismiss
+                  </button>
+                )}
+              </div>
+            )}
+
+            {setupMode === 'setup' && (
+              <button
+                type="button"
+                onClick={() => { void setup.startSetup() }}
+                disabled={setup.insufficientDiskSpace}
+                className={`mt-2 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors ${
+                  setup.insufficientDiskSpace
+                    ? 'cursor-not-allowed bg-sf-dark-700 text-sf-text-muted'
+                    : 'bg-sf-accent text-white hover:bg-sf-accent-hover'
+                }`}
+              >
+                <Download className="h-4 w-4" />
+                {setupHeadline}
+              </button>
+            )}
+
+            {setupMode === 'choose-root' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => { void setup.chooseComfyFolder() }}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-sf-accent px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-sf-accent-hover"
+                >
+                  <FolderSearch className="h-4 w-4" />
+                  Choose your ComfyUI folder
+                </button>
+                <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
+                  {setup.rootValidation?.error || 'Point Velorn at your ComfyUI install so it can download the missing files for you.'}
+                </div>
+              </>
+            )}
+
+            {setupMode === 'installing' && (
+              <div className="mt-2 rounded-lg border border-sf-dark-700 bg-sf-dark-800/60 p-3">
+                <div className="flex items-center gap-2 text-xs text-sf-text-primary">
+                  <Loader2 className="h-4 w-4 animate-spin text-sf-accent" />
+                  <span className="min-w-0 flex-1 truncate">
+                    {setup.progress.currentLabel || setup.progress.message || 'Installing...'}
+                  </span>
+                  {setup.progress.totalTasks > 1 && (
+                    <span className="shrink-0 text-[10px] text-sf-text-muted">
+                      {Math.min(setup.progress.completedTasks + 1, setup.progress.totalTasks)}/{setup.progress.totalTasks}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sf-dark-700">
+                  <div
+                    className="h-full rounded-full bg-sf-accent transition-[width] duration-300"
+                    style={{ width: `${Math.max(2, Number(setup.progress.overallPercent) || 0)}%` }}
+                  />
+                </div>
+                <div className="mt-1.5 flex items-center justify-between text-[10px] text-sf-text-muted">
+                  <span>
+                    {setup.progress.taskPercent != null ? `${Math.round(setup.progress.taskPercent)}%` : ''}
+                  </span>
+                  <span>
+                    {setup.progress.totalBytes > 0
+                      ? `${formatBytes(setup.progress.bytesDownloaded)} of ${formatBytes(setup.progress.totalBytes)}`
+                      : ''}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {setupMode === 'needs-restart' && (
+              (setup.restartCapability === 'restart' || setup.restartCapability === 'start') ? (
+                <button
+                  type="button"
+                  onClick={() => { void setup.restartNow() }}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-yellow-500/90 px-4 py-3 text-sm font-semibold text-black transition-colors hover:bg-yellow-400"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Restart ComfyUI to finish setup
+                </button>
+              ) : (
+                <>
+                  <div className="mt-2 rounded-lg border border-yellow-400/25 bg-yellow-400/10 p-3 text-[11px] text-yellow-200">
+                    Install complete. Restart ComfyUI where you started it so the new nodes load, then re-check.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { void setup.recheckAfterManualRestart() }}
+                    className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-sf-dark-500 px-4 py-2.5 text-sm font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-400 hover:text-sf-text-primary"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Re-check
+                  </button>
+                </>
+              )
+            )}
+
+            {setupMode === 'restarting' && (
+              <button
+                type="button"
+                disabled
+                className="mt-2 flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-lg bg-sf-dark-700 px-4 py-3 text-sm font-semibold text-sf-text-muted"
+              >
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Restarting ComfyUI...
+              </button>
+            )}
+
+            {setupMode === 'needs-auth' && (
+              <button
+                type="button"
+                onClick={() => actions.onOpenApiKeyDialog?.()}
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-sf-accent px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-sf-accent-hover"
+              >
+                <KeyRound className="h-4 w-4" />
+                Add your Comfy.org API key
+              </button>
+            )}
+
+            {setupMode === 'manual-only' && (
+              <button
+                type="button"
+                disabled
+                className="mt-2 flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-lg bg-sf-dark-700 px-4 py-3 text-sm font-semibold text-sf-text-muted"
+              >
+                <Sparkles className="h-4 w-4" />
+                {queueLabel}
+              </button>
+            )}
+
+            {setup.needsAuth && setupMode !== 'needs-auth' && (
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-yellow-400/25 bg-yellow-400/5 px-2 py-1.5">
+                <div className="flex items-center gap-1.5 text-[10px] text-yellow-300">
+                  <KeyRound className="h-3 w-3" />
+                  <span>This workflow also needs a Comfy.org API key.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => actions.onOpenApiKeyDialog?.()}
+                  className="shrink-0 rounded bg-sf-accent px-2 py-0.5 text-[10px] font-medium text-white transition-colors hover:bg-sf-accent/90"
+                >
+                  Add key
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
     </div>

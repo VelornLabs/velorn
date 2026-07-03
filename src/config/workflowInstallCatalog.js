@@ -640,6 +640,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/ace_step_1.5_ComfyUI_files', 'split_files/vae/ace_1.5_vae.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/ace_step_1.5_ComfyUI_files', 'split_files/vae/ace_1.5_vae.safetensors'),
     licenseUrl: 'https://huggingface.co/ACE-Step/Ace-Step1.5',
+    sizeBytes: 337431732,
     notes: 'Required by the built-in music generation workflow.',
   }),
   [modelKey('diffusion_models', 'acestep_v1.5_turbo.safetensors')]: createModelRecipe({
@@ -670,6 +671,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/ltx-2', 'split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/ltx-2', 'split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors'),
     licenseUrl: 'https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-unquantized',
+    sizeBytes: 9447702218,
     notes: 'Used by the LTX 2.3 workflow text encoder loader.',
   }),
   [modelKey('checkpoints', 'ltx-2.3-22b-dev-fp8.safetensors')]: createModelRecipe({
@@ -679,6 +681,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Lightricks/LTX-2.3-fp8', 'ltx-2.3-22b-dev-fp8.safetensors'),
     sourceUrl: hfBlob('Lightricks/LTX-2.3-fp8', 'ltx-2.3-22b-dev-fp8.safetensors'),
     licenseUrl: 'https://huggingface.co/Lightricks/LTX-2.3-fp8',
+    sizeBytes: 29145431166,
     notes: 'Main checkpoint used by the bundled LTX 2.3 workflow.',
   }),
   [modelKey('loras', 'ltx-2.3-22b-distilled-lora-384.safetensors')]: createModelRecipe({
@@ -688,6 +691,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Lightricks/LTX-2.3', 'ltx-2.3-22b-distilled-lora-384-1.1.safetensors'),
     sourceUrl: hfBlob('Lightricks/LTX-2.3', 'ltx-2.3-22b-distilled-lora-384-1.1.safetensors'),
     licenseUrl: 'https://huggingface.co/Lightricks/LTX-2.3',
+    sizeBytes: 7605507256,
     notes: 'Downloaded from the official Lightricks repo and saved under the workflow-expected filename.',
   }),
   [modelKey('latent_upscale_models', 'ltx-2.3-spatial-upscaler-x2-1.1.safetensors')]: createModelRecipe({
@@ -697,6 +701,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Lightricks/LTX-2.3', 'ltx-2.3-spatial-upscaler-x2-1.1.safetensors'),
     sourceUrl: hfBlob('Lightricks/LTX-2.3', 'ltx-2.3-spatial-upscaler-x2-1.1.safetensors'),
     licenseUrl: 'https://huggingface.co/Lightricks/LTX-2.3',
+    sizeBytes: 995743560,
     notes: 'Required for the bundled LTX 2.3 upscaling step.',
   }),
   [modelKey('text_encoders', 'qwen_2.5_vl_7b_fp8_scaled.safetensors')]: createModelRecipe({
@@ -736,6 +741,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Qwen-Image_ComfyUI', 'split_files/vae/qwen_image_vae.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Qwen-Image_ComfyUI', 'split_files/vae/qwen_image_vae.safetensors'),
     licenseUrl: 'https://huggingface.co/Qwen/Qwen-Image',
+    sizeBytes: 253806246,
     notes: 'Shared by Qwen image edit and multiple-angle workflows.',
   }),
   [modelKey('loras', 'Qwen-Edit-2509-Multiple-angles.safetensors')]: createModelRecipe({
@@ -745,6 +751,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Qwen-Image-Edit_ComfyUI', 'split_files/loras/Qwen-Edit-2509-Multiple-angles.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Qwen-Image-Edit_ComfyUI', 'split_files/loras/Qwen-Edit-2509-Multiple-angles.safetensors'),
     licenseUrl: 'https://huggingface.co/dx8152/Qwen-Edit-2509-Multiple-angles',
+    sizeBytes: 236117032,
     notes: 'Enables the bundled multi-angle helper workflows.',
   }),
   [modelKey('loras', 'Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors')]: createModelRecipe({
@@ -754,6 +761,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('lightx2v/Qwen-Image-Lightning', 'Qwen-Image-Edit-2509/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors'),
     sourceUrl: hfBlob('lightx2v/Qwen-Image-Lightning', 'Qwen-Image-Edit-2509/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors'),
     licenseUrl: 'https://huggingface.co/lightx2v/Qwen-Image-Lightning',
+    sizeBytes: 849608296,
     notes: 'Optional speed LoRA used by the bundled Qwen image edit workflow.',
   }),
   [modelKey('text_encoders', 'umt5_xxl_fp8_e4m3fn_scaled.safetensors')]: createModelRecipe({
@@ -763,6 +771,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors'),
     licenseUrl: 'https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B',
+    sizeBytes: 6735906897,
     notes: 'Text encoder for the bundled WAN 2.2 workflow.',
   }),
   [modelKey('diffusion_models', 'wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors')]: createModelRecipe({
@@ -772,6 +781,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors'),
     licenseUrl: 'https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B',
+    sizeBytes: 14294742832,
     notes: 'One of the two MoE expert models required for WAN 2.2 image-to-video.',
   }),
   [modelKey('loras', 'wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors')]: createModelRecipe({
@@ -803,6 +813,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors'),
     licenseUrl: 'https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B',
+    sizeBytes: 14294742832,
     notes: 'One of the two MoE expert models required for WAN 2.2 image-to-video.',
   }),
   [modelKey('vae', 'wan_2.1_vae.safetensors')]: createModelRecipe({
@@ -812,6 +823,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/vae/wan_2.1_vae.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/vae/wan_2.1_vae.safetensors'),
     licenseUrl: 'https://huggingface.co/Wan-AI/Wan2.2-I2V-A14B',
+    sizeBytes: 253815318,
     notes: 'Shared VAE for the bundled WAN 2.2 workflow.',
   }),
   [modelKey('diffusion_models', 'wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors')]: createModelRecipe({
@@ -821,6 +833,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors'),
     licenseUrl: 'https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B',
+    sizeBytes: 14293923632,
     notes: 'One of the two MoE expert models required for WAN 2.2 text-to-video.',
   }),
   [modelKey('diffusion_models', 'wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors')]: createModelRecipe({
@@ -830,6 +843,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors'),
     licenseUrl: 'https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B',
+    sizeBytes: 14293923632,
     notes: 'One of the two MoE expert models required for WAN 2.2 text-to-video.',
   }),
   [modelKey('loras', 'wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors')]: createModelRecipe({
@@ -839,6 +853,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors'),
     licenseUrl: 'https://huggingface.co/lightx2v/Wan2.2-Lightning',
+    sizeBytes: 1226977424,
     notes: 'Speed LoRA used by the bundled WAN 2.2 text-to-video workflow.',
   }),
   [modelKey('loras', 'wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors')]: createModelRecipe({
@@ -848,6 +863,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/Wan_2.2_ComfyUI_Repackaged', 'split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors'),
     licenseUrl: 'https://huggingface.co/lightx2v/Wan2.2-Lightning',
+    sizeBytes: 1226977424,
     notes: 'Speed LoRA used by the bundled WAN 2.2 text-to-video workflow.',
   }),
   [modelKey('diffusion_models', 'longcat_image_bf16.safetensors')]: createModelRecipe({
@@ -868,6 +884,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/ERNIE-Image', 'diffusion_models/ernie-image-turbo.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/ERNIE-Image', 'diffusion_models/ernie-image-turbo.safetensors'),
     licenseUrl: 'https://huggingface.co/Comfy-Org/ERNIE-Image',
+    sizeBytes: 16067025480,
     notes: 'Primary local model used by the bundled Ernie Image Turbo workflow.',
   }),
   [modelKey('text_encoders', 'ministral-3-3b.safetensors')]: createModelRecipe({
@@ -877,6 +894,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/ERNIE-Image', 'text_encoders/ministral-3-3b.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/ERNIE-Image', 'text_encoders/ministral-3-3b.safetensors'),
     licenseUrl: 'https://huggingface.co/Comfy-Org/ERNIE-Image',
+    sizeBytes: 7717637511,
     notes: 'Text encoder used by the bundled Ernie Image Turbo workflow.',
   }),
   [modelKey('text_encoders', 'ernie-image-prompt-enhancer.safetensors')]: createModelRecipe({
@@ -886,6 +904,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/ERNIE-Image', 'text_encoders/ernie-image-prompt-enhancer.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/ERNIE-Image', 'text_encoders/ernie-image-prompt-enhancer.safetensors'),
     licenseUrl: 'https://huggingface.co/Comfy-Org/ERNIE-Image',
+    sizeBytes: 6877439999,
     notes: 'Prompt enhancement encoder used by the bundled Ernie Image Turbo workflow.',
   }),
   [modelKey('vae', 'flux2-vae.safetensors')]: createModelRecipe({
@@ -895,6 +914,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/ERNIE-Image', 'vae/flux2-vae.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/ERNIE-Image', 'vae/flux2-vae.safetensors'),
     licenseUrl: 'https://huggingface.co/Comfy-Org/ERNIE-Image',
+    sizeBytes: 336213556,
     notes: 'Flux 2 VAE used by the bundled Ernie Image Turbo workflow.',
   }),
   [modelKey('diffusion_models', 'flux2_dev_fp8mixed.safetensors')]: createModelRecipe({
@@ -904,6 +924,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/flux2-dev', 'split_files/diffusion_models/flux2_dev_fp8mixed.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/flux2-dev', 'split_files/diffusion_models/flux2_dev_fp8mixed.safetensors'),
     licenseUrl: 'https://huggingface.co/black-forest-labs/FLUX.2-dev',
+    sizeBytes: 35455599592,
     notes: 'Primary local model used by the bundled Flux 2 text-to-image workflow.',
   }),
   [modelKey('text_encoders', 'mistral_3_small_flux2_bf16.safetensors')]: createModelRecipe({
@@ -913,6 +934,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/flux2-dev', 'split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/flux2-dev', 'split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors'),
     licenseUrl: 'https://huggingface.co/black-forest-labs/FLUX.2-dev',
+    sizeBytes: 35584897447,
     notes: 'Text encoder used by the bundled Flux 2 text-to-image workflow.',
   }),
   [modelKey('vae', 'full_encoder_small_decoder.safetensors')]: createModelRecipe({
@@ -944,6 +966,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/frame_interpolation', 'frame_interpolation/film_net_fp16.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/frame_interpolation', 'frame_interpolation/film_net_fp16.safetensors'),
     licenseUrl: 'https://huggingface.co/Comfy-Org/frame_interpolation',
+    sizeBytes: 68882302,
     notes: 'FILM model used by the bundled frame interpolation workflow.',
   }),
   [modelKey('diffusion_models', 'z_image_turbo_bf16.safetensors')]: createModelRecipe({
@@ -953,6 +976,7 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     downloadUrl: hfResolve('Comfy-Org/z_image_turbo', 'split_files/diffusion_models/z_image_turbo_bf16.safetensors'),
     sourceUrl: hfBlob('Comfy-Org/z_image_turbo', 'split_files/diffusion_models/z_image_turbo_bf16.safetensors'),
     licenseUrl: 'https://huggingface.co/Tongyi-MAI/Z-Image-Turbo',
+    sizeBytes: 12309866400,
     notes: 'Primary local text-to-image model used by the bundled Z Image Turbo workflow.',
   }),
 })

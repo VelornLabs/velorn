@@ -376,6 +376,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getComfyCloudCreditBalance: () => ipcRenderer.invoke('comfyui:getCloudCreditBalance'),
   validateWorkflowSetupRoot: (rootPath) => ipcRenderer.invoke('workflowSetup:validateRoot', rootPath),
   checkWorkflowSetupFiles: (payload = {}) => ipcRenderer.invoke('workflowSetup:checkFiles', payload),
+  getWorkflowSetupDiskSpace: (payload = {}) => ipcRenderer.invoke('workflowSetup:diskSpace', payload),
   openExternalUrl: (url) => ipcRenderer.invoke('shell:openExternal', url),
   installWorkflowSetup: (payload = {}) => ipcRenderer.invoke('workflowSetup:install', payload),
   onWorkflowSetupProgress: (cb) => {
