@@ -926,6 +926,12 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     useDirectFramePipe = true,
     deliveryFraming = 'fit',
     glslQualityScale = 1,
+    // Final exports sample each frame at its temporal center (pairs with
+    // the centered-shutter motion blur). Preview substitutes (In→Out
+    // flattens, chunk cache, timeline proxies) pass false so animated
+    // values match live playback frame-for-frame — half a frame of motion
+    // is a visible position shift on moving elements.
+    sampleAtFrameCenter = true,
     signal = null,
     // Per-clip render bakes: render ONLY these clips (no neighbors, no
     // transitions) over the range, onto a transparent canvas so the baked
@@ -1286,6 +1292,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   
   const frameDuration = fps > 0 ? 1 / fps : 0
   const halfFrame = frameDuration / 2
+  const frameSampleOffset = sampleAtFrameCenter ? halfFrame : 0
 
   try {
   for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
@@ -1300,7 +1307,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       exportPerf.yieldMs += performance.now() - yieldStart
     }
     throwIfCancelled()
-    const targetTime = rangeStart + frameIndex * frameDuration + halfFrame
+    const targetTime = rangeStart + frameIndex * frameDuration + frameSampleOffset
     const safeEnd = Math.max(rangeStart, rangeEnd - halfFrame)
     const time = Math.min(targetTime, safeEnd)
     // Solo bakes render the clip clean — transitions stay live and are
