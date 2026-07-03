@@ -101,7 +101,8 @@ export default function WorkflowDetail({
   }
 
   const queueLabel = `Queue ${workflow.outputType === 'audio' ? 'Audio' : workflow.outputType === 'image' ? 'Image' : 'Video'}`
-  const setupMode = workflow.runnable && setup ? setup.mode : 'hidden'
+  // Imported templates can pre-download their dependencies before they are runnable.
+  const setupMode = (workflow.runnable || workflow.imported) && setup ? setup.mode : 'hidden'
   const setupItems = setup?.items || []
   const autoItemCount = setupItems.filter((item) => item.auto).length
   const setupHeadline = setup && setup.totalDownloadBytes > 0

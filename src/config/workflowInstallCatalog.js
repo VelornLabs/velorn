@@ -1,3 +1,5 @@
+import { getImportedModelRecipe } from './importedWorkflowRegistry'
+
 const COMFY_REGISTRY_URL = 'https://registry.comfy.org'
 const HUGGING_FACE_BASE_URL = 'https://huggingface.co'
 
@@ -1023,6 +1025,9 @@ export function getModelInstallInfo({ filename = '', targetSubdir = '' } = {}) {
   const key = modelKey(targetSubdir, filename)
   const recipe = MODEL_INSTALL_RECIPES[key]
   if (recipe) return recipe
+
+  const importedRecipe = getImportedModelRecipe({ filename, targetSubdir })
+  if (importedRecipe) return importedRecipe
 
   return Object.freeze({
     filename: String(filename || '').trim(),

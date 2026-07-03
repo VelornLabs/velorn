@@ -9,6 +9,7 @@ import {
   ELEVENLABS_TTS_WORKFLOW_ID,
   SHORT_FILM_DIALOGUE_VIDEO_WORKFLOW_ID,
 } from './shortFilmConfig'
+import { getImportedDependencyPack } from './importedWorkflowRegistry'
 
 const COMFY_REGISTRY_URL = 'https://registry.comfy.org'
 const NANO_BANANA_2_FALLBACK_ESTIMATED_CREDITS = Object.freeze({
@@ -1084,5 +1085,5 @@ export function getWorkflowDependencyPack(workflowId) {
         ? 'ltx23-ia2v'
       : normalized
   )
-  return WORKFLOW_DEPENDENCY_PACKS[canonicalId] || null
+  return WORKFLOW_DEPENDENCY_PACKS[canonicalId] || getImportedDependencyPack(canonicalId)
 }

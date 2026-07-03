@@ -17,6 +17,13 @@ import ShortFilmEasyMode from './generate/ShortFilmEasyMode'
 import WorkflowBrowser from './generate/WorkflowBrowser'
 import WorkflowDetail from './generate/WorkflowDetail'
 import TemplateDetail from './generate/TemplateDetail'
+import {
+  IMPORTED_WORKFLOWS_CHANGED_EVENT,
+  getImportedManifestById,
+  getImportedManifests,
+  isImportedWorkflowId,
+  loadImportedWorkflowsFromDisk,
+} from '../config/importedWorkflowRegistry'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
 import useComfyUI from '../hooks/useComfyUI'
 import useAssetsStore from '../stores/assetsStore'
@@ -3320,6 +3327,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   ))
   const [workflowDetailOpen, setWorkflowDetailOpen] = useState(false)
   const [selectedComfyTemplate, setSelectedComfyTemplate] = useState(null)
+  const [importedWorkflowsVersion, setImportedWorkflowsVersion] = useState(0)
   const [latestWorkflowPreview, setLatestWorkflowPreview] = useState(null)
 
   // Input asset (store ID, will resolve to object)
@@ -4163,16 +4171,18 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   }, [currentWorkflow, formError, formErrorTroubleshootingHints, generationMode])
   const activeWorkflowBrowserMode = generationMode === 'yolo' ? 'create' : 'generate'
   const visibleWorkflowManifests = useMemo(() => (
-    GENERATE_WORKFLOW_CATALOG.filter((workflow) => (
+    [...GENERATE_WORKFLOW_CATALOG, ...getImportedManifests()].filter((workflow) => (
       !workflow.hidden
         && workflow.mode === activeWorkflowBrowserMode
         && (activeWorkflowBrowserMode === 'create'
           ? workflow.route === 'local'
           : workflow.route === workflowRoute)
     ))
-  ), [activeWorkflowBrowserMode, workflowRoute])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- importedWorkflowsVersion invalidates getImportedManifests()
+  ), [activeWorkflowBrowserMode, workflowRoute, importedWorkflowsVersion])
   const selectedWorkflowManifest = useMemo(() => (
     GENERATE_WORKFLOW_CATALOG.find((workflow) => !workflow.hidden && workflow.id === selectedWorkflowManifestId)
+      || getImportedManifestById(selectedWorkflowManifestId)
       || (() => {
         const manifest = getWorkflowManifestByWorkflowId(workflowId)
         return manifest?.hidden ? null : manifest
@@ -4235,6 +4245,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
   // When category changes, pick default workflow
   useEffect(() => {
+    // Imported template ids live outside the static category lists — don't
+    // stomp them back to a builtin default.
+    if (isImportedWorkflowId(workflowId)) return
     if (currentCategoryWorkflows.length > 0 && !currentCategoryWorkflows.find((workflow) => workflow.id === workflowId)) {
       setWorkflowId(currentCategoryWorkflows[0].id)
     }
@@ -4274,7 +4287,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     }
 
     setGenerationMode('single')
-    if (!manifest.runnable || !manifest.workflowId) {
+    // Imported templates are not queueable until their field bindings land,
+    // but selecting one must still drive the dependency check so Set up works.
+    if (!manifest.workflowId || (!manifest.runnable && !manifest.imported)) {
       setFormError('This workflow is in the catalog as a preview. Add its workflow graph and bindings before queueing it.')
       return
     }
@@ -4393,6 +4408,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     isConnected,
     recheck: runWorkflowDependencyCheck,
   })
+
+  useEffect(() => {
+    void loadImportedWorkflowsFromDisk()
+  }, [])
+
+  useEffect(() => {
+    const handler = () => setImportedWorkflowsVersion((version) => version + 1)
+    window.addEventListener(IMPORTED_WORKFLOWS_CHANGED_EVENT, handler)
+    return () => window.removeEventListener(IMPORTED_WORKFLOWS_CHANGED_EVENT, handler)
+  }, [])
 
   const validateDependenciesForQueue = useCallback(async (workflowIds, queueLabel) => {
     const normalizedIds = Array.from(new Set(
@@ -14241,6 +14266,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     <TemplateDetail
                       template={selectedComfyTemplate}
                       onBack={() => setSelectedComfyTemplate(null)}
+                      isConnected={isConnected}
                     />
                   ) : (
                     <WorkflowBrowser

@@ -1855,6 +1855,63 @@ async function loadWorkflowGraphInEmbeddedComfy({ workflowGraph, comfyBaseUrl, w
   return result
 }
 
+// Converts a UI-format workflow (nodes/links/subgraphs) to API prompt format
+// by asking the embedded ComfyUI frontend to run its own graphToPrompt().
+// That keeps subgraph flattening and widget serialization version-matched to
+// the user's install instead of re-implementing the converter here.
+async function convertWorkflowGraphInEmbeddedComfy({ workflowGraph, comfyBaseUrl, waitForMs = 12000 }) {
+  const frame = await findEmbeddedComfyFrame(comfyBaseUrl, waitForMs)
+  if (!frame) {
+    throw new Error('Could not locate the embedded ComfyUI tab. Make sure the local ComfyUI server is running.')
+  }
+
+  const script = `
+    (async () => {
+      const graphData = ${JSON.stringify(workflowGraph)};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      let comfyApp = globalThis.app || globalThis.__COMFYUI_APP__ || null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (!comfyApp) {
+          try {
+            const appModule = await import('/scripts/app.js');
+            comfyApp = appModule?.app || globalThis.app || globalThis.__COMFYUI_APP__ || null;
+          } catch (_) {
+            // Frontend still booting; keep polling.
+          }
+        }
+        if (comfyApp?.loadGraphData && comfyApp?.graphToPrompt) break;
+        await sleep(250);
+        comfyApp = comfyApp || globalThis.app || globalThis.__COMFYUI_APP__ || null;
+      }
+
+      if (!comfyApp?.loadGraphData || !comfyApp?.graphToPrompt) {
+        return { success: false, error: 'ComfyUI frontend app is not ready yet.' };
+      }
+
+      try {
+        await comfyApp.loadGraphData(graphData);
+        await sleep(0);
+        const prompt = await comfyApp.graphToPrompt();
+        const output = prompt?.output;
+        if (!output || typeof output !== 'object' || Object.keys(output).length === 0) {
+          return { success: false, error: 'graphToPrompt returned an empty prompt.' };
+        }
+        return { success: true, output };
+      } catch (error) {
+        return { success: false, error: error?.message || String(error) };
+      }
+    })()
+  `
+
+  const result = await frame.executeJavaScript(script, true)
+  if (!result?.success) {
+    throw new Error(result?.error || 'ComfyUI could not convert the workflow graph.')
+  }
+
+  return result
+}
+
 async function detectNvidiaGpuName() {
   const commands = process.platform === 'win32'
     ? [{
@@ -4720,6 +4777,60 @@ ipcMain.handle('comfyui:loadWorkflowGraph', async (event, payload = {}) => {
       error: error?.message || 'Could not load the workflow into the embedded ComfyUI tab.',
     }
   }
+})
+
+ipcMain.handle('comfyui:convertWorkflowGraph', async (event, payload = {}) => {
+  try {
+    if (!payload?.workflowGraph || typeof payload.workflowGraph !== 'object') {
+      return { success: false, error: 'Missing ComfyUI workflow graph payload.' }
+    }
+
+    const result = await convertWorkflowGraphInEmbeddedComfy({
+      workflowGraph: payload.workflowGraph,
+      comfyBaseUrl: payload.comfyBaseUrl || 'http://127.0.0.1:8188',
+      waitForMs: payload.waitForMs,
+    })
+
+    return { success: true, output: result.output }
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.message || 'Could not convert the workflow in the embedded ComfyUI tab.',
+    }
+  }
+})
+
+ipcMain.handle('workflowSetup:probeUrlSizes', async (_event, payload = {}) => {
+  const urls = (Array.isArray(payload?.urls) ? payload.urls : [])
+    .map((url) => String(url || '').trim())
+    .filter((url) => /^https:\/\//i.test(url))
+    .slice(0, 50)
+
+  const probeOne = async (url) => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 15_000)
+    try {
+      const response = await net.fetch(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal })
+      const contentLength = Number(response.headers.get('content-length'))
+      return {
+        url,
+        sizeBytes: response.ok && Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null,
+      }
+    } catch {
+      return { url, sizeBytes: null }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  const results = []
+  const CONCURRENCY = 6
+  for (let i = 0; i < urls.length; i += CONCURRENCY) {
+    const chunk = urls.slice(i, i + CONCURRENCY)
+    results.push(...await Promise.all(chunk.map(probeOne)))
+  }
+
+  return { success: true, results }
 })
 
 ipcMain.handle('workflowSetup:validateRoot', async (event, rootPath) => {

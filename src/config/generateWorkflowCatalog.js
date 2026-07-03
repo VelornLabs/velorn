@@ -3,6 +3,7 @@ import {
   CUSTOM_GENERATE_IMAGE_WORKFLOW_ID,
   CUSTOM_GENERATE_VIDEO_WORKFLOW_ID,
 } from './generateWorkspaceConfig'
+import { getImportedManifestById, getImportedManifestByWorkflowId } from './importedWorkflowRegistry'
 
 const WORKFLOW_ASSET_BASE = (() => {
   const rawBase = typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL
@@ -912,9 +913,11 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
 ])
 
 export function getWorkflowManifestByWorkflowId(workflowId) {
-  return GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.workflowId === workflowId) || null
+  return GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.workflowId === workflowId)
+    || getImportedManifestByWorkflowId(workflowId)
 }
 
 export function getWorkflowManifestById(id) {
-  return GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.id === id) || null
+  return GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.id === id)
+    || getImportedManifestById(id)
 }

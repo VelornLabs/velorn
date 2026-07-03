@@ -1,6 +1,9 @@
-import { ArrowLeft, Download, ExternalLink, KeyRound, Puzzle } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowLeft, CheckCircle2, Download, ExternalLink, KeyRound, Loader2, Puzzle } from 'lucide-react'
 import { formatBytes } from '../../hooks/useWorkflowSetupFlow'
 import { formatUsageCount } from './TemplateCard'
+import { importComfyTemplate } from '../../services/templateImporter'
+import { isTemplateImported } from '../../config/importedWorkflowRegistry'
 
 function MetaTile({ label, value }) {
   if (!value) return null
@@ -12,10 +15,32 @@ function MetaTile({ label, value }) {
   )
 }
 
-export default function TemplateDetail({ template, onBack = null }) {
+export default function TemplateDetail({ template, onBack = null, isConnected = false }) {
+  const [importState, setImportState] = useState({ phase: 'idle', message: '', error: '' })
   if (!template) return null
 
   const coverIsVideo = /\.(mp4|webm|mov)(\?|#|$)/i.test(String(template.thumbnailUrl || ''))
+  const alreadyImported = importState.phase === 'done' || isTemplateImported(template.name)
+  const importing = importState.phase === 'importing'
+
+  const handleImport = async () => {
+    if (importing || alreadyImported) return
+    setImportState({ phase: 'importing', message: 'Starting import...', error: '' })
+    try {
+      await importComfyTemplate(template, {
+        onProgress: (_step, message) => {
+          setImportState((prev) => (prev.phase === 'importing' ? { ...prev, message } : prev))
+        },
+      })
+      setImportState({ phase: 'done', message: '', error: '' })
+    } catch (error) {
+      setImportState({
+        phase: 'error',
+        message: '',
+        error: error instanceof Error ? error.message : 'Import failed.',
+      })
+    }
+  }
 
   return (
     <div className="space-y-3">
@@ -123,17 +148,63 @@ export default function TemplateDetail({ template, onBack = null }) {
             </div>
           )}
 
-          <button
-            type="button"
-            disabled
-            className="mt-5 flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-lg bg-sf-dark-700 px-4 py-3 text-sm font-semibold text-sf-text-muted"
-          >
-            <Download className="h-4 w-4" />
-            Import template
-          </button>
-          <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
-            One-click import is coming in the next update.
-          </div>
+          {importState.phase === 'error' && (
+            <div className="mt-5 rounded-lg border border-sf-error/30 bg-sf-error/10 p-2.5 text-[11px] text-sf-error">
+              {importState.error}
+            </div>
+          )}
+
+          {alreadyImported ? (
+            <>
+              <button
+                type="button"
+                disabled
+                className="mt-5 flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-lg bg-emerald-400/10 px-4 py-3 text-sm font-semibold text-emerald-300"
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                Imported
+              </button>
+              <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
+                This template now appears under the {template.openSource ? 'Local' : 'Cloud'} tab.
+                Use its Set up button there to install what it needs.
+              </div>
+            </>
+          ) : importing ? (
+            <>
+              <button
+                type="button"
+                disabled
+                className="mt-5 flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-lg bg-sf-dark-700 px-4 py-3 text-sm font-semibold text-sf-text-muted"
+              >
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {importState.message || 'Importing...'}
+              </button>
+              <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
+                The template loads through your ComfyUI to convert it for Velorn.
+              </div>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => { void handleImport() }}
+                disabled={!isConnected}
+                className={`mt-5 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors ${
+                  isConnected
+                    ? 'bg-sf-accent text-white hover:bg-sf-accent-hover'
+                    : 'cursor-not-allowed bg-sf-dark-700 text-sf-text-muted'
+                }`}
+              >
+                <Download className="h-4 w-4" />
+                {importState.phase === 'error' ? 'Retry import' : 'Import template'}
+              </button>
+              <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
+                {isConnected
+                  ? 'Converts through your ComfyUI install and registers it in Generate.'
+                  : 'Start ComfyUI to import — conversion runs through your local install.'}
+              </div>
+            </>
+          )}
 
           <a
             href={template.sourceUrl}
