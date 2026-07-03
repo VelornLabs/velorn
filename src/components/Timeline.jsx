@@ -75,7 +75,7 @@ const getClipLabelFooterOpacity = (clip) => (clip?.type === 'audio' ? 0.5 : 0.62
 
 // Resolve-style audio track/waveform colors
 const AUDIO_TRACK_BG = '#2d4038'
-const AUDIO_WAVEFORM_FILL = 'rgba(238, 255, 249, 0.94)'
+const AUDIO_WAVEFORM_FILL = 'rgba(196, 208, 202, 0.6)'
 const AUDIO_WAVEFORM_CENTER_LINE = 'rgba(255,255,255,0.32)'
 const AUDIO_CLIP_ACCENT = '#4a6b5c'
 const ADJACENT_CLIP_UI_GAP_SECONDS = 0.5
@@ -220,40 +220,38 @@ const getAudioWaveformContext = () => {
 }
 
 const buildWaveformPeaks = (audioBuffer, sampleCount = DEFAULT_WAVEFORM_SAMPLES) => {
-  const channelCount = Math.max(1, audioBuffer.numberOfChannels || 1)
+  // Per-channel peaks (up to stereo), true levels — no per-file
+  // normalization, matching the main-process ffmpeg extraction.
+  const channelCount = Math.max(1, Math.min(2, audioBuffer.numberOfChannels || 1))
   const totalSamples = Math.max(1, audioBuffer.length || 1)
   const buckets = Math.max(32, sampleCount)
   const bucketSize = Math.max(1, Math.floor(totalSamples / buckets))
-  const peaks = new Float32Array(buckets)
+  const channelPeaks = []
 
-  for (let i = 0; i < buckets; i++) {
-    const start = i * bucketSize
-    const end = i === buckets - 1 ? totalSamples : Math.min(totalSamples, start + bucketSize)
-    const span = Math.max(1, end - start)
-    const stride = Math.max(1, Math.floor(span / 64))
-    let peak = 0
-
-    for (let channel = 0; channel < channelCount; channel++) {
-      const data = audioBuffer.getChannelData(channel)
-      for (let s = start; s < end; s += stride) {
+  for (let channel = 0; channel < channelCount; channel++) {
+    const data = audioBuffer.getChannelData(channel)
+    const peaksForChannel = new Array(buckets).fill(0)
+    for (let i = 0; i < buckets; i++) {
+      const start = i * bucketSize
+      const end = i === buckets - 1 ? totalSamples : Math.min(totalSamples, start + bucketSize)
+      let peak = 0
+      for (let s = start; s < end; s++) {
         const amp = Math.abs(data[s] || 0)
         if (amp > peak) peak = amp
       }
+      peaksForChannel[i] = Math.min(1, peak)
     }
-    peaks[i] = peak
+    channelPeaks.push(peaksForChannel)
   }
 
-  let maxPeak = 0
-  for (let i = 0; i < peaks.length; i++) {
-    if (peaks[i] > maxPeak) maxPeak = peaks[i]
-  }
-  if (maxPeak > 0) {
-    for (let i = 0; i < peaks.length; i++) {
-      peaks[i] = peaks[i] / maxPeak
-    }
-  }
+  const peaks = channelPeaks.length > 1
+    ? channelPeaks[0].map((value, i) => Math.max(value, channelPeaks[1][i]))
+    : channelPeaks[0]
 
-  return peaks
+  return {
+    peaks,
+    channelPeaks: channelPeaks.length > 1 ? channelPeaks : null,
+  }
 }
 
 const isNativeMediaUrl = (url) => /^file:\/\//i.test(url) || /^comfystudio:\/\//i.test(url)
@@ -280,6 +278,9 @@ const getAudioWaveformData = async (url, sampleCount = DEFAULT_WAVEFORM_SAMPLES)
       if (result?.success && Array.isArray(result.peaks)) {
         return {
           peaks: result.peaks,
+          channelPeaks: Array.isArray(result.channelPeaks) && result.channelPeaks.length >= 2
+            ? result.channelPeaks
+            : null,
           duration: Number(result.duration) || 0
         }
       }
@@ -298,8 +299,8 @@ const getAudioWaveformData = async (url, sampleCount = DEFAULT_WAVEFORM_SAMPLES)
     if (!response.ok) throw new Error(`Failed to load audio: ${response.status}`)
     const arrayBuffer = await response.arrayBuffer()
     const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
-    const peaks = buildWaveformPeaks(audioBuffer, sampleCount)
-    return { peaks, duration: audioBuffer.duration || 0 }
+    const built = buildWaveformPeaks(audioBuffer, sampleCount)
+    return { ...built, duration: audioBuffer.duration || 0 }
   })().then((result) => {
     AUDIO_WAVEFORM_PENDING.delete(key)
     if (result) AUDIO_WAVEFORM_CACHE.set(key, result)
@@ -327,7 +328,7 @@ function getWaveformSampleCount(pixelCount) {
   return Math.min(32768, sampleCount)
 }
 
-function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
+function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null, stereo = false }) {
   const [waveform, setWaveform] = useState(null)
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   const containerRef = useRef(null)
@@ -367,10 +368,15 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     return () => ro.disconnect()
   }, [clipWidth])
 
-  const amplitudePixels = useMemo(() => {
+  const lanePixels = useMemo(() => {
     if (!waveform?.peaks?.length) return null
 
-    const peaks = waveform.peaks
+    // One lane per rendered channel: stereo tracks with per-channel data get
+    // L and R lanes; everything else renders the combined mono lane.
+    const laneSources = stereo && Array.isArray(waveform.channelPeaks) && waveform.channelPeaks.length >= 2
+      ? waveform.channelPeaks
+      : [waveform.peaks]
+
     const sourceDurationFromClip = Number(clip.sourceDuration)
     const sourceDuration = Number.isFinite(sourceDurationFromClip) && sourceDurationFromClip > 0
       ? sourceDurationFromClip
@@ -383,29 +389,31 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     const sourceSpan = Math.max(0.0001, trimEnd - trimStart)
     const isReverse = Boolean(clip.reverse)
 
-    const out = new Array(pixelCount)
-    for (let i = 0; i < pixelCount; i++) {
-      const startProgress = i / pixelCount
-      const endProgress = (i + 1) / pixelCount
-      const startTime = isReverse
-        ? trimEnd - (endProgress * sourceSpan)
-        : trimStart + (startProgress * sourceSpan)
-      const endTime = isReverse
-        ? trimEnd - (startProgress * sourceSpan)
-        : trimStart + (endProgress * sourceSpan)
-      const normalizedStart = Math.max(0, Math.min(0.999999, startTime / sourceDuration))
-      const normalizedEnd = Math.max(0, Math.min(0.999999, endTime / sourceDuration))
-      const leftIndex = Math.max(0, Math.floor(normalizedStart * (peaks.length - 1)))
-      const rightIndex = Math.min(peaks.length - 1, Math.ceil(normalizedEnd * (peaks.length - 1)))
-      let peak = 0
-      for (let peakIndex = leftIndex; peakIndex <= rightIndex; peakIndex += 1) {
-        const value = Number(peaks[peakIndex] || 0)
-        if (value > peak) peak = value
+    return laneSources.map((peaks) => {
+      const out = new Array(pixelCount)
+      for (let i = 0; i < pixelCount; i++) {
+        const startProgress = i / pixelCount
+        const endProgress = (i + 1) / pixelCount
+        const startTime = isReverse
+          ? trimEnd - (endProgress * sourceSpan)
+          : trimStart + (startProgress * sourceSpan)
+        const endTime = isReverse
+          ? trimEnd - (startProgress * sourceSpan)
+          : trimStart + (endProgress * sourceSpan)
+        const normalizedStart = Math.max(0, Math.min(0.999999, startTime / sourceDuration))
+        const normalizedEnd = Math.max(0, Math.min(0.999999, endTime / sourceDuration))
+        const leftIndex = Math.max(0, Math.floor(normalizedStart * (peaks.length - 1)))
+        const rightIndex = Math.min(peaks.length - 1, Math.ceil(normalizedEnd * (peaks.length - 1)))
+        let peak = 0
+        for (let peakIndex = leftIndex; peakIndex <= rightIndex; peakIndex += 1) {
+          const value = Number(peaks[peakIndex] || 0)
+          if (value > peak) peak = value
+        }
+        out[i] = Math.max(0.006, Math.min(1, peak))
       }
-      out[i] = Math.max(0.015, Math.min(1, peak))
-    }
-    return out
-  }, [waveform, clip.sourceDuration, clip.trimStart, clip.trimEnd, clip.reverse, pixelCount])
+      return out
+    })
+  }, [waveform, stereo, clip.sourceDuration, clip.trimStart, clip.trimEnd, clip.reverse, pixelCount])
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current
@@ -426,33 +434,47 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     ctx.fillStyle = AUDIO_TRACK_BG
     ctx.fillRect(0, 0, w, h)
 
-    const centerY = h / 2
-    const halfH = (h / 2) * 0.88
-    const n = amplitudePixels ? amplitudePixels.length : 0
+    // One horizontal lane per channel (stereo pair = L on top, R below),
+    // each mirrored around its own lane center — Flame/Resolve style.
+    const laneCount = lanePixels ? lanePixels.length : 1
+    const laneHeight = h / laneCount
 
-    if (n > 0) {
-      ctx.strokeStyle = AUDIO_WAVEFORM_FILL
-      ctx.lineWidth = 1
-      ctx.lineCap = 'butt'
-      ctx.beginPath()
-      for (let i = 0; i < n; i++) {
-        const x = ((i + 0.5) / n) * w
-        const amp = amplitudePixels[i] ?? 0.1
-        const y1 = centerY - amp * halfH
-        const y2 = centerY + amp * halfH
-        ctx.moveTo(x, y1)
-        ctx.lineTo(x, y2)
+    for (let lane = 0; lane < laneCount; lane++) {
+      const centerY = laneHeight * (lane + 0.5)
+      const halfH = (laneHeight / 2) * 0.88
+      const amps = lanePixels ? lanePixels[lane] : null
+      const n = amps ? amps.length : 0
+
+      if (n > 0) {
+        // Filled mirrored envelope (top edge across, bottom edge back) —
+        // reads as one connected waveform body like Flame/Resolve, instead
+        // of isolated per-column sticks.
+        ctx.fillStyle = AUDIO_WAVEFORM_FILL
+        ctx.beginPath()
+        ctx.moveTo(0, centerY - (amps[0] ?? 0) * halfH)
+        for (let i = 0; i < n; i++) {
+          const x = ((i + 0.5) / n) * w
+          ctx.lineTo(x, centerY - (amps[i] ?? 0) * halfH)
+        }
+        ctx.lineTo(w, centerY - (amps[n - 1] ?? 0) * halfH)
+        ctx.lineTo(w, centerY + (amps[n - 1] ?? 0) * halfH)
+        for (let i = n - 1; i >= 0; i--) {
+          const x = ((i + 0.5) / n) * w
+          ctx.lineTo(x, centerY + (amps[i] ?? 0) * halfH)
+        }
+        ctx.lineTo(0, centerY + (amps[0] ?? 0) * halfH)
+        ctx.closePath()
+        ctx.fill()
       }
+
+      ctx.strokeStyle = AUDIO_WAVEFORM_CENTER_LINE
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(0, centerY)
+      ctx.lineTo(w, centerY)
       ctx.stroke()
     }
-
-    ctx.strokeStyle = AUDIO_WAVEFORM_CENTER_LINE
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(0, centerY)
-    ctx.lineTo(w, centerY)
-    ctx.stroke()
-  }, [containerSize, amplitudePixels])
+  }, [containerSize, lanePixels])
 
   return (
     <div
@@ -5021,7 +5043,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
             const headerHeight = getTrackHeight(track)
             const audioTrackNumber = index + 1
             const channelLabels = isStereo
-              ? [`A${audioTrackNumber}L`, `A${audioTrackNumber}R`]
+              ? [`A${audioTrackNumber}.L`, `A${audioTrackNumber}.R`]
               : [`A${audioTrackNumber}`]
             
             return (
@@ -5073,22 +5095,30 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   </div>
                 ) : (
                   <div
-                    className="flex-1 min-w-0 cursor-pointer"
+                    className="flex-1 min-w-0 flex items-center gap-2 cursor-pointer"
                     onDoubleClick={(e) => { e.stopPropagation(); handleStartRename(track) }}
                     title="Double-click to rename"
                   >
-                    <span className="text-[11px] text-sf-text-primary truncate block leading-tight hover:text-sf-accent">
+                    <span className="text-[11px] text-sf-text-primary truncate leading-tight hover:text-sf-accent">
                       {track.name}
                     </span>
-                    <div className="mt-0.5 flex items-center gap-1.5">
-                      {channelLabels.map((label) => (
-                        <span
-                          key={label}
-                          className="px-1 py-0 rounded border border-sf-dark-500 bg-sf-dark-700/70 text-[9px] text-sf-text-muted leading-none"
-                        >
-                          {label}
-                        </span>
-                      ))}
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {isStereo && (
+                        <Link
+                          className="w-2.5 h-2.5 text-sf-text-muted/60 flex-shrink-0"
+                          title="Stereo pair"
+                        />
+                      )}
+                      <div className={isStereo ? 'flex flex-col gap-1 items-start' : 'flex items-center'}>
+                        {channelLabels.map((label) => (
+                          <span
+                            key={label}
+                            className="px-1 py-0.5 rounded border border-sf-dark-500 bg-sf-dark-700/70 text-[9px] text-sf-text-muted leading-none"
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -6110,6 +6140,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                       clipWidth={clipWidth}
                       clipUrl={clipUrl}
                       waveformInput={waveformInput}
+                      stereo={isStereoContent}
                     />
 
                     {fadeInWidth > 0 && (

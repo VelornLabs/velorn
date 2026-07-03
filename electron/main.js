@@ -3926,7 +3926,7 @@ ipcMain.handle('media:getAudioWaveform', async (event, mediaInput, options = {})
   }
 
   const sampleCount = Math.max(128, Math.min(32768, Math.round(Number(options?.sampleCount) || 8192)))
-  const sampleRate = Math.max(400, Math.min(12000, Math.round(Number(options?.sampleRate) || 4000)))
+  const sampleRate = Math.max(400, Math.min(12000, Math.round(Number(options?.sampleRate) || 8000)))
 
   let stat
   try {
@@ -3941,11 +3941,13 @@ ipcMain.handle('media:getAudioWaveform', async (event, mediaInput, options = {})
   }
 
   return await new Promise((resolve) => {
+    // Decode as stereo (mono sources upmix to identical L/R) so the timeline
+    // can render true per-channel lanes. Interleaved f32le: L R L R ...
     const args = [
       '-v', 'error',
       '-i', filePath,
       '-vn',
-      '-ac', '1',
+      '-ac', '2',
       '-ar', String(sampleRate),
       '-f', 'f32le',
       'pipe:1',
@@ -3973,41 +3975,46 @@ ipcMain.handle('media:getAudioWaveform', async (event, mediaInput, options = {})
       try {
         const raw = Buffer.concat(chunks)
         const floatCount = Math.floor(raw.length / 4)
-        if (floatCount <= 0) {
+        const frameCount = Math.floor(floatCount / 2)
+        if (frameCount <= 0) {
           resolve({ success: false, error: 'No audio samples decoded.' })
           return
         }
 
+        // Float32Array view over the PCM buffer: much faster than per-sample
+        // readFloatLE, which lets us scan every sample (no stride aliasing).
+        const samples = new Float32Array(raw.buffer, raw.byteOffset, frameCount * 2)
         const bucketCount = sampleCount
-        const bucketSize = Math.max(1, Math.floor(floatCount / bucketCount))
+        const bucketSize = Math.max(1, Math.floor(frameCount / bucketCount))
+        const peaksLeft = new Array(bucketCount).fill(0)
+        const peaksRight = new Array(bucketCount).fill(0)
         const peaks = new Array(bucketCount).fill(0)
-        let maxPeak = 0
 
         for (let i = 0; i < bucketCount; i++) {
           const start = i * bucketSize
-          const end = i === bucketCount - 1 ? floatCount : Math.min(floatCount, start + bucketSize)
-          const span = Math.max(1, end - start)
-          const stride = Math.max(1, Math.floor(span / 96))
+          const end = i === bucketCount - 1 ? frameCount : Math.min(frameCount, start + bucketSize)
 
-          let peak = 0
-          for (let s = start; s < end; s += stride) {
-            const amp = Math.abs(raw.readFloatLE(s * 4))
-            if (amp > peak) peak = amp
+          let peakL = 0
+          let peakR = 0
+          for (let frame = start; frame < end; frame++) {
+            const ampL = Math.abs(samples[frame * 2])
+            const ampR = Math.abs(samples[frame * 2 + 1])
+            if (ampL > peakL) peakL = ampL
+            if (ampR > peakR) peakR = ampR
           }
 
-          peaks[i] = peak
-          if (peak > maxPeak) maxPeak = peak
-        }
-
-        if (maxPeak > 0) {
-          for (let i = 0; i < peaks.length; i++) {
-            peaks[i] = peaks[i] / maxPeak
-          }
+          // True levels (clamped to full scale) — no per-file normalization,
+          // so quiet material reads quiet, like Flame/Resolve.
+          peaksLeft[i] = Math.min(1, peakL)
+          peaksRight[i] = Math.min(1, peakR)
+          peaks[i] = Math.max(peaksLeft[i], peaksRight[i])
         }
 
         const result = {
           peaks,
-          duration: floatCount / sampleRate,
+          channelPeaks: [peaksLeft, peaksRight],
+          channels: 2,
+          duration: frameCount / sampleRate,
         }
         audioWaveformCache.set(cacheKey, result)
         resolve({ success: true, ...result })

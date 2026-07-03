@@ -14,41 +14,38 @@ function getAudioWaveformContext() {
 }
 
 function buildWaveformPeaks(audioBuffer, sampleCount = DEFAULT_AUDIO_WAVEFORM_SAMPLES) {
-  const channelCount = Math.max(1, audioBuffer.numberOfChannels || 1)
+  // Per-channel peaks (up to stereo), true levels — no per-file
+  // normalization, matching the main-process ffmpeg extraction.
+  const channelCount = Math.max(1, Math.min(2, audioBuffer.numberOfChannels || 1))
   const totalSamples = Math.max(1, audioBuffer.length || 1)
   const buckets = Math.max(32, sampleCount)
   const bucketSize = Math.max(1, Math.floor(totalSamples / buckets))
-  const peaks = new Float32Array(buckets)
+  const channelPeaks = []
 
-  for (let index = 0; index < buckets; index += 1) {
-    const start = index * bucketSize
-    const end = index === buckets - 1 ? totalSamples : Math.min(totalSamples, start + bucketSize)
-    const span = Math.max(1, end - start)
-    const stride = Math.max(1, Math.floor(span / 64))
-    let peak = 0
-
-    for (let channel = 0; channel < channelCount; channel += 1) {
-      const channelData = audioBuffer.getChannelData(channel)
-      for (let sample = start; sample < end; sample += stride) {
+  for (let channel = 0; channel < channelCount; channel += 1) {
+    const channelData = audioBuffer.getChannelData(channel)
+    const peaksForChannel = new Array(buckets).fill(0)
+    for (let index = 0; index < buckets; index += 1) {
+      const start = index * bucketSize
+      const end = index === buckets - 1 ? totalSamples : Math.min(totalSamples, start + bucketSize)
+      let peak = 0
+      for (let sample = start; sample < end; sample += 1) {
         const amplitude = Math.abs(channelData[sample] || 0)
         if (amplitude > peak) peak = amplitude
       }
+      peaksForChannel[index] = Math.min(1, peak)
     }
-
-    peaks[index] = peak
+    channelPeaks.push(peaksForChannel)
   }
 
-  let maxPeak = 0
-  for (let index = 0; index < peaks.length; index += 1) {
-    if (peaks[index] > maxPeak) maxPeak = peaks[index]
-  }
-  if (maxPeak > 0) {
-    for (let index = 0; index < peaks.length; index += 1) {
-      peaks[index] = peaks[index] / maxPeak
-    }
-  }
+  const peaks = channelPeaks.length > 1
+    ? channelPeaks[0].map((value, index) => Math.max(value, channelPeaks[1][index]))
+    : channelPeaks[0]
 
-  return peaks
+  return {
+    peaks,
+    channelPeaks: channelPeaks.length > 1 ? channelPeaks : null,
+  }
 }
 
 function isNativeMediaUrl(url) {
@@ -77,6 +74,9 @@ export async function getAudioWaveformData(url, sampleCount = DEFAULT_AUDIO_WAVE
       if (result?.success && Array.isArray(result.peaks)) {
         return {
           peaks: result.peaks,
+          channelPeaks: Array.isArray(result.channelPeaks) && result.channelPeaks.length >= 2
+            ? result.channelPeaks
+            : null,
           duration: Number(result.duration) || 0,
         }
       }
@@ -94,9 +94,9 @@ export async function getAudioWaveformData(url, sampleCount = DEFAULT_AUDIO_WAVE
     if (!response.ok) throw new Error(`Failed to load audio: ${response.status}`)
     const arrayBuffer = await response.arrayBuffer()
     const audioBuffer = await context.decodeAudioData(arrayBuffer.slice(0))
-    const peaks = buildWaveformPeaks(audioBuffer, sampleCount)
+    const built = buildWaveformPeaks(audioBuffer, sampleCount)
     return {
-      peaks,
+      ...built,
       duration: audioBuffer.duration || 0,
     }
   })()
