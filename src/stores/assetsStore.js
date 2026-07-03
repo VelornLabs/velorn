@@ -873,6 +873,7 @@ export const useAssetsStore = create(
     if (candidates.length === 0) return
 
     const { getProjectFileUrl } = await import('../services/fileSystem')
+    const { isProxySourceStale } = await import('../services/proxyCache')
     const concurrency = Math.max(1, Math.min(4, Number(options.concurrency) || 3))
     let cursor = 0
     const worker = async () => {
@@ -894,7 +895,15 @@ export const useAssetsStore = create(
           try {
             const absolutePath = await window.electronAPI.pathJoin(projectPath, asset.proxyPath)
             if (await window.electronAPI.exists(absolutePath)) {
-              updates.proxyUrl = await getProjectFileUrl(projectPath, asset.proxyPath)
+              // Staleness: if the source was replaced in place since the
+              // proxy was encoded (file signature mismatch), don't
+              // resurrect the old proxy — downgrade it so "Generate
+              // missing" rebuilds it instead of previewing stale pixels.
+              if (await isProxySourceStale(projectPath, asset)) {
+                get().setProxyCacheStatus?.(asset.id, 'none')
+              } else {
+                updates.proxyUrl = await getProjectFileUrl(projectPath, asset.proxyPath)
+              }
             }
           } catch (err) {
             console.warn(`Failed to hydrate proxy URL for ${asset.name}:`, err)
@@ -1139,13 +1148,13 @@ export const useAssetsStore = create(
    * (proxy = small low-res for multi-layer preview, playback = same-res fast
    * decode for single-layer smoothness).
    */
-  setProxyCache: (assetId, proxyPath, proxyUrl) => {
+  setProxyCache: (assetId, proxyPath, proxyUrl, proxySourceSignature = null) => {
     set((state) => ({
       assets: state.assets.map(a =>
-        a.id === assetId ? { ...a, proxyPath, proxyUrl } : a
+        a.id === assetId ? { ...a, proxyPath, proxyUrl, proxySourceSignature } : a
       ),
       currentPreview: state.currentPreview?.id === assetId
-        ? { ...state.currentPreview, proxyPath, proxyUrl }
+        ? { ...state.currentPreview, proxyPath, proxyUrl, proxySourceSignature }
         : state.currentPreview,
     }))
   },
