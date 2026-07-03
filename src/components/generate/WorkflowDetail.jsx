@@ -10,6 +10,7 @@ import {
   ExternalLink,
   FolderSearch,
   KeyRound,
+  LayoutGrid,
   Loader2,
   RefreshCw,
   Sparkles,
@@ -234,7 +235,22 @@ export default function WorkflowDetail({
 
         {!workflow.runnable && (
           <div className="mt-4 rounded-lg border border-yellow-400/25 bg-yellow-400/10 p-3 text-xs text-yellow-200">
-            This catalog item is in the browser as a candidate. We still need its workflow graph and bindings before it can run.
+            {workflow.imported ? (
+              <>
+                This template needs custom nodes your ComfyUI doesn't have yet
+                {workflow.unknownNodeTypes?.length > 0 && (
+                  <>: <span className="font-semibold">{workflow.unknownNodeTypes.join(', ')}</span></>
+                )}.
+                {workflow.requiresCustomNodes?.length > 0 && (
+                  <> The template lists these node packs: {workflow.requiresCustomNodes.join(', ')}.</>
+                )}
+                {' '}Run Set up below and restart ComfyUI — the import finishes automatically once the
+                nodes are in. If a pack resists, open the template in ComfyUI from its card and use
+                Manager's install there instead.
+              </>
+            ) : (
+              'This catalog item is in the browser as a candidate. We still need its workflow graph and bindings before it can run.'
+            )}
           </div>
         )}
 
@@ -435,6 +451,17 @@ export default function WorkflowDetail({
               </div>
             )}
           </div>
+        )}
+
+        {workflow.imported && (
+          <button
+            type="button"
+            onClick={() => actions.onOpenImportedInComfyUi?.()}
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-sf-dark-500 px-4 py-2.5 text-sm font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-400 hover:text-sf-text-primary"
+          >
+            <LayoutGrid className="h-4 w-4" />
+            Open in ComfyUI
+          </button>
         )}
       </div>
     </div>

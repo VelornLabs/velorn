@@ -3,9 +3,95 @@ import { getLocalComfyConnectionSync } from './localComfyConnection'
 import { detectImportedWorkflowBindings } from './importedWorkflowBindings'
 import {
   IMPORTED_WORKFLOW_ID_PREFIX,
+  getImportedWorkflowEntry,
   getImportedWorkflowStoragePaths,
   registerImportedWorkflow,
 } from '../config/importedWorkflowRegistry'
+
+const COMFY_REGISTRY_API_BASE = 'https://api.comfy.org'
+
+function packDataToRecipe(data, fallbackName, notes) {
+  const repoUrl = String(data?.repository || '').trim().replace(/\/+$/, '')
+  if (!/^https:\/\/(github|gitlab)\.com\/[^/]+\/[^/]+$/i.test(repoUrl)) return null
+  return {
+    id: String(data?.id || fallbackName),
+    kind: 'auto',
+    displayName: String(data?.name || fallbackName),
+    repoUrl,
+    installDirName: repoUrl.split('/').pop().replace(/\.git$/i, ''),
+    docsUrl: repoUrl,
+    requirementsStrategy: 'requirements-txt',
+    notes,
+  }
+}
+
+// Resolve the template's declared node packs against the Comfy Registry (the
+// same source ComfyUI Manager uses) so missing custom nodes become one-click
+// installs instead of manual homework. Unresolvable packs stay manual.
+async function resolveNodePackRecipes(template) {
+  const recipes = []
+  const unresolved = []
+  const seenIds = new Set()
+
+  for (const packName of template.requiresCustomNodes || []) {
+    const name = String(packName || '').trim()
+    if (!name) continue
+
+    let resolved = null
+    for (const candidate of [...new Set([name, name.toLowerCase()])]) {
+      try {
+        const response = await fetch(`${COMFY_REGISTRY_API_BASE}/nodes/${encodeURIComponent(candidate)}`)
+        if (!response.ok) continue
+        resolved = packDataToRecipe(
+          await response.json(),
+          name,
+          `Resolved from the Comfy Registry for the "${template.title}" template.`
+        )
+        if (resolved) break
+      } catch {
+        // Network hiccup or bad JSON — try the next candidate id.
+      }
+    }
+
+    if (resolved && !seenIds.has(resolved.id)) {
+      seenIds.add(resolved.id)
+      recipes.push(resolved)
+    } else if (!resolved) {
+      unresolved.push(name)
+    }
+  }
+
+  return { recipes, unresolved }
+}
+
+// Template metadata sometimes omits packs the graph actually uses (seen in the
+// wild: LTX outpainting needs Float32ColorCorrect from "radiance", undeclared).
+// The registry can resolve a node CLASS to its providing pack — use that for
+// every class the user's ComfyUI doesn't know.
+async function resolveNodeClassPacks(classTypes, template) {
+  const recipesById = new Map()
+  const uncovered = []
+
+  for (const classType of classTypes) {
+    let recipe = null
+    try {
+      const response = await fetch(`${COMFY_REGISTRY_API_BASE}/comfy-nodes/${encodeURIComponent(classType)}/node`)
+      if (response.ok) {
+        recipe = packDataToRecipe(
+          await response.json(),
+          classType,
+          `Provides ${classType} — resolved from the Comfy Registry for the "${template.title}" template.`
+        )
+      }
+    } catch {
+      // Leave uncovered; the manual fallback stays visible.
+    }
+    if (recipe) recipesById.set(recipe.id, recipe)
+    else uncovered.push(classType)
+  }
+
+  return { recipes: Array.from(recipesById.values()), uncovered }
+}
 
 // Widget keys that loader nodes commonly use for their model filename, tried
 // when the converted prompt doesn't contain an exact value match.
@@ -14,13 +100,31 @@ const LOADER_INPUT_KEY_GUESSES = [
   'model_name', 'text_encoder', 'audio_vae', 'upscale_model',
 ]
 
-function collectEmbeddedModelMetadata(uiWorkflow) {
-  const nodes = [
+// Frontend-only node types that never reach the server prompt.
+const UI_ONLY_NODE_TYPES = new Set(['MarkdownNote', 'Note', 'Reroute', 'PrimitiveNode', 'GetNode', 'SetNode'])
+const SUBGRAPH_INSTANCE_TYPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function collectUiWorkflowNodes(uiWorkflow) {
+  return [
     ...(Array.isArray(uiWorkflow?.nodes) ? uiWorkflow.nodes : []),
     ...((uiWorkflow?.definitions?.subgraphs || []).flatMap((subgraph) => (
       Array.isArray(subgraph?.nodes) ? subgraph.nodes : []
     ))),
   ]
+}
+
+function collectUiNodeTypes(uiWorkflow) {
+  const types = new Set()
+  for (const node of collectUiWorkflowNodes(uiWorkflow)) {
+    const type = String(node?.type || '').trim()
+    if (!type || UI_ONLY_NODE_TYPES.has(type) || SUBGRAPH_INSTANCE_TYPE_RE.test(type)) continue
+    types.add(type)
+  }
+  return Array.from(types)
+}
+
+function collectEmbeddedModelMetadata(uiWorkflow) {
+  const nodes = collectUiWorkflowNodes(uiWorkflow)
 
   const models = []
   const seen = new Set()
@@ -98,7 +202,7 @@ function formatVramLabel(vramBytes) {
   return `${Math.ceil(numeric / (1024 ** 3))}GB+ VRAM`
 }
 
-function buildManifest(template, derived, detection) {
+function buildManifest(template, derived, detection, { conversionIncomplete = false, unknownNodeTypes = [] } = {}) {
   const workflowId = `${IMPORTED_WORKFLOW_ID_PREFIX}${template.name}`
   return {
     id: workflowId,
@@ -120,9 +224,11 @@ function buildManifest(template, derived, detection) {
     inputAssetType: detection.inputAssetType,
     outputType: derived.outputType,
     fields: detection.fields,
-    runnable: true,
+    runnable: !conversionIncomplete,
     imported: true,
     templateName: template.name,
+    unknownNodeTypes,
+    requiresCustomNodes: template.requiresCustomNodes || [],
   }
 }
 
@@ -163,24 +269,62 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
   }
   const uiWorkflow = await response.json()
 
-  progress('convert', 'Converting through your ComfyUI...')
-  const conversion = await api.convertComfyWorkflowGraph({
-    workflowGraph: uiWorkflow,
-    comfyBaseUrl: getLocalComfyConnectionSync().httpBase,
-  })
-  if (!conversion?.success || !conversion.output) {
-    throw new Error(conversion?.error || 'ComfyUI could not convert this template.')
+  // Compare the template's node types against the live ComfyUI BEFORE
+  // converting: the frontend silently loads unknown types as placeholders and
+  // graphToPrompt then emits class_type-less husks, which used to slip past
+  // the dependency check and only blow up at queue time.
+  progress('analyze', 'Checking node requirements against your ComfyUI...')
+  let objectInfo = null
+  try {
+    objectInfo = await comfyui.getObjectInfo()
+  } catch {
+    throw new Error('Could not read the node list from ComfyUI — make sure it is running, then retry.')
   }
-  const apiWorkflow = conversion.output
+  const uiNodeTypes = collectUiNodeTypes(uiWorkflow)
+  const unknownNodeTypes = uiNodeTypes.filter((type) => !objectInfo?.[type])
 
-  progress('analyze', 'Reading models and node requirements...')
+  let apiWorkflow = null
+  if (unknownNodeTypes.length === 0) {
+    progress('convert', 'Converting through your ComfyUI...')
+    const conversion = await api.convertComfyWorkflowGraph({
+      workflowGraph: uiWorkflow,
+      comfyBaseUrl: getLocalComfyConnectionSync().httpBase,
+    })
+    if (!conversion?.success || !conversion.output) {
+      throw new Error(conversion?.error || 'ComfyUI could not convert this template.')
+    }
+    // Defense in depth: object_info said every type exists, but if the
+    // conversion still produced placeholder husks, treat it as incomplete
+    // rather than saving a workflow that fails at queue time.
+    const placeholderNodes = Object.values(conversion.output)
+      .filter((node) => !String(node?.class_type || '').trim())
+    if (placeholderNodes.length === 0) {
+      apiWorkflow = conversion.output
+    }
+  }
+  const conversionIncomplete = !apiWorkflow
+
+  progress('analyze', 'Resolving node packs from the Comfy Registry...')
+  const { recipes: declaredPackRecipes, unresolved: unresolvedNodePacks } = await resolveNodePackRecipes(template)
+  const { recipes: classPackRecipes, uncovered: uncoveredNodeTypes } = unknownNodeTypes.length > 0
+    ? await resolveNodeClassPacks(unknownNodeTypes, template)
+    : { recipes: [], uncovered: [] }
+  const nodePackRecipes = []
+  const seenPackIds = new Set()
+  for (const recipe of [...classPackRecipes, ...declaredPackRecipes]) {
+    if (seenPackIds.has(recipe.id)) continue
+    seenPackIds.add(recipe.id)
+    nodePackRecipes.push(recipe)
+  }
+
+  progress('analyze', 'Reading models and download sizes...')
   const embeddedModels = collectEmbeddedModelMetadata(uiWorkflow)
   const sizeByUrl = await probeModelSizes(embeddedModels)
 
   const requiredModels = []
   const recipes = []
   for (const model of embeddedModels) {
-    const resolved = resolveModelInputKey(apiWorkflow, model)
+    const resolved = resolveModelInputKey(apiWorkflow || {}, model)
     if (resolved) {
       requiredModels.push({
         classType: resolved.classType,
@@ -204,15 +348,21 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
     }
   }
 
-  const requiredNodes = Array.from(new Set(
-    Object.values(apiWorkflow)
+  // Required nodes come from the UI workflow's declared types — the converted
+  // output loses the type string for anything not installed, which is exactly
+  // the case the dependency check must catch.
+  const requiredNodes = Array.from(new Set([
+    ...uiNodeTypes,
+    ...Object.values(apiWorkflow || {})
       .map((node) => String(node?.class_type || '').trim())
-      .filter(Boolean)
-  )).map((classType) => ({ classType }))
+      .filter(Boolean),
+  ])).map((classType) => ({ classType }))
 
   const derived = deriveCategoryAndOutput(template)
-  const detection = detectImportedWorkflowBindings(apiWorkflow, template)
-  const manifest = buildManifest(template, derived, detection)
+  const detection = apiWorkflow
+    ? detectImportedWorkflowBindings(apiWorkflow, template)
+    : { bindings: null, fields: [], needsImage: derived.needsImage, inputAssetType: derived.needsImage ? 'image' : undefined }
+  const manifest = buildManifest(template, derived, detection, { conversionIncomplete, unknownNodeTypes })
   const pack = {
     id: manifest.workflowId,
     displayName: template.title,
@@ -233,7 +383,14 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
     manifest,
     pack,
     recipes,
+    nodePackRecipes,
+    unresolvedNodePacks,
+    uncoveredNodeTypes,
     bindings: detection.bindings,
+    conversionIncomplete,
+    // Full normalized template snapshot so re-imports (e.g. the automatic one
+    // after missing nodes get installed) don't depend on the live catalog.
+    template,
     importedAt: Date.now(),
     source: {
       workflowUrl: template.workflowUrl,
@@ -241,15 +398,31 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
     },
   }
 
-  const wroteWorkflow = await api.writeFile(paths.workflowFile, JSON.stringify(apiWorkflow, null, 2), { encoding: 'utf8' })
-  if (!wroteWorkflow?.success) throw new Error(wroteWorkflow?.error || 'Could not save the converted workflow.')
+  if (apiWorkflow) {
+    const wroteWorkflow = await api.writeFile(paths.workflowFile, JSON.stringify(apiWorkflow, null, 2), { encoding: 'utf8' })
+    if (!wroteWorkflow?.success) throw new Error(wroteWorkflow?.error || 'Could not save the converted workflow.')
+  } else if (api.deleteFile) {
+    // A previous complete import may have left a workflow.json; don't let a
+    // now-incomplete re-import leave a stale runnable graph behind.
+    try { await api.deleteFile(paths.workflowFile) } catch { /* may not exist */ }
+  }
   const wroteEntry = await api.writeFile(paths.entryFile, JSON.stringify(entry, null, 2), { encoding: 'utf8' })
   if (!wroteEntry?.success) throw new Error(wroteEntry?.error || 'Could not save the imported workflow entry.')
 
   const registered = registerImportedWorkflow({ ...entry, workflowPath: paths.workflowFile })
 
-  // Nudge the dependency scanner so "Set up — X GB" reflects reality right away.
-  try { await comfyui.getObjectInfo() } catch { /* offline is fine here */ }
-
   return { success: true, entry: registered }
+}
+
+/**
+ * Re-run the import for an already-imported template using its stored
+ * snapshot — used to finish "needs nodes" imports once the packs are in.
+ */
+export async function reimportImportedWorkflow(workflowId, options = {}) {
+  const entry = getImportedWorkflowEntry(workflowId)
+  if (!entry) throw new Error('This workflow is not an imported template.')
+  if (!entry.template) {
+    throw new Error('This import predates re-import support — use Re-import on the template in the ComfyUI tab.')
+  }
+  return importComfyTemplate(entry.template, options)
 }

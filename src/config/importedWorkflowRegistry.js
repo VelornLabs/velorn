@@ -121,6 +121,13 @@ function normalizeLoadedEntry(parsed, workflowPath) {
     pack: parsed.pack,
     recipes: Array.isArray(parsed.recipes) ? parsed.recipes : [],
     bindings: parsed.bindings && typeof parsed.bindings === 'object' ? parsed.bindings : null,
+    conversionIncomplete: Boolean(parsed.conversionIncomplete),
+    nodePackRecipes: Array.isArray(parsed.nodePackRecipes) ? parsed.nodePackRecipes : [],
+    unresolvedNodePacks: Array.isArray(parsed.unresolvedNodePacks) ? parsed.unresolvedNodePacks : [],
+    // null (not []) for entries imported before class-level resolution existed,
+    // so coverage checks can tell "verified covered" from "unknown".
+    uncoveredNodeTypes: Array.isArray(parsed.uncoveredNodeTypes) ? parsed.uncoveredNodeTypes : null,
+    template: parsed.template && typeof parsed.template === 'object' ? parsed.template : null,
     workflowPath,
     importedAt: Number(parsed.importedAt) || 0,
     source: parsed.source && typeof parsed.source === 'object' ? parsed.source : {},

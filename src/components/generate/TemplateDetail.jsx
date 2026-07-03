@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { ArrowLeft, CheckCircle2, Download, ExternalLink, KeyRound, Loader2, Puzzle, RefreshCw } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, Download, ExternalLink, KeyRound, LayoutGrid, Loader2, Puzzle, RefreshCw } from 'lucide-react'
 import { formatBytes } from '../../hooks/useWorkflowSetupFlow'
 import { formatUsageCount } from './TemplateCard'
 import { importComfyTemplate } from '../../services/templateImporter'
-import { isTemplateImported } from '../../config/importedWorkflowRegistry'
+import { openUiWorkflowInComfyUi } from '../../services/workflowSetupManager'
+import { getImportedWorkflowEntries } from '../../config/importedWorkflowRegistry'
 
 function MetaTile({ label, value }) {
   if (!value) return null
@@ -17,22 +18,54 @@ function MetaTile({ label, value }) {
 
 export default function TemplateDetail({ template, onBack = null, isConnected = false }) {
   const [importState, setImportState] = useState({ phase: 'idle', message: '', error: '' })
+  const [openComfyState, setOpenComfyState] = useState({ busy: false, message: '', error: '' })
   if (!template) return null
 
   const coverIsVideo = /\.(mp4|webm|mov)(\?|#|$)/i.test(String(template.thumbnailUrl || ''))
-  const alreadyImported = importState.phase === 'done' || isTemplateImported(template.name)
+  const importedEntry = getImportedWorkflowEntries().find((entry) => entry.templateName === template.name) || null
+  const alreadyImported = importState.phase === 'done' || Boolean(importedEntry)
+  const importIncomplete = importState.phase === 'done'
+    ? Boolean(importState.incomplete)
+    : Boolean(importedEntry?.conversionIncomplete)
   const importing = importState.phase === 'importing'
+
+  const handleOpenInComfy = async () => {
+    if (openComfyState.busy) return
+    setOpenComfyState({ busy: true, message: '', error: '' })
+    try {
+      const response = await fetch(template.workflowUrl, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`Could not download the template workflow (${response.status}).`)
+      const uiWorkflow = await response.json()
+      const result = await openUiWorkflowInComfyUi(uiWorkflow, { label: template.title })
+      setOpenComfyState({
+        busy: false,
+        message: result.success ? result.hint : '',
+        error: result.success ? '' : result.error,
+      })
+    } catch (error) {
+      setOpenComfyState({
+        busy: false,
+        message: '',
+        error: error instanceof Error ? error.message : 'Could not open the template in ComfyUI.',
+      })
+    }
+  }
 
   const handleImport = async () => {
     if (importing) return
     setImportState({ phase: 'importing', message: 'Starting import...', error: '' })
     try {
-      await importComfyTemplate(template, {
+      const result = await importComfyTemplate(template, {
         onProgress: (_step, message) => {
           setImportState((prev) => (prev.phase === 'importing' ? { ...prev, message } : prev))
         },
       })
-      setImportState({ phase: 'done', message: '', error: '' })
+      setImportState({
+        phase: 'done',
+        incomplete: Boolean(result?.entry?.conversionIncomplete),
+        message: '',
+        error: '',
+      })
     } catch (error) {
       setImportState({
         phase: 'error',
@@ -164,10 +197,18 @@ export default function TemplateDetail({ template, onBack = null, isConnected = 
                 <CheckCircle2 className="h-4 w-4" />
                 Imported
               </button>
-              <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
-                This template now appears under the {template.openSource ? 'Local' : 'Cloud'} tab.
-                Use its Set up button there to install what it needs.
-              </div>
+              {importIncomplete ? (
+                <div className="mt-1.5 rounded-lg border border-yellow-400/25 bg-yellow-400/10 p-2.5 text-center text-[10px] text-yellow-200">
+                  Imported, but some of its custom nodes aren't installed yet. Open it under the{' '}
+                  {template.openSource ? 'Local' : 'Cloud'} tab, run Set up, restart ComfyUI, then
+                  come back here and Re-import to finish.
+                </div>
+              ) : (
+                <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
+                  This template now appears under the {template.openSource ? 'Local' : 'Cloud'} tab.
+                  Use its Set up button there to install what it needs.
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => { void handleImport() }}
@@ -222,6 +263,25 @@ export default function TemplateDetail({ template, onBack = null, isConnected = 
                   : 'Start ComfyUI to import — conversion runs through your local install.'}
               </div>
             </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => { void handleOpenInComfy() }}
+            disabled={!isConnected || openComfyState.busy}
+            className={`mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
+              isConnected && !openComfyState.busy
+                ? 'border-sf-dark-500 text-sf-text-secondary hover:border-sf-dark-400 hover:text-sf-text-primary'
+                : 'cursor-not-allowed border-sf-dark-700 text-sf-text-muted'
+            }`}
+          >
+            {openComfyState.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LayoutGrid className="h-4 w-4" />}
+            Open in ComfyUI
+          </button>
+          {(openComfyState.message || openComfyState.error) && (
+            <div className={`mt-1.5 text-center text-[10px] ${openComfyState.error ? 'text-sf-error' : 'text-sf-text-muted'}`}>
+              {openComfyState.error || openComfyState.message}
+            </div>
           )}
 
           <a

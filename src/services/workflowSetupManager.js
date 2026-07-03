@@ -390,6 +390,44 @@ async function loadApiWorkflowGraphIntoComfyUi(apiWorkflow) {
   }
 }
 
+// Loads a UI-format workflow (nodes/links/subgraphs, as shipped by the
+// template repo) straight into the embedded ComfyUI tab — no API→UI
+// conversion needed. ComfyUI's own missing-nodes dialog + Manager then handle
+// node packs our installer can't.
+export async function openUiWorkflowInComfyUi(uiWorkflow, { label = 'ComfyUI template' } = {}) {
+  try {
+    window.dispatchEvent(new CustomEvent(OPEN_COMFY_TAB_EVENT, { detail: { label } }))
+
+    if (!window?.electronAPI?.loadComfyUiWorkflowGraph) {
+      throw new Error('Workflow loading into the embedded ComfyUI tab is only available in the desktop build.')
+    }
+
+    const becameVisible = await waitForVisibleComfyIframe(4000)
+    if (!becameVisible) {
+      throw new Error('The embedded ComfyUI tab did not become visible in time.')
+    }
+
+    const loadResult = await window.electronAPI.loadComfyUiWorkflowGraph({
+      workflowGraph: uiWorkflow,
+      comfyBaseUrl: getLocalComfyConnectionSync().httpBase,
+      waitForMs: 12000,
+    })
+    if (!loadResult?.success) {
+      throw new Error(loadResult?.error || 'Could not load the workflow into the embedded ComfyUI tab.')
+    }
+
+    return {
+      success: true,
+      hint: `Loaded ${label} into the embedded ComfyUI tab.`,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Could not open workflow in ComfyUI.',
+    }
+  }
+}
+
 export async function openApiWorkflowInComfyUi(apiWorkflow, { label = 'Custom workflow' } = {}) {
   try {
     window.dispatchEvent(new CustomEvent(OPEN_COMFY_TAB_EVENT, {

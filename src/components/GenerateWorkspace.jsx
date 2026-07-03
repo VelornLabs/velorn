@@ -20,6 +20,7 @@ import TemplateDetail from './generate/TemplateDetail'
 import {
   IMPORTED_WORKFLOWS_CHANGED_EVENT,
   getImportedManifestById,
+  getImportedManifestByWorkflowId,
   getImportedManifests,
   getImportedWorkflowEntry,
   isImportedWorkflowId,
@@ -57,7 +58,7 @@ import {
   parseStructuredDirectorScript,
 } from '../utils/yoloPlanning'
 import { checkWorkflowDependencies, buildMissingDependencyClipboardText } from '../services/workflowDependencies'
-import { openApiWorkflowInComfyUi, openBundledWorkflowInComfyUi } from '../services/workflowSetupManager'
+import { openApiWorkflowInComfyUi, openBundledWorkflowInComfyUi, openUiWorkflowInComfyUi } from '../services/workflowSetupManager'
 import { useWorkflowSetupFlow } from '../hooks/useWorkflowSetupFlow'
 import {
   getComfyLauncherSnapshot,
@@ -4143,10 +4144,24 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   )
 
   // Current workflow info
-  const currentWorkflow = useMemo(
-    () => currentCategoryWorkflows.find((workflow) => workflow.id === workflowId) || currentCategoryWorkflows[0],
-    [currentCategoryWorkflows, workflowId]
-  )
+  const currentWorkflow = useMemo(() => {
+    const staticMatch = currentCategoryWorkflows.find((workflow) => workflow.id === workflowId)
+    if (staticMatch) return staticMatch
+    // Imported templates aren't in the static category lists — synthesize
+    // their info from the manifest so the sidebar doesn't show a builtin's.
+    const importedManifest = getImportedManifestByWorkflowId(workflowId)
+    if (importedManifest) {
+      return {
+        id: importedManifest.workflowId,
+        label: importedManifest.title,
+        category: importedManifest.outputType === 'audio' ? 'audio' : importedManifest.outputType === 'image' ? 'image' : 'video',
+        needsImage: Boolean(importedManifest.needsImage),
+        description: importedManifest.description,
+      }
+    }
+    return currentCategoryWorkflows[0]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- importedWorkflowsVersion invalidates the registry lookup
+  }, [currentCategoryWorkflows, workflowId, importedWorkflowsVersion])
   const formErrorTroubleshootingHints = useMemo(
     () => buildGenerationErrorTroubleshootingHints(formError),
     [formError]
@@ -4311,6 +4326,30 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     setSelectedComfyTemplate(null)
   }, [])
 
+  // Opens the ORIGINAL upstream graph (UI format) of an imported template in
+  // the embedded ComfyUI tab — for tweaking parameters or letting Manager
+  // handle node packs our installer can't.
+  const handleOpenImportedWorkflowInComfyUi = useCallback(async () => {
+    const entry = getImportedWorkflowEntry(workflowId)
+    const workflowUrl = entry?.template?.workflowUrl || entry?.source?.workflowUrl
+    if (!workflowUrl) {
+      setOpenWorkflowHint('This import predates Open in ComfyUI support — re-import it from the ComfyUI tab first.')
+      return
+    }
+    try {
+      const response = await fetch(workflowUrl, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`Could not download the template workflow (${response.status}).`)
+      const uiWorkflow = await response.json()
+      const result = await openUiWorkflowInComfyUi(uiWorkflow, { label: entry.manifest?.title || 'Imported template' })
+      setOpenWorkflowHint(result.success ? result.hint : result.error)
+      addComfyLog(result.success ? 'status' : 'error', result.success ? result.hint : result.error)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not open the template in ComfyUI.'
+      setOpenWorkflowHint(message)
+      addComfyLog('error', message)
+    }
+  }, [workflowId, addComfyLog])
+
   useEffect(() => {
     if (generationMode !== 'single' || category !== 'video' || videoDurationPresets.length === 0) return
     if (videoDurationPresets.includes(Number(duration))) return
@@ -4420,6 +4459,32 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     window.addEventListener(IMPORTED_WORKFLOWS_CHANGED_EVENT, handler)
     return () => window.removeEventListener(IMPORTED_WORKFLOWS_CHANGED_EVENT, handler)
   }, [])
+
+  // Once a "needs nodes" import has its dependencies satisfied (Set up +
+  // restart), finish it automatically: re-import converts the graph and flips
+  // the manifest to runnable without another trip to the ComfyUI tab.
+  const importFinishAttemptsRef = useRef(new Set())
+  useEffect(() => {
+    if (generationMode !== 'single' || !isImportedWorkflowId(workflowId)) return
+    if (dependencyCheck.workflowId !== workflowId) return
+    if (dependencyCheck.status !== 'ready' && dependencyCheck.status !== 'partial') return
+    const entry = getImportedWorkflowEntry(workflowId)
+    if (!entry?.conversionIncomplete || !entry.template) return
+    if (importFinishAttemptsRef.current.has(workflowId)) return
+    importFinishAttemptsRef.current.add(workflowId)
+    ;(async () => {
+      try {
+        addComfyLog('status', `Finishing import of ${entry.manifest?.title || workflowId}...`)
+        const { reimportImportedWorkflow } = await import('../services/templateImporter')
+        await reimportImportedWorkflow(workflowId)
+        addComfyLog('status', `${entry.manifest?.title || workflowId} is ready to queue.`)
+        void runWorkflowDependencyCheck()
+      } catch (error) {
+        importFinishAttemptsRef.current.delete(workflowId)
+        addComfyLog('error', `Could not finish the import: ${error?.message || error}`)
+      }
+    })()
+  }, [dependencyCheck, generationMode, workflowId, importedWorkflowsVersion, runWorkflowDependencyCheck, addComfyLog])
 
   const validateDependenciesForQueue = useCallback(async (workflowIds, queueLabel) => {
     const normalizedIds = Array.from(new Set(
@@ -12457,7 +12522,18 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         if (!outputs || typeof outputs !== 'object') continue
 
         // ── VIDEO detection: scan ALL nodes, ALL keys ──
-        // Check known video keys first (videos, gifs), then any array key with video-like filenames
+        // Collect every matching video: multi-output templates (e.g. imported
+        // graphs that save both a result and a side-by-side comparison) write
+        // more than one, and returning only the first drops the real output.
+        const videos = []
+        const videoSignatures = new Set()
+        const pushUniqueVideo = (info) => {
+          if (!info?.filename) return
+          const signature = `${info.filename}|${info.subfolder || ''}|${info.outputType || 'output'}`
+          if (videoSignatures.has(signature)) return
+          videoSignatures.add(signature)
+          videos.push(info)
+        }
         for (const nodeId of Object.keys(outputs)) {
           const nodeOut = outputs[nodeId]
           if (!nodeOut || typeof nodeOut !== 'object') continue
@@ -12471,7 +12547,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
               ))
               if (info) {
                 console.log(`[pollForResult] Found video in node ${nodeId}.${key}:`, info)
-                return { type: 'video', ...info }
+                pushUniqueVideo(info)
               }
             }
           }
@@ -12486,11 +12562,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
               ))
               if (info && isVideoFilename(info.filename)) {
                 console.log(`[pollForResult] Found video in node ${nodeId}.${key} (by extension):`, info)
-                return { type: 'video', ...info }
+                pushUniqueVideo(info)
               }
             }
           }
         }
+        if (videos.length === 1) return { type: 'video', ...videos[0] }
+        if (videos.length > 1) return { type: 'videos', items: videos.map((info) => ({ type: 'video', ...info })) }
 
         // ── IMAGE detection: scan ALL nodes, ALL keys ──
         const images = []
@@ -12755,9 +12833,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       return persistedAsset
     }
 
-    if (result.type === 'video') {
-      if (markImportedSignature('video', result.filename, result.subfolder, result.outputType)) {
-        addComfyLog('status', `Skipped duplicate video import: ${result.filename}`)
+    if (result.type === 'video' || result.type === 'videos') {
+      const videoItems = (result.type === 'videos' ? result.items : [result]).filter(Boolean)
+      const freshVideoItems = videoItems.filter((item) => {
+        if (markImportedSignature('video', item.filename, item.subfolder, item.outputType)) {
+          addComfyLog('status', `Skipped duplicate video import: ${item.filename}`)
+          return false
+        }
+        return true
+      })
+      if (freshVideoItems.length === 0) {
         return { didImportAny: false, importedAssets }
       }
       const shortFilmVideoName = shortFilmMeta?.kind === 'shot-video'
@@ -12765,60 +12850,64 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         : ''
       const generatedVideoFolderPath = generatedFolderPath('video')
       const generatedVideoFolderId = getGeneratedFolderId('video', generatedVideoFolderPath)
-      try {
-        const videoFile = await comfyui.downloadVideo(result.filename, result.subfolder, result.outputType)
-        const assetInfo = await importAsset(targetProjectHandle, videoFile, 'video')
-        const blobUrl = importsIntoActiveProject ? URL.createObjectURL(videoFile) : null
-        const newAsset = await saveImportedAssetRecord({
-          ...assetInfo,
-          name: shortFilmVideoName || resolvedName,
-          type: 'video',
-          url: blobUrl,
-          prompt: jobPrompt,
-          isImported: true,
-          yolo: directorMeta || undefined,
-          shortFilm: shortFilmMeta || undefined,
-          folderId: generatedVideoFolderId,
-          settings: {
-            duration: jobDuration,
-            fps: jobFps,
-            resolution: jobResolution ? `${jobResolution.width}x${jobResolution.height}` : undefined,
-            seed: jobSeed,
-            inputAssetId: job?.inputAssetId || undefined,
-            keyframeAssetId: job?.inputAssetId || shortFilmMeta?.keyframeAssetId || undefined,
+      for (let videoIndex = 0; videoIndex < freshVideoItems.length; videoIndex += 1) {
+        const item = freshVideoItems[videoIndex]
+        const videoAssetName = `${shortFilmVideoName || resolvedName}${freshVideoItems.length > 1 ? ` (${videoIndex + 1})` : ''}`
+        try {
+          const videoFile = await comfyui.downloadVideo(item.filename, item.subfolder, item.outputType)
+          const assetInfo = await importAsset(targetProjectHandle, videoFile, 'video')
+          const blobUrl = importsIntoActiveProject ? URL.createObjectURL(videoFile) : null
+          const newAsset = await saveImportedAssetRecord({
+            ...assetInfo,
+            name: videoAssetName,
+            type: 'video',
+            url: blobUrl,
+            prompt: jobPrompt,
+            isImported: true,
+            yolo: directorMeta || undefined,
+            shortFilm: shortFilmMeta || undefined,
+            folderId: generatedVideoFolderId,
+            settings: {
+              duration: jobDuration,
+              fps: jobFps,
+              resolution: jobResolution ? `${jobResolution.width}x${jobResolution.height}` : undefined,
+              seed: jobSeed,
+              inputAssetId: job?.inputAssetId || undefined,
+              keyframeAssetId: job?.inputAssetId || shortFilmMeta?.keyframeAssetId || undefined,
+            }
+          }, generatedVideoFolderPath)
+          if (newAsset) importedAssets.push(newAsset)
+          didImportAny = true
+          if (isElectron() && importsIntoActiveProject && currentProjectHandle && newAsset?.absolutePath) {
+            enqueuePlaybackTranscode(currentProjectHandle, newAsset.id, newAsset.absolutePath).catch(() => {})
+            if (isProxyPlaybackEnabled()) {
+              enqueueProxyTranscode(currentProjectHandle, newAsset.id, newAsset.absolutePath).catch(() => {})
+            }
           }
-        }, generatedVideoFolderPath)
-        if (newAsset) importedAssets.push(newAsset)
-        didImportAny = true
-        if (isElectron() && importsIntoActiveProject && currentProjectHandle && newAsset?.absolutePath) {
-          enqueuePlaybackTranscode(currentProjectHandle, newAsset.id, newAsset.absolutePath).catch(() => {})
-          if (isProxyPlaybackEnabled()) {
-            enqueueProxyTranscode(currentProjectHandle, newAsset.id, newAsset.absolutePath).catch(() => {})
-          }
+        } catch (err) {
+          console.error('Failed to save video:', err)
+          if (!importsIntoActiveProject) throw err
+          // Fallback: use ComfyUI URL
+          const url = comfyui.getMediaUrl(item.filename, item.subfolder, item.outputType)
+          const fallbackAsset = addAsset({
+            name: videoAssetName,
+            type: 'video',
+            url,
+            prompt: jobPrompt,
+            yolo: directorMeta || undefined,
+            shortFilm: shortFilmMeta || undefined,
+            folderId: generatedVideoFolderId,
+            settings: {
+              duration: jobDuration,
+              fps: jobFps,
+              seed: jobSeed,
+              inputAssetId: job?.inputAssetId || undefined,
+              keyframeAssetId: job?.inputAssetId || shortFilmMeta?.keyframeAssetId || undefined,
+            }
+          })
+          if (fallbackAsset) importedAssets.push(fallbackAsset)
+          didImportAny = true
         }
-      } catch (err) {
-        console.error('Failed to save video:', err)
-        if (!importsIntoActiveProject) throw err
-        // Fallback: use ComfyUI URL
-        const url = comfyui.getMediaUrl(result.filename, result.subfolder, result.outputType)
-        const fallbackAsset = addAsset({
-          name: shortFilmVideoName || resolvedName,
-          type: 'video',
-          url,
-          prompt: jobPrompt,
-          yolo: directorMeta || undefined,
-          shortFilm: shortFilmMeta || undefined,
-          folderId: generatedVideoFolderId,
-          settings: {
-            duration: jobDuration,
-            fps: jobFps,
-            seed: jobSeed,
-            inputAssetId: job?.inputAssetId || undefined,
-            keyframeAssetId: job?.inputAssetId || shortFilmMeta?.keyframeAssetId || undefined,
-          }
-        })
-        if (fallbackAsset) importedAssets.push(fallbackAsset)
-        didImportAny = true
       }
     } else if (result.type === 'images') {
       let generatedImageFolderId = null
@@ -14066,6 +14155,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const workflowDetailActions = {
     onGenerate: handleGenerate,
     onOpenApiKeyDialog: () => setApiKeyDialogOpen(true),
+    onOpenImportedInComfyUi: handleOpenImportedWorkflowInComfyUi,
     onPreviewAssetIndexChange: (nextIndex) => {
       setLatestWorkflowPreview((prev) => {
         if (!prev || prev.workflowId !== selectedPreviewWorkflowId) return prev

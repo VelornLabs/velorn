@@ -10,6 +10,7 @@ import {
   startComfyLauncher,
   waitForComfyLauncherState,
 } from '../services/comfyLauncher'
+import { getImportedWorkflowEntry } from '../config/importedWorkflowRegistry'
 
 const COMFY_ROOT_PATH_SETTING_KEY = 'comfyRootPath'
 // Downloads need working room beyond the payload itself (temp files, other
@@ -126,7 +127,44 @@ export function useWorkflowSetupFlow({ dependencyCheck, isConnected, recheck }) 
 
   const plan = useMemo(() => {
     if (!enriched) return null
-    return buildWorkflowInstallPlan([enriched], [enriched.workflowId])
+    const basePlan = buildWorkflowInstallPlan([enriched], [enriched.workflowId])
+
+    // Imported templates carry registry-resolved node-pack recipes. Curated
+    // install info can't map their custom classes, so uncurated missing nodes
+    // land in manualNodes — promote them to auto pack installs instead. The
+    // installer treats already-present packs as cheap git updates, so listing
+    // every resolved pack is safe.
+    const importedEntry = getImportedWorkflowEntry(enriched.workflowId)
+    const packRecipes = importedEntry?.nodePackRecipes || []
+    if (packRecipes.length === 0 || (basePlan.manualNodes || []).length === 0) return basePlan
+
+    const coveredClassTypes = basePlan.manualNodes.map((node) => node.classType)
+    const existingPackIds = new Set((basePlan.nodePacks || []).map((pack) => pack.id))
+    const addedPacks = packRecipes
+      .filter((recipe) => !existingPackIds.has(recipe.id))
+      .map((recipe) => ({
+        ...recipe,
+        workflowIds: [enriched.workflowId],
+        workflowLabels: [enriched.workflowLabel],
+        classTypes: coveredClassTypes,
+      }))
+    if (addedPacks.length === 0) return basePlan
+
+    // Keep the manual entries when coverage is uncertain: class-level
+    // resolution left some classes uncovered, or (for older imports without
+    // that data) a declared pack failed to resolve.
+    const keepManual = Array.isArray(importedEntry?.uncoveredNodeTypes)
+      ? importedEntry.uncoveredNodeTypes.length > 0
+      : (importedEntry?.unresolvedNodePacks || []).length > 0
+
+    return {
+      ...basePlan,
+      nodePacks: [...(basePlan.nodePacks || []), ...addedPacks],
+      manualNodes: keepManual ? basePlan.manualNodes : [],
+      actionableTaskCount: basePlan.actionableTaskCount + addedPacks.length,
+      hasActionableTasks: true,
+      restartRecommended: true,
+    }
   }, [enriched])
 
   const items = useMemo(() => {
