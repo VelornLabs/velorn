@@ -1411,6 +1411,26 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     },
 
     /**
+     * Blit the finished stage to the compositor's own canvas (the default
+     * framebuffer) for live-preview display. The stage is premultiplied and
+     * bottom-up, which matches the default framebuffer's presentation, so a
+     * plain blit shows upright. Callers drawImage(compositor.canvas) into
+     * their display canvas in the same task (the drawing buffer is not
+     * preserved across frames).
+     */
+    present() {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      gl.viewport(0, 0, width, height)
+      gl.disable(gl.BLEND)
+      gl.useProgram(programs.blit)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, stages[stageIndex].texture)
+      gl.uniform1i(uniforms.blit.u_texture, 0)
+      gl.uniform1f(uniforms.blit.u_opacity, 1)
+      drawFullscreen()
+    },
+
+    /**
      * Snapshot the current stage into a 2D canvas context (straight alpha,
      * top-down). Used to hand the composited stage to the legacy 2D path
      * for adjustment-layer features not yet ported (tonal, GLSL, managed

@@ -684,7 +684,10 @@ export const useTimelineStore = create(
   // always uses asset.path. Hydrated from localStorage on boot in PreviewPanel.
   useProxyPlaybackForAssets: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-use-playback-proxies') === 'true'),
   glslPreviewQuality: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-glsl-preview-quality')) || 'full',
-  previewCompositorMode: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-preview-compositor-mode')) || 'canvas',
+  // 'gpu' composites the preview through the shared WebGL2 compositor
+  // (services/gpuCompositor.js — same engine as export); 'canvas' is the
+  // 2D fallback / kill switch. A stored explicit choice is respected.
+  previewCompositorMode: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-preview-compositor-mode')) || 'gpu',
   showTimelineClipThumbnails: (typeof localStorage === 'undefined' || localStorage.getItem('comfystudio-show-timeline-clip-thumbnails') !== 'false'),
   
   // Snapping settings
@@ -3632,7 +3635,7 @@ export const useTimelineStore = create(
     }
   },
   setPreviewCompositorMode: (mode) => {
-    const normalized = ['canvas', 'dom'].includes(mode) ? mode : 'canvas'
+    const normalized = ['canvas', 'dom', 'gpu'].includes(mode) ? mode : 'gpu'
     set({ previewCompositorMode: normalized })
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('comfystudio-preview-compositor-mode', normalized)

@@ -577,7 +577,7 @@ export const getClipQuadCorners = (rect, transform = {}, transitionStyle = null)
  * Anisotropic scales get the isotropic mean; exact for the uniform scales
  * transitions use.
  */
-const getApproxTransformScale = (transform = {}, transitionStyle = null) => {
+export const getApproxTransformScale = (transform = {}, transitionStyle = null) => {
   const perspective = clamp(Number(transform.perspective) || 1200, 100, 10000)
   const positionZ = clamp(Number(transform.positionZ) || 0, -20000, perspective - 100)
   const depthScale = clamp(perspective / Math.max(100, perspective - positionZ), 0.05, 12)
@@ -585,6 +585,46 @@ const getApproxTransformScale = (transform = {}, transitionStyle = null) => {
   const scaleX = Math.abs((Number(transform.scaleX) || 100) / 100) * transitionScale * depthScale
   const scaleY = Math.abs((Number(transform.scaleY) || 100) / 100) * transitionScale * depthScale
   return (scaleX + scaleY) / 2
+}
+
+/**
+ * Route color/blur onto the GPU layer chain slots per the 2D recipe a clip
+ * would have taken. Shared by the exporter's GPU block and the live
+ * preview's GPU path so the routing can never drift between them:
+ * - tonal clips: tonal pass post-accumulation, then ONE summed gaussian
+ *   (device px, exact — the 2D path blurred at identity transform);
+ * - masked clips: color + adjustment blur at composite time (post-mask);
+ * - plain clips: per-sample color, adjustment+transform blur stacked as
+ *   sqrt(a²+b²) pre-velocity/pre-managed, scaled to device space
+ *   (ctx.filter blur scales with the transform it is drawn under).
+ */
+export const routeGpuLayerColorBlur = ({
+  usesTonalAdjustments,
+  hasMask,
+  adjustmentSettings,
+  colorSettings,
+  adjustmentBlur,
+  transformBlur,
+  deviceScale,
+}) => {
+  if (usesTonalAdjustments) {
+    const totalBlur = adjustmentBlur + transformBlur
+    return {
+      tonalSettings: adjustmentSettings,
+      blurPx: totalBlur > 0 ? totalBlur : null,
+    }
+  }
+  if (hasMask) {
+    return {
+      postColorSettings: colorSettings,
+      postBlurPx: adjustmentBlur > 0 ? adjustmentBlur : null,
+    }
+  }
+  const combinedBlur = Math.sqrt(adjustmentBlur * adjustmentBlur + transformBlur * transformBlur)
+  return {
+    colorSettings,
+    preBlurPx: combinedBlur > 0 ? combinedBlur * deviceScale : null,
+  }
 }
 
 const drawAffineTriangle = (ctx, source, sourceWidth, sourceHeight, s0, s1, s2, d0, d1, d2) => {
@@ -2155,49 +2195,24 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             })
           }
         }
-        // Route color/blur per the 2D recipe the clip would have taken.
-        let layerColorSettings = null
-        let layerPreBlurPx = null
-        let layerTonalSettings = null
-        let layerBlurPx = null
-        let layerPostColorSettings = null
-        let layerPostBlurPx = null
-        if (usesTonalAdjustments) {
-          // applyAdvancedAdjustmentsToCanvas recipe: tonal pass, then ONE
-          // gaussian of adjustment blur + transform blur (summed, applied
-          // at identity transform in the 2D path — device px, exact).
-          layerTonalSettings = clipAdjustmentSettings
-          const totalBlur = gpuAdjustmentBlur + gpuTransformBlur
-          layerBlurPx = totalBlur > 0 ? totalBlur : null
-        } else if (gpuMaskSpec) {
-          // Mask recipe: color + adjustment blur apply at composite time
-          // (identity transform in the 2D path — device px, exact).
-          layerPostColorSettings = gpuColorSettings
-          layerPostBlurPx = gpuAdjustmentBlur > 0 ? gpuAdjustmentBlur : null
-        } else {
-          // Plain recipe: per-sample color; adjustment + transform blur
-          // stack as sequential gaussians = one gaussian of sqrt(a² + b²),
-          // scaled to device space (ctx.filter blur scales with the
-          // transform it is drawn under). Runs pre-velocity/pre-managed,
-          // matching the 2D draw-time filter position.
-          layerColorSettings = gpuColorSettings
-          const combinedBlur = Math.sqrt(gpuAdjustmentBlur * gpuAdjustmentBlur + gpuTransformBlur * gpuTransformBlur)
-          layerPreBlurPx = combinedBlur > 0
-            ? combinedBlur * getApproxTransformScale(clipTransform, transitionStyle)
-            : null
-        }
+        // Route color/blur per the 2D recipe the clip would have taken
+        // (shared with the preview's GPU path — see routeGpuLayerColorBlur).
+        const routed = routeGpuLayerColorBlur({
+          usesTonalAdjustments,
+          hasMask: !!gpuMaskSpec,
+          adjustmentSettings: clipAdjustmentSettings,
+          colorSettings: gpuColorSettings,
+          adjustmentBlur: gpuAdjustmentBlur,
+          transformBlur: gpuTransformBlur,
+          deviceScale: getApproxTransformScale(clipTransform, transitionStyle),
+        })
         if (gpuSamples.length > 0) {
           gpu.drawLayer({
             samples: gpuSamples,
-            colorSettings: layerColorSettings,
-            preBlurPx: layerPreBlurPx,
             velocity: gpuVelocity,
             mask: gpuMaskSpec,
-            tonalSettings: layerTonalSettings,
-            blurPx: layerBlurPx,
             managedPasses: gpuManagedPasses,
-            postColorSettings: layerPostColorSettings,
-            postBlurPx: layerPostBlurPx,
+            ...routed,
             opacity: clipOpacity,
             blendMode,
           })

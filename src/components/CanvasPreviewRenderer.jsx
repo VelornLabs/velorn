@@ -17,6 +17,7 @@ import {
   applyEffectsToTransform,
   applyGlowPassesToCanvas,
   applyPixelEffectsToImageData,
+  buildManagedEffectGpuPasses,
   drawLetterboxOverlay,
   drawVignetteOverlay,
   getActiveLetterboxEffect,
@@ -31,15 +32,19 @@ import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerComp
 import { applyTransitionClip, getFadeOverlayInfo, getTransitionStyleForClip } from '../utils/transitionStyles'
 import { isFullBakeFresh } from '../utils/clipBakeSignature'
 import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
-import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
+import { applyVelocityMotionBlurToCanvas, buildVelocityBlurUniformValues, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 import {
   applyClipCrop,
   applyClipTransform,
   drawPerspectiveClipSource,
   drawText,
+  getApproxTransformScale,
   getBaseDrawRect,
+  getClipQuadCorners,
   hasPerspectiveClipTransform,
+  routeGpuLayerColorBlur,
 } from '../services/exporter'
+import { createGpuCompositor } from '../services/gpuCompositor'
 import { drawShape, getShapeCanvasRect } from '../utils/shapes'
 
 const PRELOAD_LOOKAHEAD = 2.5
@@ -512,6 +517,44 @@ function CanvasPreviewRenderer({
     video.currentTime = targetTime
   }, [])
 
+  // Phase 4: the live preview composites through the same WebGL2 compositor
+  // as export (previewCompositorMode 'gpu', the default; 'canvas' is the 2D
+  // fallback / kill switch). One compositor instance per timeline size;
+  // WebGL2 init failure or context loss falls back to the 2D path.
+  const gpuPreviewRef = useRef({ compositor: null, width: 0, height: 0, failed: false })
+  useEffect(() => () => {
+    gpuPreviewRef.current.compositor?.dispose()
+    gpuPreviewRef.current.compositor = null
+  }, [])
+  const getGpuStage = useCallback((width, height, mode) => {
+    if (mode !== 'gpu' || !width || !height) return null
+    const holder = gpuPreviewRef.current
+    if (holder.failed) return null
+    if (holder.compositor && (holder.width !== width || holder.height !== height)) {
+      holder.compositor.dispose()
+      holder.compositor = null
+    }
+    if (holder.compositor?.isContextLost()) {
+      // GL calls on a lost context are silently ignored, so dispose is safe;
+      // this frame renders 2D and the next frame rebuilds.
+      holder.compositor.dispose()
+      holder.compositor = null
+      return null
+    }
+    if (!holder.compositor) {
+      holder.compositor = createGpuCompositor({ width, height, transparent: false })
+      holder.width = width
+      holder.height = height
+      if (holder.compositor) {
+        console.log('[Preview] GPU compositor active (WebGL2). setPreviewCompositorMode("canvas") for the 2D compositor.')
+      } else {
+        holder.failed = true
+        console.warn('[Preview] WebGL2 unavailable; using the 2D compositor.')
+      }
+    }
+    return holder.compositor
+  }, [])
+
   const applyAdvancedAdjustmentsToCanvas = useCallback((sourceCanvas, settings, width, height, extraBlurPx = null) => {
     const buffers = buffersRef.current
     if (!buffers.processedCanvas) {
@@ -767,6 +810,77 @@ function CanvasPreviewRenderer({
         return
       }
 
+      // GPU compositor path: native transforms/masks/effects, mirroring the
+      // exporter's GPU block. Masked clips with velocity blur keep the 2D
+      // path (same exclusion as export).
+      const gpuStage = state.gpuStage
+      const gpuMaskInfo = gpuStage ? getMaskInfo(clip, getAssetById, time, isCachedRender) : null
+      if (gpuStage && !(velocityMotionBlur && gpuMaskInfo)) {
+        offCtx.restore()
+        const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
+        // Full bakes carry the transform inside the baked pixels — draw
+        // them neutral, same contract as the exporter.
+        const sampleTransformFor = (sampleClipTime) => (
+          isFullBake ? clipTransform : resolveClipTransformAtTime(sampleClipTime)
+        )
+        const gpuSamples = []
+        for (const sample of motionBlurSamples) {
+          const corners = getClipQuadCorners(rect, sampleTransformFor(sample.clipTime), transitionStyle)
+          if (corners) {
+            gpuSamples.push({
+              source: drawSource,
+              sourceKey: clip.id,
+              sourceVersion: `${clipUrl}|${Number(drawSource.currentTime) || 0}`,
+              corners,
+              weight: sample.weight,
+            })
+          }
+        }
+        if (gpuSamples.length === 0) return
+
+        let gpuMaskSpec = null
+        if (gpuMaskInfo?.url) {
+          const maskImage = getImageForUrl(gpuMaskInfo.url)
+          if (maskImage) {
+            const maskCorners = getClipQuadCorners(rect, sampleTransformFor(clipTime), transitionStyle)
+            if (maskCorners) {
+              gpuMaskSpec = {
+                source: maskImage,
+                sourceKey: `${clip.id}:mask`,
+                sourceVersion: gpuMaskInfo.url,
+                corners: maskCorners,
+                invert: !!gpuMaskInfo.invertMask,
+                blurPx: (!usesTonalAdjustments && blurPx != null)
+                  ? blurPx * getApproxTransformScale(clipTransform, transitionStyle)
+                  : null,
+              }
+            }
+          }
+        }
+
+        const routed = routeGpuLayerColorBlur({
+          usesTonalAdjustments,
+          hasMask: !!gpuMaskSpec,
+          adjustmentSettings,
+          colorSettings: clipAdjustmentFilterValue ? adjustmentSettings : null,
+          adjustmentBlur: adjustmentSettings.blur > 0 ? adjustmentSettings.blur : 0,
+          transformBlur: blurPx != null ? blurPx : 0,
+          deviceScale: getApproxTransformScale(clipTransform, transitionStyle),
+        })
+        gpuStage.drawLayer({
+          samples: gpuSamples,
+          velocity: velocityMotionBlur ? buildVelocityBlurUniformValues(velocityMotionBlur) : null,
+          mask: gpuMaskSpec,
+          managedPasses: usesManagedEffects
+            ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
+            : null,
+          ...routed,
+          opacity: clipOpacity,
+          blendMode,
+        })
+        return
+      }
+
       const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
       // Full bakes carry the transform INSIDE the baked pixels — drawing
       // them with the live transform applies it twice (scale 162% became
@@ -817,6 +931,35 @@ function CanvasPreviewRenderer({
       }
     }
 
+    // GPU compositor path for clips that rastered through the 2D helpers
+    // above (text/shape, and masked+velocity media): the full-frame raster
+    // becomes a GPU layer; tonal + managed effects run as native passes.
+    if (state.gpuStage) {
+      const totalTonalBlur = adjustmentSettings.blur + (blurPx != null ? blurPx : 0)
+      state.gpuStage.drawLayer({
+        samples: [{
+          source: buffers.offCanvas,
+          sourceKey: `${clip.id}:2d`,
+          sourceVersion: frameIndex,
+          corners: [
+            { x: 0, y: 0, u: 0, v: 0, w: 1 },
+            { x: width, y: 0, u: 1, v: 0, w: 1 },
+            { x: 0, y: height, u: 0, v: 1, w: 1 },
+            { x: width, y: height, u: 1, v: 1, w: 1 },
+          ],
+          weight: 1,
+        }],
+        tonalSettings: usesTonalAdjustments ? adjustmentSettings : null,
+        blurPx: usesTonalAdjustments && totalTonalBlur > 0 ? totalTonalBlur : null,
+        managedPasses: usesManagedEffects
+          ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
+          : null,
+        opacity: clipOpacity,
+        blendMode,
+      })
+      return
+    }
+
     let outputCanvas = buffers.offCanvas
     if (usesTonalAdjustments) {
       outputCanvas = applyAdvancedAdjustmentsToCanvas(buffers.offCanvas, adjustmentSettings, width, height, blurPx)
@@ -847,6 +990,27 @@ function CanvasPreviewRenderer({
     const adjustmentIsActive = hasAdjustmentEffect(adjustmentSettings)
     const glslQualityScale = getGlslPreviewQualityScale(state.glslPreviewQuality)
     if (!adjustmentIsActive && !usesManagedEffects) return
+
+    // GPU compositor path: fully native adjustment layer (color/tonal/blur
+    // grade of the stage + managed chain), mirroring the exporter.
+    if (state.gpuStage) {
+      const rect = getBaseDrawRect(width, height, width, height)
+      const corners = getClipQuadCorners(rect, clipTransform, null)
+      if (!corners) return
+      const opacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
+      const blendMode = clipTransform.blendMode || 'normal'
+      state.gpuStage.drawAdjustment({
+        corners,
+        colorSettings: adjustmentSettings,
+        blurPx: adjustmentSettings.blur > 0 ? adjustmentSettings.blur : null,
+        managedPasses: usesManagedEffects
+          ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
+          : null,
+        opacity,
+        blendMode,
+      })
+      return
+    }
 
     const buffers = buffersRef.current
     if (!buffers.adjustmentCanvas) buffers.adjustmentCanvas = document.createElement('canvas')
@@ -1072,27 +1236,43 @@ function CanvasPreviewRenderer({
     stageCtx.fillStyle = '#000000'
     stageCtx.fillRect(0, 0, width, height)
 
+    // GPU compositing: clips draw into the WebGL2 stage instead of
+    // stageCtx; the finished frame blits into stageCanvas below so all the
+    // hold/blit/last-frame logic stays identical.
+    const gpuStage = getGpuStage(width, height, state.previewCompositorMode)
+    if (gpuStage) gpuStage.beginFrame()
+    const clipState = { ...state, width, height, fps, gpuStage }
+
     let sawUnreadyVisual = false
     for (const entry of visualClips) {
       const { clip } = entry
       if (!clip) continue
       if (clip.type === 'adjustment') {
-        applyAdjustmentLayer(stageCtx, clip, time, frameIndex, { ...state, width, height, fps })
+        applyAdjustmentLayer(stageCtx, clip, time, frameIndex, clipState)
         continue
       }
       if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text' || clip.type === 'shape') {
-        const status = drawVisualClip(stageCtx, entry, time, transitionInfo, { ...state, width, height, fps }, frameIndex)
+        const status = drawVisualClip(stageCtx, entry, time, transitionInfo, clipState, frameIndex)
         if (status === 'unready') sawUnreadyVisual = true
       }
     }
 
     const fadeOverlay = getFadeOverlayInfo(transitionInfo)
     if (fadeOverlay && fadeOverlay.opacity > 0.001) {
-      stageCtx.save()
-      stageCtx.globalAlpha = Math.min(1, fadeOverlay.opacity)
-      stageCtx.fillStyle = fadeOverlay.color
-      stageCtx.fillRect(0, 0, width, height)
-      stageCtx.restore()
+      if (gpuStage) {
+        gpuStage.drawFill(fadeOverlay.color, Math.min(1, fadeOverlay.opacity))
+      } else {
+        stageCtx.save()
+        stageCtx.globalAlpha = Math.min(1, fadeOverlay.opacity)
+        stageCtx.fillStyle = fadeOverlay.color
+        stageCtx.fillRect(0, 0, width, height)
+        stageCtx.restore()
+      }
+    }
+
+    if (gpuStage) {
+      gpuStage.present()
+      stageCtx.drawImage(gpuStage.canvas, 0, 0)
     }
 
     // A clip that should be visible couldn't draw yet (cold element at a
