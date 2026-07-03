@@ -27,6 +27,11 @@ import {
   GLSL_EFFECT_FRAGMENT_SOURCE,
   getAnimatedGlslEffectUniforms,
 } from '../utils/glslEffects'
+import {
+  ADJUSTMENT_STAGES_GLSL,
+  ADJUSTMENT_COLOR_PASS_FS,
+  buildAdjustmentUniformValues,
+} from '../utils/adjustmentsGpu'
 
 const GPU_EXPORT_FLAG_KEY = 'comfystudio-export-gpu'
 
@@ -83,56 +88,8 @@ void main() {
 }
 `
 
-// Color stages mirror applyAdjustmentGroupToRgb in utils/adjustments.js
-// exactly (same order, same per-stage clamping) so GPU and 2D exports match.
-const COLOR_STAGES_GLSL = `
-vec3 linearStage(vec3 c, float slope, float intercept) {
-  return clamp(c * slope + intercept, 0.0, 1.0);
-}
-
-vec3 applyColorStages(vec3 c) {
-  if (u_brightness != 0.0) {
-    c = linearStage(c, max((100.0 + u_brightness) / 100.0, 0.0), 0.0);
-  }
-  if (u_contrast != 0.0) {
-    float slope = max((100.0 + u_contrast) / 100.0, 0.0);
-    c = linearStage(c, slope, 0.5 - 0.5 * slope);
-  }
-  if (u_saturation != 0.0) {
-    float amount = max((100.0 + u_saturation) / 100.0, 0.0);
-    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    c = clamp(vec3(lum) + (c - vec3(lum)) * amount, 0.0, 1.0);
-  }
-  if (u_gain != 0.0) {
-    c = linearStage(c, max((100.0 + u_gain) / 100.0, 0.0), 0.0);
-  }
-  if (u_gamma != 0.0) {
-    float slope = max((100.0 + u_gamma * 0.5) / 100.0, 0.0);
-    c = linearStage(c, slope, 0.5 - 0.5 * slope);
-  }
-  if (u_offset != 0.0) {
-    c = linearStage(c, 1.0, u_offset / 200.0);
-  }
-  if (u_hue != 0.0) {
-    float angle = u_hue * 0.017453292519943295;
-    float cosA = cos(angle);
-    float sinA = sin(angle);
-    mat3 m = mat3(
-      0.213 + cosA * 0.787 - sinA * 0.213,
-      0.213 - cosA * 0.213 + sinA * 0.143,
-      0.213 - cosA * 0.213 - sinA * 0.787,
-      0.715 - cosA * 0.715 - sinA * 0.715,
-      0.715 + cosA * 0.285 + sinA * 0.140,
-      0.715 - cosA * 0.715 + sinA * 0.715,
-      0.072 - cosA * 0.072 + sinA * 0.928,
-      0.072 - cosA * 0.072 - sinA * 0.283,
-      0.072 + cosA * 0.928 + sinA * 0.072
-    );
-    c = clamp(m * c, 0.0, 1.0);
-  }
-  return c;
-}
-`
+// Color stage + tonal math lives in utils/adjustmentsGpu.js — shared with
+// the preview's standalone grade pass so both grade through one shader.
 
 const LAYER_FS = `#version 300 es
 precision highp float;
@@ -149,7 +106,7 @@ uniform float u_offset;
 uniform float u_hue;
 in vec2 v_uv;
 out vec4 outColor;
-${COLOR_STAGES_GLSL}
+${ADJUSTMENT_STAGES_GLSL}
 void main() {
   vec4 texel = texture(u_texture, v_uv);
   vec3 rgb = texel.rgb;
@@ -158,31 +115,33 @@ void main() {
     rgb /= alpha;
   }
   if (u_applyColor) {
-    rgb = applyColorStages(rgb);
+    rgb = applyGroupStages(rgb, float[7](u_brightness, u_contrast, u_saturation, u_gain, u_gamma, u_offset, u_hue));
   }
   outColor = vec4(rgb * alpha, alpha) * u_alpha;
 }
 `
 
-// Fullscreen color pass over the premultiplied stage (adjustment layers).
-const COLOR_PASS_FS = `#version 300 es
+// Mask application mirroring the export path's luminance loop exactly: the
+// layer's alpha is REPLACED by the mask's straight-rgb average luminance.
+// Undrawn mask regions read luminance 0, so inverted masks make the area
+// outside the clip opaque black — that is the 2D export's behavior (the
+// preview's destination-in/out semantics differ; parity here is with
+// export).
+const MASK_FS = `#version 300 es
 precision highp float;
-uniform sampler2D u_texture;
-uniform float u_brightness;
-uniform float u_contrast;
-uniform float u_saturation;
-uniform float u_gain;
-uniform float u_gamma;
-uniform float u_offset;
-uniform float u_hue;
+uniform sampler2D u_layer;
+uniform sampler2D u_mask;
+uniform bool u_invert;
 in vec2 v_uv;
 out vec4 outColor;
-${COLOR_STAGES_GLSL}
 void main() {
-  vec4 texel = texture(u_texture, v_uv);
-  vec3 rgb = texel.a > 0.0 ? texel.rgb / texel.a : vec3(0.0);
-  rgb = applyColorStages(rgb);
-  outColor = vec4(rgb * texel.a, texel.a);
+  vec4 layer = texture(u_layer, v_uv);
+  vec4 mask = texture(u_mask, v_uv);
+  vec3 maskRgb = mask.a > 0.0 ? mask.rgb / mask.a : vec3(0.0);
+  float lum = (maskRgb.r + maskRgb.g + maskRgb.b) / 3.0;
+  float alpha = u_invert ? 1.0 - lum : lum;
+  vec3 layerRgb = layer.a > 0.0 ? layer.rgb / layer.a : vec3(0.0);
+  outColor = vec4(layerRgb * alpha, alpha);
 }
 `
 
@@ -431,7 +390,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
   try {
     programs = {
       layer: createProgram(gl, LAYER_VS, LAYER_FS),
-      colorPass: createProgram(gl, FULLSCREEN_VS, COLOR_PASS_FS),
+      colorPass: createProgram(gl, FULLSCREEN_VS, ADJUSTMENT_COLOR_PASS_FS),
       blit: createProgram(gl, FULLSCREEN_VS, BLIT_FS),
       fill: createProgram(gl, FULLSCREEN_VS, FILL_FS),
       blur: createProgram(gl, FULLSCREEN_VS, BLUR_FS),
@@ -439,6 +398,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
       final: createProgram(gl, FULLSCREEN_VS, FINAL_FS),
       unpremult: createProgram(gl, FULLSCREEN_VS, UNPREMULT_FS),
       premult: createProgram(gl, FULLSCREEN_VS, PREMULT_FS),
+      mask: createProgram(gl, FULLSCREEN_VS, MASK_FS),
     }
   } catch (err) {
     console.warn('[GPU Compositor] Shader init failed, falling back to 2D:', err?.message || err)
@@ -449,7 +409,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     layer: getUniforms(gl, programs.layer, [
       'u_resolution', 'u_texture', 'u_alpha', 'u_inputPremultiplied', 'u_applyColor', ...COLOR_UNIFORM_NAMES,
     ]),
-    colorPass: getUniforms(gl, programs.colorPass, ['u_texture', ...COLOR_UNIFORM_NAMES]),
+    colorPass: getUniforms(gl, programs.colorPass, ['u_texture', 'u_global', 'u_shadows', 'u_midtones', 'u_highlights', 'u_groupActive']),
     blit: getUniforms(gl, programs.blit, ['u_texture', 'u_opacity']),
     fill: getUniforms(gl, programs.fill, ['u_color']),
     blur: getUniforms(gl, programs.blur, ['u_texture', 'u_direction', 'u_sigma', 'u_taps']),
@@ -457,6 +417,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     final: getUniforms(gl, programs.final, ['u_texture']),
     unpremult: getUniforms(gl, programs.unpremult, ['u_texture']),
     premult: getUniforms(gl, programs.premult, ['u_texture']),
+    mask: getUniforms(gl, programs.mask, ['u_layer', 'u_mask', 'u_invert']),
   }
 
   // Fullscreen triangle-strip quad in clip space.
@@ -506,6 +467,11 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
   const scratchA = createTarget(width, height)
   const scratchB = createTarget(width, height)
   const downsampleTargets = new Map() // factor -> [targetA, targetB]
+  let maskScratch = null // lazy third full-res target; only mask users pay
+  const getMaskScratch = () => {
+    if (!maskScratch) maskScratch = createTarget(width, height)
+    return maskScratch
+  }
 
   // MSAA renderbuffer for layer quads so rotated/scaled clip edges stay
   // antialiased like canvas 2D drawImage. Fullscreen passes don't need it.
@@ -550,6 +516,15 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     gl.uniform1f(programUniforms.u_gamma, Number(settings?.gamma) || 0)
     gl.uniform1f(programUniforms.u_offset, Number(settings?.offset) || 0)
     gl.uniform1f(programUniforms.u_hue, Number(settings?.hue) || 0)
+  }
+
+  const setColorPassUniforms = (settings) => {
+    const values = buildAdjustmentUniformValues(settings)
+    gl.uniform1fv(uniforms.colorPass.u_global, values.global)
+    gl.uniform1fv(uniforms.colorPass.u_shadows, values.shadows)
+    gl.uniform1fv(uniforms.colorPass.u_midtones, values.midtones)
+    gl.uniform1fv(uniforms.colorPass.u_highlights, values.highlights)
+    gl.uniform1fv(uniforms.colorPass.u_groupActive, values.groupActive)
   }
 
   const uploadSource = (source, key, version) => {
@@ -621,24 +596,24 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     drawFullscreen()
   }
 
-  // Gaussian blur of scratchA in place (via scratchB), approximating CSS
+  // Gaussian blur of `target` in place (via `temp`), approximating CSS
   // blur(px). Large radii run at reduced resolution like Chromium does.
-  const blurScratchA = (blurPx) => {
+  const runGaussianBlur = (target, temp, blurPx) => {
     const sigma = Math.max(0.01, Number(blurPx) || 0)
     if (sigma <= 0.01) return
     const factor = sigma <= 8 ? 1 : (sigma <= 24 ? 2 : 4)
     const effectiveSigma = sigma / factor
     const taps = Math.min(MAX_BLUR_TAPS, Math.max(1, Math.ceil(effectiveSigma * 3)))
     if (factor === 1) {
-      runBlurPass(scratchA.texture, scratchB, [1, 0], effectiveSigma, taps)
-      runBlurPass(scratchB.texture, scratchA, [0, 1], effectiveSigma, taps)
+      runBlurPass(target.texture, temp, [1, 0], effectiveSigma, taps)
+      runBlurPass(temp.texture, target, [0, 1], effectiveSigma, taps)
       return
     }
     const [smallA, smallB] = getDownsamplePair(factor)
-    blitOnto(scratchA.texture, smallA, 1, false)
+    blitOnto(target.texture, smallA, 1, false)
     runBlurPass(smallA.texture, smallB, [1, 0], effectiveSigma, taps)
     runBlurPass(smallB.texture, smallA, [0, 1], effectiveSigma, taps)
-    blitOnto(smallA.texture, scratchA, 1, false)
+    blitOnto(smallA.texture, target, 1, false)
   }
 
   // Composite a full-frame layer texture onto the stage with opacity +
@@ -712,16 +687,16 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     drawFullscreen()
   }
 
-  // Apply GLSL effects to scratchA; the premultiplied result lands in
-  // scratchB (returned) so callers composite straight from there.
-  const runGlslEffectsPass = (effects, clipTime) => {
+  // Apply GLSL effects to `cur`; the premultiplied result lands in `other`
+  // (three hops: unpremult cur→other, effect other→cur, premult cur→other).
+  const runGlslEffectsPass = (effects, clipTime, cur, other) => {
     const pipeline = ensureGlslEffectsPipeline()
-    runFullscreenTexturePass(programs.unpremult, uniforms.unpremult, scratchA.texture, scratchB)
-    bindTarget(scratchA)
+    runFullscreenTexturePass(programs.unpremult, uniforms.unpremult, cur.texture, other)
+    bindTarget(cur)
     gl.disable(gl.BLEND)
     gl.useProgram(pipeline.program)
     gl.activeTexture(gl.TEXTURE0)
-    gl.bindTexture(gl.TEXTURE_2D, scratchB.texture)
+    gl.bindTexture(gl.TEXTURE_2D, other.texture)
     gl.uniform1i(pipeline.locate('u_image'), 0)
     gl.uniform2f(pipeline.locate('u_texelSize'), 1 / width, 1 / height)
     const values = getAnimatedGlslEffectUniforms(effects, clipTime)
@@ -732,8 +707,19 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     gl.bindVertexArray(pipeline.vao)
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
     gl.bindVertexArray(null)
-    runFullscreenTexturePass(programs.premult, uniforms.premult, scratchA.texture, scratchB)
-    return scratchB
+    runFullscreenTexturePass(programs.premult, uniforms.premult, cur.texture, other)
+  }
+
+  // Global + tonal color grade of `cur` into `other` (premultiplied in/out).
+  const runColorPass = (settings, cur, other) => {
+    bindTarget(other)
+    gl.disable(gl.BLEND)
+    gl.useProgram(programs.colorPass)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, cur.texture)
+    gl.uniform1i(uniforms.colorPass.u_texture, 0)
+    setColorPassUniforms(settings || {})
+    drawFullscreen()
   }
 
   // Render one layer sample (a textured quad with homogeneous corners) into
@@ -766,12 +752,12 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     gl.bindVertexArray(null)
   }
 
-  // Accumulate samples into scratchA (through the MSAA buffer when
-  // available), then blur, then GLSL effects, then composite onto the stage.
-  const renderLayerSamples = (samples, { colorSettings = null, blurPx = null, glslEffects = null, opacity = 1, blendMode = 'normal', inputPremultiplied = false }) => {
+  // Draw quads into `resolveTarget` (through the MSAA buffer when
+  // available) with premultiplied source-over accumulation.
+  const accumulateSamples = (samples, colorSettings, inputPremultiplied, resolveTarget) => {
     const accumulationTarget = msaaFbo
       ? { fbo: msaaFbo, width, height }
-      : scratchA
+      : resolveTarget
     bindTarget(accumulationTarget)
     gl.clearColor(0, 0, 0, 0)
     gl.clear(gl.COLOR_BUFFER_BIT)
@@ -781,18 +767,83 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     }
     if (msaaFbo) {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msaaFbo)
-      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, scratchA.fbo)
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, resolveTarget.fbo)
       gl.blitFramebuffer(0, 0, width, height, 0, 0, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST)
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     }
+  }
+
+  // Assemble one layer and composite it onto the stage. The pass order
+  // matches the 2D recipes exactly:
+  //   accumulate (per-sample color) → mask blur → mask apply → tonal →
+  //   blur → GLSL effects → post color → post blur → composite.
+  // Plain clips use colorSettings+blurPx; tonal clips use tonalSettings+
+  // blurPx (color handled post-accumulation like applyAdvancedAdjustments);
+  // masked clips use mask.blurPx pre-apply and postColorSettings/postBlurPx
+  // (color applied at composite time in the 2D path).
+  const renderLayerSamples = (samples, {
+    colorSettings = null,
+    mask = null,
+    tonalSettings = null,
+    blurPx = null,
+    glslEffects = null,
+    postColorSettings = null,
+    postBlurPx = null,
+    opacity = 1,
+    blendMode = 'normal',
+    inputPremultiplied = false,
+  }) => {
+    let cur = scratchA
+    let other = scratchB
+    const swap = () => { const t = cur; cur = other; other = t }
+
+    accumulateSamples(samples, colorSettings, inputPremultiplied, cur)
+
+    if (mask) {
+      const maskTarget = getMaskScratch()
+      accumulateSamples([{ texture: mask.texture, corners: mask.corners, weight: 1 }], null, false, maskTarget)
+      if (mask.blurPx != null && mask.blurPx > 0) {
+        runGaussianBlur(cur, other, mask.blurPx)
+        runGaussianBlur(maskTarget, other, mask.blurPx)
+      }
+      bindTarget(other)
+      gl.disable(gl.BLEND)
+      gl.useProgram(programs.mask)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, cur.texture)
+      gl.uniform1i(uniforms.mask.u_layer, 0)
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_2D, maskTarget.texture)
+      gl.uniform1i(uniforms.mask.u_mask, 1)
+      gl.uniform1i(uniforms.mask.u_invert, mask.invert ? 1 : 0)
+      drawFullscreen()
+      swap()
+    }
+
+    if (tonalSettings) {
+      runColorPass(tonalSettings, cur, other)
+      swap()
+    }
+
     if (blurPx != null && blurPx > 0) {
-      blurScratchA(blurPx)
+      runGaussianBlur(cur, other, blurPx)
     }
-    let compositeSource = scratchA.texture
+
     if (glslEffects) {
-      compositeSource = runGlslEffectsPass(glslEffects.effects, glslEffects.clipTime).texture
+      runGlslEffectsPass(glslEffects.effects, glslEffects.clipTime, cur, other)
+      swap()
     }
-    compositeOntoStage(compositeSource, opacity, blendMode)
+
+    if (postColorSettings) {
+      runColorPass(postColorSettings, cur, other)
+      swap()
+    }
+
+    if (postBlurPx != null && postBlurPx > 0) {
+      runGaussianBlur(cur, other, postBlurPx)
+    }
+
+    compositeOntoStage(cur.texture, opacity, blendMode)
   }
 
   const renderFinalToScratchB = () => {
@@ -826,12 +877,27 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
      *   { x, y (canvas px), u, v (source UV), w (1/projection) } — computed
      *   by the exporter's getClipQuadCorners so geometry math stays in one
      *   place.
-     * colorSettings: normalized non-tonal adjustment settings or null.
-     * glslEffects: { effects, clipTime } to run the shared GLSL effect
-     * shader on the assembled layer (post-blur, pre-composite) — the same
-     * device-space order as the 2D managed-effects path.
+     * colorSettings: normalized non-tonal adjustment settings applied
+     * per-sample (plain clips). tonalSettings: full settings incl. tonal
+     * groups, applied post-accumulation. mask: { source, sourceKey,
+     * sourceVersion, corners, invert, blurPx } — alpha-replacement mask.
+     * postColorSettings/postBlurPx: color+blur applied after mask/GLSL
+     * (masked clips, where the 2D path filtered at composite time).
+     * glslEffects: { effects, clipTime } for the shared GLSL effect shader.
      */
-    drawLayer({ samples, colorSettings = null, blurPx = null, glslEffects = null, opacity = 1, blendMode = 'normal', inputPremultiplied = false }) {
+    drawLayer({
+      samples,
+      colorSettings = null,
+      mask = null,
+      tonalSettings = null,
+      blurPx = null,
+      glslEffects = null,
+      postColorSettings = null,
+      postBlurPx = null,
+      opacity = 1,
+      blendMode = 'normal',
+      inputPremultiplied = false,
+    }) {
       const prepared = []
       for (const sample of samples) {
         if (!sample?.source || !sample?.corners) continue
@@ -842,7 +908,27 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
         })
       }
       if (prepared.length === 0) return
-      renderLayerSamples(prepared, { colorSettings, blurPx, glslEffects, opacity, blendMode, inputPremultiplied })
+      let preparedMask = null
+      if (mask?.source && mask?.corners) {
+        preparedMask = {
+          texture: uploadSource(mask.source, mask.sourceKey, mask.sourceVersion),
+          corners: mask.corners,
+          invert: !!mask.invert,
+          blurPx: mask.blurPx ?? null,
+        }
+      }
+      renderLayerSamples(prepared, {
+        colorSettings,
+        mask: preparedMask,
+        tonalSettings,
+        blurPx,
+        glslEffects,
+        postColorSettings,
+        postBlurPx,
+        opacity,
+        blendMode,
+        inputPremultiplied,
+      })
     },
 
     /**
@@ -852,22 +938,17 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
      * snapshot, matching the 2D path).
      */
     drawAdjustment({ corners, colorSettings = null, blurPx = null, glslEffects = null, opacity = 1, blendMode = 'normal' }) {
-      bindTarget(scratchA)
-      gl.disable(gl.BLEND)
-      gl.useProgram(programs.colorPass)
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, stages[stageIndex].texture)
-      gl.uniform1i(uniforms.colorPass.u_texture, 0)
-      setColorUniforms(uniforms.colorPass, colorSettings || {})
-      drawFullscreen()
+      // colorSettings may include tonal groups — the color pass handles
+      // global + shadows/midtones/highlights in one shader.
+      runColorPass(colorSettings || {}, stages[stageIndex], scratchA)
       if (blurPx != null && blurPx > 0) {
-        blurScratchA(blurPx)
+        runGaussianBlur(scratchA, scratchB, blurPx)
       }
       // The processed stage must end up in scratchB: renderLayerSamples
       // accumulates INTO scratchA, which would otherwise read and write the
       // same texture. The GLSL pass already lands there; otherwise copy.
       if (glslEffects) {
-        runGlslEffectsPass(glslEffects.effects, glslEffects.clipTime)
+        runGlslEffectsPass(glslEffects.effects, glslEffects.clipTime, scratchA, scratchB)
       } else {
         blitOnto(scratchA.texture, scratchB, 1, false)
       }
