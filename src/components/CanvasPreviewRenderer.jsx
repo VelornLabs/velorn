@@ -768,8 +768,12 @@ function CanvasPreviewRenderer({
       }
 
       const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
+      // Full bakes carry the transform INSIDE the baked pixels — drawing
+      // them with the live transform applies it twice (scale 162% became
+      // ~262%, keyframed moves re-animated on top of the baked motion).
+      // Legacy mask bakes keep the live transform by contract.
       const getSampleTransform = (sampleClipTime) => (
-        resolveClipTransformAtTime(sampleClipTime)
+        isFullBake ? clipTransform : resolveClipTransformAtTime(sampleClipTime)
       )
       const drawMediaSample = (targetCtx, source, sample, targetFilter = 'none') => {
         const sampleTransform = getSampleTransform(sample.clipTime)
