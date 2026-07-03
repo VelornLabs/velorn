@@ -416,7 +416,9 @@ function ExportPanel() {
       }
     }
     const onComplete = (data) => {
-      console.log('[ExportPanel] Worker export complete', data)
+      // Stringified so saved devtools logs keep nested fields (frameSources,
+      // perf) instead of collapsing them to {…}.
+      console.log('[ExportPanel] Worker export complete', JSON.stringify(data))
       setExportResult(data)
       setExportStatus('Export complete')
       setExportProgress(100)

@@ -29,6 +29,7 @@ import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerComp
 import { drawShape, getShapeCanvasRect } from '../utils/shapes'
 import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
 import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
+import { createClipFrameCursor, getFrameSourceStats, isWebCodecsExportEnabled, resetFrameSourceStats } from './exportFrameSource'
 
 const DEFAULT_SAMPLE_RATE = 44100
 const AUDIO_FETCH_TIMEOUT_MS = 15000
@@ -935,6 +936,31 @@ export const audioBufferToWav = (buffer) => {
 
 const formatFrameNumber = (index) => String(index).padStart(6, '0')
 
+/**
+ * Approximate source time for a clip at a timeline time — same math as the
+ * draw loop's inline computation (minus the video-element duration
+ * fallback). Used only to warm frame cursors in parallel before the serial
+ * draw loop; the draw loop's own computation stays authoritative.
+ */
+const getPreSeekSourceTime = (clip, timelineTime, usingCached) => {
+  const clipTime = timelineTime - (clip.startTime || 0)
+  if (usingCached) {
+    return clamp(clipTime, 0, Math.max(0, (Number(clip.duration) || 0) - 0.01))
+  }
+  const baseScale = clip.sourceTimeScale || (clip.timelineFps && clip.sourceFps
+    ? clip.timelineFps / clip.sourceFps
+    : 1)
+  const speed = Number(clip.speed)
+  const speedScale = Number.isFinite(speed) && speed > 0 ? speed : 1
+  const timeScale = baseScale * speedScale
+  const trimStart = clip.trimStart || 0
+  const rawTrimEnd = clip.trimEnd ?? clip.sourceDuration ?? trimStart
+  const trimEnd = Number.isFinite(rawTrimEnd) ? rawTrimEnd : trimStart
+  const rawSourceTime = trimStart + clipTime * timeScale
+  const maxSourceTime = clip.sourceDuration || clip.trimEnd || trimEnd
+  return Math.max(0, Math.min(rawSourceTime, Math.max(0, maxSourceTime - 0.001)))
+}
+
 export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   const timelineState = useTimelineStore.getState()
   const assetsState = useAssetsStore.getState()
@@ -1149,6 +1175,85 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     }
   }
   
+  // WebCodecs sequential decode (see exportFrameSource.js). Random-access
+  // <video> seeks dominate export time; qualifying clips route through a
+  // per-clip sequential decoder instead, falling back to the element path
+  // per clip on any doubt. Kill switch: localStorage
+  // 'comfystudio-export-webcodecs' = '0'.
+  const webCodecsEnabled = isWebCodecsExportEnabled()
+  const FRAME_CURSOR_PREFETCH_SEC = 3
+  // Per-phase wall-clock accumulators, surfaced in the completion payload so
+  // a single export run shows where render time actually goes.
+  const exportPerf = { yieldMs: 0, layersMs: 0, sampleMs: 0, readbackMs: 0, pipeMs: 0, preSeekBatches: 0, preSeekClips: 0 }
+  resetFrameSourceStats()
+  // At most ONE frame write is in flight at a time (order into FFmpeg's
+  // stdin must be preserved); it overlaps with the next frame's render.
+  let pendingFrameWrite = null
+  const clipFrameCursors = new Map() // clipId -> { promise, cursor, settled, clipEnd }
+  let webCodecsClipCount = 0
+  let elementPathClipCount = 0
+  const countedClipPaths = new Set()
+  const countClipPath = (clipId, usedCursor) => {
+    if (countedClipPaths.has(clipId)) return
+    countedClipPaths.add(clipId)
+    if (usedCursor) webCodecsClipCount += 1
+    else elementPathClipCount += 1
+  }
+
+  const getClipCursorEntry = (clip) => {
+    if (!webCodecsEnabled || clip.type !== 'video' || clip.reverse) return null
+    const existing = clipFrameCursors.get(clip.id)
+    if (existing) return existing
+    const cachedUrl = cachedVideoSources.get(clip.id)
+    const sourceUrl = cachedUrl || resolvedAssetUrls.get(clip.assetId)
+    if (!sourceUrl || failedVideoSources.has(sourceUrl)) return null
+    const usingCached = !!cachedUrl
+    const trimStart = usingCached ? 0 : (clip.trimStart || 0)
+    const rawTrimEnd = clip.trimEnd ?? clip.sourceDuration
+    const sourceEnd = usingCached
+      ? (Number(clip.duration) || null)
+      : (Number.isFinite(Number(rawTrimEnd)) && Number(rawTrimEnd) > trimStart ? Number(rawTrimEnd) : null)
+    const entry = {
+      cursor: null,
+      settled: false,
+      clipEnd: (Number(clip.startTime) || 0) + (Number(clip.duration) || 0),
+    }
+    entry.promise = createClipFrameCursor({
+      url: sourceUrl,
+      // Transitions sample source handles beyond the trim window
+      // (allowHandles), so decode from a bit before the in-point.
+      startTime: Math.max(0, trimStart - 1.5),
+      endTime: sourceEnd,
+      label: `clip ${clip.id}`,
+    }).then((cursor) => {
+      entry.cursor = cursor
+      entry.settled = true
+      return cursor
+    }).catch(() => {
+      entry.settled = true
+      return null
+    })
+    clipFrameCursors.set(clip.id, entry)
+    return entry
+  }
+
+  const closeClipCursorEntry = (entry) => {
+    if (!entry) return
+    if (entry.cursor) {
+      try { entry.cursor.close() } catch { /* ignore */ }
+      entry.cursor = null
+    } else if (entry.promise) {
+      entry.promise.then((cursor) => {
+        try { cursor?.close() } catch { /* ignore */ }
+      })
+    }
+  }
+
+  const closeAllFrameCursors = () => {
+    for (const entry of clipFrameCursors.values()) closeClipCursorEntry(entry)
+    clipFrameCursors.clear()
+  }
+
   const maskAssets = assetsState.assets.filter(asset => asset.type === 'mask')
   for (const mask of maskAssets) {
     if (!mask?.url && (!mask.maskFrames || mask.maskFrames.length === 0)) continue
@@ -1204,7 +1309,15 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   try {
   for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
     throwIfCancelled()
-    await yieldToMain()
+    // The rAF-based yield caps the loop at the display refresh rate. With
+    // sequential decode producing frames much faster than vsync, yield for
+    // UI paint only every few frames — still ~15Hz of UI updates during
+    // export, without a per-frame vsync wait.
+    if (frameIndex % 4 === 0) {
+      const yieldStart = performance.now()
+      await yieldToMain()
+      exportPerf.yieldMs += performance.now() - yieldStart
+    }
     throwIfCancelled()
     const targetTime = rangeStart + frameIndex * frameDuration + halfFrame
     const safeEnd = Math.max(rangeStart, rangeEnd - halfFrame)
@@ -1214,6 +1327,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     ctx.fillStyle = '#000000'
     ctx.fillRect(0, 0, width, height)
     
+    const layersStart = performance.now()
     const activeClips = timelineState.getActiveClipsAtTime(time)
     const rawVisualLayerClips = activeClips
       .filter(({ track }) => track.type === 'video')
@@ -1229,7 +1343,30 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       timelineWidth: width,
       timelineHeight: height,
     })
-    
+
+    // Warm every visible layer's decoder in parallel before the serial draw
+    // loop: per-layer decode waits overlap instead of accumulating (the
+    // dominant cost on multi-layer timelines). The authoritative per-clip
+    // sample below then hits an already-decoded frame. Failures are ignored
+    // here — the draw loop's sample handles fallback per clip.
+    if (webCodecsEnabled && visualLayerClips.length > 1) {
+      const preSeekStart = performance.now()
+      const preSeeks = []
+      for (const { clip } of visualLayerClips) {
+        if (!clip || clip.type !== 'video' || clip.reverse) continue
+        const cursor = clipFrameCursors.get(clip.id)?.cursor
+        if (!cursor || cursor.dead) continue
+        const preTarget = getPreSeekSourceTime(clip, time, cachedVideoSources.has(clip.id))
+        preSeeks.push(cursor.seek(preTarget).catch(() => {}))
+      }
+      if (preSeeks.length > 1) {
+        exportPerf.preSeekBatches += 1
+        exportPerf.preSeekClips += preSeeks.length
+        await Promise.all(preSeeks)
+      }
+      exportPerf.sampleMs += performance.now() - preSeekStart
+    }
+
     for (const { clip } of visualLayerClips) {
       if (clip.type === 'adjustment') {
         const clipTime = time - clip.startTime
@@ -1478,6 +1615,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       let sourceHeight = height
       let drawSource = null
       let videoElement = null
+      let sampleVideoSourceAt = null
       let sourceFps = null
       let maxSourceTime = null
       let sourceTime = null
@@ -1519,18 +1657,55 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         sourceFps = Number.isFinite(assetFps) && assetFps > 0 ? assetFps : null
 
         shouldBlend = !!(sourceFps && sourceFps < fps - 0.5 && !maskEffect && !hasMotionBlurSamples && !velocityMotionBlur)
+
+        // Prefer the WebCodecs sequential frame cursor; any doubt (or a
+        // mid-clip cursor failure) falls back to the element seek path.
+        let frameCursor = null
+        const cursorEntry = getClipCursorEntry(clip)
+        if (cursorEntry) {
+          frameCursor = cursorEntry.settled ? cursorEntry.cursor : await cursorEntry.promise
+          if (frameCursor?.dead || frameCursor?.closed) frameCursor = null
+        }
+        countClipPath(clip.id, !!frameCursor)
+        sampleVideoSourceAt = async (t) => {
+          const sampleStart = performance.now()
+          try {
+            if (frameCursor) {
+              try {
+                await frameCursor.seek(t)
+                return frameCursor.drawSource
+              } catch (err) {
+                console.warn('[Export] WebCodecs frame source failed mid-clip; using video element:', getMediaErrorMessage(err))
+                try { frameCursor.close() } catch { /* ignore */ }
+                frameCursor = null
+              }
+            }
+            await seekVideo(video, t, fastSeek)
+            return video
+          } finally {
+            exportPerf.sampleMs += performance.now() - sampleStart
+          }
+        }
+
         if (!shouldBlend) {
           try {
-            await seekVideo(video, clampedSourceTime, fastSeek)
+            drawSource = await sampleVideoSourceAt(clampedSourceTime)
           } catch (err) {
             if (sourceUrl) failedVideoSources.add(sourceUrl)
             console.warn('[Export] Failed to seek source video, skipping clip frame:', getMediaErrorMessage(err))
             continue
           }
+        } else {
+          // Blend paths sample per sub-frame through sampleVideoSourceAt.
+          drawSource = video
         }
-        sourceWidth = video.videoWidth || sourceWidth
-        sourceHeight = video.videoHeight || sourceHeight
-        drawSource = video
+        if (drawSource !== video) {
+          sourceWidth = drawSource.width || video.videoWidth || sourceWidth
+          sourceHeight = drawSource.height || video.videoHeight || sourceHeight
+        } else {
+          sourceWidth = video.videoWidth || sourceWidth
+          sourceHeight = video.videoHeight || sourceHeight
+        }
       } else if (clip.type === 'image') {
         const imageUrl = resolvedAssetUrls.get(clip.assetId) || asset?.url
         const image = imageUrl ? imageElements.get(imageUrl) : null
@@ -1599,14 +1774,14 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           const blend = clamp((sourceTime - baseTime) / sourceFrameDuration, 0, 1)
 
           try {
+            const baseSource = await sampleVideoSourceAt(baseTime)
             offCtx.globalAlpha = 1 - blend
-            await seekVideo(videoElement, baseTime, fastSeek)
-            offCtx.drawImage(videoElement, 0, 0, rect.width, rect.height)
+            offCtx.drawImage(baseSource, 0, 0, rect.width, rect.height)
 
             if (blend > 0.001 && nextTime > baseTime + 1e-6) {
+              const nextSource = await sampleVideoSourceAt(nextTime)
               offCtx.globalAlpha = blend
-              await seekVideo(videoElement, nextTime, fastSeek)
-              offCtx.drawImage(videoElement, 0, 0, rect.width, rect.height)
+              offCtx.drawImage(nextSource, 0, 0, rect.width, rect.height)
             }
           } catch (err) {
             console.warn('[Export] Failed blended seek/draw, skipping clip frame:', getMediaErrorMessage(err))
@@ -1709,13 +1884,13 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           const nextTime = Math.min(baseTime + sourceFrameDuration, (maxSourceTime ?? sourceTime) - 0.001)
           const blend = clamp((sourceTime - baseTime) / sourceFrameDuration, 0, 1)
           try {
+            const baseSource = await sampleVideoSourceAt(baseTime)
             offCtx.globalAlpha = 1 - blend
-            await seekVideo(videoElement, baseTime, fastSeek)
-            offCtx.drawImage(videoElement, 0, 0, rect.width, rect.height)
+            offCtx.drawImage(baseSource, 0, 0, rect.width, rect.height)
             if (blend > 0.001 && nextTime > baseTime + 1e-6) {
+              const nextSource = await sampleVideoSourceAt(nextTime)
               offCtx.globalAlpha = blend
-              await seekVideo(videoElement, nextTime, fastSeek)
-              offCtx.drawImage(videoElement, 0, 0, rect.width, rect.height)
+              offCtx.drawImage(nextSource, 0, 0, rect.width, rect.height)
             }
           } catch (err) {
             console.warn('[Export] Failed blended seek/draw, skipping clip frame:', getMediaErrorMessage(err))
@@ -1794,14 +1969,14 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const blend = clamp((sourceTime - baseTime) / sourceFrameDuration, 0, 1)
 
         try {
+          const baseSource = await sampleVideoSourceAt(baseTime)
           ctx.globalAlpha = clipOpacity * (1 - blend)
-          await seekVideo(videoElement, baseTime, fastSeek)
-          ctx.drawImage(videoElement, 0, 0, rect.width, rect.height)
+          ctx.drawImage(baseSource, 0, 0, rect.width, rect.height)
 
           if (blend > 0.001 && nextTime > baseTime + 1e-6) {
+            const nextSource = await sampleVideoSourceAt(nextTime)
             ctx.globalAlpha = clipOpacity * blend
-            await seekVideo(videoElement, nextTime, fastSeek)
-            ctx.drawImage(videoElement, 0, 0, rect.width, rect.height)
+            ctx.drawImage(nextSource, 0, 0, rect.width, rect.height)
           }
         } catch (err) {
           console.warn('[Export] Failed blended seek/draw, skipping clip frame:', getMediaErrorMessage(err))
@@ -1898,17 +2073,35 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       ctx.fillRect(0, 0, width, height)
       ctx.restore()
     }
-    
+    exportPerf.layersMs += performance.now() - layersStart
+
     if (framePipeSessionId) {
+      const readbackStart = performance.now()
       const frameData = ctx.getImageData(0, 0, width, height)
       const pixelData = frameData.data
       const frameBuffer = pixelData.byteOffset === 0 && pixelData.byteLength === pixelData.buffer.byteLength
         ? pixelData.buffer
         : pixelData.buffer.slice(pixelData.byteOffset, pixelData.byteOffset + pixelData.byteLength)
-      const writeResult = await window.electronAPI.writeFrameToPipe(framePipeSessionId, frameBuffer)
-      if (!writeResult?.success) {
-        throw new Error(writeResult?.error || 'Failed to write frame to FFmpeg pipe.')
+      exportPerf.readbackMs += performance.now() - readbackStart
+      // Pipeline: the previous frame's write ran while this frame rendered.
+      // Settle it, then fire this frame's write without waiting on it.
+      const pipeWriteStart = performance.now()
+      if (pendingFrameWrite) {
+        const previousWrite = await pendingFrameWrite
+        if (!previousWrite?.success) {
+          pendingFrameWrite = null
+          throw new Error(previousWrite?.error || 'Failed to write frame to FFmpeg pipe.')
+        }
       }
+      pendingFrameWrite = window.electronAPI.writeFrameToPipe(framePipeSessionId, frameBuffer)
+      exportPerf.pipeMs += performance.now() - pipeWriteStart
+      // Real task-queue yield while the write is in flight: decoder output
+      // callbacks are event-loop tasks, and this loop is otherwise mostly
+      // synchronous — without yielding, decoded frames sit undelivered
+      // until the next seek is forced to wait for them.
+      const taskYieldStart = performance.now()
+      await yieldToEventLoop()
+      exportPerf.yieldMs += performance.now() - taskYieldStart
     } else {
       const frameBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
       const frameBuffer = await frameBlob.arrayBuffer()
@@ -1928,8 +2121,43 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     if (frameIndex > 0 && frameIndex % 10 === 0) {
       await yieldToEventLoop()
     }
+
+    // Frame-cursor lifecycle: warm decoders for clips that start soon so
+    // cuts don't pay init latency, and release decoders (a scarce hardware
+    // resource) for clips the playhead has passed.
+    if (webCodecsEnabled) {
+      for (const clip of videoClips) {
+        if (clipFrameCursors.has(clip.id)) continue
+        const clipStart = Number(clip.startTime) || 0
+        if (clipStart > time && clipStart <= time + FRAME_CURSOR_PREFETCH_SEC) {
+          getClipCursorEntry(clip)
+        }
+      }
+      for (const [clipId, entry] of clipFrameCursors) {
+        if (time > entry.clipEnd + 0.25) {
+          closeClipCursorEntry(entry)
+          clipFrameCursors.delete(clipId)
+        }
+      }
+    }
   }
+  if (pendingFrameWrite) {
+    const finalWrite = await pendingFrameWrite
+    pendingFrameWrite = null
+    if (!finalWrite?.success) {
+      throw new Error(finalWrite?.error || 'Failed to write frame to FFmpeg pipe.')
+    }
+  }
+  if (webCodecsEnabled) {
+    console.log(`[Export] Frame sources: ${webCodecsClipCount} clip(s) via WebCodecs, ${elementPathClipCount} via video element`)
+  }
+  closeAllFrameCursors()
   } catch (err) {
+    closeAllFrameCursors()
+    if (pendingFrameWrite) {
+      pendingFrameWrite.catch(() => {})
+      pendingFrameWrite = null
+    }
     if (framePipeSessionId) {
       try {
         await window.electronAPI.abortFramePipe(framePipeSessionId)
@@ -2267,9 +2495,28 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   
   onProgress({ status: EXPORT_STATUS.done, progress: 100 })
   
+  const perFrameMs = (ms) => (totalFrames > 0 ? Number((ms / totalFrames).toFixed(2)) : 0)
   return {
     outputPath,
     encoderUsed: encodeResult.encoderUsed || null,
+    // Surfaced in the main window's '[ExportPanel] Worker export complete'
+    // log — the export runs in a hidden worker window whose own console
+    // isn't visible in normal devtools captures.
+    frameSources: webCodecsEnabled
+      ? { webcodecs: webCodecsClipCount, element: elementPathClipCount }
+      : null,
+    perf: {
+      frames: totalFrames,
+      perFrameMs: {
+        mediaSample: perFrameMs(exportPerf.sampleMs),
+        layerComposite: perFrameMs(exportPerf.layersMs - exportPerf.sampleMs),
+        readback: perFrameMs(exportPerf.readbackMs),
+        pipeWrite: perFrameMs(exportPerf.pipeMs),
+        uiYield: perFrameMs(exportPerf.yieldMs),
+      },
+      preSeek: { batches: exportPerf.preSeekBatches, clips: exportPerf.preSeekClips },
+      frameSource: getFrameSourceStats(),
+    },
   }
 }
 
