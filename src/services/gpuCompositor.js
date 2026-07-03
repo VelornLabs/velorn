@@ -22,6 +22,12 @@
  * 2D path automatically.
  */
 
+import {
+  GLSL_EFFECT_VERTEX_SOURCE,
+  GLSL_EFFECT_FRAGMENT_SOURCE,
+  getAnimatedGlslEffectUniforms,
+} from '../utils/glslEffects'
+
 const GPU_EXPORT_FLAG_KEY = 'comfystudio-export-gpu'
 
 export const isGpuExportEnabled = () => {
@@ -278,6 +284,31 @@ void main() {
 }
 `
 
+// Wrap passes for the GLSL effects program: the effect shaders were
+// authored against straight-alpha input (the 2D path fed them
+// unpremultiplied canvases), while the stage is premultiplied.
+const UNPREMULT_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_texture;
+in vec2 v_uv;
+out vec4 outColor;
+void main() {
+  vec4 texel = texture(u_texture, v_uv);
+  outColor = vec4(texel.a > 0.0 ? texel.rgb / texel.a : vec3(0.0), texel.a);
+}
+`
+
+const PREMULT_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_texture;
+in vec2 v_uv;
+out vec4 outColor;
+void main() {
+  vec4 texel = texture(u_texture, v_uv);
+  outColor = vec4(texel.rgb * texel.a, texel.a);
+}
+`
+
 // Readback pass: unpremultiply and flip vertically so readPixels returns
 // the same top-down straight RGBA that getImageData fed the FFmpeg pipe.
 const FINAL_FS = `#version 300 es
@@ -304,17 +335,18 @@ const compileShader = (gl, type, source) => {
   return shader
 }
 
-const createProgram = (gl, vsSource, fsSource) => {
+const createProgram = (gl, vsSource, fsSource, attribBindings = null) => {
   const vs = compileShader(gl, gl.VERTEX_SHADER, vsSource)
   const fs = compileShader(gl, gl.FRAGMENT_SHADER, fsSource)
   const program = gl.createProgram()
   gl.attachShader(program, vs)
   gl.attachShader(program, fs)
   // Pin attribute locations to match the vertexAttribPointer indices used
-  // by both VAOs (bindings for attributes a shader lacks are ignored).
-  gl.bindAttribLocation(program, 0, 'a_pos')
-  gl.bindAttribLocation(program, 1, 'a_uv')
-  gl.bindAttribLocation(program, 2, 'a_w')
+  // by the VAOs (bindings for attributes a shader lacks are ignored).
+  const bindings = attribBindings || { a_pos: 0, a_uv: 1, a_w: 2 }
+  for (const [name, location] of Object.entries(bindings)) {
+    gl.bindAttribLocation(program, location, name)
+  }
   gl.linkProgram(program)
   gl.deleteShader(vs)
   gl.deleteShader(fs)
@@ -405,6 +437,8 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
       blur: createProgram(gl, FULLSCREEN_VS, BLUR_FS),
       composite: createProgram(gl, FULLSCREEN_VS, COMPOSITE_FS),
       final: createProgram(gl, FULLSCREEN_VS, FINAL_FS),
+      unpremult: createProgram(gl, FULLSCREEN_VS, UNPREMULT_FS),
+      premult: createProgram(gl, FULLSCREEN_VS, PREMULT_FS),
     }
   } catch (err) {
     console.warn('[GPU Compositor] Shader init failed, falling back to 2D:', err?.message || err)
@@ -421,6 +455,8 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     blur: getUniforms(gl, programs.blur, ['u_texture', 'u_direction', 'u_sigma', 'u_taps']),
     composite: getUniforms(gl, programs.composite, ['u_dst', 'u_src', 'u_opacity', 'u_blendMode']),
     final: getUniforms(gl, programs.final, ['u_texture']),
+    unpremult: getUniforms(gl, programs.unpremult, ['u_texture']),
+    premult: getUniforms(gl, programs.premult, ['u_texture']),
   }
 
   // Fullscreen triangle-strip quad in clip space.
@@ -605,13 +641,14 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     blitOnto(smallA.texture, scratchA, 1, false)
   }
 
-  // Composite scratchA onto the stage with opacity + blend mode. Normal
-  // blend draws straight onto the current stage; the fancy modes sample the
-  // stage as a texture, so they write to the other stage and swap.
-  const compositeScratchAOntoStage = (opacity, blendMode) => {
+  // Composite a full-frame layer texture onto the stage with opacity +
+  // blend mode. Normal blend draws straight onto the current stage; the
+  // fancy modes sample the stage as a texture, so they write to the other
+  // stage and swap.
+  const compositeOntoStage = (sourceTexture, opacity, blendMode) => {
     const modeId = BLEND_MODE_IDS[blendMode] || 0
     if (modeId === 0) {
-      blitOnto(scratchA.texture, stages[stageIndex], opacity, true)
+      blitOnto(sourceTexture, stages[stageIndex], opacity, true)
       return
     }
     const src = stages[stageIndex]
@@ -623,12 +660,80 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     gl.bindTexture(gl.TEXTURE_2D, src.texture)
     gl.uniform1i(uniforms.composite.u_dst, 0)
     gl.activeTexture(gl.TEXTURE1)
-    gl.bindTexture(gl.TEXTURE_2D, scratchA.texture)
+    gl.bindTexture(gl.TEXTURE_2D, sourceTexture)
     gl.uniform1i(uniforms.composite.u_src, 1)
     gl.uniform1f(uniforms.composite.u_opacity, opacity)
     gl.uniform1i(uniforms.composite.u_blendMode, modeId)
     drawFullscreen()
     stageIndex = dstIndex
+  }
+
+  // ---- GLSL effects pass (native port of utils/glslEffects.js) ----------
+  // Same fragment shader and uniform math as the 2D path's renderer, run
+  // FBO-to-FBO instead of bouncing through canvases and a second GL
+  // context. The effect shaders expect straight alpha and v=0 at the image
+  // bottom; the stage textures are premultiplied and bottom-up, so wrap
+  // with unpremult/premult passes — orientation already matches.
+  let glslEffectsPipeline = null
+  const ensureGlslEffectsPipeline = () => {
+    if (glslEffectsPipeline) return glslEffectsPipeline
+    const program = createProgram(gl, GLSL_EFFECT_VERTEX_SOURCE, GLSL_EFFECT_FRAGMENT_SOURCE, { a_position: 0, a_texCoord: 1 })
+    const vao = gl.createVertexArray()
+    gl.bindVertexArray(vao)
+    const positionBuffer = gl.createBuffer()
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW)
+    gl.enableVertexAttribArray(0)
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
+    const texCoordBuffer = gl.createBuffer()
+    gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW)
+    gl.enableVertexAttribArray(1)
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0)
+    gl.bindVertexArray(null)
+    const uniformLocations = new Map()
+    const locate = (name) => {
+      if (!uniformLocations.has(name)) {
+        uniformLocations.set(name, gl.getUniformLocation(program, name))
+      }
+      return uniformLocations.get(name)
+    }
+    glslEffectsPipeline = { program, vao, locate }
+    return glslEffectsPipeline
+  }
+
+  const runFullscreenTexturePass = (program, programUniforms, sourceTexture, target) => {
+    bindTarget(target)
+    gl.disable(gl.BLEND)
+    gl.useProgram(program)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, sourceTexture)
+    gl.uniform1i(programUniforms.u_texture, 0)
+    drawFullscreen()
+  }
+
+  // Apply GLSL effects to scratchA; the premultiplied result lands in
+  // scratchB (returned) so callers composite straight from there.
+  const runGlslEffectsPass = (effects, clipTime) => {
+    const pipeline = ensureGlslEffectsPipeline()
+    runFullscreenTexturePass(programs.unpremult, uniforms.unpremult, scratchA.texture, scratchB)
+    bindTarget(scratchA)
+    gl.disable(gl.BLEND)
+    gl.useProgram(pipeline.program)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, scratchB.texture)
+    gl.uniform1i(pipeline.locate('u_image'), 0)
+    gl.uniform2f(pipeline.locate('u_texelSize'), 1 / width, 1 / height)
+    const values = getAnimatedGlslEffectUniforms(effects, clipTime)
+    for (const key of Object.keys(values)) {
+      const location = pipeline.locate(`u_${key}`)
+      if (location) gl.uniform1f(location, values[key])
+    }
+    gl.bindVertexArray(pipeline.vao)
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+    gl.bindVertexArray(null)
+    runFullscreenTexturePass(programs.premult, uniforms.premult, scratchA.texture, scratchB)
+    return scratchB
   }
 
   // Render one layer sample (a textured quad with homogeneous corners) into
@@ -662,8 +767,8 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
   }
 
   // Accumulate samples into scratchA (through the MSAA buffer when
-  // available), then blur, then composite onto the stage.
-  const renderLayerSamples = (samples, { colorSettings = null, blurPx = null, opacity = 1, blendMode = 'normal', inputPremultiplied = false }) => {
+  // available), then blur, then GLSL effects, then composite onto the stage.
+  const renderLayerSamples = (samples, { colorSettings = null, blurPx = null, glslEffects = null, opacity = 1, blendMode = 'normal', inputPremultiplied = false }) => {
     const accumulationTarget = msaaFbo
       ? { fbo: msaaFbo, width, height }
       : scratchA
@@ -683,7 +788,11 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     if (blurPx != null && blurPx > 0) {
       blurScratchA(blurPx)
     }
-    compositeScratchAOntoStage(opacity, blendMode)
+    let compositeSource = scratchA.texture
+    if (glslEffects) {
+      compositeSource = runGlslEffectsPass(glslEffects.effects, glslEffects.clipTime).texture
+    }
+    compositeOntoStage(compositeSource, opacity, blendMode)
   }
 
   const renderFinalToScratchB = () => {
@@ -718,8 +827,11 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
      *   by the exporter's getClipQuadCorners so geometry math stays in one
      *   place.
      * colorSettings: normalized non-tonal adjustment settings or null.
+     * glslEffects: { effects, clipTime } to run the shared GLSL effect
+     * shader on the assembled layer (post-blur, pre-composite) — the same
+     * device-space order as the 2D managed-effects path.
      */
-    drawLayer({ samples, colorSettings = null, blurPx = null, opacity = 1, blendMode = 'normal', inputPremultiplied = false }) {
+    drawLayer({ samples, colorSettings = null, blurPx = null, glslEffects = null, opacity = 1, blendMode = 'normal', inputPremultiplied = false }) {
       const prepared = []
       for (const sample of samples) {
         if (!sample?.source || !sample?.corners) continue
@@ -730,7 +842,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
         })
       }
       if (prepared.length === 0) return
-      renderLayerSamples(prepared, { colorSettings, blurPx, opacity, blendMode, inputPremultiplied })
+      renderLayerSamples(prepared, { colorSettings, blurPx, glslEffects, opacity, blendMode, inputPremultiplied })
     },
 
     /**
@@ -739,7 +851,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
      * transformed quad (camera shake on adjustment layers moves the whole
      * snapshot, matching the 2D path).
      */
-    drawAdjustment({ corners, colorSettings = null, blurPx = null, opacity = 1, blendMode = 'normal' }) {
+    drawAdjustment({ corners, colorSettings = null, blurPx = null, glslEffects = null, opacity = 1, blendMode = 'normal' }) {
       bindTarget(scratchA)
       gl.disable(gl.BLEND)
       gl.useProgram(programs.colorPass)
@@ -751,13 +863,17 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
       if (blurPx != null && blurPx > 0) {
         blurScratchA(blurPx)
       }
-      // scratchA now holds the processed stage; draw it back as a layer.
-      // scratchA's texture rows are bottom-up relative to canvas space, so
-      // flip V in the UVs.
+      // The processed stage must end up in scratchB: renderLayerSamples
+      // accumulates INTO scratchA, which would otherwise read and write the
+      // same texture. The GLSL pass already lands there; otherwise copy.
+      if (glslEffects) {
+        runGlslEffectsPass(glslEffects.effects, glslEffects.clipTime)
+      } else {
+        blitOnto(scratchA.texture, scratchB, 1, false)
+      }
+      // scratchB's texture rows are bottom-up relative to canvas space, so
+      // flip V in the UVs for the transformed draw back over the stage.
       const flippedCorners = corners.map((corner) => ({ ...corner, v: 1 - corner.v }))
-      // Copy scratchA aside first: renderLayerSamples accumulates INTO
-      // scratchA, which would otherwise read and write the same texture.
-      blitOnto(scratchA.texture, scratchB, 1, false)
       renderLayerSamples(
         [{ texture: scratchB.texture, corners: flippedCorners, weight: 1 }],
         { opacity, blendMode, inputPremultiplied: true }

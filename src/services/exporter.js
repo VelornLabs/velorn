@@ -671,6 +671,19 @@ const hasManagedPixelOrVignetteEffect = (clip, clipTime) => {
     || hasLetterboxEffect(effects, clipTime)
 }
 
+// True when a clip's managed effects are exclusively GLSL shader effects —
+// those run natively in the GPU compositor (shared shader source, zero
+// readbacks). Anything else in the managed chain (ImageData passes, glow,
+// vignette, letterbox) still needs the 2D fallback.
+const hasOnlyGlslManagedEffects = (clip, clipTime) => {
+  const effects = clip?.effects || []
+  return hasGlslEffect(effects)
+    && !hasPixelFilterEffect(effects, clipTime)
+    && !hasGlowEffect(effects)
+    && !hasVignetteEffect(effects, clipTime)
+    && !hasLetterboxEffect(effects, clipTime)
+}
+
 /**
  * Apply a clip's managed pixel effects (chromatic aberration, film grain) and
  * vignette to an offscreen canvas that already contains the clip content at
@@ -1396,12 +1409,15 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           const blendMode = clipTransform?.blendMode || 'normal'
           const usesTonalAdjustments = hasTonalAdjustmentEffect(adjustmentSettings)
 
-          if (!usesTonalAdjustments && !usesManagedPixelEffects) {
-            // Color/blur-only adjustment layers grade the GPU stage directly.
+          const glslOnlyManaged = usesManagedPixelEffects && hasOnlyGlslManagedEffects(clip, clipTime)
+          if (!usesTonalAdjustments && (!usesManagedPixelEffects || glslOnlyManaged)) {
+            // Color/blur-only and GLSL-only adjustment layers grade the GPU
+            // stage directly — no per-frame snapshot readback.
             gpu.drawAdjustment({
               corners,
               colorSettings: adjustmentSettings,
               blurPx: adjustmentSettings.blur > 0 ? adjustmentSettings.blur : null,
+              glslEffects: glslOnlyManaged ? { effects: clip.effects, clipTime } : null,
               opacity: baseOpacity,
               blendMode,
             })
@@ -1943,7 +1959,11 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         continue
       }
       
-      if (usesManagedPixelEffects && !maskEffect) {
+      // GLSL-only managed effects run natively in the GPU compositor; the
+      // 2D managed fallback below is for everything else.
+      const gpuNativeGlsl = gpu && usesManagedPixelEffects && !maskEffect && !velocityMotionBlur
+        && !usesTonalAdjustments && hasOnlyGlslManagedEffects(clip, clipTime)
+      if (usesManagedPixelEffects && !maskEffect && !gpuNativeGlsl) {
         let buffers = maskRenderBuffers.get(clip.id)
         if (!buffers) {
           const offCanvas = document.createElement('canvas')
@@ -2177,6 +2197,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             samples: gpuSamples,
             colorSettings: gpuColorSettings,
             blurPx: gpuBlurPx,
+            glslEffects: gpuNativeGlsl ? { effects: clip.effects, clipTime } : null,
             opacity: clipOpacity,
             blendMode,
           })

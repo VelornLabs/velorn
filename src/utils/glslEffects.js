@@ -997,6 +997,15 @@ function getExportRenderer(width, height) {
   return renderer
 }
 
+// Shader sources are also consumed by the export GPU compositor
+// (services/gpuCompositor.js) so effects render identically there — single
+// source of truth, same pattern as transitionStyles. Uniform values come
+// from getAnimatedGlslEffectUniforms; every key maps to uniform `u_<key>`.
+export {
+  VERTEX_SHADER_SOURCE as GLSL_EFFECT_VERTEX_SOURCE,
+  FRAGMENT_SHADER_SOURCE as GLSL_EFFECT_FRAGMENT_SOURCE,
+}
+
 export function applyGlslEffectsToCanvas(canvas, ctx, width, height, effects, clipTime = 0, qualityScale = 1) {
   if (!canvas || !ctx || !hasGlslEffect(effects)) return false
   try {
