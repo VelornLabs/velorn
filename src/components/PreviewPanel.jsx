@@ -258,7 +258,10 @@ const PREVIEW_TRANSFORM_CONTROLS_KEY = 'previewShowTransformControls'
 const PREVIEW_CHUNK_DURATION = 5
 const PREVIEW_CHUNK_COUNT = 4
 const PREVIEW_CHUNK_EPSILON = 0.03
-const SHOW_PREVIEW_CHUNK_CACHE_BUTTON = false
+// Re-enabled July 2026: chunk caching rides the export pipeline, which is
+// ~3x faster since the WebCodecs sequential-decode rework — the slowness
+// that got this button benched is gone.
+const SHOW_PREVIEW_CHUNK_CACHE_BUTTON = true
 
 function isSamePreviewChunkRange(a, b) {
   return Math.abs((Number(a?.rangeStart) || 0) - (Number(b?.rangeStart) || 0)) < 0.001

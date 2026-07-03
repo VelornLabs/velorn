@@ -3536,7 +3536,7 @@ export const useTimelineStore = create(
    * @param {string} cacheUrl - Blob URL of the cached video
    * @param {string} cachePath - Optional path to the cached file on disk
    */
-  setCacheUrl: (clipId, cacheUrl, cachePath = null) => {
+  setCacheUrl: (clipId, cacheUrl, cachePath = null, cacheKind = null, cacheSignature = null) => {
     set((state) => ({
       clips: state.clips.map(clip => {
         if (clip.id !== clipId) return clip
@@ -3544,6 +3544,11 @@ export const useTimelineStore = create(
           ...clip,
           cacheUrl,
           cachePath, // Path to the file on disk (for persistence)
+          // 'full' bakes carry transform/effects/speed/text inside the file
+          // and are validated by content signature; legacy (null) bakes keep
+          // the old mask-only contract.
+          cacheKind: cacheUrl ? cacheKind : null,
+          cacheSignature: cacheUrl ? cacheSignature : null,
           cacheStatus: cacheUrl ? 'cached' : 'none',
           cacheProgress: cacheUrl ? 100 : 0,
         }
@@ -3585,6 +3590,9 @@ export const useTimelineStore = create(
           cacheStatus: 'none',
           cacheProgress: 0,
           cacheUrl: null,
+          cachePath: null,
+          cacheKind: null,
+          cacheSignature: null,
         }
       })
     }))

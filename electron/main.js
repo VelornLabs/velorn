@@ -5551,7 +5551,27 @@ ipcMain.handle('export:startFramePipe', async (event, options = {}) => {
     args.push('-t', String(duration))
   }
 
-  const encoderUsed = appendExportVideoEncoderArgs(args, options)
+  let encoderUsed
+  if (options.alpha) {
+    // Alpha-preserving path for per-clip render bakes: VP9 with an alpha
+    // plane so baked text/masked/transformed clips still composite over
+    // lower layers. auto-alt-ref MUST be off — libvpx rejects transparency
+    // with alt-ref frames. Realtime deadline keeps bakes fast; these are
+    // preview caches, not deliverables.
+    args.push(
+      '-c:v', 'libvpx-vp9',
+      '-pix_fmt', 'yuva420p',
+      '-deadline', 'realtime',
+      '-cpu-used', '8',
+      '-row-mt', '1',
+      '-crf', '30',
+      '-b:v', '0',
+      '-auto-alt-ref', '0'
+    )
+    encoderUsed = 'libvpx-vp9-alpha'
+  } else {
+    encoderUsed = appendExportVideoEncoderArgs(args, options)
+  }
   args.push(outputPath)
 
   const sessionId = crypto.randomUUID()

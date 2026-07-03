@@ -28,6 +28,7 @@ import {
 import { applyGlslEffectsToCanvas, canUseGlslEffects, getGlslPreviewQualityScale, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
 import { applyTransitionClip, getFadeOverlayInfo, getTransitionStyleForClip } from '../utils/transitionStyles'
+import { isFullBakeFresh } from '../utils/clipBakeSignature'
 import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
 import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 import {
@@ -108,8 +109,15 @@ function getClipPlaybackTimeAtTimeline(clip, timelineTime, endOffset = 0.01, opt
 
 function resolvePreviewUrl(clip, getAssetById, useProxyPlaybackForAssets) {
   if (!clip) return null
-  if (clip.type === 'video' && clip.cacheStatus === 'cached' && clip.cacheUrl) {
-    return clip.cacheUrl
+  // Render caches: legacy (mask) bakes apply to video clips; full bakes
+  // (cacheKind 'full') turn any clip type into a video source but are only
+  // used while their content signature is fresh.
+  if (clip.cacheStatus === 'cached' && clip.cacheUrl) {
+    if (clip.cacheKind === 'full') {
+      if (isFullBakeFresh(clip)) return clip.cacheUrl
+    } else if (clip.type === 'video') {
+      return clip.cacheUrl
+    }
   }
   const asset = clip.assetId ? getAssetById(clip.assetId) : null
   if (clip.type === 'video') {
@@ -543,11 +551,19 @@ function CanvasPreviewRenderer({
     const height = state.height
     const getAssetById = useAssetsStore.getState().getAssetById
     const clipTime = time - (clip.startTime || 0)
+    // Full render bakes carry transform/effects/adjustments/masks/speed and
+    // text animation inside the baked file; only opacity + blend mode (and
+    // transitions) stay live. Stale bakes (content edited since render)
+    // automatically fall back to the live path.
+    const isFullBake = isFullBakeFresh(clip)
     const transitionStyle = getTransitionStyleForClip(transitionInfo, clip)
     const resolveClipTransformAtTime = (sampleClipTime) => (
       applyEffectsToTransform(getAnimatedTransform(clip, sampleClipTime) || clip.transform || {}, clip.effects, sampleClipTime)
     )
-    const clipTransform = resolveClipTransformAtTime(clipTime)
+    const liveClipTransform = resolveClipTransformAtTime(clipTime)
+    const clipTransform = isFullBake
+      ? { opacity: liveClipTransform.opacity, blendMode: liveClipTransform.blendMode }
+      : liveClipTransform
     const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
     const clipOpacity = (transitionStyle?.opacity ?? 1) * baseOpacity
     if (clipOpacity <= 0.001 || transitionStyle?.display === false) return
@@ -555,18 +571,18 @@ function CanvasPreviewRenderer({
     const blendMode = clipTransform?.blendMode || 'normal'
     const blurPx = transitionStyle?.blur ?? (clipTransform?.blur > 0 ? clipTransform.blur : null)
     const adjustmentSettings = normalizeAdjustmentSettings(
-      getAnimatedAdjustmentSettings(clip, clipTime) || clip.adjustments || {}
+      isFullBake ? {} : (getAnimatedAdjustmentSettings(clip, clipTime) || clip.adjustments || {})
     )
     const usesTonalAdjustments = hasTonalAdjustmentEffect(adjustmentSettings)
     const adjustmentFilter = buildCssFilterFromAdjustments(adjustmentSettings)
     const clipAdjustmentFilterValue = adjustmentFilter !== 'none' ? adjustmentFilter : null
-    const usesManagedEffects = hasManagedCanvasEffect(clip, clipTime)
+    const usesManagedEffects = !isFullBake && hasManagedCanvasEffect(clip, clipTime)
     const glslQualityScale = getGlslPreviewQualityScale(state.glslPreviewQuality)
     const timelineFps = state.timelineFps || state.fps || 24
-    const velocityMotionBlur = canUseVelocityMotionBlur()
+    const velocityMotionBlur = (!isFullBake && canUseVelocityMotionBlur())
       ? getVelocityMotionBlurOptions(clip, clipTime, timelineFps, resolveClipTransformAtTime)
       : null
-    const motionBlurSamples = velocityMotionBlur
+    const motionBlurSamples = (velocityMotionBlur || isFullBake)
       ? [{ clipTime, weight: 1 }]
       : getMotionBlurSamples(clip, clipTime, timelineFps, 'preview')
     const hasMotionBlurSamples = motionBlurSamples.length > 1
@@ -590,7 +606,7 @@ function CanvasPreviewRenderer({
     if (blurPx != null) filterParts.push(`blur(${blurPx}px)`)
     offCtx.filter = filterParts.length > 0 ? filterParts.join(' ') : 'none'
 
-    if (clip.type === 'text' || clip.type === 'shape') {
+    if ((clip.type === 'text' || clip.type === 'shape') && !isFullBake) {
       const isShapeClip = clip.type === 'shape'
       const getTextShapeFrame = (sampleClipTime) => {
         const animatedShapeProperties = isShapeClip ? getAnimatedShapeProperties(clip, sampleClipTime) : null
@@ -666,8 +682,8 @@ function CanvasPreviewRenderer({
       let drawSource = null
       let sourceWidth = width
       let sourceHeight = height
-      const isCachedRender = clip.type === 'video' && clip.cacheStatus === 'cached' && clip.cacheUrl && clipUrl === clip.cacheUrl
-      if (clip.type === 'video') {
+      const isCachedRender = clip.cacheStatus === 'cached' && clip.cacheUrl && clipUrl === clip.cacheUrl
+      if (clip.type === 'video' || isFullBake) {
         const video = videoCache.getVideoElement({ ...clip, url: clipUrl })
         if (!video) {
           offCtx.restore()
@@ -950,7 +966,7 @@ function CanvasPreviewRenderer({
 
     if (shouldGateVideoReadiness) {
       for (const { clip } of visualClips) {
-        if (!clip || clip.type !== 'video') continue
+        if (!clip || (clip.type !== 'video' && !isFullBakeFresh(clip))) continue
         const seekDriven = isSeekDrivenPlayback(state, clip)
         const isTransitionClip = transitionClipIds.has(clip.id)
         if (state.isPlaying && !seekDriven && !isTransitionClip && !loopSeekHoldActive) continue

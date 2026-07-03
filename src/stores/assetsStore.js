@@ -587,6 +587,15 @@ export const useAssetsStore = create(
       get().hydratePlaybackMediaUrls(projectHandle).catch((err) => {
         console.warn('Background playback media hydration failed:', err)
       })
+      // Re-resolve per-clip render bake URLs (session-scoped) so clips
+      // rendered to cache keep playing their bakes after a restart.
+      // Dynamic import: clipRenderCache -> exporter -> assetsStore would
+      // otherwise be a static import cycle.
+      import('../services/clipRenderCache')
+        .then((mod) => mod.hydrateClipRenderCaches(projectHandle))
+        .catch((err) => {
+          console.warn('Background clip render cache hydration failed:', err)
+        })
     }
   },
 

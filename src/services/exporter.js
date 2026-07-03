@@ -31,6 +31,7 @@ import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/mot
 import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 import { createClipFrameCursor, getFrameSourceStats, isWebCodecsExportEnabled, resetFrameSourceStats } from './exportFrameSource'
 import { applyTransitionClip, getFadeOverlayInfo, getTransitionCanvasStyle } from '../utils/transitionStyles'
+import { isFullBakeFresh } from '../utils/clipBakeSignature'
 
 const DEFAULT_SAMPLE_RATE = 44100
 const AUDIO_FETCH_TIMEOUT_MS = 15000
@@ -872,7 +873,15 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     deliveryFraming = 'fit',
     glslQualityScale = 1,
     signal = null,
+    // Per-clip render bakes: render ONLY these clips (no neighbors, no
+    // transitions) over the range, onto a transparent canvas so the baked
+    // file still composites over lower layers.
+    soloClipIds = null,
+    transparent = false,
   } = options
+  const soloClipSet = Array.isArray(soloClipIds) && soloClipIds.length > 0
+    ? new Set(soloClipIds)
+    : null
   const throwIfCancelled = () => {
     if (signal?.aborted) {
       throw new Error('Export cancelled')
@@ -950,7 +959,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
-  const ctx = canvas.getContext('2d', { alpha: false })
+  const ctx = canvas.getContext('2d', { alpha: !!transparent })
   const adjustmentCanvas = document.createElement('canvas')
   adjustmentCanvas.width = width
   adjustmentCanvas.height = height
@@ -990,12 +999,21 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     return processedCanvas
   }
   
-  const videoClips = timelineState.clips.filter(c => c.type === 'video')
+  // Full render bakes (cacheKind 'full') turn any clip type — including
+  // text/shape — into a video source, so they ride the video loading path.
+  // Stale bakes (content signature mismatch) are excluded and render live.
+  const videoClips = timelineState.clips.filter(c => (
+    c.type === 'video'
+    || (useCachedRenders && isFullBakeFresh(c))
+  ))
   const imageClips = timelineState.clips.filter(c => c.type === 'image')
 
   if (useCachedRenders) {
     for (const clip of videoClips) {
       if (clip.cacheStatus !== 'cached') continue
+      // Full bakes must match the clip's current content; legacy (mask)
+      // bakes keep the old status-only contract.
+      if (clip.cacheKind === 'full' && !isFullBakeFresh(clip)) continue
       if (clip.cacheUrl) {
         cachedVideoSources.set(clip.id, clip.cacheUrl)
         continue
@@ -1017,16 +1035,17 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
   const projectHandle = projectState.currentProjectHandle
   const resolvedAssetUrls = new Map()
   for (const clip of [...videoClips, ...imageClips]) {
+    const overrideUrl = cachedVideoSources.get(clip.id) || null
     const asset = assetsState.getAssetById(clip.assetId)
-    if (!asset?.url) continue
-    const proxyUrl = clip.type === 'video' && useProxyMedia
+    // Baked text/shape clips have no asset; their only source is the bake.
+    if (!asset?.url && !overrideUrl) continue
+    const proxyUrl = clip.type === 'video' && useProxyMedia && asset
       ? await getExportProxyUrl(asset, projectHandle)
       : null
-    const resolvedUrl = proxyUrl || await getExportAssetUrl(asset, projectHandle)
-    if (!resolvedUrl) continue
-    resolvedAssetUrls.set(clip.assetId, resolvedUrl)
-    if (clip.type === 'video') {
-      const overrideUrl = cachedVideoSources.get(clip.id)
+    const resolvedUrl = proxyUrl || (asset?.url ? await getExportAssetUrl(asset, projectHandle) : null)
+    if (!resolvedUrl && !overrideUrl) continue
+    if (resolvedUrl && clip.assetId) resolvedAssetUrls.set(clip.assetId, resolvedUrl)
+    if (clip.type === 'video' || overrideUrl) {
       const sourceUrl = overrideUrl || resolvedUrl
       if (!sourceUrl) continue
       if (!videoElements.has(sourceUrl) && !failedVideoSources.has(sourceUrl)) {
@@ -1154,6 +1173,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       outputPath: pipedVideoPath,
       format: outputExtension,
       duration: totalDuration,
+      alpha: !!transparent,
       videoCodec,
       proresProfile: format === 'prores' ? proresProfile : undefined,
       useHardwareEncoder,
@@ -1195,13 +1215,22 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     const targetTime = rangeStart + frameIndex * frameDuration + halfFrame
     const safeEnd = Math.max(rangeStart, rangeEnd - halfFrame)
     const time = Math.min(targetTime, safeEnd)
-    const transitionInfo = timelineState.getTransitionAtTime(time)
-    
-    ctx.fillStyle = '#000000'
-    ctx.fillRect(0, 0, width, height)
-    
+    // Solo bakes render the clip clean — transitions stay live and are
+    // composited over the baked file at playback/export time.
+    const transitionInfo = soloClipSet ? null : timelineState.getTransitionAtTime(time)
+
+    if (transparent) {
+      ctx.clearRect(0, 0, width, height)
+    } else {
+      ctx.fillStyle = '#000000'
+      ctx.fillRect(0, 0, width, height)
+    }
+
     const layersStart = performance.now()
-    const activeClips = timelineState.getActiveClipsAtTime(time)
+    const activeClipsUnfiltered = timelineState.getActiveClipsAtTime(time)
+    const activeClips = soloClipSet
+      ? activeClipsUnfiltered.filter(({ clip }) => soloClipSet.has(clip.id))
+      : activeClipsUnfiltered
     const rawVisualLayerClips = activeClips
       .filter(({ track }) => track.type === 'video')
       .sort((a, b) => {
@@ -1318,25 +1347,33 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       const transitionStyle = (isVideoA || isVideoB) ? getTransitionCanvasStyle(transitionInfo, isVideoA) : null
       
       const clipTime = time - clip.startTime
+      // Full render bakes (cacheKind 'full') carry transform, effects,
+      // adjustments, masks, speed, and text animation inside the baked
+      // file; only opacity + blend mode (and transitions) stay live.
+      const fullBakeUrl = cachedVideoSources.get(clip.id) || null
+      const isFullBake = !!fullBakeUrl && clip.cacheKind === 'full'
       const resolveClipTransformAtTime = (sampleClipTime) => scaleTransformToExport(
         applyEffectsToTransform(getAnimatedTransform(clip, sampleClipTime) || clip.transform || {}, clip.effects, sampleClipTime)
       )
-      const clipTransform = resolveClipTransformAtTime(clipTime)
+      const liveClipTransform = resolveClipTransformAtTime(clipTime)
+      const clipTransform = isFullBake
+        ? { opacity: liveClipTransform.opacity, blendMode: liveClipTransform.blendMode }
+        : liveClipTransform
       const clipAdjustmentSettings = normalizeAdjustmentSettings(
-        getAnimatedAdjustmentSettings(clip, clipTime) || clip.adjustments || {}
+        isFullBake ? {} : (getAnimatedAdjustmentSettings(clip, clipTime) || clip.adjustments || {})
       )
       const usesTonalAdjustments = hasTonalAdjustmentEffect(clipAdjustmentSettings)
       const clipAdjustmentFilter = buildCssFilterFromAdjustments(clipAdjustmentSettings)
       const clipAdjustmentFilterValue = clipAdjustmentFilter !== 'none' ? clipAdjustmentFilter : null
-      const usesManagedPixelEffects = hasManagedPixelOrVignetteEffect(clip, clipTime)
-      const velocityMotionBlur = canUseVelocityMotionBlur()
+      const usesManagedPixelEffects = !isFullBake && hasManagedPixelOrVignetteEffect(clip, clipTime)
+      const velocityMotionBlur = (!isFullBake && canUseVelocityMotionBlur())
         ? getVelocityMotionBlurOptions(clip, clipTime, fps, resolveClipTransformAtTime)
         : null
-      const motionBlurSamples = velocityMotionBlur
+      const motionBlurSamples = (velocityMotionBlur || isFullBake)
         ? [{ clipTime, weight: 1 }]
         : getMotionBlurSamples(clip, clipTime, fps, 'export')
       const hasMotionBlurSamples = motionBlurSamples.length > 1
-      if (clip.type === 'text' || clip.type === 'shape') {
+      if ((clip.type === 'text' || clip.type === 'shape') && !isFullBake) {
         const isShapeClip = clip.type === 'shape'
         const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
         const clipOpacity = (transitionStyle?.opacity ?? 1) * baseOpacity
@@ -1494,7 +1531,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       let sourceTime = null
       let shouldBlend = false
       
-      if (clip.type === 'video') {
+      if (clip.type === 'video' || isFullBake) {
         const sourceUrl = cachedSourceUrl || resolvedAssetUrls.get(clip.assetId) || asset?.url
         if (sourceUrl && failedVideoSources.has(sourceUrl)) {
           continue
@@ -1529,7 +1566,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const assetFps = Number(asset?.settings?.fps)
         sourceFps = Number.isFinite(assetFps) && assetFps > 0 ? assetFps : null
 
-        shouldBlend = !!(sourceFps && sourceFps < fps - 0.5 && !maskEffect && !hasMotionBlurSamples && !velocityMotionBlur)
+        shouldBlend = !isFullBake && !!(sourceFps && sourceFps < fps - 0.5 && !maskEffect && !hasMotionBlurSamples && !velocityMotionBlur)
 
         // Prefer the WebCodecs sequential frame cursor; any doubt (or a
         // mid-clip cursor failure) falls back to the element seek path.

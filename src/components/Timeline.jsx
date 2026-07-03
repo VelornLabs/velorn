@@ -9,6 +9,8 @@ import {
 import useTimelineStore, { buildClipSyncLock, isMusicVideoSyncCapableClip, isSyncLockedClip } from '../stores/timelineStore'
 import useProjectStore from '../stores/projectStore'
 import renderCacheService from '../services/renderCache'
+import { isClipRenderable, renderClipToCache } from '../services/clipRenderCache'
+import { isFullBakeFresh } from '../utils/clipBakeSignature'
 import { deleteRenderCache } from '../services/fileSystem'
 import { clearDiskCacheUrl } from './VideoLayerRenderer'
 import useAssetsStore from '../stores/assetsStore'
@@ -3366,10 +3368,27 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   }, [clipContextMenu])
 
   // Context menu actions
+  const renderableSelectedClips = useMemo(() => (
+    selectedClipIds
+      .map((id) => clips.find(c => c.id === id))
+      .filter((clip) => isClipRenderable(clip))
+  ), [selectedClipIds, clips])
+
+  const handleRenderClips = useCallback(async (targetClips) => {
+    for (const target of targetClips) {
+      if (!isClipRenderable(target)) continue
+      try {
+        await renderClipToCache(target.id)
+      } catch (err) {
+        console.warn('[RenderCache] Clip render failed:', target?.id, err)
+      }
+    }
+  }, [])
+
   const handleContextMenuAction = (action) => {
     const clip = clips.find(c => c.id === clipContextMenu?.clipId)
     if (!clip) return
-    
+
     switch (action) {
       case 'add-mask':
         if (!(clip.type === 'video' || clip.type === 'image')) break
@@ -3377,6 +3396,15 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         selectClip(clip.id)
         requestMaskPicker(clip.id, { openPicker: true })
         break
+      case 'render-cache': {
+        const targetIds = selectedClipIds.includes(clip.id) ? selectedClipIds : [clip.id]
+        const targets = targetIds
+          .map((clipId) => clips.find(c => c.id === clipId))
+          .filter(Boolean)
+        void handleRenderClips(targets)
+        setClipContextMenu(null)
+        break
+      }
       case 'flush-cache': {
         const targetIds = selectedClipIds.includes(clip.id) ? selectedClipIds : [clip.id]
         targetIds.forEach((clipId) => {
@@ -4688,6 +4716,17 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
               {selectedClipsShouldEnable ? 'Enable' : 'Disable'}
             </button>
             <button
+              onClick={() => { void handleRenderClips(renderableSelectedClips) }}
+              disabled={renderableSelectedClips.length === 0}
+              className={toolbarButtonClass}
+              title={renderableSelectedClips.length > 0
+                ? `Render ${renderableSelectedClips.length > 1 ? `${renderableSelectedClips.length} selected clips` : 'the selected clip'} to cache for smooth playback`
+                : 'Select clips to render them to cache'}
+            >
+              <Zap className="w-3 h-3" />
+              Render
+            </button>
+            <button
               onClick={handleDeleteCurrentSelection}
               disabled={!canDeleteCurrentSelection}
               className={toolbarDangerButtonClass}
@@ -5384,6 +5423,28 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                         width: `${renderedClipWidth}px`,
                       }}
                     >
+                    {/* Render-cache status strip (Resolve-style): purple grows
+                        with render progress, green = cached and fresh,
+                        amber = content edited since the bake (outdated).
+                        Bottom edge — the TOP 3px slot belongs to the clip
+                        label-color strip (z-20, later in DOM), which would
+                        paint over anything we put there. */}
+                    {clip.cacheStatus === 'rendering' && (
+                      <div
+                        className="absolute bottom-0 left-0 h-[3px] bg-purple-400 z-20 pointer-events-none"
+                        style={{ width: `${Math.max(4, Math.min(100, Number(clip.cacheProgress) || 0))}%` }}
+                      />
+                    )}
+                    {clip.cacheStatus === 'cached' && (
+                      <div
+                        className={`absolute bottom-0 left-0 right-0 h-[3px] z-20 pointer-events-none ${
+                          clip.cacheKind !== 'full' || isFullBakeFresh(clip) ? 'bg-emerald-400/90' : 'bg-amber-400/90'
+                        }`}
+                      />
+                    )}
+                    {clip.cacheStatus === 'invalid' && (
+                      <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-amber-400/90 z-20 pointer-events-none" />
+                    )}
                     {(() => {
                       const edgeTransitions = edgeTransitionsByClipId.get(clip.id) || []
                       const hasIn = edgeTransitions.some(t => t.edge === 'in')
@@ -6692,6 +6753,27 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                     )
                   })()}
                 </div>
+                <div className="h-px bg-sf-dark-600 my-1" />
+              </>
+            )
+          })()}
+          {(() => {
+            const contextClip = clips.find(c => c.id === clipContextMenu.clipId)
+            if (!isClipRenderable(contextClip)) return null
+            const isRenderingClip = contextClip?.cacheStatus === 'rendering'
+            const renderLabel = isRenderingClip
+              ? 'Rendering…'
+              : (contextClip?.cacheStatus === 'cached' ? 'Re-render Clip' : 'Render Clip')
+            return (
+              <>
+                <button
+                  onClick={() => handleContextMenuAction('render-cache')}
+                  disabled={isRenderingClip}
+                  className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-default"
+                >
+                  <Zap className="w-3 h-3 text-sf-text-muted" />
+                  <span>{renderLabel}</span>
+                </button>
                 <div className="h-px bg-sf-dark-600 my-1" />
               </>
             )
