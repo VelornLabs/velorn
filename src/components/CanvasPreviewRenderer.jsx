@@ -11,6 +11,7 @@ import {
   hasTonalAdjustmentEffect,
   normalizeAdjustmentSettings,
 } from '../utils/adjustments'
+import { applyAdjustmentSettingsToCanvasGpu } from '../utils/adjustmentsGpu'
 import {
   applyBlurPassesToCanvas,
   applyEffectsToTransform,
@@ -519,30 +520,47 @@ function CanvasPreviewRenderer({
     }
     ensureCanvasSize(buffers.processedCanvas, width, height)
     ensureCanvasSize(buffers.adjustmentCanvas, width, height)
-    const processedCtx = buffers.processedCanvas.getContext('2d', { willReadFrequently: true })
     const adjustmentCtx = buffers.adjustmentCanvas.getContext('2d')
-    processedCtx.clearRect(0, 0, width, height)
-    processedCtx.filter = 'none'
-    processedCtx.globalAlpha = 1
-    processedCtx.globalCompositeOperation = 'source-over'
-    processedCtx.drawImage(sourceCanvas, 0, 0)
-
     const normalizedSettings = normalizeAdjustmentSettings(settings)
-    const frameData = processedCtx.getImageData(0, 0, width, height)
-    applyAdjustmentSettingsToImageData(frameData, normalizedSettings)
-    processedCtx.putImageData(frameData, 0, 0)
+
+    // GPU grade first — the same shader the export compositor uses. The
+    // CPU pixel loop below is the no-WebGL2 fallback only; it is far too
+    // slow for playback (full-frame getImageData + per-pixel JS per clip
+    // per frame). The GPU output canvas is kept separate from
+    // processedCanvas so the fallback's willReadFrequently hint never
+    // forces the fast path's canvases into CPU backing.
+    let gradedCanvas = null
+    if (!buffers.gpuGradeCanvas) {
+      buffers.gpuGradeCanvas = document.createElement('canvas')
+    }
+    ensureCanvasSize(buffers.gpuGradeCanvas, width, height)
+    const gpuGradeCtx = buffers.gpuGradeCanvas.getContext('2d')
+    if (applyAdjustmentSettingsToCanvasGpu(sourceCanvas, gpuGradeCtx, width, height, normalizedSettings)) {
+      gradedCanvas = buffers.gpuGradeCanvas
+    } else {
+      const processedCtx = buffers.processedCanvas.getContext('2d', { willReadFrequently: true })
+      processedCtx.clearRect(0, 0, width, height)
+      processedCtx.filter = 'none'
+      processedCtx.globalAlpha = 1
+      processedCtx.globalCompositeOperation = 'source-over'
+      processedCtx.drawImage(sourceCanvas, 0, 0)
+      const frameData = processedCtx.getImageData(0, 0, width, height)
+      applyAdjustmentSettingsToImageData(frameData, normalizedSettings)
+      processedCtx.putImageData(frameData, 0, 0)
+      gradedCanvas = buffers.processedCanvas
+    }
 
     const totalBlur = Math.max(0, normalizedSettings.blur + (Number(extraBlurPx) || 0))
     if (totalBlur > 0) {
       adjustmentCtx.clearRect(0, 0, width, height)
       adjustmentCtx.save()
       adjustmentCtx.filter = `blur(${totalBlur}px)`
-      adjustmentCtx.drawImage(buffers.processedCanvas, 0, 0)
+      adjustmentCtx.drawImage(gradedCanvas, 0, 0)
       adjustmentCtx.restore()
       return buffers.adjustmentCanvas
     }
 
-    return buffers.processedCanvas
+    return gradedCanvas
   }, [])
 
   const drawVisualClip = useCallback((ctx, entry, time, transitionInfo, state, frameIndex) => {
@@ -595,7 +613,9 @@ function CanvasPreviewRenderer({
     }
     ensureCanvasSize(buffers.offCanvas, width, height)
     ensureCanvasSize(buffers.maskCanvas, width, height)
-    const offCtx = buffers.offCanvas.getContext('2d', { willReadFrequently: usesTonalAdjustments || usesManagedEffects })
+    // Tonal grades read pixels on the GPU now; only the managed ImageData
+    // effects still read this canvas back on the CPU.
+    const offCtx = buffers.offCanvas.getContext('2d', { willReadFrequently: usesManagedEffects })
     const maskCtx = buffers.maskCanvas.getContext('2d', { willReadFrequently: true })
     offCtx.clearRect(0, 0, width, height)
     offCtx.save()
