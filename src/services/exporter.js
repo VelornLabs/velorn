@@ -15,6 +15,7 @@ import {
   applyEffectsToTransform,
   applyGlowPassesToCanvas,
   applyPixelEffectsToImageData,
+  buildManagedEffectGpuPasses,
   drawLetterboxOverlay,
   drawVignetteOverlay,
   getActiveLetterboxEffect,
@@ -28,7 +29,7 @@ import { applyGlslEffectsToCanvas, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
 import { drawShape, getShapeCanvasRect } from '../utils/shapes'
 import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
-import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
+import { applyVelocityMotionBlurToCanvas, buildVelocityBlurUniformValues, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 import { createClipFrameCursor, getFrameSourceStats, isWebCodecsExportEnabled, resetFrameSourceStats } from './exportFrameSource'
 import { applyTransitionClip, getFadeOverlayInfo, getTransitionCanvasStyle } from '../utils/transitionStyles'
 import { isFullBakeFresh } from '../utils/clipBakeSignature'
@@ -671,19 +672,6 @@ const hasManagedPixelOrVignetteEffect = (clip, clipTime) => {
     || hasLetterboxEffect(effects, clipTime)
 }
 
-// True when a clip's managed effects are exclusively GLSL shader effects —
-// those run natively in the GPU compositor (shared shader source, zero
-// readbacks). Anything else in the managed chain (ImageData passes, glow,
-// vignette, letterbox) still needs the 2D fallback.
-const hasOnlyGlslManagedEffects = (clip, clipTime) => {
-  const effects = clip?.effects || []
-  return hasGlslEffect(effects)
-    && !hasPixelFilterEffect(effects, clipTime)
-    && !hasGlowEffect(effects)
-    && !hasVignetteEffect(effects, clipTime)
-    && !hasLetterboxEffect(effects, clipTime)
-}
-
 /**
  * Apply a clip's managed pixel effects (chromatic aberration, film grain) and
  * vignette to an offscreen canvas that already contains the clip content at
@@ -1294,19 +1282,6 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       blendMode: blendMode === 'normal' ? 'normal' : blendMode,
     })
   }
-  let gpuSnapshotCanvas = null
-  let gpuSnapshotCtx = null
-  const getGpuStageSnapshot = () => {
-    if (!gpuSnapshotCanvas) {
-      gpuSnapshotCanvas = document.createElement('canvas')
-      gpuSnapshotCanvas.width = width
-      gpuSnapshotCanvas.height = height
-      gpuSnapshotCtx = gpuSnapshotCanvas.getContext('2d')
-    }
-    gpu.readStageIntoContext(gpuSnapshotCtx)
-    return gpuSnapshotCanvas
-  }
-
   onProgress({ status: EXPORT_STATUS.rendering, progress: 5 })
   
   const frameDuration = fps > 0 ? 1 / fps : 0
@@ -1407,45 +1382,19 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           if (!corners) continue
           const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
           const blendMode = clipTransform?.blendMode || 'normal'
-          const usesTonalAdjustments = hasTonalAdjustmentEffect(adjustmentSettings)
-
-          const glslOnlyManaged = usesManagedPixelEffects && hasOnlyGlslManagedEffects(clip, clipTime)
-          if (!usesManagedPixelEffects || glslOnlyManaged) {
-            // Color, tonal, blur, and GLSL-only adjustment layers grade the
-            // GPU stage directly — no per-frame snapshot readback. The color
-            // pass handles global + shadows/midtones/highlights groups.
-            gpu.drawAdjustment({
-              corners,
-              colorSettings: adjustmentSettings,
-              blurPx: adjustmentSettings.blur > 0 ? adjustmentSettings.blur : null,
-              glslEffects: glslOnlyManaged ? { effects: clip.effects, clipTime } : null,
-              opacity: baseOpacity,
-              blendMode,
-            })
-            continue
-          }
-
-          // Adjustment layers with non-GLSL managed effects (ImageData
-          // passes, glow, vignette, letterbox) still run the 2D pipeline:
-          // snapshot the GPU stage, process, composite back.
-          const snapshot = getGpuStageSnapshot()
-          let adjustmentOutputCanvas
-          if (usesTonalAdjustments) {
-            adjustmentOutputCanvas = applyAdvancedAdjustmentsToCanvas(snapshot, adjustmentSettings)
-          } else {
-            const adjustmentFilter = adjustmentIsActive ? buildCssFilterFromAdjustments(adjustmentSettings) : 'none'
-            adjustmentCtx.clearRect(0, 0, width, height)
-            adjustmentCtx.save()
-            adjustmentCtx.filter = adjustmentFilter
-            adjustmentCtx.drawImage(snapshot, 0, 0)
-            adjustmentCtx.restore()
-            adjustmentOutputCanvas = adjustmentCanvas
-          }
-          if (usesManagedPixelEffects) {
-            const managedCtx = adjustmentOutputCanvas.getContext('2d')
-            applyClipManagedEffectsToOffCanvas(adjustmentOutputCanvas, managedCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
-          }
-          gpuDrawCanvasLayer(adjustmentOutputCanvas, `${clip.id}:adj`, frameIndex, baseOpacity, blendMode, null, null, corners)
+          // Fully native: color/tonal/blur plus the entire managed chain
+          // (pixel effects, glow, GLSL, vignette, letterbox) — no per-frame
+          // stage snapshot readback.
+          gpu.drawAdjustment({
+            corners,
+            colorSettings: adjustmentSettings,
+            blurPx: adjustmentSettings.blur > 0 ? adjustmentSettings.blur : null,
+            managedPasses: usesManagedPixelEffects
+              ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
+              : null,
+            opacity: baseOpacity,
+            blendMode,
+          })
           continue
         }
 
@@ -1844,15 +1793,12 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         targetCtx.restore()
       }
 
-      // GPU-native eligibility: tonal adjustments, masks, and GLSL-only
-      // managed effects all run in the compositor now; velocity blur and
-      // non-GLSL managed effects (ImageData passes, glow, vignette,
-      // letterbox) still need the 2D branches below.
-      const glslOnlyManagedMedia = usesManagedPixelEffects && hasOnlyGlslManagedEffects(clip, clipTime)
-      const gpuManagedOk = !usesManagedPixelEffects || glslOnlyManagedMedia
-      const gpuNativeTonal = gpu && usesTonalAdjustments && !velocityMotionBlur && gpuManagedOk
+      // GPU-native eligibility: everything runs in the compositor now
+      // except masked clips with velocity blur (the one remaining 2D
+      // combination); text/shape rasterization stays canvas 2D by design.
+      const gpuNativeMedia = gpu && !(velocityMotionBlur && maskEffect)
 
-      if (usesTonalAdjustments && !gpuNativeTonal) {
+      if (usesTonalAdjustments && !gpuNativeMedia) {
         let buffers = maskRenderBuffers.get(clip.id)
         if (!buffers) {
           const offCanvas = document.createElement('canvas')
@@ -1969,7 +1915,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         continue
       }
       
-      if (usesManagedPixelEffects && !maskEffect && !(gpu && glslOnlyManagedMedia && !velocityMotionBlur)) {
+      if (usesManagedPixelEffects && !maskEffect && !gpu) {
         let buffers = maskRenderBuffers.get(clip.id)
         if (!buffers) {
           const offCanvas = document.createElement('canvas')
@@ -2049,33 +1995,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const gpuColorSettings = clipAdjustmentFilterValue ? clipAdjustmentSettings : null
         const gpuAdjustmentBlur = clipAdjustmentSettings.blur > 0 ? clipAdjustmentSettings.blur : 0
         const gpuTransformBlur = blurPx != null ? blurPx : 0
-        const gpuGlslEffects = glslOnlyManagedMedia ? { effects: clip.effects, clipTime } : null
-
-        if (velocityMotionBlur && !maskEffect) {
-          // Velocity blur stays a 2D+GLSL pass for now; composite via GPU.
-          let buffers = maskRenderBuffers.get(clip.id)
-          if (!buffers) {
-            const offCanvas = document.createElement('canvas')
-            offCanvas.width = width
-            offCanvas.height = height
-            const offCtx = offCanvas.getContext('2d')
-            buffers = { offCanvas, offCtx }
-            maskRenderBuffers.set(clip.id, buffers)
-          }
-          const { offCanvas, offCtx } = buffers
-          const velocityFilterParts = []
-          if (clipAdjustmentFilterValue) velocityFilterParts.push(clipAdjustmentFilterValue)
-          if (blurPx != null) velocityFilterParts.push(`blur(${blurPx}px)`)
-          const velocitySampleFilter = velocityFilterParts.length > 0 ? velocityFilterParts.join(' ') : 'none'
-          offCtx.clearRect(0, 0, width, height)
-          drawMediaTransformSample(offCtx, { clipTime, weight: 1 }, velocitySampleFilter)
-          applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
-          // Filter already applied in the offscreen draw; composite plain.
-          // (The 2D export path re-applies it at this draw — a double-apply
-          // the preview never had.)
-          gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
-          continue
-        }
+        const gpuManagedPasses = usesManagedPixelEffects
+          ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
+          : null
+        const gpuVelocity = velocityMotionBlur ? buildVelocityBlurUniformValues(velocityMotionBlur) : null
 
         let gpuMaskHandled = false
         let gpuMaskSpec = null
@@ -2084,9 +2007,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           const maskFrameUrl = getMaskFrameInfo(clip, maskAsset, time)
           const maskImageMap = maskElements.get(maskAsset?.id)
           const maskImage = maskImageMap?.get(maskFrameUrl)
-          // Masks run natively unless the clip also needs a 2D-only
-          // feature (velocity blur, non-GLSL managed effects).
-          const needs2dMask = velocityMotionBlur || (usesManagedPixelEffects && !glslOnlyManagedMedia)
+          // Masks run natively unless the clip also has velocity blur —
+          // the one combination still on the 2D path (their 2D ordering,
+          // velocity after mask, differs from the native chain's).
+          const needs2dMask = !!velocityMotionBlur
           if (maskImage && !needs2dMask) {
             const maskCorners = getClipQuadCorners(rect, clipTransform, transitionStyle)
             if (maskCorners) {
@@ -2226,6 +2150,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         }
         // Route color/blur per the 2D recipe the clip would have taken.
         let layerColorSettings = null
+        let layerPreBlurPx = null
         let layerTonalSettings = null
         let layerBlurPx = null
         let layerPostColorSettings = null
@@ -2246,10 +2171,11 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           // Plain recipe: per-sample color; adjustment + transform blur
           // stack as sequential gaussians = one gaussian of sqrt(a² + b²),
           // scaled to device space (ctx.filter blur scales with the
-          // transform it is drawn under).
+          // transform it is drawn under). Runs pre-velocity/pre-managed,
+          // matching the 2D draw-time filter position.
           layerColorSettings = gpuColorSettings
           const combinedBlur = Math.sqrt(gpuAdjustmentBlur * gpuAdjustmentBlur + gpuTransformBlur * gpuTransformBlur)
-          layerBlurPx = combinedBlur > 0
+          layerPreBlurPx = combinedBlur > 0
             ? combinedBlur * getApproxTransformScale(clipTransform, transitionStyle)
             : null
         }
@@ -2257,10 +2183,12 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           gpu.drawLayer({
             samples: gpuSamples,
             colorSettings: layerColorSettings,
+            preBlurPx: layerPreBlurPx,
+            velocity: gpuVelocity,
             mask: gpuMaskSpec,
             tonalSettings: layerTonalSettings,
             blurPx: layerBlurPx,
-            glslEffects: gpuGlslEffects,
+            managedPasses: gpuManagedPasses,
             postColorSettings: layerPostColorSettings,
             postBlurPx: layerPostBlurPx,
             opacity: clipOpacity,
