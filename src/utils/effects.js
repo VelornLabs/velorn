@@ -14,6 +14,10 @@
  */
 
 import { getValueAtTime } from './keyframes'
+// Circular at module level but runtime-only usage (glslEffects imports
+// getAnimatedEffectSettings from here); both sides export hoisted function
+// declarations, so the cycle is safe.
+import { hasGlslEffect } from './glslEffects'
 
 const clampNumber = (value, min, max, fallback = 0) => {
   const parsed = Number(value)
@@ -1435,6 +1439,170 @@ export function drawLetterboxOverlay(ctx, width, height, letterboxEffect, clipTi
     }
   }
   ctx.restore()
+}
+
+/**
+ * VHS damage per-row parameters for the GPU pass. Mirrors
+ * applyVhsDamageToImageData's mulberry32 stream consumption exactly: per
+ * row it draws rowShift, the dropout roll, then (conditionally) the dropout
+ * shift/lift, then reserves one call per pixel for the noise. The shader
+ * reconstructs the n-th stream value from the counter-based generator, so
+ * rowData[y*4+3] records each row's noise call base.
+ */
+function buildVhsDamageGpuPass(effect, settings, clipTime, frameIndex, width, height) {
+  const amount = Math.max(0, Math.min(100, Number(settings?.amount) || 0))
+  const jitter = Math.max(0, Number(settings?.jitter) || 0)
+  const scanlines = Math.max(0, Math.min(100, Number(settings?.scanlines) || 0))
+  const colorBleed = Math.max(0, Number(settings?.colorBleed) || 0)
+  if (amount <= 0 && jitter <= 0 && scanlines <= 0 && colorBleed <= 0) return null
+
+  const seed = grainSeedFor(effect, clipTime, frameIndex)
+  const random = mulberry32(seed)
+  let callIndex = 0
+  const next = () => {
+    callIndex += 1
+    return random()
+  }
+  const amountNorm = amount / 100
+  const maxJitter = jitter * amountNorm
+  const bleedPx = Math.round(colorBleed * amountNorm)
+  const scanStrength = (scanlines / 100) * amountNorm
+  const dropoutChance = amountNorm * 0.018
+  const rowData = new Float32Array(height * 4)
+
+  for (let y = 0; y < height; y++) {
+    const band = Math.floor(y / 8)
+    const bandNoise = Math.sin((clipTime * 17 + band * 1.73) * Math.PI * 2)
+    const rowShift = Math.round(bandNoise * maxJitter + (next() - 0.5) * maxJitter * 0.75)
+    const scanPhase = y % 3
+    const scanDarken = scanPhase === 0
+      ? scanStrength * 54
+      : (scanPhase === 1 ? scanStrength * 12 : 0)
+    const dropout = next() < dropoutChance
+    const dropoutShift = dropout ? Math.round((next() - 0.5) * maxJitter * 3) : 0
+    const dropoutLift = dropout ? (next() * 2 - 1) * 52 * amountNorm : 0
+    rowData[y * 4] = rowShift + dropoutShift
+    rowData[y * 4 + 1] = scanDarken
+    rowData[y * 4 + 2] = dropoutLift
+    rowData[y * 4 + 3] = callIndex // pixel x consumes stream call (base + x + 1)
+    callIndex += width
+  }
+
+  return {
+    type: 'vhsDamage',
+    seed,
+    rowData,
+    noiseAmp: 58 * amountNorm,
+    bleedPx,
+  }
+}
+
+/**
+ * Managed-effect pass descriptors for the GPU compositor, in the exact
+ * order applyClipManagedEffectsToOffCanvas applies them: ImageData pixel
+ * effects (effect-stack order) → glow/halation → GLSL effects → vignette →
+ * letterbox. All parameter derivation mirrors the 2D implementations above
+ * so the shaders reproduce them; the noise-driven effects share the same
+ * counter-based mulberry32 stream and are bit-compatible.
+ */
+export function buildManagedEffectGpuPasses(effects, clipTime, frameIndex, width, height) {
+  const passes = []
+  if (!Array.isArray(effects) || effects.length === 0) return passes
+
+  for (const effect of effects) {
+    if (!effect || effect.enabled === false) continue
+    if (effect.type === 'chromaticAberration') {
+      const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime)
+      const amount = Number(animated.settings?.amount) || 0
+      if (amount <= 0) continue
+      const angleRad = ((Number(animated.settings?.angle) || 0) * Math.PI) / 180
+      const dx = Math.round(Math.cos(angleRad) * amount)
+      const dy = Math.round(Math.sin(angleRad) * amount)
+      if (dx === 0 && dy === 0) continue
+      passes.push({ type: 'chromaticAberration', dx, dy })
+    } else if (effect.type === 'sharpen') {
+      const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime)
+      const amount = Math.max(0, Math.min(100, Number(animated.settings?.amount) || 0))
+      if (amount <= 0) continue
+      passes.push({ type: 'sharpen', strength: (amount / 100) * 0.55 })
+    } else if (effect.type === 'filmGrain') {
+      const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime)
+      const amount = Number(animated.settings?.amount) || 0
+      if (amount <= 0) continue
+      passes.push({
+        type: 'filmGrain',
+        seed: grainSeedFor({ id: 'grain' }, clipTime, frameIndex),
+        monochrome: Number(animated.settings?.monochrome) >= 0.5,
+        strength: (amount / 100) * 0.65,
+        stride: Math.max(1, Math.floor(Math.max(0.5, Number(animated.settings?.size) || 1))),
+      })
+    } else if (effect.type === 'vhsDamage') {
+      const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime)
+      const pass = buildVhsDamageGpuPass(effect, animated.settings, clipTime, frameIndex, width, height)
+      if (pass) passes.push(pass)
+    }
+  }
+
+  for (const effect of getActiveGlowEffects(effects)) {
+    const animated = getAnimatedEffectSettings({ keyframes: null }, effect, clipTime)
+    const { intensity = 0, size = 12, threshold = 0 } = animated.settings || {}
+    if (intensity <= 0 || size <= 0) continue
+    passes.push({
+      type: 'glow',
+      halation: effect.type === 'halation',
+      warmth: Math.max(0, Math.min(1, (Number(animated.settings?.warmth) || 0) / 100)),
+      hasThreshold: threshold > 0,
+      cutoff: Math.max(0, Math.min(1, threshold / 100)),
+      blurPx: Math.max(0.5, Number(size) || 0),
+      // Canvas ignores out-of-range globalAlpha assignments, so the 2D
+      // path's min(2, …) effectively lands at 1 for intensity > 100.
+      opacity: Math.min(1, Math.max(0, (Number(intensity) || 0) / 100)),
+    })
+  }
+
+  if (hasGlslEffect(effects)) {
+    passes.push({ type: 'glslEffects', effects, clipTime })
+  }
+
+  const vignette = getActiveVignetteEffect(effects, clipTime)
+  if (vignette) {
+    const animated = getAnimatedEffectSettings({ keyframes: null }, vignette, clipTime)
+    const { amount = 0, size = 70, softness = 60 } = animated.settings || {}
+    if (amount > 0) {
+      const centerX = width / 2
+      const centerY = height / 2
+      const maxRadius = Math.sqrt(centerX * centerX + centerY * centerY)
+      const clearRadius = (Math.max(0, Math.min(100, size)) / 100) * maxRadius * 0.55
+      const fullRadius = maxRadius * (1 - (Math.max(0, Math.min(100, softness)) / 100) * 0.25)
+      passes.push({
+        type: 'vignette',
+        startRadius: Math.min(clearRadius, fullRadius * 0.98),
+        fullRadius,
+        amount: Math.max(0, Math.min(1, amount / 100)),
+      })
+    }
+  }
+
+  const letterbox = getActiveLetterboxEffect(effects, clipTime)
+  if (letterbox) {
+    const animated = getAnimatedEffectSettings({ keyframes: null }, letterbox, clipTime)
+    const { aspect = 2.39, opacity = 100, softness = 0 } = animated.settings || {}
+    const alpha = Math.max(0, Math.min(1, (Number(opacity) || 0) / 100))
+    const targetAspect = Math.max(0.1, Number(aspect) || 0)
+    const containerAspect = width / height
+    const soft = Math.max(0, Number(softness) || 0)
+    if (alpha > 0) {
+      if (containerAspect > targetAspect) {
+        const barSize = Math.max(0, (width - height * targetAspect) / 2)
+        if (barSize > 0) passes.push({ type: 'letterbox', horizontal: false, barSize, soft, alpha })
+      } else if (containerAspect < targetAspect) {
+        const barSize = Math.max(0, (height - width / targetAspect) / 2)
+        if (barSize > 0) passes.push({ type: 'letterbox', horizontal: true, barSize, soft, alpha })
+      }
+    }
+  }
+
+  return passes
 }
 
 /**

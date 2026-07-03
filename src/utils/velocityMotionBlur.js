@@ -232,6 +232,29 @@ export function canUseVelocityMotionBlur() {
   return webGlSupport
 }
 
+// Shader sources are also consumed by the export GPU compositor
+// (services/gpuCompositor.js) so velocity blur renders identically there —
+// single source of truth, same pattern as glslEffects/adjustmentsGpu.
+export {
+  VERTEX_SHADER_SOURCE as VELOCITY_BLUR_VERTEX_SOURCE,
+  FRAGMENT_SHADER_SOURCE as VELOCITY_BLUR_FRAGMENT_SOURCE,
+}
+
+/**
+ * Uniform values for the velocity blur shader, mirroring render()'s option
+ * handling — including the Y flip (canvas coordinates are Y-down; the
+ * shader samples in flipped texture space).
+ */
+export function buildVelocityBlurUniformValues(options = {}) {
+  return {
+    velocityPx: [Number(options.velocityX) || 0, -(Number(options.velocityY) || 0)],
+    samples: clamp(Math.round(Number(options.samples) || 8), 2, 48),
+    sharpness: clamp(Number(options.sharpness ?? 0), 0, 1),
+    falloff: clamp(Number(options.falloff ?? 0.85), 0.1, 4),
+    center: options.centered ? 0.5 : 0,
+  }
+}
+
 export function applyVelocityMotionBlurToCanvas(canvas, ctx, width, height, options = {}) {
   if (!canvas || !ctx || !canUseVelocityMotionBlur()) return false
   try {
