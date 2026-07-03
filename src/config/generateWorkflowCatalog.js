@@ -22,6 +22,8 @@ export const GENERATE_WORKFLOW_ROUTES = Object.freeze({
   local: 'local',
   cloud: 'cloud',
   custom: 'custom',
+  // Live browse of ComfyUI's official template catalog (no local manifests).
+  templates: 'templates',
 })
 
 export const GENERATE_WORKFLOW_CATEGORY_LABELS = Object.freeze({

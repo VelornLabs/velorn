@@ -16,6 +16,7 @@ import MusicVideoEasyMode from './generate/MusicVideoEasyMode'
 import ShortFilmEasyMode from './generate/ShortFilmEasyMode'
 import WorkflowBrowser from './generate/WorkflowBrowser'
 import WorkflowDetail from './generate/WorkflowDetail'
+import TemplateDetail from './generate/TemplateDetail'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
 import useComfyUI from '../hooks/useComfyUI'
 import useAssetsStore from '../stores/assetsStore'
@@ -3318,6 +3319,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     getWorkflowManifestByWorkflowId(persistedState?.workflowId || 'wan22-i2v')?.route || 'local'
   ))
   const [workflowDetailOpen, setWorkflowDetailOpen] = useState(false)
+  const [selectedComfyTemplate, setSelectedComfyTemplate] = useState(null)
   const [latestWorkflowPreview, setLatestWorkflowPreview] = useState(null)
 
   // Input asset (store ID, will resolve to object)
@@ -4289,6 +4291,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const handleWorkflowRouteChange = useCallback((nextRoute) => {
     setWorkflowRoute(nextRoute)
     setWorkflowDetailOpen(false)
+    setSelectedComfyTemplate(null)
   }, [])
 
   useEffect(() => {
@@ -14234,13 +14237,22 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             {generationMode === 'single' && (
               <>
                 {!workflowDetailOpen ? (
-                  <WorkflowBrowser
-                    workflows={visibleWorkflowManifests}
-                    selectedWorkflowId={selectedWorkflowManifest?.id || workflowId}
-                    route={workflowRoute}
-                    onRouteChange={handleWorkflowRouteChange}
-                    onSelectWorkflow={handleWorkflowManifestSelect}
-                  />
+                  workflowRoute === 'templates' && selectedComfyTemplate ? (
+                    <TemplateDetail
+                      template={selectedComfyTemplate}
+                      onBack={() => setSelectedComfyTemplate(null)}
+                    />
+                  ) : (
+                    <WorkflowBrowser
+                      workflows={visibleWorkflowManifests}
+                      selectedWorkflowId={selectedWorkflowManifest?.id || workflowId}
+                      route={workflowRoute}
+                      onRouteChange={handleWorkflowRouteChange}
+                      onSelectWorkflow={handleWorkflowManifestSelect}
+                      onSelectTemplate={setSelectedComfyTemplate}
+                      selectedTemplateName={selectedComfyTemplate?.name || ''}
+                    />
+                  )
                 ) : (
                   <WorkflowDetail
                     workflow={selectedWorkflowManifest}
