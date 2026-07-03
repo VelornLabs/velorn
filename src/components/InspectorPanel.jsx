@@ -5500,8 +5500,16 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
       : getMaxEdgeTransitionDuration(selectedTransition.clipId)
     const maxFrames = Math.max(1, Math.floor((maxDurationSeconds || selectedTransition.duration || 0.5) * FRAME_RATE))
     const settings = selectedTransition.settings || {}
-    const supportsZoom = selectedTransition.type === 'zoom-in' || selectedTransition.type === 'zoom-out'
-    const supportsBlur = selectedTransition.type === 'blur'
+    const supportsZoom = ['zoom-in', 'zoom-out', 'cross-zoom'].includes(selectedTransition.type)
+    const supportsBlur = ['blur', 'cross-zoom', 'whip-left', 'whip-right'].includes(selectedTransition.type)
+    const supportsColor = ['flash', 'dip-color'].includes(selectedTransition.type)
+    const isCrossZoom = selectedTransition.type === 'cross-zoom'
+    const isWhip = selectedTransition.type === 'whip-left' || selectedTransition.type === 'whip-right'
+    const zoomDefault = isCrossZoom ? 0.4 : 0.1
+    const zoomMax = isCrossZoom ? 1 : 0.3
+    const blurDefault = isWhip ? 16 : (isCrossZoom ? 12 : 8)
+    const blurMax = (isWhip || isCrossZoom) ? 40 : 20
+    const colorDefault = selectedTransition.type === 'dip-color' ? '#000000' : '#FFFFFF'
     const transitionKindLabel = selectedTransition.kind === 'between'
       ? 'Between Clips'
       : `Edge (${selectedTransition.edge === 'in' ? 'In' : 'Out'})`
@@ -5632,14 +5640,14 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
               <input
                 type="range"
                 min={0.02}
-                max={0.3}
+                max={zoomMax}
                 step={0.01}
-                value={settings.zoomAmount ?? 0.1}
+                value={settings.zoomAmount ?? zoomDefault}
                 onChange={(e) => handleSettingChange('zoomAmount', Number(e.target.value))}
                 className="flex-1"
               />
               <span className="text-[10px] text-sf-text-muted w-10 text-right">
-                {(settings.zoomAmount ?? 0.1).toFixed(2)}
+                {(settings.zoomAmount ?? zoomDefault).toFixed(2)}
               </span>
             </div>
           )}
@@ -5650,14 +5658,29 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
               <input
                 type="range"
                 min={0}
-                max={20}
+                max={blurMax}
                 step={1}
-                value={settings.blurAmount ?? 8}
+                value={settings.blurAmount ?? blurDefault}
                 onChange={(e) => handleSettingChange('blurAmount', Number(e.target.value))}
                 className="flex-1"
               />
               <span className="text-[10px] text-sf-text-muted w-10 text-right">
-                {Math.round(settings.blurAmount ?? 8)}px
+                {Math.round(settings.blurAmount ?? blurDefault)}px
+              </span>
+            </div>
+          )}
+
+          {supportsColor && (
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] text-sf-text-muted w-24">Color</label>
+              <input
+                type="color"
+                value={settings.color || colorDefault}
+                onChange={(e) => handleSettingChange('color', e.target.value)}
+                className="h-7 w-10 bg-sf-dark-700 border border-sf-dark-600 rounded cursor-pointer p-0.5"
+              />
+              <span className="text-[10px] text-sf-text-muted font-mono uppercase">
+                {settings.color || colorDefault}
               </span>
             </div>
           )}

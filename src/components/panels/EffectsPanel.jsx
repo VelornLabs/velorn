@@ -134,20 +134,6 @@ function EffectsPanel() {
     return transitions.filter(t => t.kind === 'edge' && t.clipId === selectedSingle.id)
   }, [selectedSingle, transitions])
   
-  const handleDurationInput = (value) => {
-    const next = Number(value)
-    if (Number.isNaN(next)) return
-    setDurationFrames(Math.max(1, Math.min(240, next)))
-  }
-
-  const handleSetDefaultDuration = () => {
-    try {
-      localStorage.setItem(TRANSITION_DEFAULT_DURATION_KEY, String(durationFrames))
-      window.dispatchEvent(new CustomEvent('comfystudio-transition-default-duration-changed', { detail: durationFrames }))
-    } catch (_) {}
-    setMessage(`Default transition duration set to ${durationFrames} frames.`)
-  }
-
   const toggleCategory = (categoryId) => {
     setExpandedCategories(prev =>
       prev.includes(categoryId)
@@ -500,42 +486,31 @@ function EffectsPanel() {
           />
         </div>
 
-        {/* Duration picker */}
-        <div className="space-y-2">
-          <div className="text-[11px] text-sf-text-muted">Duration</div>
-          <div className="flex items-center gap-1 flex-wrap">
-            {TRANSITION_DURATIONS.map((d) => (
-              <button
-                key={d.frames}
-                onClick={() => setDurationFrames(d.frames)}
-                className={`px-2 py-1 rounded text-[10px] border transition-colors ${
-                  durationFrames === d.frames
-                    ? 'bg-sf-accent/20 border-sf-accent text-sf-accent'
-                    : 'bg-sf-dark-800 border-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary hover:border-sf-dark-500'
-                }`}
-              >
-                {d.frames}f
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min={1}
-              max={240}
-              value={durationFrames}
-              onChange={(e) => handleDurationInput(e.target.value)}
-              className="w-20 bg-sf-dark-800 border border-sf-dark-600 rounded px-2 py-1 text-[11px] text-sf-text-primary focus:outline-none focus:border-sf-accent"
-            />
-            <span className="text-[11px] text-sf-text-muted">frames</span>
-            <span className="text-[11px] text-sf-text-muted">({(durationFrames / FRAME_RATE).toFixed(2)}s)</span>
-          </div>
-          <button
-            onClick={handleSetDefaultDuration}
-            className="w-full px-2 py-1 rounded border border-sf-dark-600 bg-sf-dark-800 hover:bg-sf-dark-700 text-[10px] text-sf-text-secondary transition-colors"
+        {/* Apply-at duration: compact chip row. Fine-tuning to exact frames
+            and "Set as Default Duration" live in the transition Inspector
+            once a transition is applied — the bin stays a browsing surface. */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[11px] text-sf-text-muted">Apply at</span>
+          {TRANSITION_DURATIONS.map((d) => (
+            <button
+              key={d.frames}
+              onClick={() => setDurationFrames(d.frames)}
+              className={`px-2 py-1 rounded text-[10px] border transition-colors ${
+                durationFrames === d.frames
+                  ? 'bg-sf-accent/20 border-sf-accent text-sf-accent'
+                  : 'bg-sf-dark-800 border-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary hover:border-sf-dark-500'
+              }`}
+            >
+              {d.frames}f
+            </button>
+          ))}
+          <span className="text-[11px] text-sf-text-muted">({durationSeconds.toFixed(2)}s)</span>
+          <span
+            className="ml-auto cursor-help"
+            title={'Drag a transition onto a cut, or select two adjacent clips and click a transition to apply. Select one clip to apply to its start or end. Fine-tune duration in the Inspector after applying.'}
           >
-            Set as Default Duration
-          </button>
+            <Info className="w-3.5 h-3.5 text-sf-text-muted/70" />
+          </span>
         </div>
 
         {/* Edge mode for single clip */}
@@ -566,15 +541,7 @@ function EffectsPanel() {
             </div>
           </div>
         )}
-        
-        <div className="text-[11px] text-sf-text-muted flex items-start gap-2 bg-sf-dark-800/60 border border-sf-dark-700 rounded-lg p-2">
-          <Info className="w-4 h-4 text-sf-text-muted mt-0.5" />
-          <div>
-            Drag a transition onto a cut, or select two adjacent clips and click a transition to apply.
-            Select one clip to apply to its start or end.
-          </div>
-        </div>
-        
+
         {message && (
           <div className="text-[11px] text-sf-accent bg-sf-accent/10 border border-sf-accent/20 rounded-lg p-2">
             {message}

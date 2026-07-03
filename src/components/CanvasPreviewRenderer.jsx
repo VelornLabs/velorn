@@ -27,6 +27,7 @@ import {
 } from '../utils/effects'
 import { applyGlslEffectsToCanvas, canUseGlslEffects, getGlslPreviewQualityScale, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
+import { applyTransitionClip, getFadeOverlayInfo, getTransitionStyleForClip } from '../utils/transitionStyles'
 import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
 import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 import {
@@ -120,121 +121,8 @@ function resolvePreviewUrl(clip, getAssetById, useProxyPlaybackForAssets) {
   return asset?.url || clip.url || null
 }
 
-function getTransitionCanvasStyle(transitionInfo, isVideoA) {
-  if (!transitionInfo) {
-    return { opacity: isVideoA ? 1 : 0, display: isVideoA }
-  }
-
-  const { transition, progress } = transitionInfo
-  const type = transition?.type || 'dissolve'
-  const zoomAmount = transition?.settings?.zoomAmount ?? 0.1
-  const blurAmount = transition?.settings?.blurAmount ?? 8
-  const edgeMode = transition?.kind === 'edge'
-  const edge = transitionInfo?.edge
-  const effectiveIsVideoA = edgeMode ? edge === 'out' : isVideoA
-
-  const base = {
-    opacity: 1,
-    translateX: 0,
-    translateY: 0,
-    scale: 1,
-    clipInset: null,
-    blur: 0,
-    display: true,
-  }
-
-  if (edgeMode && (type === 'fade-black' || type === 'fade-white')) {
-    const opacity = effectiveIsVideoA ? 1 - progress : progress
-    return { ...base, opacity }
-  }
-
-  if (effectiveIsVideoA) {
-    switch (type) {
-      case 'dissolve':
-        return { ...base, opacity: 1 }
-      case 'fade-black':
-      case 'fade-white':
-        return { ...base, opacity: progress < 0.5 ? 1 - progress * 2 : 0 }
-      case 'wipe-left':
-        return { ...base, clipInset: { top: 0, right: progress, bottom: 0, left: 0 } }
-      case 'wipe-right':
-        return { ...base, clipInset: { top: 0, right: 0, bottom: 0, left: progress } }
-      case 'wipe-up':
-        return { ...base, clipInset: { top: 0, right: 0, bottom: progress, left: 0 } }
-      case 'wipe-down':
-        return { ...base, clipInset: { top: progress, right: 0, bottom: 0, left: 0 } }
-      case 'slide-left':
-        return { ...base, translateX: -progress }
-      case 'slide-right':
-        return { ...base, translateX: progress }
-      case 'slide-up':
-        return { ...base, translateY: -progress }
-      case 'slide-down':
-        return { ...base, translateY: progress }
-      case 'zoom-in':
-        return { ...base, scale: 1 + progress * zoomAmount, opacity: 1 - progress }
-      case 'zoom-out':
-        return { ...base, scale: 1 - progress * zoomAmount, opacity: 1 - progress }
-      case 'blur':
-        return { ...base, blur: progress * blurAmount, opacity: 1 - progress }
-      default:
-        return { ...base, opacity: 1 - progress }
-    }
-  }
-
-  switch (type) {
-    case 'dissolve':
-      return { ...base, opacity: progress }
-    case 'fade-black':
-    case 'fade-white':
-      return { ...base, opacity: progress > 0.5 ? (progress - 0.5) * 2 : 0 }
-    case 'wipe-left':
-      return { ...base, clipInset: { top: 0, right: 0, bottom: 0, left: 1 - progress } }
-    case 'wipe-right':
-      return { ...base, clipInset: { top: 0, right: 1 - progress, bottom: 0, left: 0 } }
-    case 'wipe-up':
-      return { ...base, clipInset: { top: 1 - progress, right: 0, bottom: 0, left: 0 } }
-    case 'wipe-down':
-      return { ...base, clipInset: { top: 0, right: 0, bottom: 1 - progress, left: 0 } }
-    case 'slide-left':
-      return { ...base, translateX: 1 - progress }
-    case 'slide-right':
-      return { ...base, translateX: -(1 - progress) }
-    case 'slide-up':
-      return { ...base, translateY: 1 - progress }
-    case 'slide-down':
-      return { ...base, translateY: -(1 - progress) }
-    case 'zoom-in':
-      return { ...base, scale: 1 - zoomAmount + progress * zoomAmount, opacity: progress }
-    case 'zoom-out':
-      return { ...base, scale: 1 + zoomAmount - progress * zoomAmount, opacity: progress }
-    case 'blur':
-      return { ...base, blur: (1 - progress) * blurAmount, opacity: progress }
-    default:
-      return { ...base, opacity: progress }
-  }
-}
-
-function getFadeOverlayOpacity(transitionInfo) {
-  if (!transitionInfo) return null
-  const type = transitionInfo.transition?.type
-  if (type !== 'fade-black' && type !== 'fade-white') return null
-  const progress = transitionInfo.progress ?? 0
-  if (transitionInfo.transition?.kind === 'edge') return null
-  return progress < 0.5 ? progress * 2 : (1 - progress) * 2
-}
-
-function applyTransitionClip(ctx, rect, transitionStyle) {
-  if (!transitionStyle?.clipInset) return
-  const { top, right, bottom, left } = transitionStyle.clipInset
-  const insetTop = rect.height * top
-  const insetRight = rect.width * right
-  const insetBottom = rect.height * bottom
-  const insetLeft = rect.width * left
-  ctx.beginPath()
-  ctx.rect(insetLeft, insetTop, rect.width - insetLeft - insetRight, rect.height - insetTop - insetBottom)
-  ctx.clip()
-}
+// Transition style math lives in ../utils/transitionStyles — shared with the
+// exporter so preview and export can never drift.
 
 function hasManagedCanvasEffect(clip, clipTime) {
   if (!clip) return false
@@ -288,17 +176,6 @@ function ensureCanvasSize(canvas, width, height) {
   if (!canvas) return
   if (canvas.width !== width) canvas.width = width
   if (canvas.height !== height) canvas.height = height
-}
-
-function getTransitionStyleForClip(transitionInfo, clip) {
-  if (!transitionInfo || !clip) return null
-  if (transitionInfo.transition?.kind === 'edge') {
-    if (transitionInfo.clip?.id !== clip.id) return null
-    return getTransitionCanvasStyle(transitionInfo, transitionInfo.edge === 'out')
-  }
-  if (transitionInfo.clipA?.id === clip.id) return getTransitionCanvasStyle(transitionInfo, true)
-  if (transitionInfo.clipB?.id === clip.id) return getTransitionCanvasStyle(transitionInfo, false)
-  return null
 }
 
 function getVisualLayerClips(state, time) {
@@ -1169,12 +1046,11 @@ function CanvasPreviewRenderer({
       }
     }
 
-    const overlayOpacity = getFadeOverlayOpacity(transitionInfo)
-    if (overlayOpacity !== null) {
-      const type = transitionInfo?.transition?.type
+    const fadeOverlay = getFadeOverlayInfo(transitionInfo)
+    if (fadeOverlay && fadeOverlay.opacity > 0.001) {
       stageCtx.save()
-      stageCtx.globalAlpha = overlayOpacity
-      stageCtx.fillStyle = type === 'fade-white' ? '#FFFFFF' : '#000000'
+      stageCtx.globalAlpha = Math.min(1, fadeOverlay.opacity)
+      stageCtx.fillStyle = fadeOverlay.color
       stageCtx.fillRect(0, 0, width, height)
       stageCtx.restore()
     }
