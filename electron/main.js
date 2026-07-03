@@ -5297,6 +5297,15 @@ ipcMain.handle('export:mixAudio', async (event, options = {}) => {
   })
 })
 
+// VideoToolbox rate control has no CRF; map the x264-style CRF (lower =
+// better, 18 ≈ visually lossless) onto its 1–100 quality scale (higher =
+// better): 12 → 76, 18 → 64, 23 → 54.
+function crfToVideoToolboxQuality(crf) {
+  const parsed = Number(crf)
+  const safe = Number.isFinite(parsed) ? parsed : 18
+  return Math.max(1, Math.min(100, Math.round(100 - safe * 2)))
+}
+
 function appendExportVideoEncoderArgs(args, options = {}) {
   const {
     format = 'mp4',
@@ -5310,6 +5319,10 @@ function appendExportVideoEncoderArgs(args, options = {}) {
     bitrateKbps = 8000,
     keyframeInterval = null,
   } = options
+  // Hardware encoding is NVENC on Windows/Linux, VideoToolbox on macOS
+  // (Apple Silicon / T2 media engine). Availability is gated up front by
+  // the export:checkNvenc IPC, mirroring the NVENC flow.
+  const useVideoToolbox = useHardwareEncoder && process.platform === 'darwin'
 
   let encoderUsed = null
   const isProRes = videoCodec === 'prores' || (format === 'mov' && options.proresProfile != null)
@@ -5352,7 +5365,18 @@ function appendExportVideoEncoderArgs(args, options = {}) {
       args.push('-crf', String(crf), '-b:v', '0')
     }
   } else if (normalizedCodec === 'h265') {
-    if (useHardwareEncoder) {
+    if (useVideoToolbox) {
+      args.push(
+        '-c:v', 'hevc_videotoolbox',
+        '-pix_fmt', 'yuv420p'
+      )
+      encoderUsed = 'hevc_videotoolbox'
+      if (qualityMode === 'bitrate') {
+        args.push('-b:v', `${bitrateKbps}k`)
+      } else {
+        args.push('-q:v', String(crfToVideoToolboxQuality(crf)))
+      }
+    } else if (useHardwareEncoder) {
       args.push(
         '-c:v', 'hevc_nvenc',
         '-preset', nvencPreset,
@@ -5381,7 +5405,18 @@ function appendExportVideoEncoderArgs(args, options = {}) {
     args.push('-tag:v', 'hvc1')
   } else {
     // Default to H.264
-    if (useHardwareEncoder) {
+    if (useVideoToolbox) {
+      args.push(
+        '-c:v', 'h264_videotoolbox',
+        '-pix_fmt', 'yuv420p'
+      )
+      encoderUsed = 'h264_videotoolbox'
+      if (qualityMode === 'bitrate') {
+        args.push('-b:v', `${bitrateKbps}k`)
+      } else {
+        args.push('-q:v', String(crfToVideoToolboxQuality(crf)))
+      }
+    } else if (useHardwareEncoder) {
       args.push(
         '-c:v', 'h264_nvenc',
         '-preset', nvencPreset,
@@ -5498,7 +5533,7 @@ ipcMain.handle('export:encodeVideo', async (event, options = {}) => {
   }
 
   args.push(outputPath)
-  console.log(`[Export] Encoding with ${encoderUsed} (${useHardwareEncoder ? 'NVENC' : 'software'})`)
+  console.log(`[Export] Encoding with ${encoderUsed} (${useHardwareEncoder ? 'hardware' : 'software'})`)
 
   return await new Promise((resolve) => {
     const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true })
@@ -5605,7 +5640,7 @@ ipcMain.handle('export:startFramePipe', async (event, options = {}) => {
     getStderr: () => stderr,
   })
 
-  console.log(`[Export] Frame pipe started with ${encoderUsed} (${options.useHardwareEncoder ? 'NVENC' : 'software'})`)
+  console.log(`[Export] Frame pipe started with ${encoderUsed} (${options.useHardwareEncoder ? 'hardware' : 'software'})`)
   return { success: true, sessionId, encoderUsed }
 })
 
@@ -5903,36 +5938,42 @@ ipcMain.handle('proxy:transcode', async (event, { inputPath, outputPath, targetH
   })
 })
 
+// Hardware-encoder availability check. Despite the historical channel name
+// this is platform-aware: NVENC on Windows/Linux, VideoToolbox on macOS.
+// The `kind` field tells the renderer which family it is looking at.
 ipcMain.handle('export:checkNvenc', async () => {
-  const gpuName = await detectNvidiaGpuName()
+  const isMac = process.platform === 'darwin'
+  const kind = isMac ? 'videotoolbox' : 'nvenc'
+  const gpuName = isMac ? null : await detectNvidiaGpuName()
 
   if (!ffmpegPath) {
-    return { available: false, h264: false, h265: false, gpuName, error: 'FFmpeg binary not available.' }
+    return { available: false, h264: false, h265: false, gpuName, kind, error: 'FFmpeg binary not available.' }
   }
-  
+
   return await new Promise((resolve) => {
     const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-encoders'], { windowsHide: true })
     let output = ''
-    
+
     ffmpeg.stdout.on('data', (data) => {
       output += data.toString()
     })
     ffmpeg.stderr.on('data', (data) => {
       output += data.toString()
     })
-    
+
     ffmpeg.on('error', (err) => {
-      resolve({ available: false, h264: false, h265: false, gpuName, error: err.message })
+      resolve({ available: false, h264: false, h265: false, gpuName, kind, error: err.message })
     })
-    
+
     ffmpeg.on('close', () => {
-      const hasH264 = output.includes('h264_nvenc')
-      const hasH265 = output.includes('hevc_nvenc')
+      const hasH264 = isMac ? output.includes('h264_videotoolbox') : output.includes('h264_nvenc')
+      const hasH265 = isMac ? output.includes('hevc_videotoolbox') : output.includes('hevc_nvenc')
       resolve({
         available: hasH264 || hasH265,
         h264: hasH264,
         h265: hasH265,
         gpuName,
+        kind,
       })
     })
   })
