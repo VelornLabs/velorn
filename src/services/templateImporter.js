@@ -1,6 +1,6 @@
 import { comfyui } from './comfyui'
 import { getLocalComfyConnectionSync } from './localComfyConnection'
-import { detectImportedWorkflowBindings } from './importedWorkflowBindings'
+import { detectImportedWorkflowBindings, detectOutputMediaFromClasses } from './importedWorkflowBindings'
 import {
   IMPORTED_WORKFLOW_ID_PREFIX,
   getImportedWorkflowEntry,
@@ -113,7 +113,7 @@ function collectUiWorkflowNodes(uiWorkflow) {
   ]
 }
 
-function collectUiNodeTypes(uiWorkflow) {
+export function collectUiNodeTypes(uiWorkflow) {
   const types = new Set()
   for (const node of collectUiWorkflowNodes(uiWorkflow)) {
     const type = String(node?.type || '').trim()
@@ -175,11 +175,12 @@ function resolveModelInputKey(apiWorkflow, model) {
     : null
 }
 
-function deriveCategoryAndOutput(template) {
+function deriveCategoryAndOutput(template, apiWorkflow = null) {
   const inputs = Array.isArray(template?.io?.inputs) ? template.io.inputs : []
   const outputs = Array.isArray(template?.io?.outputs) ? template.io.outputs : []
   const hasImageInput = inputs.some((entry) => entry?.mediaType === 'image')
   const outputMedia = outputs.find((entry) => entry?.mediaType)?.mediaType
+    || (apiWorkflow ? detectOutputMediaFromClasses(apiWorkflow) : '')
     || (template.categoryId === 'video' ? 'video'
       : template.categoryId === 'audio' ? 'audio'
         : template.categoryId === 'image' ? 'image' : '')
@@ -358,7 +359,7 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
       .filter(Boolean),
   ])).map((classType) => ({ classType }))
 
-  const derived = deriveCategoryAndOutput(template)
+  const derived = deriveCategoryAndOutput(template, apiWorkflow)
   const detection = apiWorkflow
     ? detectImportedWorkflowBindings(apiWorkflow, template)
     : { bindings: null, fields: [], needsImage: derived.needsImage, inputAssetType: derived.needsImage ? 'image' : undefined }
@@ -424,5 +425,158 @@ export async function reimportImportedWorkflow(workflowId, options = {}) {
   if (!entry.template) {
     throw new Error('This import predates re-import support — use Re-import on the template in the ComfyUI tab.')
   }
+  if (!entry.template.workflowUrl) {
+    throw new Error('This workflow was captured from the ComfyUI tab — open it there and import it again to update it.')
+  }
   return importComfyTemplate(entry.template, options)
+}
+
+// When the user opens a template in the embedded ComfyUI tab (to install
+// nodes or tweak the graph), remember which template it was so an import
+// from the tab keeps its identity (name, thumbnail, local/cloud routing).
+let pendingComfyTabImportContext = null
+
+export function setPendingComfyTabImportContext(template) {
+  pendingComfyTabImportContext = template && typeof template === 'object' ? template : null
+}
+
+function buildCapturedTemplate(workflowName) {
+  const now = new Date()
+  const slugBase = String(workflowName || '').trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48)
+  return {
+    name: `comfy-tab-${slugBase || 'workflow'}-${now.getTime().toString(36)}`,
+    title: String(workflowName || '').trim() || `ComfyUI workflow (${now.toLocaleDateString()})`,
+    description: 'Imported from the embedded ComfyUI tab.',
+    tags: ['comfyui-tab'],
+    models: [],
+    date: '',
+    openSource: true,
+    sizeBytes: 0,
+    vramBytes: 0,
+    usage: 0,
+    requiresCustomNodes: [],
+    io: null,
+    mediaType: '',
+    mediaSubtype: '',
+    thumbnailUrl: '',
+    workflowUrl: '',
+    sourceUrl: '',
+  }
+}
+
+/**
+ * Import whatever graph is currently open in the embedded ComfyUI tab. This
+ * is the "fix it with ComfyUI's own tools, then import" path: the graph is
+ * live, so its nodes all exist and conversion cannot produce placeholders.
+ */
+export async function importWorkflowFromComfyTab({ onProgress } = {}) {
+  const progress = (step, message) => { try { onProgress?.(step, message) } catch { /* UI only */ } }
+  const api = typeof window !== 'undefined' ? window.electronAPI : null
+  if (!api?.captureComfyWorkflowGraph || !api?.writeFile) {
+    throw new Error('Importing from the ComfyUI tab is only available in the desktop build.')
+  }
+
+  progress('capture', 'Reading the current graph from ComfyUI...')
+  const captured = await api.captureComfyWorkflowGraph({
+    comfyBaseUrl: getLocalComfyConnectionSync().httpBase,
+  })
+  if (!captured?.success || !captured.output) {
+    throw new Error(captured?.error || 'Could not capture the current ComfyUI graph.')
+  }
+  const apiWorkflow = captured.output
+  const uiWorkflow = captured.workflow || null
+
+  const placeholderNodes = Object.values(apiWorkflow)
+    .filter((node) => !String(node?.class_type || '').trim())
+  if (placeholderNodes.length > 0) {
+    throw new Error('The graph still has missing (red) nodes — install them in ComfyUI first, then import again.')
+  }
+
+  const template = pendingComfyTabImportContext || buildCapturedTemplate(captured.workflowName)
+  pendingComfyTabImportContext = null
+
+  progress('analyze', 'Reading models and node requirements...')
+  const { recipes: nodePackRecipes, unresolved: unresolvedNodePacks } = await resolveNodePackRecipes(template)
+  const embeddedModels = uiWorkflow ? collectEmbeddedModelMetadata(uiWorkflow) : []
+  const sizeByUrl = await probeModelSizes(embeddedModels)
+
+  const requiredModels = []
+  const recipes = []
+  for (const model of embeddedModels) {
+    const resolved = resolveModelInputKey(apiWorkflow, model)
+    if (resolved) {
+      requiredModels.push({
+        classType: resolved.classType,
+        inputKey: resolved.inputKey,
+        filename: model.name,
+        targetSubdir: model.directory,
+      })
+    }
+    if (model.url) {
+      recipes.push({
+        filename: model.name,
+        targetSubdir: model.directory,
+        displayName: model.name,
+        downloadUrl: model.url,
+        sourceUrl: model.url,
+        licenseUrl: '',
+        sizeBytes: sizeByUrl.get(model.url) ?? null,
+        sha256: '',
+        notes: `From the ComfyUI template "${template.name}".`,
+      })
+    }
+  }
+
+  const requiredNodes = Array.from(new Set([
+    ...(uiWorkflow ? collectUiNodeTypes(uiWorkflow) : []),
+    ...Object.values(apiWorkflow)
+      .map((node) => String(node?.class_type || '').trim())
+      .filter(Boolean),
+  ])).map((classType) => ({ classType }))
+
+  const derived = deriveCategoryAndOutput(template, apiWorkflow)
+  const detection = detectImportedWorkflowBindings(apiWorkflow, template)
+  const manifest = buildManifest(template, derived, detection, { conversionIncomplete: false, unknownNodeTypes: [] })
+  const pack = {
+    id: manifest.workflowId,
+    displayName: template.title,
+    requiredNodes,
+    requiredModels,
+    requiresComfyOrgApiKey: !template.openSource,
+    docsUrl: template.sourceUrl || '',
+  }
+
+  progress('save', 'Saving the imported workflow...')
+  const paths = await getImportedWorkflowStoragePaths(template.name)
+  if (!paths) throw new Error('Could not resolve the imported-workflow storage folder.')
+  await api.createDirectory?.(paths.dir, { recursive: true })
+
+  const entry = {
+    workflowId: manifest.workflowId,
+    templateName: template.name,
+    manifest,
+    pack,
+    recipes,
+    nodePackRecipes,
+    unresolvedNodePacks,
+    uncoveredNodeTypes: [],
+    bindings: detection.bindings,
+    conversionIncomplete: false,
+    template,
+    importedAt: Date.now(),
+    source: {
+      workflowUrl: template.workflowUrl || '',
+      sourceUrl: template.sourceUrl || '',
+      capturedFromTab: true,
+    },
+  }
+
+  const wroteWorkflow = await api.writeFile(paths.workflowFile, JSON.stringify(apiWorkflow, null, 2), { encoding: 'utf8' })
+  if (!wroteWorkflow?.success) throw new Error(wroteWorkflow?.error || 'Could not save the captured workflow.')
+  const wroteEntry = await api.writeFile(paths.entryFile, JSON.stringify(entry, null, 2), { encoding: 'utf8' })
+  if (!wroteEntry?.success) throw new Error(wroteEntry?.error || 'Could not save the imported workflow entry.')
+
+  const registered = registerImportedWorkflow({ ...entry, workflowPath: paths.workflowFile })
+  return { success: true, entry: registered }
 }

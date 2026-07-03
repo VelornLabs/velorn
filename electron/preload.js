@@ -379,6 +379,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWorkflowSetupDiskSpace: (payload = {}) => ipcRenderer.invoke('workflowSetup:diskSpace', payload),
   probeWorkflowSetupUrlSizes: (payload = {}) => ipcRenderer.invoke('workflowSetup:probeUrlSizes', payload),
   convertComfyWorkflowGraph: (payload = {}) => ipcRenderer.invoke('comfyui:convertWorkflowGraph', payload),
+  captureComfyWorkflowGraph: (payload = {}) => ipcRenderer.invoke('comfyui:captureWorkflowGraph', payload),
   openExternalUrl: (url) => ipcRenderer.invoke('shell:openExternal', url),
   installWorkflowSetup: (payload = {}) => ipcRenderer.invoke('workflowSetup:install', payload),
   onWorkflowSetupProgress: (cb) => {

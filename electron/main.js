@@ -1922,6 +1922,55 @@ async function convertWorkflowGraphInEmbeddedComfy({ workflowGraph, comfyBaseUrl
   return result
 }
 
+// Captures whatever graph is CURRENTLY open in the embedded ComfyUI tab —
+// both the UI serialization and the API prompt — so the user can set up /
+// modify a workflow with ComfyUI's own tools and then import the result.
+async function captureWorkflowGraphFromEmbeddedComfy({ comfyBaseUrl, waitForMs = 12000 }) {
+  const frame = await findEmbeddedComfyFrame(comfyBaseUrl, waitForMs)
+  if (!frame) {
+    throw new Error('Could not locate the embedded ComfyUI tab. Make sure the local ComfyUI server is running.')
+  }
+
+  const script = `
+    (async () => {
+      let comfyApp = globalThis.app || globalThis.__COMFYUI_APP__ || null;
+      if (!comfyApp?.graphToPrompt) {
+        try {
+          const appModule = await import('/scripts/app.js');
+          comfyApp = appModule?.app || comfyApp;
+        } catch (_) { /* frontend not ready */ }
+      }
+      if (!comfyApp?.graphToPrompt) {
+        return { success: false, error: 'ComfyUI frontend app is not ready yet.' };
+      }
+      try {
+        const prompt = await comfyApp.graphToPrompt();
+        const output = prompt?.output;
+        if (!output || typeof output !== 'object' || Object.keys(output).length === 0) {
+          return { success: false, error: 'The current ComfyUI graph is empty or could not be converted.' };
+        }
+        let workflowName = '';
+        try {
+          workflowName = String(
+            comfyApp.extensionManager?.workflow?.activeWorkflow?.filename
+            || comfyApp.workflowManager?.activeWorkflow?.name
+            || ''
+          ).replace(/\\.json$/i, '');
+        } catch (_) { /* name is a nicety only */ }
+        return { success: true, output, workflow: prompt?.workflow || null, workflowName };
+      } catch (error) {
+        return { success: false, error: error?.message || String(error) };
+      }
+    })()
+  `
+
+  const result = await frame.executeJavaScript(script, true)
+  if (!result?.success) {
+    throw new Error(result?.error || 'Could not capture the current ComfyUI graph.')
+  }
+  return result
+}
+
 async function detectNvidiaGpuName() {
   const commands = process.platform === 'win32'
     ? [{
@@ -4809,6 +4858,21 @@ ipcMain.handle('comfyui:convertWorkflowGraph', async (event, payload = {}) => {
     return {
       success: false,
       error: error?.message || 'Could not convert the workflow in the embedded ComfyUI tab.',
+    }
+  }
+})
+
+ipcMain.handle('comfyui:captureWorkflowGraph', async (_event, payload = {}) => {
+  try {
+    const result = await captureWorkflowGraphFromEmbeddedComfy({
+      comfyBaseUrl: payload?.comfyBaseUrl || 'http://127.0.0.1:8188',
+      waitForMs: payload?.waitForMs,
+    })
+    return { success: true, output: result.output, workflow: result.workflow, workflowName: result.workflowName || '' }
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.message || 'Could not capture the current ComfyUI graph.',
     }
   }
 })

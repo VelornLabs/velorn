@@ -1,10 +1,10 @@
-import { useState } from 'react'
-import { ArrowLeft, CheckCircle2, Download, ExternalLink, KeyRound, LayoutGrid, Loader2, Puzzle, RefreshCw } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, ExternalLink, KeyRound, LayoutGrid, Loader2, Puzzle } from 'lucide-react'
 import { formatBytes } from '../../hooks/useWorkflowSetupFlow'
 import { formatUsageCount } from './TemplateCard'
-import { importComfyTemplate } from '../../services/templateImporter'
+import { collectUiNodeTypes } from '../../services/templateImporter'
 import { openUiWorkflowInComfyUi } from '../../services/workflowSetupManager'
-import { getImportedWorkflowEntries } from '../../config/importedWorkflowRegistry'
+import { comfyui } from '../../services/comfyui'
 
 function MetaTile({ label, value }) {
   if (!value) return null
@@ -17,17 +17,37 @@ function MetaTile({ label, value }) {
 }
 
 export default function TemplateDetail({ template, onBack = null, isConnected = false }) {
-  const [importState, setImportState] = useState({ phase: 'idle', message: '', error: '' })
   const [openComfyState, setOpenComfyState] = useState({ busy: false, message: '', error: '' })
+  const [nodeCheck, setNodeCheck] = useState({ status: 'idle', missing: [] })
+
+  // Courtesy pre-check: diff the template's node types against the live
+  // ComfyUI so the user knows whether Manager will have work to do when the
+  // template opens. Informational only — the tab flow handles the rest.
+  useEffect(() => {
+    let cancelled = false
+    setNodeCheck({ status: 'idle', missing: [] })
+    if (!template?.workflowUrl || !isConnected) return undefined
+    ;(async () => {
+      setNodeCheck({ status: 'checking', missing: [] })
+      try {
+        const [response, objectInfo] = await Promise.all([
+          fetch(template.workflowUrl, { cache: 'no-store' }),
+          comfyui.getObjectInfo(),
+        ])
+        if (!response.ok) throw new Error(`(${response.status})`)
+        const uiWorkflow = await response.json()
+        const missing = collectUiNodeTypes(uiWorkflow).filter((type) => !objectInfo?.[type])
+        if (!cancelled) setNodeCheck({ status: 'ready', missing })
+      } catch {
+        if (!cancelled) setNodeCheck({ status: 'unknown', missing: [] })
+      }
+    })()
+    return () => { cancelled = true }
+  }, [template?.workflowUrl, isConnected])
+
   if (!template) return null
 
   const coverIsVideo = /\.(mp4|webm|mov)(\?|#|$)/i.test(String(template.thumbnailUrl || ''))
-  const importedEntry = getImportedWorkflowEntries().find((entry) => entry.templateName === template.name) || null
-  const alreadyImported = importState.phase === 'done' || Boolean(importedEntry)
-  const importIncomplete = importState.phase === 'done'
-    ? Boolean(importState.incomplete)
-    : Boolean(importedEntry?.conversionIncomplete)
-  const importing = importState.phase === 'importing'
 
   const handleOpenInComfy = async () => {
     if (openComfyState.busy) return
@@ -39,7 +59,9 @@ export default function TemplateDetail({ template, onBack = null, isConnected = 
       const result = await openUiWorkflowInComfyUi(uiWorkflow, { label: template.title })
       setOpenComfyState({
         busy: false,
-        message: result.success ? result.hint : '',
+        message: result.success
+          ? 'Opened in the ComfyUI tab — generate there and your outputs land in the Assets panel.'
+          : '',
         error: result.success ? '' : result.error,
       })
     } catch (error) {
@@ -47,30 +69,6 @@ export default function TemplateDetail({ template, onBack = null, isConnected = 
         busy: false,
         message: '',
         error: error instanceof Error ? error.message : 'Could not open the template in ComfyUI.',
-      })
-    }
-  }
-
-  const handleImport = async () => {
-    if (importing) return
-    setImportState({ phase: 'importing', message: 'Starting import...', error: '' })
-    try {
-      const result = await importComfyTemplate(template, {
-        onProgress: (_step, message) => {
-          setImportState((prev) => (prev.phase === 'importing' ? { ...prev, message } : prev))
-        },
-      })
-      setImportState({
-        phase: 'done',
-        incomplete: Boolean(result?.entry?.conversionIncomplete),
-        message: '',
-        error: '',
-      })
-    } catch (error) {
-      setImportState({
-        phase: 'error',
-        message: '',
-        error: error instanceof Error ? error.message : 'Import failed.',
       })
     }
   }
@@ -181,105 +179,39 @@ export default function TemplateDetail({ template, onBack = null, isConnected = 
             </div>
           )}
 
-          {importState.phase === 'error' && (
-            <div className="mt-5 rounded-lg border border-sf-error/30 bg-sf-error/10 p-2.5 text-[11px] text-sf-error">
-              {importState.error}
+          {isConnected && nodeCheck.status === 'ready' && nodeCheck.missing.length > 0 && (
+            <div className="mt-5 rounded-lg border border-yellow-400/25 bg-yellow-400/10 p-2.5 text-[11px] text-yellow-200">
+              Heads up — your ComfyUI is missing {nodeCheck.missing.length} node type{nodeCheck.missing.length === 1 ? '' : 's'} this
+              template uses: <span className="font-semibold">{nodeCheck.missing.join(', ')}</span>.
+              ComfyUI Manager will offer to install them when the template opens.
             </div>
           )}
-
-          {alreadyImported ? (
-            <>
-              <button
-                type="button"
-                disabled
-                className="mt-5 flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-lg bg-emerald-400/10 px-4 py-3 text-sm font-semibold text-emerald-300"
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                Imported
-              </button>
-              {importIncomplete ? (
-                <div className="mt-1.5 rounded-lg border border-yellow-400/25 bg-yellow-400/10 p-2.5 text-center text-[10px] text-yellow-200">
-                  Imported, but some of its custom nodes aren't installed yet. Open it under the{' '}
-                  {template.openSource ? 'Local' : 'Cloud'} tab, run Set up, restart ComfyUI, then
-                  come back here and Re-import to finish.
-                </div>
-              ) : (
-                <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
-                  This template now appears under the {template.openSource ? 'Local' : 'Cloud'} tab.
-                  Use its Set up button there to install what it needs.
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => { void handleImport() }}
-                disabled={!isConnected}
-                className={`mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
-                  isConnected
-                    ? 'border-sf-dark-500 text-sf-text-secondary hover:border-sf-dark-400 hover:text-sf-text-primary'
-                    : 'cursor-not-allowed border-sf-dark-700 text-sf-text-muted'
-                }`}
-              >
-                <RefreshCw className="h-4 w-4" />
-                Re-import latest version
-              </button>
-              {!isConnected && (
-                <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
-                  Start ComfyUI to re-import — conversion runs through your local install.
-                </div>
-              )}
-            </>
-          ) : importing ? (
-            <>
-              <button
-                type="button"
-                disabled
-                className="mt-5 flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-lg bg-sf-dark-700 px-4 py-3 text-sm font-semibold text-sf-text-muted"
-              >
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {importState.message || 'Importing...'}
-              </button>
-              <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
-                The template loads through your ComfyUI to convert it for Velorn.
-              </div>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => { void handleImport() }}
-                disabled={!isConnected}
-                className={`mt-5 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors ${
-                  isConnected
-                    ? 'bg-sf-accent text-white hover:bg-sf-accent-hover'
-                    : 'cursor-not-allowed bg-sf-dark-700 text-sf-text-muted'
-                }`}
-              >
-                <Download className="h-4 w-4" />
-                {importState.phase === 'error' ? 'Retry import' : 'Import template'}
-              </button>
-              <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
-                {isConnected
-                  ? 'Converts through your ComfyUI install and registers it in Generate.'
-                  : 'Start ComfyUI to import — conversion runs through your local install.'}
-              </div>
-            </>
+          {isConnected && nodeCheck.status === 'ready' && nodeCheck.missing.length === 0 && (
+            <div className="mt-5 text-center text-[10px] text-emerald-300/90">
+              Your ComfyUI has everything this template needs.
+            </div>
           )}
 
           <button
             type="button"
             onClick={() => { void handleOpenInComfy() }}
             disabled={!isConnected || openComfyState.busy}
-            className={`mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
+            className={`mt-2 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors ${
               isConnected && !openComfyState.busy
-                ? 'border-sf-dark-500 text-sf-text-secondary hover:border-sf-dark-400 hover:text-sf-text-primary'
-                : 'cursor-not-allowed border-sf-dark-700 text-sf-text-muted'
+                ? 'bg-sf-accent text-white hover:bg-sf-accent-hover'
+                : 'cursor-not-allowed bg-sf-dark-700 text-sf-text-muted'
             }`}
           >
             {openComfyState.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LayoutGrid className="h-4 w-4" />}
             Open in ComfyUI
           </button>
+          <div className="mt-1.5 text-center text-[10px] text-sf-text-muted">
+            {isConnected
+              ? 'Opens live in the ComfyUI tab — generate there and outputs land in your Assets panel.'
+              : 'Start ComfyUI to open this template.'}
+          </div>
           {(openComfyState.message || openComfyState.error) && (
-            <div className={`mt-1.5 text-center text-[10px] ${openComfyState.error ? 'text-sf-error' : 'text-sf-text-muted'}`}>
+            <div className={`mt-1.5 text-center text-[10px] ${openComfyState.error ? 'text-sf-error' : 'text-emerald-300/90'}`}>
               {openComfyState.error || openComfyState.message}
             </div>
           )}

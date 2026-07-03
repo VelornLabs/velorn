@@ -21,7 +21,6 @@ import {
   IMPORTED_WORKFLOWS_CHANGED_EVENT,
   getImportedManifestById,
   getImportedManifestByWorkflowId,
-  getImportedManifests,
   getImportedWorkflowEntry,
   isImportedWorkflowId,
   loadImportedWorkflowsFromDisk,
@@ -58,7 +57,7 @@ import {
   parseStructuredDirectorScript,
 } from '../utils/yoloPlanning'
 import { checkWorkflowDependencies, buildMissingDependencyClipboardText } from '../services/workflowDependencies'
-import { openApiWorkflowInComfyUi, openBundledWorkflowInComfyUi, openUiWorkflowInComfyUi } from '../services/workflowSetupManager'
+import { openApiWorkflowInComfyUi, openBundledWorkflowInComfyUi } from '../services/workflowSetupManager'
 import { useWorkflowSetupFlow } from '../hooks/useWorkflowSetupFlow'
 import {
   getComfyLauncherSnapshot,
@@ -4188,15 +4187,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   }, [currentWorkflow, formError, formErrorTroubleshootingHints, generationMode])
   const activeWorkflowBrowserMode = generationMode === 'yolo' ? 'create' : 'generate'
   const visibleWorkflowManifests = useMemo(() => (
-    [...GENERATE_WORKFLOW_CATALOG, ...getImportedManifests()].filter((workflow) => (
+    // Curated manifests only: the ComfyUI templates route is a launcher into
+    // the embedded ComfyUI tab, not an import source for Local/Cloud.
+    GENERATE_WORKFLOW_CATALOG.filter((workflow) => (
       !workflow.hidden
         && workflow.mode === activeWorkflowBrowserMode
         && (activeWorkflowBrowserMode === 'create'
           ? workflow.route === 'local'
           : workflow.route === workflowRoute)
     ))
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- importedWorkflowsVersion invalidates getImportedManifests()
-  ), [activeWorkflowBrowserMode, workflowRoute, importedWorkflowsVersion])
+  ), [activeWorkflowBrowserMode, workflowRoute])
   const selectedWorkflowManifest = useMemo(() => (
     GENERATE_WORKFLOW_CATALOG.find((workflow) => !workflow.hidden && workflow.id === selectedWorkflowManifestId)
       || getImportedManifestById(selectedWorkflowManifestId)
@@ -4326,29 +4326,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     setSelectedComfyTemplate(null)
   }, [])
 
-  // Opens the ORIGINAL upstream graph (UI format) of an imported template in
-  // the embedded ComfyUI tab — for tweaking parameters or letting Manager
-  // handle node packs our installer can't.
-  const handleOpenImportedWorkflowInComfyUi = useCallback(async () => {
-    const entry = getImportedWorkflowEntry(workflowId)
-    const workflowUrl = entry?.template?.workflowUrl || entry?.source?.workflowUrl
-    if (!workflowUrl) {
-      setOpenWorkflowHint('This import predates Open in ComfyUI support — re-import it from the ComfyUI tab first.')
-      return
-    }
-    try {
-      const response = await fetch(workflowUrl, { cache: 'no-store' })
-      if (!response.ok) throw new Error(`Could not download the template workflow (${response.status}).`)
-      const uiWorkflow = await response.json()
-      const result = await openUiWorkflowInComfyUi(uiWorkflow, { label: entry.manifest?.title || 'Imported template' })
-      setOpenWorkflowHint(result.success ? result.hint : result.error)
-      addComfyLog(result.success ? 'status' : 'error', result.success ? result.hint : result.error)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not open the template in ComfyUI.'
-      setOpenWorkflowHint(message)
-      addComfyLog('error', message)
-    }
-  }, [workflowId, addComfyLog])
 
   useEffect(() => {
     if (generationMode !== 'single' || category !== 'video' || videoDurationPresets.length === 0) return
@@ -4460,31 +4437,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     return () => window.removeEventListener(IMPORTED_WORKFLOWS_CHANGED_EVENT, handler)
   }, [])
 
-  // Once a "needs nodes" import has its dependencies satisfied (Set up +
-  // restart), finish it automatically: re-import converts the graph and flips
-  // the manifest to runnable without another trip to the ComfyUI tab.
-  const importFinishAttemptsRef = useRef(new Set())
-  useEffect(() => {
-    if (generationMode !== 'single' || !isImportedWorkflowId(workflowId)) return
-    if (dependencyCheck.workflowId !== workflowId) return
-    if (dependencyCheck.status !== 'ready' && dependencyCheck.status !== 'partial') return
-    const entry = getImportedWorkflowEntry(workflowId)
-    if (!entry?.conversionIncomplete || !entry.template) return
-    if (importFinishAttemptsRef.current.has(workflowId)) return
-    importFinishAttemptsRef.current.add(workflowId)
-    ;(async () => {
-      try {
-        addComfyLog('status', `Finishing import of ${entry.manifest?.title || workflowId}...`)
-        const { reimportImportedWorkflow } = await import('../services/templateImporter')
-        await reimportImportedWorkflow(workflowId)
-        addComfyLog('status', `${entry.manifest?.title || workflowId} is ready to queue.`)
-        void runWorkflowDependencyCheck()
-      } catch (error) {
-        importFinishAttemptsRef.current.delete(workflowId)
-        addComfyLog('error', `Could not finish the import: ${error?.message || error}`)
-      }
-    })()
-  }, [dependencyCheck, generationMode, workflowId, importedWorkflowsVersion, runWorkflowDependencyCheck, addComfyLog])
 
   const validateDependenciesForQueue = useCallback(async (workflowIds, queueLabel) => {
     const normalizedIds = Array.from(new Set(
@@ -14155,7 +14107,6 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const workflowDetailActions = {
     onGenerate: handleGenerate,
     onOpenApiKeyDialog: () => setApiKeyDialogOpen(true),
-    onOpenImportedInComfyUi: handleOpenImportedWorkflowInComfyUi,
     onPreviewAssetIndexChange: (nextIndex) => {
       setLatestWorkflowPreview((prev) => {
         if (!prev || prev.workflowId !== selectedPreviewWorkflowId) return prev

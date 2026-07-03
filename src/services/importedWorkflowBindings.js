@@ -122,19 +122,66 @@ function resolveAssetInputKey(apiNode, mediaType) {
   return candidates[0] || 'image'
 }
 
-function detectAssetBindings(apiWorkflow, template) {
+// Loader classes → the media type they feed. Used when there is no upstream
+// io metadata (e.g. graphs captured from the embedded ComfyUI tab).
+const ASSET_LOADER_CLASSES = Object.freeze({
+  LoadImage: 'image',
+  LoadImageMask: 'image',
+  LoadImageOutput: 'image',
+  LoadVideo: 'video',
+  VHS_LoadVideo: 'video',
+  VHS_LoadVideoPath: 'video',
+  LoadAudio: 'audio',
+  VHS_LoadAudioUpload: 'audio',
+})
+
+const OUTPUT_SAVER_CLASSES = Object.freeze({
+  SaveVideo: 'video',
+  VHS_VideoCombine: 'video',
+  SaveWEBM: 'video',
+  SaveAnimatedWEBP: 'video',
+  SaveImage: 'image',
+  SaveAudio: 'audio',
+  SaveAudioMP3: 'audio',
+  SaveAudioOpus: 'audio',
+})
+
+export function detectOutputMediaFromClasses(apiWorkflow) {
+  for (const node of Object.values(apiWorkflow || {})) {
+    const media = OUTPUT_SAVER_CLASSES[String(node?.class_type || '').trim()]
+    if (media) return media
+  }
+  return ''
+}
+
+function collectMediaInputRefs(apiWorkflow, template) {
   const ioInputs = Array.isArray(template?.io?.inputs) ? template.io.inputs : []
+  const refs = []
+  if (ioInputs.length > 0) {
+    for (const input of ioInputs) {
+      const nodeId = String(input?.nodeId ?? '').trim()
+      const mediaType = String(input?.mediaType || '').trim()
+      if (!nodeId || !['image', 'audio', 'video'].includes(mediaType) || !apiWorkflow[nodeId]) continue
+      refs.push({ nodeId, mediaType })
+    }
+    return refs
+  }
+
+  // No upstream metadata — find loader nodes by class (captured graphs).
+  for (const [nodeId, node] of Object.entries(apiWorkflow || {})) {
+    const mediaType = ASSET_LOADER_CLASSES[String(node?.class_type || '').trim()]
+    if (mediaType) refs.push({ nodeId, mediaType })
+  }
+  return refs
+}
+
+function detectAssetBindings(apiWorkflow, template) {
   const assets = []
   let primaryTaken = false
   let referenceIndex = 0
 
-  for (const input of ioInputs) {
-    const nodeId = String(input?.nodeId ?? '').trim()
-    const mediaType = String(input?.mediaType || '').trim()
-    if (!nodeId || !['image', 'audio', 'video'].includes(mediaType)) continue
+  for (const { nodeId, mediaType } of collectMediaInputRefs(apiWorkflow, template)) {
     const apiNode = apiWorkflow[nodeId]
-    if (!apiNode) continue
-
     const inputKey = resolveAssetInputKey(apiNode, mediaType)
     if (!primaryTaken && (mediaType === 'image' || mediaType === 'video')) {
       primaryTaken = true
