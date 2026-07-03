@@ -301,6 +301,16 @@ function clampWindowBoundsToDisplay(bounds, display) {
   }
 }
 
+function centerBoundsInDisplay(width, height, display) {
+  const workArea = display?.workArea || screen.getPrimaryDisplay().workArea
+  return {
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    y: Math.round(workArea.y + (workArea.height - height) / 2),
+    width: Math.round(width),
+    height: Math.round(height),
+  }
+}
+
 async function getRestoredMainWindowState() {
   const settings = await readSettingsRaw()
   const savedState = settings?.[MAIN_WINDOW_STATE_SETTING_KEY] || {}
@@ -3198,7 +3208,7 @@ function registerFileProtocol() {
   })
 }
 
-function createSplashWindow() {
+function createSplashWindow(restoredWindowState = null) {
   const splashPath = isDev
     ? path.join(__dirname, '../public/splash.html')
     : path.join(__dirname, '../dist/splash.html')
@@ -3207,14 +3217,17 @@ function createSplashWindow() {
   const splashWidth = 1200
   const statusBarHeight = 44
   const splashHeight = Math.round(splashWidth / SPLASH_ASPECT) + statusBarHeight
+  const splashDisplay = restoredWindowState?.bounds
+    ? screen.getDisplayMatching(restoredWindowState.bounds)
+    : screen.getPrimaryDisplay()
+  const splashBounds = centerBoundsInDisplay(splashWidth, splashHeight, splashDisplay)
   splashWindow = new BrowserWindow({
-    width: splashWidth,
-    height: splashHeight,
+    ...splashBounds,
     icon: iconPath,
     backgroundColor: '#0a0a0b',
     frame: false,
     transparent: false,
-    center: true,
+    center: false,
     resizable: false,
     alwaysOnTop: true,
     webPreferences: {
@@ -3229,8 +3242,8 @@ function createSplashWindow() {
   return splashWindow
 }
 
-async function createWindow() {
-  const restoredWindowState = await getRestoredMainWindowState()
+async function createWindow(restoredWindowState = null) {
+  restoredWindowState = restoredWindowState || await getRestoredMainWindowState()
   mainWindow = new BrowserWindow({
     ...restoredWindowState.bounds,
     minWidth: 1200,
@@ -6123,7 +6136,7 @@ ipcMain.handle('export:checkNvenc', async () => {
 // App Lifecycle
 // ============================================
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerFileProtocol()
   mcpServer = createComfyStudioMcpServer({
     port: DEFAULT_MCP_PORT,
@@ -6149,11 +6162,12 @@ app.whenReady().then(() => {
     .catch((error) => {
       console.warn('[comfyLauncher] init failed:', error?.message || error)
     })
-  const splash = createSplashWindow()
+  const restoredWindowState = await getRestoredMainWindowState()
+  const splash = createSplashWindow(restoredWindowState)
   splash.webContents.once('did-finish-load', () => {
     runStartupChecks()
       .then(async () => {
-        await createWindow()
+        await createWindow(restoredWindowState)
         if (splashWindow && !splashWindow.isDestroyed()) {
           splashWindow.close()
           splashWindow = null
@@ -6161,7 +6175,7 @@ app.whenReady().then(() => {
       })
       .catch(async (err) => {
         console.error('Startup checks failed:', err)
-        await createWindow()
+        await createWindow(restoredWindowState)
         if (splashWindow && !splashWindow.isDestroyed()) {
           splashWindow.close()
           splashWindow = null
