@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Settings, LogOut, Save, FolderOpen, Minus, Maximize2, BookOpen } from 'lucide-react'
+import { Settings, LogOut, Save, FolderOpen, Minus, Maximize2, BookOpen, ChevronDown } from 'lucide-react'
 import useTimelineStore from '../stores/timelineStore'
 import useProjectStore from '../stores/projectStore'
 
@@ -91,7 +91,15 @@ function BottomBar({ onOpenSettings, onOpenGettingStarted, projectName }) {
 
   return (
     <div className="h-8 flex-shrink-0 bg-black border-t border-sf-dark-700 flex items-center justify-end px-3 gap-0">
-      {/* Undo | Redo | Project name | Settings */}
+      {/* Save | Undo | Redo | Project name | Settings */}
+      <button
+        onClick={handleSave}
+        className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-bold text-white hover:bg-sf-dark-800 transition-colors"
+        title="Save Project"
+      >
+        Save
+      </button>
+      <Separator />
       <button
         onClick={handleUndo}
         disabled={!combinedCanUndo}
@@ -154,6 +162,10 @@ function BottomBar({ onOpenSettings, onOpenGettingStarted, projectName }) {
               Velorn
             </text>
           </svg>
+          <ChevronDown
+            className={`h-3 w-3 flex-shrink-0 text-sf-text-muted transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+            aria-hidden="true"
+          />
         </button>
 
         {menuOpen && (
