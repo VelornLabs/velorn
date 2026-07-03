@@ -372,6 +372,9 @@ function PreviewPanel() {
     setGlslPreviewQuality,
     previewCompositorMode,
     setPreviewCompositorMode,
+    inPoint,
+    outPoint,
+    rangeRenderState,
   } = useTimelineStore()
   
   // Use timeline playback hook
@@ -685,6 +688,15 @@ function PreviewPanel() {
     setPreviewChunks((chunks) => chunks.filter((chunk) => chunk.signature === currentSignature))
   }, [currentSignature])
 
+  // Flag the In→Out flatten stale the moment the timeline content changes —
+  // the ruler bar goes amber and playback falls back to live compositing
+  // (the chunk itself is pruned by the effect above).
+  useEffect(() => {
+    if (rangeRenderState?.status === 'cached' && rangeRenderState.signature !== currentSignature) {
+      useTimelineStore.getState().setRangeRenderState({ ...rangeRenderState, status: 'stale' })
+    }
+  }, [currentSignature, rangeRenderState])
+
   const buildPreviewChunkRanges = useCallback(() => {
     const timelineEnd = Math.max(0, Number(getTimelineEndTime?.()) || Number(timelineDuration) || 0)
     if (timelineEnd <= 0) return []
@@ -881,6 +893,68 @@ function PreviewPanel() {
     glslPreviewQuality,
     useProxyPlaybackForAssets,
   ])
+
+  // Flame-style Render In→Out: flatten the marked range through the export
+  // pipeline as ONE chunk (seamless playback across the whole range, no
+  // 5s-boundary source swaps). It lands in the same previewChunks list, so
+  // activePreviewChunk serves it automatically while it is fresh.
+  const runRenderInOut = useCallback(async () => {
+    if (chunkCacheState.busy) return
+    if (!currentProjectHandle || !window.electronAPI) {
+      setChunkCacheState({ busy: false, progress: 0, status: '', error: 'Render In→Out is available in the desktop app only.', cachedCount: 0, totalCount: 0, currentRangeLabel: '' })
+      return
+    }
+    const timelineState = useTimelineStore.getState()
+    const rangeStart = timelineState.inPoint
+    const rangeEnd = timelineState.outPoint
+    if (rangeStart == null || rangeEnd == null || rangeEnd - rangeStart <= PREVIEW_CHUNK_EPSILON) {
+      setChunkCacheState({ busy: false, progress: 0, status: '', error: 'Set In and Out points first (I / O keys).', cachedCount: 0, totalCount: 0, currentRangeLabel: '' })
+      return
+    }
+    const setRangeRenderState = timelineState.setRangeRenderState
+    const abortController = new AbortController()
+    chunkCacheAbortRef.current = abortController
+    const rangeLabel = formatPreviewChunkRange({ rangeStart, rangeEnd })
+    setChunkCacheState({ busy: true, progress: 0, status: `Rendering In→Out (${rangeLabel})...`, error: null, cachedCount: 0, totalCount: 1, currentRangeLabel: rangeLabel })
+    setRangeRenderState({ status: 'rendering', progress: 0, rangeStart, rangeEnd, signature: null })
+
+    const result = await renderPreviewChunk(
+      rangeStart,
+      rangeEnd,
+      (progress) => {
+        const safeProgress = Number.isFinite(progress) ? Math.round(progress) : 0
+        setChunkCacheState({ busy: true, progress: safeProgress, status: `Rendering In→Out (${rangeLabel})...`, error: null, cachedCount: 0, totalCount: 1, currentRangeLabel: rangeLabel })
+        setRangeRenderState({ status: 'rendering', progress: safeProgress, rangeStart, rangeEnd, signature: null })
+      },
+      {
+        force: false,
+        signal: abortController.signal,
+        useProxyMedia: useProxyPlaybackForAssets,
+        glslQualityScale: getGlslPreviewQualityScale(glslPreviewQuality),
+      }
+    )
+    if (chunkCacheAbortRef.current === abortController) chunkCacheAbortRef.current = null
+
+    if (!result?.path || !result?.url) {
+      const wasCancelled = abortController.signal.aborted || /cancel/i.test(result?.error || '')
+      setChunkCacheState({ busy: false, progress: 0, status: wasCancelled ? 'Render In→Out stopped.' : '', error: wasCancelled ? null : (result?.error || 'Render In→Out failed.'), cachedCount: 0, totalCount: 1, currentRangeLabel: rangeLabel })
+      setRangeRenderState(null)
+      return
+    }
+
+    const nextChunk = {
+      path: result.path,
+      url: result.url,
+      signature: result.signature,
+      rangeStart: result.rangeStart ?? rangeStart,
+      rangeEnd: result.rangeEnd ?? rangeEnd,
+    }
+    setPreviewChunks((chunks) => upsertPreviewChunk(chunks, nextChunk))
+    setChunkCacheState({ busy: false, progress: 100, status: `Rendered In→Out (${rangeLabel}).`, error: null, cachedCount: 1, totalCount: 1, currentRangeLabel: '' })
+    // The stale-watch effect flips this to 'stale' if the timeline changed
+    // mid-render.
+    setRangeRenderState({ status: 'cached', progress: 100, rangeStart: nextChunk.rangeStart, rangeEnd: nextChunk.rangeEnd, signature: result.signature })
+  }, [chunkCacheState.busy, currentProjectHandle, useProxyPlaybackForAssets, glslPreviewQuality])
 
   const activePreviewChunk = useMemo(() => {
     return previewChunks.find((chunk) => (
@@ -2419,6 +2493,28 @@ function PreviewPanel() {
                             : previewChunkPlan.label}
                         </button>
                       )}
+                      {SHOW_PREVIEW_CHUNK_CACHE_BUTTON && currentProjectHandle && window.electronAPI && clips.length > 0 && (() => {
+                        const hasRange = inPoint !== null && outPoint !== null && outPoint > inPoint
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => { void runRenderInOut() }}
+                            disabled={chunkCacheState.busy || !hasRange}
+                            className={`px-2 py-1 rounded text-xs transition-colors ${
+                              chunkCacheState.busy || !hasRange
+                                ? 'bg-sf-dark-700 text-sf-text-muted cursor-not-allowed'
+                                : rangeRenderState?.status === 'cached'
+                                  ? 'bg-emerald-800/70 hover:bg-emerald-700 text-white'
+                                  : 'bg-purple-800/70 hover:bg-purple-700 text-white'
+                            }`}
+                            title={hasRange
+                              ? `Flatten the In→Out range (${formatPreviewChunkRange({ rangeStart: inPoint, rangeEnd: outPoint })}) through the export pipeline for smooth playback. Any timeline edit marks it stale. Uses current proxy and GLSL preview-quality settings.`
+                              : 'Set In and Out points on the timeline first (I / O keys), then render the range as one flattened file for smooth playback.'}
+                          >
+                            {hasRange && rangeRenderState?.status === 'cached' ? 'In→Out Rendered' : 'Render In→Out'}
+                          </button>
+                        )
+                      })()}
                       {chunkCacheState.error && (
                         <span
                           className="px-2 py-1 rounded text-xs bg-amber-900/50 text-amber-200 border border-amber-700/40"

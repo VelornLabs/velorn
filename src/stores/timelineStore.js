@@ -700,7 +700,12 @@ export const useTimelineStore = create(
   // In/Out points for three-point editing
   inPoint: null, // Timeline in-point (seconds)
   outPoint: null, // Timeline out-point (seconds)
-  
+
+  // Render In→Out status for the timeline ruler (transient, not persisted —
+  // getProjectData never includes it; PreviewPanel's render flow owns it).
+  // { status: 'rendering'|'cached'|'stale', progress, rangeStart, rangeEnd, signature } | null
+  rangeRenderState: null,
+
   // Undo/Redo history
   history: [], // Array of past states
   historyIndex: -1, // Current position in history (-1 means at present state)
@@ -5080,6 +5085,13 @@ export const useTimelineStore = create(
    */
   clearInOutPoints: () => {
     set({ inPoint: null, outPoint: null })
+  },
+
+  /**
+   * Update the transient Render In→Out status shown on the timeline ruler.
+   */
+  setRangeRenderState: (rangeRenderState = null) => {
+    set({ rangeRenderState })
   },
 
   /**

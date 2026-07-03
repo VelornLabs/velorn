@@ -710,6 +710,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     rippleEditMode,
     inPoint,
     outPoint,
+    rangeRenderState,
     markers,
     selectedMarkerId,
     addClip,
@@ -6533,11 +6534,29 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           {inPoint !== null && outPoint !== null && inPoint < outPoint && (
             <div
               className="absolute top-0 bottom-0 bg-[#5a7a9e]/10 z-5 pointer-events-none border-t border-b border-[#5a7a9e]/30"
-              style={{ 
+              style={{
                 left: `${inPoint * pixelsPerSecond}px`,
                 width: `${(outPoint - inPoint) * pixelsPerSecond}px`
               }}
-            />
+            >
+              {/* Render In→Out status strip — same color language as the
+                  per-clip render strip (purple rendering / green fresh /
+                  amber stale) */}
+              {rangeRenderState
+                && Math.abs((rangeRenderState.rangeStart ?? -1) - inPoint) < 0.001
+                && Math.abs((rangeRenderState.rangeEnd ?? -1) - outPoint) < 0.001 && (
+                <div className="absolute left-0 bottom-0 h-[3px] w-full bg-sf-dark-900/60">
+                  {rangeRenderState.status === 'rendering' && (
+                    <div
+                      className="h-full bg-purple-400/90"
+                      style={{ width: `${Math.max(4, Math.min(100, Number(rangeRenderState.progress) || 0))}%` }}
+                    />
+                  )}
+                  {rangeRenderState.status === 'cached' && <div className="h-full w-full bg-emerald-400/90" />}
+                  {rangeRenderState.status === 'stale' && <div className="h-full w-full bg-amber-400/90" />}
+                </div>
+              )}
+            </div>
           )}
           
           {/* Snap Guide Lines */}
