@@ -32,6 +32,7 @@ import { applyVelocityMotionBlurToCanvas, canUseVelocityMotionBlur } from '../ut
 import { createClipFrameCursor, getFrameSourceStats, isWebCodecsExportEnabled, resetFrameSourceStats } from './exportFrameSource'
 import { applyTransitionClip, getFadeOverlayInfo, getTransitionCanvasStyle } from '../utils/transitionStyles'
 import { isFullBakeFresh } from '../utils/clipBakeSignature'
+import { createGpuCompositor, isGpuExportEnabled } from './gpuCompositor'
 
 const DEFAULT_SAMPLE_RATE = 44100
 const AUDIO_FETCH_TIMEOUT_MS = 15000
@@ -477,7 +478,7 @@ const getVisibleLocalRect = (rect, transform = {}, transitionStyle = null) => {
   return { left, right, top, bottom, width: right - left, height: bottom - top }
 }
 
-const projectClipPoint = (x, y, rect, transform = {}, transitionStyle = null) => {
+const projectClipCorner = (x, y, rect, transform = {}, transitionStyle = null) => {
   const anchorX = Number.isFinite(Number(transform.anchorX)) ? Number(transform.anchorX) : 50
   const anchorY = Number.isFinite(Number(transform.anchorY)) ? Number(transform.anchorY) : 50
   const anchorPxX = rect.width * (anchorX / 100)
@@ -530,7 +531,59 @@ const projectClipPoint = (x, y, rect, transform = {}, transitionStyle = null) =>
   return {
     x: centerX + px * projection,
     y: centerY + py * projection,
+    projection,
   }
+}
+
+const projectClipPoint = (x, y, rect, transform = {}, transitionStyle = null) => {
+  const corner = projectClipCorner(x, y, rect, transform, transitionStyle)
+  return { x: corner.x, y: corner.y }
+}
+
+/**
+ * Quad corner data for the GPU compositor: the visible (crop + transition
+ * inset) window of a clip projected through the same math as
+ * projectClipPoint, with w = 1/projection so the GPU interpolates with true
+ * perspective instead of the affine-triangle approximation. Corner order is
+ * TL, TR, BL, BR (triangle-strip order). Returns null when nothing is
+ * visible.
+ */
+export const getClipQuadCorners = (rect, transform = {}, transitionStyle = null) => {
+  const visible = getVisibleLocalRect(rect, transform, transitionStyle)
+  if (visible.width <= 0.01 || visible.height <= 0.01) return null
+  const localCorners = [
+    [visible.left, visible.top],
+    [visible.right, visible.top],
+    [visible.left, visible.bottom],
+    [visible.right, visible.bottom],
+  ]
+  return localCorners.map(([localX, localY]) => {
+    const projected = projectClipCorner(localX, localY, rect, transform, transitionStyle)
+    return {
+      x: projected.x,
+      y: projected.y,
+      u: localX / rect.width,
+      v: localY / rect.height,
+      w: 1 / projected.projection,
+    }
+  })
+}
+
+/**
+ * Mean device-space scale of a clip transform. Canvas 2D filters (ctx.filter)
+ * scale with the transform they're drawn under, so the GPU path — which blurs
+ * post-transform in device space — multiplies blur radii by this to match.
+ * Anisotropic scales get the isotropic mean; exact for the uniform scales
+ * transitions use.
+ */
+const getApproxTransformScale = (transform = {}, transitionStyle = null) => {
+  const perspective = clamp(Number(transform.perspective) || 1200, 100, 10000)
+  const positionZ = clamp(Number(transform.positionZ) || 0, -20000, perspective - 100)
+  const depthScale = clamp(perspective / Math.max(100, perspective - positionZ), 0.05, 12)
+  const transitionScale = transitionStyle?.scale || 1
+  const scaleX = Math.abs((Number(transform.scaleX) || 100) / 100) * transitionScale * depthScale
+  const scaleY = Math.abs((Number(transform.scaleY) || 100) / 100) * transitionScale * depthScale
+  return (scaleX + scaleY) / 2
 }
 
 const drawAffineTriangle = (ctx, source, sourceWidth, sourceHeight, s0, s1, s2, d0, d1, d2) => {
@@ -1193,7 +1246,54 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       onProgress({ status: 'Fast pipe unavailable - using PNG frame sequence...', progress: 4 })
     }
   }
-  
+
+  // GPU compositing (WebGL2). Replaces the per-clip canvas-2D composite
+  // chain; clips that need not-yet-ported features (tonal adjustments,
+  // masks, GLSL/managed effects, velocity blur, text raster) still render
+  // through the 2D helpers and composite as GPU textures. Only engages on
+  // the frame-pipe path (the PNG fallback keeps the 2D compositor). Kill
+  // switch: localStorage 'comfystudio-export-gpu' = '0'.
+  let gpu = null
+  if (framePipeSessionId && isGpuExportEnabled()) {
+    gpu = createGpuCompositor({ width, height, transparent: !!transparent })
+    if (gpu) {
+      console.log('[Export] GPU compositor active (WebGL2). Set localStorage comfystudio-export-gpu=0 to use the 2D compositor.')
+    } else {
+      console.warn('[Export] WebGL2 unavailable; using the 2D compositor.')
+    }
+  }
+  const gpuFullFrameCorners = gpu
+    ? [
+      { x: 0, y: 0, u: 0, v: 0, w: 1 },
+      { x: width, y: 0, u: 1, v: 0, w: 1 },
+      { x: 0, y: height, u: 0, v: 1, w: 1 },
+      { x: width, y: height, u: 1, v: 1, w: 1 },
+    ]
+    : null
+  // Composite a 2D-rendered full-frame canvas (the legacy offscreen path)
+  // onto the GPU stage.
+  const gpuDrawCanvasLayer = (sourceCanvas, sourceKey, sourceVersion, opacity, blendMode, colorSettings = null, blurPx = null, corners = null) => {
+    gpu.drawLayer({
+      samples: [{ source: sourceCanvas, sourceKey, sourceVersion, corners: corners || gpuFullFrameCorners, weight: 1 }],
+      colorSettings,
+      blurPx,
+      opacity,
+      blendMode: blendMode === 'normal' ? 'normal' : blendMode,
+    })
+  }
+  let gpuSnapshotCanvas = null
+  let gpuSnapshotCtx = null
+  const getGpuStageSnapshot = () => {
+    if (!gpuSnapshotCanvas) {
+      gpuSnapshotCanvas = document.createElement('canvas')
+      gpuSnapshotCanvas.width = width
+      gpuSnapshotCanvas.height = height
+      gpuSnapshotCtx = gpuSnapshotCanvas.getContext('2d')
+    }
+    gpu.readStageIntoContext(gpuSnapshotCtx)
+    return gpuSnapshotCanvas
+  }
+
   onProgress({ status: EXPORT_STATUS.rendering, progress: 5 })
   
   const frameDuration = fps > 0 ? 1 / fps : 0
@@ -1219,7 +1319,12 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     // composited over the baked file at playback/export time.
     const transitionInfo = soloClipSet ? null : timelineState.getTransitionAtTime(time)
 
-    if (transparent) {
+    if (gpu?.isContextLost()) {
+      throw new Error('GPU compositor context lost mid-export. Re-run the export (set localStorage comfystudio-export-gpu=0 to force the 2D compositor).')
+    }
+    if (gpu) {
+      gpu.beginFrame()
+    } else if (transparent) {
       ctx.clearRect(0, 0, width, height)
     } else {
       ctx.fillStyle = '#000000'
@@ -1281,6 +1386,50 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const clipTransform = scaleTransformToExport(applyEffectsToTransform(baseClipTransform, clip.effects, clipTime))
         const usesManagedPixelEffects = hasManagedPixelOrVignetteEffect(clip, clipTime)
         const adjustmentIsActive = hasAdjustmentEffect(adjustmentSettings)
+
+        if (gpu) {
+          if (!adjustmentIsActive && !usesManagedPixelEffects) continue
+          const rect = getBaseDrawRect(width, height, width, height)
+          const corners = getClipQuadCorners(rect, clipTransform, null)
+          if (!corners) continue
+          const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
+          const blendMode = clipTransform?.blendMode || 'normal'
+          const usesTonalAdjustments = hasTonalAdjustmentEffect(adjustmentSettings)
+
+          if (!usesTonalAdjustments && !usesManagedPixelEffects) {
+            // Color/blur-only adjustment layers grade the GPU stage directly.
+            gpu.drawAdjustment({
+              corners,
+              colorSettings: adjustmentSettings,
+              blurPx: adjustmentSettings.blur > 0 ? adjustmentSettings.blur : null,
+              opacity: baseOpacity,
+              blendMode,
+            })
+            continue
+          }
+
+          // Tonal / managed-effect adjustment layers still run the 2D
+          // pipeline: snapshot the GPU stage, process, composite back.
+          const snapshot = getGpuStageSnapshot()
+          let adjustmentOutputCanvas
+          if (usesTonalAdjustments) {
+            adjustmentOutputCanvas = applyAdvancedAdjustmentsToCanvas(snapshot, adjustmentSettings)
+          } else {
+            const adjustmentFilter = adjustmentIsActive ? buildCssFilterFromAdjustments(adjustmentSettings) : 'none'
+            adjustmentCtx.clearRect(0, 0, width, height)
+            adjustmentCtx.save()
+            adjustmentCtx.filter = adjustmentFilter
+            adjustmentCtx.drawImage(snapshot, 0, 0)
+            adjustmentCtx.restore()
+            adjustmentOutputCanvas = adjustmentCanvas
+          }
+          if (usesManagedPixelEffects) {
+            const managedCtx = adjustmentOutputCanvas.getContext('2d')
+            applyClipManagedEffectsToOffCanvas(adjustmentOutputCanvas, managedCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
+          }
+          gpuDrawCanvasLayer(adjustmentOutputCanvas, `${clip.id}:adj`, frameIndex, baseOpacity, blendMode, null, null, corners)
+          continue
+        }
 
         if (adjustmentCtx && (adjustmentIsActive || usesManagedPixelEffects)) {
           const usesTonalAdjustments = hasTonalAdjustmentEffect(adjustmentSettings)
@@ -1439,6 +1588,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             applyClipManagedEffectsToOffCanvas(processedCanvasForText, outCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
           }
 
+          if (gpu) {
+            gpuDrawCanvasLayer(processedCanvasForText, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+            continue
+          }
           ctx.save()
           ctx.globalAlpha = clipOpacity
           ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
@@ -1473,6 +1626,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
 
           applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
 
+          if (gpu) {
+            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+            continue
+          }
           ctx.save()
           ctx.globalAlpha = clipOpacity
           ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
@@ -1503,12 +1660,36 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           }
           applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
 
+          if (gpu) {
+            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+            continue
+          }
           ctx.save()
           ctx.globalAlpha = clipOpacity
           ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
           ctx.filter = 'none'
           ctx.drawImage(offCanvas, 0, 0)
           ctx.restore()
+          continue
+        }
+        if (gpu) {
+          // Simple text/shape: raster through the shared 2D helpers (vector
+          // sharpness at the final transform), composite on the GPU stage.
+          let buffers = maskRenderBuffers.get(clip.id)
+          if (!buffers) {
+            const offCanvas = document.createElement('canvas')
+            offCanvas.width = width
+            offCanvas.height = height
+            const offCtx = offCanvas.getContext('2d')
+            buffers = { offCanvas, offCtx }
+            maskRenderBuffers.set(clip.id, buffers)
+          }
+          const { offCanvas, offCtx } = buffers
+          offCtx.clearRect(0, 0, width, height)
+          for (const sample of motionBlurSamples) {
+            drawTextShapeSample(offCtx, sample, sampleFilter)
+          }
+          gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
           continue
         }
         for (const sample of motionBlurSamples) {
@@ -1749,6 +1930,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           applyClipManagedEffectsToOffCanvas(advancedOutputCanvas, outCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
         }
 
+        if (gpu) {
+          gpuDrawCanvasLayer(advancedOutputCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+          continue
+        }
         ctx.save()
         ctx.globalAlpha = clipOpacity
         ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
@@ -1821,12 +2006,181 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
 
         applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
 
+        if (gpu) {
+          gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+          continue
+        }
         ctx.save()
         ctx.globalAlpha = clipOpacity
         ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
         ctx.filter = 'none'
         ctx.drawImage(offCanvas, 0, 0)
         ctx.restore()
+        continue
+      }
+
+      if (gpu) {
+        const gpuColorSettings = clipAdjustmentFilterValue ? clipAdjustmentSettings : null
+        // The 2D path stacks adjustment blur (inside the CSS filter string)
+        // and transform/transition blur as sequential gaussians; combined
+        // that is exactly one gaussian of sqrt(a² + b²). ctx.filter blur
+        // also scales with the transform it is drawn under, so scale the
+        // radius to device space.
+        const gpuAdjustmentBlur = clipAdjustmentSettings.blur > 0 ? clipAdjustmentSettings.blur : 0
+        const gpuTransformBlur = blurPx != null ? blurPx : 0
+        const gpuCombinedBlur = Math.sqrt(gpuAdjustmentBlur * gpuAdjustmentBlur + gpuTransformBlur * gpuTransformBlur)
+        const gpuBlurPx = gpuCombinedBlur > 0
+          ? gpuCombinedBlur * getApproxTransformScale(clipTransform, transitionStyle)
+          : null
+
+        if (velocityMotionBlur && !maskEffect) {
+          // Velocity blur stays a 2D+GLSL pass for now; composite via GPU.
+          let buffers = maskRenderBuffers.get(clip.id)
+          if (!buffers) {
+            const offCanvas = document.createElement('canvas')
+            offCanvas.width = width
+            offCanvas.height = height
+            const offCtx = offCanvas.getContext('2d')
+            buffers = { offCanvas, offCtx }
+            maskRenderBuffers.set(clip.id, buffers)
+          }
+          const { offCanvas, offCtx } = buffers
+          const velocityFilterParts = []
+          if (clipAdjustmentFilterValue) velocityFilterParts.push(clipAdjustmentFilterValue)
+          if (blurPx != null) velocityFilterParts.push(`blur(${blurPx}px)`)
+          const velocitySampleFilter = velocityFilterParts.length > 0 ? velocityFilterParts.join(' ') : 'none'
+          offCtx.clearRect(0, 0, width, height)
+          drawMediaTransformSample(offCtx, { clipTime, weight: 1 }, velocitySampleFilter)
+          applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+          // Filter already applied in the offscreen draw; composite plain.
+          // (The 2D export path re-applies it at this draw — a double-apply
+          // the preview never had.)
+          gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+          continue
+        }
+
+        let gpuMaskHandled = false
+        if (maskEffect) {
+          const maskAsset = assetsState.getAssetById(maskEffect.maskAssetId)
+          const maskFrameUrl = getMaskFrameInfo(clip, maskAsset, time)
+          const maskImageMap = maskElements.get(maskAsset?.id)
+          const maskImage = maskImageMap?.get(maskFrameUrl)
+          if (maskImage) {
+            let buffers = maskRenderBuffers.get(clip.id)
+            if (!buffers || !buffers.maskCanvas) {
+              const offCanvas = buffers?.offCanvas || document.createElement('canvas')
+              offCanvas.width = width
+              offCanvas.height = height
+              const offCtx = offCanvas.getContext('2d')
+              const maskCanvas = document.createElement('canvas')
+              maskCanvas.width = width
+              maskCanvas.height = height
+              const maskCtx = maskCanvas.getContext('2d')
+              buffers = { offCanvas, offCtx, maskCanvas, maskCtx }
+              maskRenderBuffers.set(clip.id, buffers)
+            }
+            const { offCanvas, offCtx, maskCanvas, maskCtx } = buffers
+            const blurPxMask = transitionStyle?.blur ?? (clipTransform?.blur > 0 ? clipTransform.blur : null)
+
+            offCtx.clearRect(0, 0, width, height)
+            offCtx.save()
+            offCtx.globalAlpha = 1
+            offCtx.filter = blurPxMask != null ? `blur(${blurPxMask}px)` : 'none'
+            applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
+            applyClipCrop(offCtx, rect, clipTransform)
+            applyTransitionClip(offCtx, rect, transitionStyle)
+            offCtx.drawImage(drawSource, 0, 0, rect.width, rect.height)
+            offCtx.restore()
+
+            maskCtx.clearRect(0, 0, width, height)
+            maskCtx.save()
+            maskCtx.filter = blurPxMask != null ? `blur(${blurPxMask}px)` : 'none'
+            applyClipTransform(maskCtx, rect, clipTransform, transitionStyle)
+            applyClipCrop(maskCtx, rect, clipTransform)
+            applyTransitionClip(maskCtx, rect, transitionStyle)
+            maskCtx.drawImage(maskImage, 0, 0, rect.width, rect.height)
+            maskCtx.restore()
+
+            const frameData = offCtx.getImageData(0, 0, width, height)
+            const maskData = maskCtx.getImageData(0, 0, width, height)
+            const framePixels = frameData.data
+            const maskPixels = maskData.data
+            for (let i = 0; i < framePixels.length; i += 4) {
+              const luminance = (maskPixels[i] + maskPixels[i + 1] + maskPixels[i + 2]) / 3
+              const alpha = maskEffect.invertMask ? (255 - luminance) : luminance
+              framePixels[i + 3] = alpha
+            }
+            offCtx.putImageData(frameData, 0, 0)
+
+            if (velocityMotionBlur) {
+              applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+            }
+            if (usesManagedPixelEffects) {
+              applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
+            }
+            // Color + adjustment blur composite once here (the 2D path
+            // applies them via ctx.filter at this identity-transform draw).
+            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode, gpuColorSettings, gpuAdjustmentBlur > 0 ? gpuAdjustmentBlur : null)
+            gpuMaskHandled = true
+          }
+          // No usable mask image: fall through to the plain draw, matching
+          // the 2D path.
+        }
+        if (gpuMaskHandled) continue
+
+        const gpuSamples = []
+        if (hasMotionBlurSamples) {
+          for (const sample of motionBlurSamples) {
+            const corners = getClipQuadCorners(rect, resolveClipTransformAtTime(sample.clipTime), transitionStyle)
+            if (corners) {
+              gpuSamples.push({ source: drawSource, sourceKey: clip.id, sourceVersion: frameIndex, corners, weight: sample.weight })
+            }
+          }
+        } else if (shouldBlend && sourceTime !== null) {
+          const corners = getClipQuadCorners(rect, clipTransform, transitionStyle)
+          if (corners) {
+            const sourceFrameDuration = 1 / sourceFps
+            const baseIndex = Math.floor(sourceTime / sourceFrameDuration)
+            const baseTime = baseIndex * sourceFrameDuration
+            const nextTime = Math.min(baseTime + sourceFrameDuration, (maxSourceTime ?? sourceTime) - 0.001)
+            const blend = clamp((sourceTime - baseTime) / sourceFrameDuration, 0, 1)
+            try {
+              const baseSource = await sampleVideoSourceAt(baseTime)
+              gpuSamples.push({ source: baseSource, sourceKey: `${clip.id}:a`, sourceVersion: frameIndex, corners, weight: 1 - blend })
+              if (blend > 0.001 && nextTime > baseTime + 1e-6) {
+                const nextSource = await sampleVideoSourceAt(nextTime)
+                gpuSamples.push({ source: nextSource, sourceKey: `${clip.id}:b`, sourceVersion: frameIndex, corners, weight: blend })
+              }
+            } catch (err) {
+              console.warn('[Export] Failed blended seek/draw, skipping clip frame:', getMediaErrorMessage(err))
+              if (clip.type === 'video') {
+                const badSourceUrl = cachedVideoSources.get(clip.id) || resolvedAssetUrls.get(clip.assetId) || asset?.url
+                if (badSourceUrl) failedVideoSources.add(badSourceUrl)
+              }
+              continue
+            }
+          }
+        } else {
+          const corners = getClipQuadCorners(rect, clipTransform, transitionStyle)
+          if (corners) {
+            gpuSamples.push({
+              source: drawSource,
+              sourceKey: clip.id,
+              sourceVersion: clip.type === 'image' ? 'static' : frameIndex,
+              corners,
+              weight: 1,
+            })
+          }
+        }
+        if (gpuSamples.length > 0) {
+          gpu.drawLayer({
+            samples: gpuSamples,
+            colorSettings: gpuColorSettings,
+            blurPx: gpuBlurPx,
+            opacity: clipOpacity,
+            blendMode,
+          })
+        }
         continue
       }
 
@@ -1976,21 +2330,30 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     
     const fadeOverlay = getFadeOverlayInfo(transitionInfo)
     if (fadeOverlay && fadeOverlay.opacity > 0.001) {
-      ctx.save()
-      ctx.globalAlpha = Math.min(1, fadeOverlay.opacity)
-      ctx.fillStyle = fadeOverlay.color
-      ctx.fillRect(0, 0, width, height)
-      ctx.restore()
+      if (gpu) {
+        gpu.drawFill(fadeOverlay.color, Math.min(1, fadeOverlay.opacity))
+      } else {
+        ctx.save()
+        ctx.globalAlpha = Math.min(1, fadeOverlay.opacity)
+        ctx.fillStyle = fadeOverlay.color
+        ctx.fillRect(0, 0, width, height)
+        ctx.restore()
+      }
     }
     exportPerf.layersMs += performance.now() - layersStart
 
     if (framePipeSessionId) {
       const readbackStart = performance.now()
-      const frameData = ctx.getImageData(0, 0, width, height)
-      const pixelData = frameData.data
-      const frameBuffer = pixelData.byteOffset === 0 && pixelData.byteLength === pixelData.buffer.byteLength
-        ? pixelData.buffer
-        : pixelData.buffer.slice(pixelData.byteOffset, pixelData.byteOffset + pixelData.byteLength)
+      let frameBuffer
+      if (gpu) {
+        frameBuffer = gpu.readFramePixels().buffer
+      } else {
+        const frameData = ctx.getImageData(0, 0, width, height)
+        const pixelData = frameData.data
+        frameBuffer = pixelData.byteOffset === 0 && pixelData.byteLength === pixelData.buffer.byteLength
+          ? pixelData.buffer
+          : pixelData.buffer.slice(pixelData.byteOffset, pixelData.byteOffset + pixelData.byteLength)
+      }
       exportPerf.readbackMs += performance.now() - readbackStart
       // Pipeline: the previous frame's write ran while this frame rendered.
       // Settle it, then fire this frame's write without waiting on it.
@@ -2061,8 +2424,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     console.log(`[Export] Frame sources: ${webCodecsClipCount} clip(s) via WebCodecs, ${elementPathClipCount} via video element`)
   }
   closeAllFrameCursors()
+  gpu?.dispose()
   } catch (err) {
     closeAllFrameCursors()
+    gpu?.dispose()
     if (pendingFrameWrite) {
       pendingFrameWrite.catch(() => {})
       pendingFrameWrite = null
@@ -2416,6 +2781,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       : null,
     perf: {
       frames: totalFrames,
+      gpuCompositing: !!gpu,
       perFrameMs: {
         mediaSample: perFrameMs(exportPerf.sampleMs),
         layerComposite: perFrameMs(exportPerf.layersMs - exportPerf.sampleMs),
