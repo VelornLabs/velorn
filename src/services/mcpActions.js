@@ -10,6 +10,12 @@ import { normalizeAdjustmentSettings } from '../utils/adjustments'
 import { saveLocalComfyConnectionPort } from './localComfyConnection'
 import { getAbsoluteFileUrl, importAsset, writeGeneratedOverlayToProject } from './fileSystem'
 import buildFcpXml from './fcpxmlExporter'
+import {
+  handleTranscribeCaptions,
+  handleGetCaptionStatus,
+  handleUpdateCaptionCues,
+  handleGenerateCaptions,
+} from './mcpCaptions'
 
 export const MCP_ACTION_BRIDGE_VERSION = 2
 
@@ -279,6 +285,105 @@ async function handleCreateProject(payload = {}) {
     action: 'create_project',
     project: summarizeProject(nextState.currentProject || project, nextState.currentProjectHandle),
     currentTimelineId: nextState.currentTimelineId || null,
+  }
+}
+
+function handleListRecentProjects(payload = {}) {
+  const projectState = useProjectStore.getState()
+  const limit = Math.max(1, Math.min(10, Number(payload.limit) || 10))
+  const currentPath = typeof projectState.currentProjectHandle === 'string' ? projectState.currentProjectHandle : ''
+  const projects = (projectState.recentProjects || []).slice(0, limit).map((project) => ({
+    name: project?.name || '',
+    path: project?.path || '',
+    modified: project?.modified || null,
+    isOpen: Boolean(currentPath && project?.path === currentPath),
+    ...(project?.settings
+      ? {
+        settings: {
+          width: Number(project.settings.width) || null,
+          height: Number(project.settings.height) || null,
+          fps: Number(project.settings.fps) || null,
+        },
+      }
+      : {}),
+  }))
+  return {
+    action: 'list_recent_projects',
+    count: projects.length,
+    currentProjectPath: currentPath || null,
+    currentProjectName: projectState.currentProject?.name || null,
+    projects,
+  }
+}
+
+async function handleOpenProject(payload = {}) {
+  if (!window.electronAPI) {
+    throw new Error('Opening projects through MCP is only available in the desktop app.')
+  }
+
+  const projectState = useProjectStore.getState()
+  const explicitPath = String(payload.projectPath || payload.path || '').trim()
+  const requestedName = String(payload.projectName || payload.name || '').trim()
+
+  let target = null
+  if (explicitPath) {
+    target = { name: null, path: explicitPath, source: 'explicit path' }
+  } else if (requestedName) {
+    const requestedNameLower = requestedName.toLowerCase()
+    const recent = (projectState.recentProjects || []).find((project) => (
+      String(project?.name || '').trim().toLowerCase() === requestedNameLower
+    ))
+    if (!recent?.path) {
+      const knownNames = (projectState.recentProjects || [])
+        .map((project) => String(project?.name || '').trim())
+        .filter(Boolean)
+      throw new Error(`No recent project named "${requestedName}". Known recent projects: ${knownNames.join(', ') || 'none'}.`)
+    }
+    target = { name: recent.name || null, path: recent.path, source: 'recent project' }
+  } else {
+    throw new Error('Provide projectPath or projectName. Use list_recent_projects to see known projects.')
+  }
+
+  const exists = window.electronAPI.exists ? await window.electronAPI.exists(target.path) : true
+  if (!exists) {
+    throw new Error(`No project folder found at "${target.path}".`)
+  }
+
+  const currentPath = typeof projectState.currentProjectHandle === 'string' ? projectState.currentProjectHandle : ''
+  const alreadyOpen = Boolean(currentPath && currentPath === target.path)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'open_project',
+      message: alreadyOpen
+        ? 'This project is already open. Applying would reload it from disk.'
+        : 'Open project plan only. No project was opened.',
+      plan: {
+        name: target.name,
+        path: target.path,
+        source: target.source,
+        alreadyOpen,
+        replacesOpenProject: Boolean(currentPath && !alreadyOpen),
+        ...(currentPath && !alreadyOpen ? { currentProjectPath: currentPath } : {}),
+      },
+    }
+  }
+
+  const opened = await projectState.openProject?.(target.path)
+  if (!opened) {
+    const error = useProjectStore.getState().error
+    throw new Error(error || `Could not open the project at "${target.path}".`)
+  }
+
+  const nextState = useProjectStore.getState()
+  return {
+    success: true,
+    action: 'open_project',
+    message: `Opened project "${nextState.currentProject?.name || target.path}".`,
+    project: summarizeProject(nextState.currentProject, nextState.currentProjectHandle),
+    currentTimelineId: nextState.currentTimelineId || null,
+    reloaded: alreadyOpen,
   }
 }
 
@@ -6718,6 +6823,10 @@ async function handleMcpAction(request = {}) {
       return handleCreateProject(request.payload || {})
     case 'duplicate_project':
       return handleDuplicateProject(request.payload || {})
+    case 'open_project':
+      return handleOpenProject(request.payload || {})
+    case 'list_recent_projects':
+      return handleListRecentProjects(request.payload || {})
     case 'list_glsl_effects':
       return handleListGlslEffects(request.payload || {})
     case 'set_clip_label_color':
@@ -6790,6 +6899,14 @@ async function handleMcpAction(request = {}) {
       return handleAddTextClip(request.payload || {})
     case 'update_text_clip':
       return handleUpdateTextClip(request.payload || {})
+    case 'transcribe_captions':
+      return handleTranscribeCaptions(request.payload || {})
+    case 'get_caption_status':
+      return handleGetCaptionStatus(request.payload || {})
+    case 'update_caption_cues':
+      return handleUpdateCaptionCues(request.payload || {})
+    case 'generate_captions':
+      return handleGenerateCaptions(request.payload || {})
     case 'add_shape_clip':
       return handleAddShapeClip(request.payload || {})
     case 'update_shape_clip':

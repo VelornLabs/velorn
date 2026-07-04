@@ -6457,6 +6457,126 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'list_recent_projects',
+      description: 'List recently opened ComfyStudio projects (name, path, last modified, whether currently open). Works with no project open. Use with open_project to recover after an app restart or switch projects.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', description: 'Maximum projects to return. Defaults to 10 (the full recent list).' },
+        },
+      },
+    },
+    {
+      name: 'open_project',
+      description: 'Open a ComfyStudio project by folder path or by recent-project name. Works with no project open; replaces the currently open project (work is autosaved). Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectPath: { type: 'string', description: 'Absolute project folder path.' },
+          projectName: { type: 'string', description: 'Name of a recent project from list_recent_projects. Used when projectPath is omitted.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the open plan without switching projects. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'transcribe_captions',
+      description: 'Transcribe spoken audio into timed caption cues with the local ComfyUI Qwen3-ASR workflow. Starts a background job and returns a jobId immediately; poll get_caption_status for progress and the finished editable cue draft. Timeline scope transcribes the mixed program audio; asset scope transcribes one source asset. Requires a reachable ComfyUI connection. Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', enum: ['timeline', 'asset'], description: 'Transcribe the mixed timeline program audio or a single source asset. Defaults to timeline.' },
+          assetId: { type: 'string', description: 'Source asset ID from get_assets. Required when scope is asset.' },
+          language: { type: 'string', description: 'ASR language hint such as English or Auto. Defaults to Auto.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the transcription plan without starting a job. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'get_caption_status',
+      description: 'Return the state of the active or most recent MCP caption job (transcribe_captions / generate_captions) plus the current editable caption cue draft.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'Optional caption job ID. Defaults to the most recent job.' },
+          includeCues: { type: 'boolean', description: 'Include the full cue list in the draft summary. Defaults to true.' },
+        },
+      },
+    },
+    {
+      name: 'update_caption_cues',
+      description: 'Edit the caption cue draft produced by transcribe_captions before rendering: fix text, retime, remove cues, or replace the whole cue list. Draft-only; the timeline does not change until generate_captions runs.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          cues: {
+            type: 'array',
+            description: 'Full replacement cue list. Times are in seconds.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                start: { type: 'number' },
+                end: { type: 'number' },
+                text: { type: 'string' },
+              },
+              required: ['start', 'end', 'text'],
+            },
+          },
+          edits: {
+            type: 'array',
+            description: 'Targeted edits to existing cues by id.',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                text: { type: 'string' },
+                startSeconds: { type: 'number' },
+                endSeconds: { type: 'number' },
+              },
+              required: ['id'],
+            },
+          },
+          removeIds: { type: 'array', items: { type: 'string' }, description: 'Cue IDs to delete from the draft.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the resulting cue list without saving the draft.' },
+        },
+      },
+    },
+    {
+      name: 'generate_captions',
+      description: 'Render the caption cue draft into a transparent animated overlay and place it on the dedicated Captions track. Starts a background job that renders in real time (a 10s program takes about 10s); poll get_caption_status. Replaces any prior timeline-scope caption overlay. Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          presetId: { type: 'string', enum: ['kinetic-pop', 'kinetic-traditional', 'kinetic-neon', 'kinetic-bold-dark', 'kinetic-punch'], description: 'Caption style preset. Defaults to kinetic-pop. kinetic-traditional renders static bottom subtitles.' },
+          accentColor: { type: 'string', description: 'Spoken-word accent color as #RRGGBB. Defaults to the preset accent.' },
+          textColor: { type: 'string', description: 'Base text color as #RRGGBB. Defaults to the preset text color.' },
+          textStyle: { type: 'string', enum: ['background', 'outline', 'shadow', 'plain'], description: 'Text treatment. Defaults to the preset default.' },
+          fontFamily: { type: 'string', description: 'Font family such as Inter, Arial, Impact, Georgia.' },
+          verticalPlacement: { type: 'string', enum: ['auto', 'top', 'middle', 'bottom'] },
+          horizontalPlacement: { type: 'string', enum: ['auto', 'left', 'center', 'right'] },
+          motionProfile: { type: 'string', enum: ['auto', 'tamed', 'excited', 'frenetic'], description: 'How energetically words move. tamed holds a line; frenetic roams.' },
+          sizeScale: { type: 'number', description: 'Font size multiplier from 0.3 to 2. Defaults to 1.' },
+          verticalOffset: { type: 'number', description: 'Vertical nudge as a fraction of frame height from -0.45 to 0.45. Defaults to 0.' },
+          subtitlePosition: { type: 'string', enum: ['action-safe', 'title-safe', 'center'], description: 'Placement for the kinetic-traditional subtitles preset.' },
+          placeOnTimeline: { type: 'boolean', description: 'Place the rendered overlay on the Captions track. Defaults to true.' },
+          cues: {
+            type: 'array',
+            description: 'Optional inline cue list to render instead of the stored draft.',
+            items: {
+              type: 'object',
+              properties: {
+                start: { type: 'number' },
+                end: { type: 'number' },
+                text: { type: 'string' },
+              },
+              required: ['start', 'end', 'text'],
+            },
+          },
+          previewOnly: { type: 'boolean', description: 'When true, returns the render plan without starting the job. Defaults to true.' },
+        },
+      },
+    },
+    {
       name: 'get_music_video_status',
       description: 'Summarize ComfyStudio music-video workflow assets, assembled clips, and sync-locked clips in the current project.',
       inputSchema: {
@@ -8944,6 +9064,8 @@ class ComfyStudioMcpServer {
     const snapshot = getSnapshotOrEmpty(this.lastSnapshot)
     const toolsAllowedWithoutProject = new Set([
       'get_project',
+      'list_recent_projects',
+      'open_project',
       'diagnose_comfyui_connection',
       'set_comfyui_connection',
       'repair_comfyui_connection',
@@ -9064,6 +9186,18 @@ class ComfyStudioMcpServer {
         return this.inspectVisibleShots(snapshot, args)
       case 'get_generation_status':
         return textResult(summarizeGenerationAssets(snapshot.assets || []))
+      case 'list_recent_projects':
+        return this.runRendererActionTool('list_recent_projects', args, { bridgeName: 'MCP project bridge', suggestedTool: 'list_recent_projects' })
+      case 'open_project':
+        return this.runRendererActionTool('open_project', args, { bridgeName: 'MCP project bridge', suggestedTool: 'open_project', defaultPreviewOnly: true })
+      case 'transcribe_captions':
+        return this.runRendererActionTool('transcribe_captions', args, { bridgeName: 'MCP captions bridge', suggestedTool: 'transcribe_captions', defaultPreviewOnly: true })
+      case 'get_caption_status':
+        return this.runRendererActionTool('get_caption_status', args, { bridgeName: 'MCP captions bridge', suggestedTool: 'get_caption_status' })
+      case 'update_caption_cues':
+        return this.runRendererActionTool('update_caption_cues', args, { bridgeName: 'MCP captions bridge', suggestedTool: 'update_caption_cues' })
+      case 'generate_captions':
+        return this.runRendererActionTool('generate_captions', args, { bridgeName: 'MCP captions bridge', suggestedTool: 'generate_captions', defaultPreviewOnly: true })
       case 'get_music_video_status':
         return textResult(summarizeMusicVideoWorkflow(snapshot))
       case 'analyze_timeline':
