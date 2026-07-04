@@ -17,11 +17,14 @@ import {
 import WorkflowCard from './WorkflowCard'
 import TemplateCard from './TemplateCard'
 
+// Browser tabs are a presentation layer over manifest routes: "featured"
+// shows the curated local+cloud manifests (Create mode and the Set up flow
+// key off those data-level routes, so the data keeps local/cloud).
+const BROWSER_TABS = ['featured', 'custom', 'templates']
 const ROUTE_LABELS = {
-  local: 'Local',
-  cloud: 'Cloud',
-  custom: 'Custom',
-  templates: 'ComfyUI',
+  featured: 'Featured',
+  custom: 'My Workflows',
+  templates: 'Templates',
 }
 
 const CUSTOM_WORKFLOW_FILTERS = Object.freeze([
@@ -98,7 +101,7 @@ function formatFetchedAt(timestamp) {
 export default function WorkflowBrowser({
   workflows = [],
   selectedWorkflowId = '',
-  route = GENERATE_WORKFLOW_ROUTES.local,
+  route = 'featured',
   variant = 'default',
   onRouteChange,
   onSelectWorkflow,
@@ -113,6 +116,8 @@ export default function WorkflowBrowser({
   const isCreateLauncher = variant === 'create-launcher'
   const isTemplatesRoute = !isCreateLauncher && route === GENERATE_WORKFLOW_ROUTES.templates
   const isCustomRoute = !isCreateLauncher && route === GENERATE_WORKFLOW_ROUTES.custom
+  const isFeaturedRoute = !isCreateLauncher && route === 'featured'
+  const [featuredSource, setFeaturedSource] = useState('all')
   const templateCatalog = useComfyTemplateCatalog(isTemplatesRoute)
   const customLibrary = useCustomWorkflowLibrary(isCustomRoute)
   const [openingLibraryId, setOpeningLibraryId] = useState(null)
@@ -222,8 +227,11 @@ export default function WorkflowBrowser({
   const filteredWorkflows = useMemo(() => (
     isTemplatesRoute
       ? []
-      : workflows.filter((workflow) => matchesWorkflow(workflow, normalizedQuery, activeFilterId))
-  ), [activeFilterId, isTemplatesRoute, normalizedQuery, workflows])
+      : workflows.filter((workflow) => (
+        (!isFeaturedRoute || featuredSource === 'all' || workflow.route === featuredSource)
+        && matchesWorkflow(workflow, normalizedQuery, activeFilterId)
+      ))
+  ), [activeFilterId, isTemplatesRoute, isFeaturedRoute, featuredSource, normalizedQuery, workflows])
 
   const groupedWorkflows = useMemo(() => {
     const groups = new Map()
@@ -273,38 +281,18 @@ export default function WorkflowBrowser({
       {!isCreateLauncher && (
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-1 rounded-lg border border-sf-dark-700 bg-sf-dark-800 p-1">
-            {Object.values(GENERATE_WORKFLOW_ROUTES).map((routeId) => (
+            {BROWSER_TABS.map((routeId) => (
               <button
                 key={routeId}
                 type="button"
                 onClick={() => onRouteChange?.(routeId)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                className={`rounded-md px-3.5 py-2 text-sm font-semibold transition-colors ${
                   route === routeId
                     ? 'bg-sf-accent text-white'
                     : 'text-sf-text-muted hover:bg-sf-dark-700 hover:text-sf-text-primary'
                 }`}
               >
-                <span className="inline-flex items-center gap-1.5">
-                  <span>{ROUTE_LABELS[routeId] || routeId}</span>
-                  {routeId === GENERATE_WORKFLOW_ROUTES.custom && (
-                    <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none ${
-                      route === routeId
-                        ? 'bg-white/20 text-white'
-                        : 'bg-amber-500/15 text-amber-200'
-                    }`}>
-                      Beta
-                    </span>
-                  )}
-                  {routeId === GENERATE_WORKFLOW_ROUTES.templates && (
-                    <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none ${
-                      route === routeId
-                        ? 'bg-white/20 text-white'
-                        : 'bg-sky-500/15 text-sky-200'
-                    }`}>
-                      New
-                    </span>
-                  )}
-                </span>
+                {ROUTE_LABELS[routeId] || routeId}
               </button>
             ))}
           </div>
@@ -323,9 +311,9 @@ export default function WorkflowBrowser({
         </div>
       )}
 
-      {!isCreateLauncher && routeFilters.length > 1 && (
+      {!isCreateLauncher && (routeFilters.length > 1 || isFeaturedRoute) && (
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          {routeFilters.map((filter) => (
+          {routeFilters.length > 1 && routeFilters.map((filter) => (
             <button
               key={filter.id}
               type="button"
@@ -339,6 +327,24 @@ export default function WorkflowBrowser({
               {filter.label}
             </button>
           ))}
+          {isFeaturedRoute && (
+            <div className="ml-auto flex items-center gap-1 rounded-lg border border-sf-dark-700 bg-sf-dark-800 p-0.5">
+              {TEMPLATE_SOURCE_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setFeaturedSource(option.id)}
+                  className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                    featuredSource === option.id
+                      ? 'bg-sf-dark-600 text-sf-text-primary'
+                      : 'text-sf-text-muted hover:text-sf-text-primary'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

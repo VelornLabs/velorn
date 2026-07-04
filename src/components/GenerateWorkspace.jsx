@@ -3324,9 +3324,12 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const [category, setCategory] = useState(persistedState?.category || 'video')
   const [workflowId, setWorkflowId] = useState(persistedState?.workflowId || 'wan22-i2v')
   const [selectedWorkflowManifestId, setSelectedWorkflowManifestId] = useState(persistedState?.selectedWorkflowManifestId || persistedState?.workflowId || 'wan22-i2v')
-  const [workflowRoute, setWorkflowRoute] = useState(() => (
-    getWorkflowManifestByWorkflowId(persistedState?.workflowId || 'wan22-i2v')?.route || 'local'
-  ))
+  const [workflowRoute, setWorkflowRoute] = useState(() => {
+    // Manifests keep data-level local/cloud routes; the browser shows both
+    // under the single "Featured" tab.
+    const manifestRoute = getWorkflowManifestByWorkflowId(persistedState?.workflowId || 'wan22-i2v')?.route || 'local'
+    return manifestRoute === 'local' || manifestRoute === 'cloud' ? 'featured' : manifestRoute
+  })
   const [workflowDetailOpen, setWorkflowDetailOpen] = useState(false)
   const [selectedComfyTemplate, setSelectedComfyTemplate] = useState(null)
   const [importedWorkflowsVersion, setImportedWorkflowsVersion] = useState(0)
@@ -4194,7 +4197,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         && workflow.mode === activeWorkflowBrowserMode
         && (activeWorkflowBrowserMode === 'create'
           ? workflow.route === 'local'
-          : workflow.route === workflowRoute)
+          : workflowRoute === 'featured'
+            ? (workflow.route === 'local' || workflow.route === 'cloud')
+            : workflow.route === workflowRoute)
     ))
   ), [activeWorkflowBrowserMode, workflowRoute])
   const selectedWorkflowManifest = useMemo(() => (
@@ -4274,7 +4279,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     if (!manifest) return
 
     setSelectedWorkflowManifestId(manifest.id)
-    setWorkflowRoute(manifest.route || 'local')
+    setWorkflowRoute(manifest.route === 'local' || manifest.route === 'cloud' ? 'featured' : (manifest.route || 'featured'))
     setFormError(null)
     setWorkflowDetailOpen(true)
 
@@ -4362,7 +4367,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     const manifest = getWorkflowManifestByWorkflowId(workflowId)
     if (!manifest) return
     setSelectedWorkflowManifestId(manifest.id)
-    setWorkflowRoute(manifest.route || 'local')
+    setWorkflowRoute(manifest.route === 'local' || manifest.route === 'cloud' ? 'featured' : (manifest.route || 'featured'))
   }, [workflowId])
 
   const runWorkflowDependencyCheck = useCallback(async () => {
@@ -14236,10 +14241,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       {/* Header */}
       <div className="h-12 flex items-center justify-between px-4 border-b border-sf-dark-700">
         <div className="flex items-center gap-3">
-          <Sparkles className="w-4 h-4 text-sf-accent" />
-          <span className="text-sm font-semibold text-sf-text-primary">Generate</span>
-
-          <div className="flex items-center gap-1 ml-4 p-1 rounded-lg bg-sf-dark-800 border border-sf-dark-700">
+          {/* No wordmark: the app tab already says "Generate", and the mode
+              chips act as the page title. */}
+          <div className="flex items-center gap-1 p-1 rounded-lg bg-sf-dark-800 border border-sf-dark-700">
             <button
               onClick={() => {
                 setGenerationMode('single')
@@ -14256,7 +14260,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
               }}
               className={`px-3 py-1 rounded text-xs transition-colors ${generationMode === 'yolo' ? 'bg-sf-accent text-white' : 'text-sf-text-muted hover:text-sf-text-primary'}`}
             >
-              Create <span className="ml-1 text-[9px] opacity-75">Beta</span>
+              Director
             </button>
           </div>
         </div>
