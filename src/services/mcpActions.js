@@ -1273,7 +1273,7 @@ function resolveClipKeyframeClearProperties(clearKeyframes, clip = null) {
   if (!clearKeyframes) return []
   const allPropertiesForClip = clip?.type === 'shape'
     ? [...CLIP_KEYFRAME_PROPERTIES]
-    : CLIP_KEYFRAME_PROPERTIES.filter((property) => !SHAPE_KEYFRAME_PROPERTIES.has(property))
+    : [...CLIP_KEYFRAME_PROPERTIES].filter((property) => !SHAPE_KEYFRAME_PROPERTIES.has(property))
   const requested = clearKeyframes === true || clearKeyframes === 'all'
     ? allPropertiesForClip
     : Array.isArray(clearKeyframes)

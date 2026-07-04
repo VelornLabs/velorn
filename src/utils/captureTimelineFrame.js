@@ -193,14 +193,29 @@ export async function captureTimelineFrameAt(time, options = {}) {
       ? Math.max(0.1, Math.min(1, requestedQuality))
       : undefined
 
+    // Composite at full project resolution so pixel-space transform values
+    // (positionX/Y, blur) land where preview and export put them, then
+    // downscale the finished frame to the requested capture size.
     const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
+    canvas.width = sourceWidth
+    canvas.height = sourceHeight
 
-    const rendered = await renderTimelineCompositeStill(time, canvas, width, height)
+    const rendered = await renderTimelineCompositeStill(time, canvas, sourceWidth, sourceHeight)
     if (!rendered) return null
 
-    const blob = await new Promise((resolve) => canvas.toBlob((nextBlob) => resolve(nextBlob), mimeType, quality))
+    let outputCanvas = canvas
+    if (width !== sourceWidth || height !== sourceHeight) {
+      outputCanvas = document.createElement('canvas')
+      outputCanvas.width = width
+      outputCanvas.height = height
+      const outputCtx = outputCanvas.getContext('2d', { alpha: false })
+      if (!outputCtx) return null
+      outputCtx.imageSmoothingEnabled = true
+      outputCtx.imageSmoothingQuality = 'high'
+      outputCtx.drawImage(canvas, 0, 0, width, height)
+    }
+
+    const blob = await new Promise((resolve) => outputCanvas.toBlob((nextBlob) => resolve(nextBlob), mimeType, quality))
     if (!blob) return null
 
     const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
