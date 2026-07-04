@@ -4862,6 +4862,19 @@ ipcMain.handle('comfyui:convertWorkflowGraph', async (event, payload = {}) => {
   }
 })
 
+// The embedded ComfyUI iframe is cross-origin (OOPIF); once it holds focus,
+// inputs in the parent document can stop receiving keystrokes until the
+// renderer's webContents is explicitly refocused.
+ipcMain.handle('window:focusRenderer', async () => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.focus()
+      return { success: true }
+    }
+  } catch { /* focus is best-effort */ }
+  return { success: false }
+})
+
 ipcMain.handle('comfyui:captureWorkflowGraph', async (_event, payload = {}) => {
   try {
     const result = await captureWorkflowGraphFromEmbeddedComfy({

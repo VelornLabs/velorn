@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
+import { RefreshCw, ExternalLink, Loader2, BookmarkPlus } from 'lucide-react'
 import TitleBar from './components/TitleBar'
 import ExportPanel from './components/ExportPanel'
 import GenerateWorkspace from './components/GenerateWorkspace'
@@ -97,6 +97,71 @@ function App() {
   const [comfyIframeNonce, setComfyIframeNonce] = useState(0)
   const reloadComfyIframe = useCallback(() => {
     setComfyIframeNonce((n) => n + 1)
+  }, [])
+  const [comfySaveState, setComfySaveState] = useState({ phase: 'idle', name: '', message: '', error: '' })
+  const capturedComfyGraphRef = useRef(null)
+  const comfySaveNameInputRef = useRef(null)
+  // Focus + select ONCE when the naming field opens (autoFocus alone loses
+  // the focus race against the cross-origin ComfyUI iframe). Doing this per
+  // render would re-select on every keystroke and eat the typed text.
+  useEffect(() => {
+    if (comfySaveState.phase !== 'naming') return undefined
+    const timer = setTimeout(() => {
+      try {
+        comfySaveNameInputRef.current?.focus()
+        comfySaveNameInputRef.current?.select()
+      } catch { /* best effort */ }
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [comfySaveState.phase])
+  const handleStartSaveComfyGraph = useCallback(async () => {
+    setComfySaveState((prev) => (prev.phase === 'idle' ? { phase: 'busy', name: '', message: '', error: '' } : prev))
+    try {
+      const { captureCurrentComfyGraph } = await import('./services/customWorkflowLibrary')
+      const captured = await captureCurrentComfyGraph()
+      capturedComfyGraphRef.current = captured
+      // The cross-origin ComfyUI iframe holds keyboard focus hostage (OOPIF
+      // quirk): reclaim it explicitly or the name input won't take keystrokes.
+      try { document.querySelector('iframe[title="ComfyUI"]')?.blur() } catch { /* best effort */ }
+      await window.electronAPI?.focusRendererWindow?.()
+      window.focus()
+      // ComfyUI's tab rename is unreliable, so naming happens here: prefill
+      // with whatever ComfyUI calls the workflow and let the user fix it.
+      setComfySaveState({ phase: 'naming', name: String(captured.workflowName || '').trim(), message: '', error: '' })
+    } catch (error) {
+      setComfySaveState({
+        phase: 'idle',
+        name: '',
+        message: '',
+        error: error instanceof Error ? error.message : 'Could not capture the workflow.',
+      })
+    }
+  }, [])
+  const handleConfirmSaveComfyGraph = useCallback(async () => {
+    const captured = capturedComfyGraphRef.current
+    setComfySaveState((prev) => ({ ...prev, phase: 'busy' }))
+    try {
+      const { saveCapturedGraphToLibrary } = await import('./services/customWorkflowLibrary')
+      const result = await saveCapturedGraphToLibrary(captured, comfySaveState.name)
+      capturedComfyGraphRef.current = null
+      setComfySaveState({
+        phase: 'idle',
+        name: '',
+        message: `${result.updated ? 'Updated' : 'Saved'} "${result.entry.title}" — find it under Generate → Custom.`,
+        error: '',
+      })
+    } catch (error) {
+      setComfySaveState((prev) => ({
+        ...prev,
+        phase: 'naming',
+        message: '',
+        error: error instanceof Error ? error.message : 'Could not save the workflow.',
+      }))
+    }
+  }, [comfySaveState.name])
+  const handleCancelSaveComfyGraph = useCallback(() => {
+    capturedComfyGraphRef.current = null
+    setComfySaveState({ phase: 'idle', name: '', message: '', error: '' })
   }, [])
   const openComfyExternal = useCallback(() => {
     const url = comfyIframeUrl || getLocalComfyHttpBaseSync()
@@ -516,7 +581,59 @@ function App() {
               browser as a fallback diagnostic. */}
           <div className="flex items-center gap-2 px-3 py-1.5 border-b border-sf-dark-700 bg-sf-dark-900 text-xs text-sf-text-muted flex-shrink-0">
             <span className="font-mono truncate">{comfyIframeUrl || '—'}</span>
+            {(comfySaveState.message || comfySaveState.error) && (
+              <span className={`max-w-[420px] truncate ${comfySaveState.error ? 'text-sf-error' : 'text-emerald-300'}`}>
+                {comfySaveState.error || comfySaveState.message}
+              </span>
+            )}
             <div className="flex-1" />
+            {comfySaveState.phase === 'naming' ? (
+              <span className="inline-flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={comfySaveState.name}
+                  onChange={(event) => setComfySaveState((prev) => ({ ...prev, name: event.target.value }))}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void handleConfirmSaveComfyGraph()
+                    if (event.key === 'Escape') handleCancelSaveComfyGraph()
+                  }}
+                  ref={comfySaveNameInputRef}
+                  autoFocus
+                  placeholder="Workflow name"
+                  className="w-56 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1 text-xs text-sf-text-primary outline-none placeholder:text-sf-text-muted focus:border-sf-accent"
+                />
+                <button
+                  type="button"
+                  onClick={() => { void handleConfirmSaveComfyGraph() }}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-sf-accent/15 text-sf-accent hover:bg-sf-accent/25 transition-colors"
+                >
+                  <BookmarkPlus className="w-3.5 h-3.5" />
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelSaveComfyGraph}
+                  className="px-2 py-1 rounded hover:bg-sf-dark-700 hover:text-sf-text-primary transition-colors"
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={handleStartSaveComfyGraph}
+                disabled={comfySaveState.phase === 'busy'}
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded transition-colors ${
+                  comfySaveState.phase === 'busy'
+                    ? 'cursor-not-allowed text-sf-text-muted'
+                    : 'bg-sf-accent/15 text-sf-accent hover:bg-sf-accent/25'
+                }`}
+                title="Save the workflow currently open below to your library (Generate → Custom), so you can reopen it here anytime"
+              >
+                {comfySaveState.phase === 'busy' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
+                Save to Velorn
+              </button>
+            )}
             <button
               type="button"
               onClick={reloadComfyIframe}

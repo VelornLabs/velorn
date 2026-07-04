@@ -774,6 +774,9 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     outputType: 'image',
     fields: customImageFields,
     runnable: true,
+    // Superseded by the personal workflow library (save from the ComfyUI tab);
+    // kept hidden because the Director custom-workflow bridges share plumbing.
+    hidden: true,
     tags: ['custom', 'comfyui', 'image', 'image edit', 'text to image'],
   },
   {
@@ -794,6 +797,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     outputType: 'video',
     fields: customVideoFields,
     runnable: true,
+    hidden: true,
     tags: ['custom', 'comfyui', 'video', 'image to video', 'text to video', 'audio'],
   },
   {
