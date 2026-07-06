@@ -1,8 +1,8 @@
-# ComfyStudio v0.1.5 Draft Release Notes
+# Velorn v0.1.5 Draft Release Notes
 
 ## Choose The Right Download
 
-- **Desktop app:** for most users who want to install ComfyStudio and use the editor, Generate workflows, and export tools directly.
+- **Desktop app:** for most users who want to install Velorn and use the editor, Generate workflows, and export tools directly.
 - **Workflow Starter Pack (optional):** for advanced ComfyUI users who want to inspect setup workflows manually in ComfyUI and prepare nodes/models outside the app.
 
 ## Highlights
@@ -38,7 +38,7 @@
 
 ## Important Setup Note
 
-ComfyStudio generation still depends on a separate local ComfyUI installation.
+Velorn generation still depends on a separate local ComfyUI installation.
 
 - Local workflows may require manual node/model setup.
 - Cloud workflows still use local ComfyUI and may require partner nodes plus a Comfy account API key.
@@ -54,4 +54,4 @@ ComfyStudio generation still depends on a separate local ComfyUI installation.
 
 ## Suggested GitHub Release Title
 
-`ComfyStudio v0.1.5 - Faster timeline navigation and clearer NVENC export`
+`Velorn v0.1.5 - Faster timeline navigation and clearer NVENC export`

@@ -361,7 +361,7 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
 
   const derived = deriveCategoryAndOutput(template, apiWorkflow)
   const detection = apiWorkflow
-    ? detectImportedWorkflowBindings(apiWorkflow, template)
+    ? detectImportedWorkflowBindings(apiWorkflow, template, uiWorkflow)
     : { bindings: null, fields: [], needsImage: derived.needsImage, inputAssetType: derived.needsImage ? 'image' : undefined }
   const manifest = buildManifest(template, derived, detection, { conversionIncomplete, unknownNodeTypes })
   const pack = {
@@ -536,7 +536,7 @@ export async function importWorkflowFromComfyTab({ onProgress } = {}) {
   ])).map((classType) => ({ classType }))
 
   const derived = deriveCategoryAndOutput(template, apiWorkflow)
-  const detection = detectImportedWorkflowBindings(apiWorkflow, template)
+  const detection = detectImportedWorkflowBindings(apiWorkflow, template, uiWorkflow)
   const manifest = buildManifest(template, derived, detection, { conversionIncomplete: false, unknownNodeTypes: [] })
   const pack = {
     id: manifest.workflowId,

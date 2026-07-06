@@ -207,8 +207,8 @@ export default function WorkflowFieldRenderer({ field, workflow, values, actions
               </div>
               <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
                 {customKind === 'video'
-                  ? 'Required: COMFYSTUDIO_PROMPT and COMFYSTUDIO_OUTPUT_VIDEO. Optional: COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_AUDIO, COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT, COMFYSTUDIO_FPS, COMFYSTUDIO_DURATION.'
-                  : 'Required: COMFYSTUDIO_OUTPUT_IMAGE.'}
+                  ? 'Required: VELORN_PROMPT and VELORN_OUTPUT_VIDEO. Optional: VELORN_INPUT_IMAGE, VELORN_AUDIO, VELORN_SEED, VELORN_WIDTH, VELORN_HEIGHT, VELORN_FPS, VELORN_DURATION.'
+                  : 'Required: VELORN_OUTPUT_IMAGE.'}
               </p>
               <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
                 {customKind === 'video'
@@ -306,6 +306,57 @@ export default function WorkflowFieldRenderer({ field, workflow, values, actions
           placeholder={field.placeholder || (stateKey === 'prompt' ? 'Describe what you want to generate...' : '')}
           className="w-full resize-y rounded-lg border border-sf-dark-700 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary outline-none transition-colors placeholder:text-sf-text-muted focus:border-sf-accent"
         />
+      </div>
+    )
+  }
+
+  if (field.type === 'number') {
+    const value = values[field.id] ?? field.defaultValue ?? ''
+    return (
+      <div className="space-y-1.5">
+        {commonLabel}
+        <input
+          type="number"
+          value={value}
+          min={field.min}
+          max={field.max}
+          step={field.step ?? (field.valueType === 'integer' ? 1 : 'any')}
+          onChange={(event) => {
+            const raw = event.target.value
+            const parsed = Number(raw)
+            actions.setValue(
+              field.id,
+              raw === ''
+                ? ''
+                : Number.isFinite(parsed)
+                  ? (field.valueType === 'integer' ? Math.round(parsed) : parsed)
+                  : raw
+            )
+          }}
+          className="w-full rounded-lg border border-sf-dark-700 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary outline-none transition-colors focus:border-sf-accent"
+        />
+        {field.helper && (
+          <p className="text-[10px] leading-snug text-sf-text-muted">{field.helper}</p>
+        )}
+      </div>
+    )
+  }
+
+  if (field.type === 'text') {
+    const value = values[field.id] ?? field.defaultValue ?? ''
+    return (
+      <div className="space-y-1.5">
+        {commonLabel}
+        <input
+          type="text"
+          value={value}
+          placeholder={field.placeholder || ''}
+          onChange={(event) => actions.setValue(field.id, event.target.value)}
+          className="w-full rounded-lg border border-sf-dark-700 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-primary outline-none transition-colors placeholder:text-sf-text-muted focus:border-sf-accent"
+        />
+        {field.helper && (
+          <p className="text-[10px] leading-snug text-sf-text-muted">{field.helper}</p>
+        )}
       </div>
     )
   }

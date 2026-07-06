@@ -1,4 +1,4 @@
-# Contributing to ComfyStudio
+# Contributing to Velorn
 
 Thanks for contributing.
 

@@ -12,6 +12,59 @@ const ASSET_INPUT_KEY_CANDIDATES = {
   audio: ['audio'],
   video: ['file', 'video'],
 }
+const SUBGRAPH_INSTANCE_TYPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function toFieldId(value, fallback = 'parameter') {
+  return String(value || fallback)
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '') || fallback
+}
+
+function uniqueFieldId(baseId, usedIds) {
+  const base = toFieldId(baseId)
+  if (!usedIds.has(base)) {
+    usedIds.add(base)
+    return base
+  }
+  let index = 2
+  while (usedIds.has(`${base}_${index}`)) index += 1
+  const id = `${base}_${index}`
+  usedIds.add(id)
+  return id
+}
+
+function inferPrimitiveValueType(apiNode, inputKey = 'value') {
+  const classType = String(apiNode?.class_type || '')
+  const value = apiNode?.inputs?.[inputKey]
+  if (/boolean/i.test(classType) || typeof value === 'boolean') return 'boolean'
+  if (/int/i.test(classType) || Number.isInteger(value)) return 'integer'
+  if (/float|number/i.test(classType) || typeof value === 'number') return 'number'
+  return typeof value === 'string' ? 'string' : 'unknown'
+}
+
+function coerceParameterValue(value, valueType, fallback) {
+  if (value === null || typeof value === 'undefined' || value === '') return fallback
+  if (valueType === 'boolean') {
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase()
+      if (['true', '1', 'yes', 'on'].includes(normalized)) return true
+      if (['false', '0', 'no', 'off'].includes(normalized)) return false
+    }
+    return Boolean(value)
+  }
+  if (valueType === 'integer') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? Math.round(parsed) : fallback
+  }
+  if (valueType === 'number') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : fallback
+  }
+  return value
+}
 
 function findTextInputKey(node) {
   for (const key of TEXT_INPUT_KEYS) {
@@ -201,16 +254,68 @@ function detectAssetBindings(apiWorkflow, template) {
   return assets
 }
 
+function collectRootUiNodes(uiWorkflow) {
+  return Array.isArray(uiWorkflow?.nodes) ? uiWorkflow.nodes : []
+}
+
+function detectProxyParameterBindings(apiWorkflow, uiWorkflow) {
+  const parameters = []
+  const usedIds = new Set(['asset', 'prompt', 'negative_prompt', 'seed'])
+
+  for (const node of collectRootUiNodes(uiWorkflow)) {
+    const nodeId = String(node?.id ?? '').trim()
+    if (!nodeId || !SUBGRAPH_INSTANCE_TYPE_RE.test(String(node?.type || ''))) continue
+    const proxyWidgets = Array.isArray(node?.properties?.proxyWidgets) ? node.properties.proxyWidgets : []
+    if (proxyWidgets.length === 0) continue
+
+    const widgetInputs = (Array.isArray(node?.inputs) ? node.inputs : [])
+      .filter((input) => input?.widget)
+
+    for (let index = 0; index < proxyWidgets.length; index += 1) {
+      const proxyWidget = proxyWidgets[index]
+      if (!Array.isArray(proxyWidget) || proxyWidget.length < 2) continue
+      const input = widgetInputs[index]
+      if (!input) continue
+      if (input.link !== null && typeof input.link !== 'undefined') continue
+
+      const internalNodeId = String(proxyWidget[0] ?? '').trim()
+      const inputKey = String(proxyWidget[1] || input?.widget?.name || 'value').trim()
+      if (!internalNodeId || !inputKey) continue
+
+      const apiNodeId = `${nodeId}:${internalNodeId}`
+      const apiNode = apiWorkflow?.[apiNodeId]
+      if (!apiNode || !apiNode.inputs || Array.isArray(apiNode.inputs[inputKey])) continue
+      const defaultValue = apiNode.inputs[inputKey]
+      const valueType = inferPrimitiveValueType(apiNode, inputKey)
+      if (!['integer', 'number', 'boolean', 'string'].includes(valueType)) continue
+
+      const label = String(input.label || input.name || inputKey || `Parameter ${parameters.length + 1}`).trim()
+      const fieldId = uniqueFieldId(label, usedIds)
+      parameters.push({
+        fieldId,
+        label,
+        nodeId: apiNodeId,
+        inputKey,
+        valueType,
+        defaultValue,
+      })
+    }
+  }
+
+  return parameters
+}
+
 /**
  * Inspect a converted template and derive everything the Generate form needs:
  * queue-time bindings (node id + input key per value) and the manifest fields
  * that collect those values from the user.
  */
-export function detectImportedWorkflowBindings(apiWorkflow, template) {
+export function detectImportedWorkflowBindings(apiWorkflow, template, uiWorkflow = null) {
   const { positive, negative } = detectPromptBindings(apiWorkflow)
   const seeds = detectSeedBindings(apiWorkflow)
   const outputPrefixes = detectOutputPrefixBindings(apiWorkflow)
   const assets = detectAssetBindings(apiWorkflow, template)
+  const parameters = detectProxyParameterBindings(apiWorkflow, uiWorkflow)
 
   const primaryAsset = assets.find((asset) => asset.source === 'primary') || null
 
@@ -236,6 +341,19 @@ export function detectImportedWorkflowBindings(apiWorkflow, template) {
     })
   }
   if (positive) fields.push({ id: 'prompt', label: 'Prompt', type: 'textarea' })
+  for (const parameter of parameters) {
+    fields.push({
+      id: parameter.fieldId,
+      label: parameter.label,
+      type: parameter.valueType === 'boolean' ? 'toggle' : parameter.valueType === 'string' ? 'text' : 'number',
+      templateParameter: true,
+      valueType: parameter.valueType,
+      defaultValue: parameter.defaultValue,
+      helper: parameter.fieldId.startsWith('target_aspect_')
+        ? 'Template target aspect ratio control.'
+        : 'Imported ComfyUI template parameter.',
+    })
+  }
   if (seeds.length > 0) fields.push({ id: 'seed', label: 'Seed', type: 'seed' })
 
   return {
@@ -245,6 +363,7 @@ export function detectImportedWorkflowBindings(apiWorkflow, template) {
       seeds,
       assets,
       outputPrefixes,
+      parameters,
     },
     fields,
     needsImage: Boolean(primaryAsset),
@@ -281,6 +400,19 @@ export function applyImportedWorkflowBindings(workflowJson, bindings, values = {
       ? (asset.assetType === 'video' ? values.inputVideo : values.inputImage)
       : values.assetFieldFilenames?.[asset.fieldId]
     if (filename) setInput(asset, filename)
+  }
+
+  const parameterValues = values.templateParameters && typeof values.templateParameters === 'object'
+    ? values.templateParameters
+    : values.parameters && typeof values.parameters === 'object'
+      ? values.parameters
+      : {}
+  for (const parameter of bindings?.parameters || []) {
+    const rawValue = parameterValues[parameter.fieldId]
+      ?? parameterValues[parameter.label]
+      ?? parameterValues[parameter.inputKey]
+    const nextValue = coerceParameterValue(rawValue, parameter.valueType, undefined)
+    if (typeof nextValue !== 'undefined') setInput(parameter, nextValue)
   }
 
   const filenamePrefix = String(values.filenamePrefix || '').trim()

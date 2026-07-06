@@ -42,7 +42,7 @@ jobs:
             gh release create "$RELEASE_TAG" \
               --draft \
               --verify-tag \
-              --title "ComfyStudio $RELEASE_TAG" \
+              --title "Velorn $RELEASE_TAG" \
               --notes-file docs/RELEASE_DRAFT_TEMPLATE.md
           fi
 
@@ -81,8 +81,8 @@ jobs:
         run: |
           $version = "${{ steps.app_version.outputs.app_version }}"
           gh release upload $env:RELEASE_TAG `
-            "release/ComfyStudio-$version-windows-installer-x64.exe#Windows Installer" `
-            "release/ComfyStudio-$version-windows-portable-x64.exe#Windows Portable" `
+            "release/Velorn-$version-windows-installer-x64.exe#Windows Installer" `
+            "release/Velorn-$version-windows-portable-x64.exe#Windows Portable" `
             --clobber
 
   build-linux:
@@ -131,8 +131,8 @@ jobs:
         run: |
           VERSION="${{ steps.app_version.outputs.app_version }}"
           gh release upload "$RELEASE_TAG" \
-            "release/ComfyStudio-${VERSION}-linux-x86_64.AppImage#Linux AppImage" \
-            "release/ComfyStudio-${VERSION}-linux-amd64.deb#Linux deb" \
+            "release/Velorn-${VERSION}-linux-x86_64.AppImage#Linux AppImage" \
+            "release/Velorn-${VERSION}-linux-amd64.deb#Linux deb" \
             --clobber
 
   build-macos:
@@ -196,6 +196,6 @@ jobs:
         run: |
           VERSION="${{ steps.app_version.outputs.app_version }}"
           gh release upload "$RELEASE_TAG" \
-            "release/ComfyStudio-${VERSION}-mac-arm64.dmg#Mac (Apple Silicon)" \
-            "release/ComfyStudio-${VERSION}-mac-x64.dmg#Mac (Intel)" \
+            "release/Velorn-${VERSION}-mac-arm64.dmg#Mac (Apple Silicon)" \
+            "release/Velorn-${VERSION}-mac-x64.dmg#Mac (Intel)" \
             --clobber

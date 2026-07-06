@@ -1,7 +1,7 @@
 {
-  "name": "comfystudio",
+  "name": "velorn",
   "version": "0.1.23",
-  "description": "AI-Powered Animatic Studio for Pre-Production",
+  "description": "AI-native video editing built around real creative timelines, generative workflows, and local agent control.",
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -31,13 +31,13 @@
   "author": "Velorn contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JaimeIsMe/comfystudio.git"
+    "url": "git+https://github.com/VelornLabs/velorn.git"
   },
-  "homepage": "https://github.com/JaimeIsMe/comfystudio",
+  "homepage": "https://velorn.ai",
   "bugs": {
-    "url": "https://github.com/JaimeIsMe/comfystudio/issues"
+    "url": "https://github.com/VelornLabs/velorn/issues"
   },
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "@xyflow/react": "^12.10.2",
     "clsx": "^2.0.0",

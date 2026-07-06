@@ -1,8 +1,8 @@
-﻿# ComfyStudio v0.1.6 Draft Release Notes
+# Velorn v0.1.6 Draft Release Notes
 
 ## Choose The Right Download
 
-- **Desktop app:** for most users who want to install ComfyStudio and use the editor, Generate workflows, and export tools directly.
+- **Desktop app:** for most users who want to install Velorn and use the editor, Generate workflows, and export tools directly.
 - **Workflow Starter Pack (optional):** for advanced ComfyUI users who want to inspect setup workflows manually in ComfyUI and prepare nodes/models outside the app.
 
 ## Highlights
@@ -52,7 +52,7 @@
 
 ## Important Setup Note
 
-ComfyStudio generation still depends on a separate local ComfyUI installation.
+Velorn generation still depends on a separate local ComfyUI installation.
 
 - Local workflows may require manual node/model setup.
 - The caption transcription flow also depends on the required local ComfyUI nodes being installed.
@@ -70,4 +70,4 @@ ComfyStudio generation still depends on a separate local ComfyUI installation.
 
 ## Suggested GitHub Release Title
 
-`ComfyStudio v0.1.6 - Animated captions, kinetic typography, and subtitle controls`
+`Velorn v0.1.6 - Animated captions, kinetic typography, and subtitle controls`

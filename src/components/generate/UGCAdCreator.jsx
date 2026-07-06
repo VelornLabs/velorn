@@ -2886,7 +2886,7 @@ export default function UGCAdCreator({
               {customKeyframeWorkflowName || 'No custom workflow loaded'}
             </div>
             <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-              Required: <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_PROMPT</span> and <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_OUTPUT_IMAGE</span>. Optional: <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_INPUT_IMAGE</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_SEED</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_WIDTH</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_HEIGHT</span>.
+              Required: <span className="font-mono text-sf-text-secondary">VELORN_PROMPT</span> and <span className="font-mono text-sf-text-secondary">VELORN_OUTPUT_IMAGE</span>. Optional: <span className="font-mono text-sf-text-secondary">VELORN_INPUT_IMAGE</span>, <span className="font-mono text-sf-text-secondary">VELORN_SEED</span>, <span className="font-mono text-sf-text-secondary">VELORN_WIDTH</span>, <span className="font-mono text-sf-text-secondary">VELORN_HEIGHT</span>.
             </p>
             <div className={`mt-2 text-[10px] ${customKeyframeValidation.ok ? 'text-emerald-300' : 'text-amber-200'}`}>
               {customKeyframeValidation.message}

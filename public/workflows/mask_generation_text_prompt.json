@@ -35,7 +35,7 @@
   },
   "5": {
     "inputs": {
-      "filename_prefix": "ComfyStudioMask",
+      "filename_prefix": "VelornMask",
       "images": [
         "4",
         0

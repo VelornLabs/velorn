@@ -1479,9 +1479,12 @@ export const useTimelineStore = create(
   /**
    * Remove a clip (or multiple clips if they're selected)
    */
-  removeClip: (clipId) => {
-    // Save to history before modifying
-    get().saveToHistory()
+  removeClip: (clipId, saveHistory = true) => {
+    // Save to history before modifying (batch callers that own their own
+    // checkpoint pass false to keep the whole edit a single undo step)
+    if (saveHistory) {
+      get().saveToHistory()
+    }
 
     set((state) => {
       const targetIds = new Set(expandClipIdsWithLinked(state.clips, [clipId]))

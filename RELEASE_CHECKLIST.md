@@ -1,4 +1,4 @@
-# ComfyStudio Release Checklist
+# Velorn Release Checklist
 
 Use this as the single "ship it" playbook when preparing a public release.
 Update this file as process changes so future chats and future contributors can continue from the same source of truth.
@@ -181,7 +181,7 @@ npm run electron:build:linux
 
 ### Getting Started Guide
 
-- [x] Implement manual `Getting Started` guide accessible from `ComfyStudio > Getting Started`.
+- [x] Implement manual `Getting Started` guide accessible from `Velorn > Getting Started`.
 - [x] Guide covers projects folder, ComfyUI port, connection test, workflow setup expectations, and a basic app tour.
 - [ ] Include clear "where files go" guidance (models/nodes/workflows/output folders).
 - [x] Add a replayable entry point so users can reopen onboarding later.
@@ -229,7 +229,7 @@ Notes:
 Use this when starting a new chat so the next assistant has exact context:
 
 ```md
-Project: ComfyStudio (Electron + React + ComfyUI local integration)
+Project: Velorn (Electron + React + ComfyUI local integration)
 Goal for this session:
 Current branch:
 Latest commit:

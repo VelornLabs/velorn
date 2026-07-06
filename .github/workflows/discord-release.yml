@@ -29,18 +29,18 @@ jobs:
           name = os.environ.get("RELEASE_NAME") or os.environ.get("RELEASE_TAG") or "New release"
           tag = os.environ.get("RELEASE_TAG") or ""
           url = os.environ.get("RELEASE_URL") or ""
-          website_url = "https://comfystudiopro.com/"
+          website_url = "https://velorn.ai/"
           body = (os.environ.get("RELEASE_BODY") or "").strip()
 
           if len(body) > 1800:
               body = body[:1800].rstrip() + "\n\nRelease notes continue on GitHub."
 
           title = name if not tag or tag in name else f"{name} ({tag})"
-          description = body or "The latest ComfyStudio release is now available."
+          description = body or "The latest Velorn release is now available."
 
           payload = {
               "content": (
-                  f"New ComfyStudio release is live: **{title}**\n\n"
+                  f"New Velorn release is live: **{title}**\n\n"
                   f"GitHub release:\n{url}\n\n"
                   f"Website download page:\n{website_url}"
               ),

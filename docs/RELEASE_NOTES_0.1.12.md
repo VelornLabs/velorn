@@ -1,8 +1,8 @@
-# ComfyStudio v0.1.12 Draft Release Notes
+# Velorn v0.1.12 Draft Release Notes
 
 ## Choose The Right Download
 
-- **Desktop app:** for most users who want to install ComfyStudio and use the editor, Generate workflows, Director Mode, Flow AI, and export features directly.
+- **Desktop app:** for most users who want to install Velorn and use the editor, Generate workflows, Director Mode, Flow AI, and export features directly.
 - **Workflow Starter Pack (optional):** for advanced ComfyUI users who want to inspect setup workflows manually in ComfyUI and prepare nodes/models outside the app.
 
 ## Highlights
@@ -38,7 +38,7 @@
 - Lyrics input consolidated into a single auto-detecting textarea that accepts plain text, SRT, or LRC
 - Added an explicit `Start at:` field per shot and a four-tier resolution hierarchy (explicit > matched lyric line > scene timing > linear estimate) for accurate audio alignment
 - Added validation: coverage and gap reports, lyric-moment cross-check, and overlap detection so timing problems are surfaced before generation
-- Added in-app song transcription using the Qwen ASR caption workflow to generate cue-level SRT inside ComfyStudio
+- Added in-app song transcription using the Qwen ASR caption workflow to generate cue-level SRT inside Velorn
 - Music video storyboard "Draft" quality now uses Qwen Image Edit 2509 so character references work in draft passes
 - "Copy LLM Prompt" is now "Copy Prompt for ChatGPT / Claude / Gemini" with helper text explaining the round-trip workflow
 - The captioning workflow has been added to Workflow Setup so its dependencies install through the same flow as everything else
@@ -52,7 +52,7 @@
 ## Playback And Input Polish
 
 - Spacebar play/pause now works even when focus is on a volume knob, transport button, or inspector slider; only true text-editing fields swallow the shortcut
-- Native Chromium focus rectangles on range sliders and buttons are now suppressed when interacting with the mouse, with a subtle ComfyStudio focus ring kept for keyboard Tab navigation
+- Native Chromium focus rectangles on range sliders and buttons are now suppressed when interacting with the mouse, with a subtle Velorn focus ring kept for keyboard Tab navigation
 - The Create Storyboard PDF button reliably opens the PDF in your default viewer again, via Electron `shell.openPath`
 - Workflow Setup gallery no longer flickers or tears while scrolling; backdrop-blur and transform animations were removed from the gallery cards
 
@@ -64,7 +64,7 @@
 
 ## Important Setup Note
 
-ComfyStudio generation still depends on a separate local ComfyUI installation in this build.
+Velorn generation still depends on a separate local ComfyUI installation in this build.
 
 - Local workflows may require manual node/model setup.
 - Cloud workflows still use local ComfyUI and may require partner nodes plus a Comfy account API key.
@@ -81,4 +81,4 @@ ComfyStudio generation still depends on a separate local ComfyUI installation in
 
 ## Suggested GitHub Release Title
 
-`ComfyStudio v0.1.12 - Timeline tools, effects stack, music video pipeline, and UX polish`
+`Velorn v0.1.12 - Timeline tools, effects stack, music video pipeline, and UX polish`

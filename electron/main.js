@@ -1077,8 +1077,8 @@ async function getComfyStudioBridgeStatusInternal() {
     comfyRootPath: root.normalizedPath,
     customNodesPath: root.customNodesPath,
     message: installed
-      ? 'ComfyStudio Bridge is installed. Restart ComfyUI if the Send button is not visible yet.'
-      : 'ComfyStudio Bridge is not installed yet.',
+      ? 'Velorn Bridge is installed. Restart ComfyUI if the Send button is not visible yet.'
+      : 'Velorn Bridge is not installed yet.',
   }
 }
 
@@ -1099,7 +1099,7 @@ async function installComfyStudioBridgeInternal() {
       success: false,
       state: 'unavailable',
       installed: false,
-      error: `Bundled ComfyStudio Bridge files are missing: ${sourceDir}`,
+      error: `Bundled Velorn Bridge files are missing: ${sourceDir}`,
     }
   }
 
@@ -1112,8 +1112,8 @@ async function installComfyStudioBridgeInternal() {
     copied,
     restartRequired: true,
     message: copied > 0
-      ? `Installed ComfyStudio Bridge (${copied} file${copied === 1 ? '' : 's'} updated). Restart ComfyUI to load it.`
-      : 'ComfyStudio Bridge is already up to date. Restart ComfyUI if the Send button is not visible.',
+      ? `Installed Velorn Bridge (${copied} file${copied === 1 ? '' : 's'} updated). Restart ComfyUI to load it.`
+      : 'Velorn Bridge is already up to date. Restart ComfyUI if the Send button is not visible.',
   }
 }
 
@@ -3263,7 +3263,8 @@ function createSplashWindow(restoredWindowState = null) {
     : path.join(__dirname, '../dist/splash.html')
   // Match your splash image aspect ratio (1632×656); extra height for status bar
   const SPLASH_ASPECT = 1632 / 656
-  const splashWidth = 1200
+  const SPLASH_WINDOW_SCALE = 0.7
+  const splashWidth = Math.round(1200 * SPLASH_WINDOW_SCALE)
   const statusBarHeight = 44
   const splashHeight = Math.round(splashWidth / SPLASH_ASPECT) + statusBarHeight
   const splashDisplay = restoredWindowState?.bounds
@@ -4783,7 +4784,7 @@ ipcMain.handle('comfyLauncher:pickMacApp', async () => {
 })
 
 // ============================================
-// ComfyStudio Bridge IPC
+// Velorn Bridge IPC
 // ============================================
 
 ipcMain.handle('comfyBridge:getStatus', async () => {
@@ -4794,7 +4795,7 @@ ipcMain.handle('comfyBridge:getStatus', async () => {
       success: false,
       state: 'unavailable',
       installed: false,
-      error: error?.message || 'Could not check the ComfyStudio Bridge.',
+      error: error?.message || 'Could not check the Velorn Bridge.',
     }
   }
 })
@@ -4807,7 +4808,7 @@ ipcMain.handle('comfyBridge:install', async () => {
       success: false,
       state: 'unavailable',
       installed: false,
-      error: error?.message || 'Could not install the ComfyStudio Bridge.',
+      error: error?.message || 'Could not install the Velorn Bridge.',
     }
   }
 })

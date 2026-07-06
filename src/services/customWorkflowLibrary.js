@@ -1,9 +1,16 @@
 // Personal workflow library: graphs the user saved from the embedded ComfyUI
 // tab. Launcher model — each entry stores the UI-format graph so a click can
-// load it straight back into the tab. No conversion, no forms, no bindings.
+// load it straight back into the tab. No forms, no bindings; the only
+// conversion is on-demand UI→API when an entry is promoted into a Director
+// custom slot (VELORN node-title contract).
 
 import { getLocalComfyConnectionSync } from './localComfyConnection'
 import { openUiWorkflowInComfyUi } from './workflowSetupManager'
+import {
+  CUSTOM_KEYFRAME_ENDPOINTS,
+  CUSTOM_VIDEO_ENDPOINTS,
+  scanUiWorkflowForCustomEndpoints,
+} from './comfyui'
 
 const CUSTOM_WORKFLOWS_DIR_NAME = 'custom-workflows'
 export const CUSTOM_WORKFLOW_LIBRARY_CHANGED_EVENT = 'comfystudio:custom-workflow-library-changed'
@@ -261,6 +268,137 @@ export async function openCustomLibraryWorkflow(id) {
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Could not open the saved workflow.',
+    }
+  }
+}
+
+// Node types match the app's starter templates so injected stubs behave the
+// same way the starters do (prompt via PrimitiveStringMultiline, video out
+// via core SaveVideo).
+const MARKER_STUB_SPECS = {
+  inputImage: { type: 'LoadImage', size: [315, 314] },
+  prompt: { type: 'PrimitiveStringMultiline', size: [400, 190] },
+  outputImage: { type: 'SaveImage', size: [310, 270] },
+  outputVideo: { type: 'SaveVideo', size: [315, 130] },
+}
+
+function injectMarkerStubNodes(graph, kind, missingKeys) {
+  if (!Array.isArray(graph.nodes)) graph.nodes = []
+  const endpoints = kind === 'video' ? CUSTOM_VIDEO_ENDPOINTS : CUSTOM_KEYFRAME_ENDPOINTS
+
+  let minX = Infinity
+  let minY = Infinity
+  for (const node of graph.nodes) {
+    const pos = Array.isArray(node?.pos) ? node.pos : [node?.pos?.['0'], node?.pos?.['1']]
+    if (Number.isFinite(pos?.[0])) minX = Math.min(minX, pos[0])
+    if (Number.isFinite(pos?.[1])) minY = Math.min(minY, pos[1])
+  }
+  if (!Number.isFinite(minX)) minX = 0
+  if (!Number.isFinite(minY)) minY = 0
+
+  let nextId = Number(graph.last_node_id) || 0
+  const startX = minX - 480
+  let y = minY
+  const added = []
+  for (const key of missingKeys) {
+    const spec = MARKER_STUB_SPECS[key]
+    const title = endpoints[key]
+    if (!spec || !title) continue
+    nextId += 1
+    graph.nodes.push({
+      id: nextId,
+      type: spec.type,
+      pos: [startX, y],
+      size: [...spec.size],
+      flags: {},
+      order: 0,
+      mode: 0,
+      title,
+      properties: { 'Node name for S&R': spec.type },
+    })
+    added.push(title)
+    y += spec.size[1] + 60
+  }
+  graph.last_node_id = nextId
+
+  if (added.length > 0) {
+    if (!Array.isArray(graph.groups)) graph.groups = []
+    graph.groups.push({
+      title: 'Velorn: wire these in, then save to My Workflows',
+      bounding: [startX - 20, minY - 60, 440, y - minY + 20],
+      color: '#3f789e',
+      font_size: 24,
+      flags: {},
+    })
+  }
+  return added
+}
+
+/**
+ * Open a saved workflow in the embedded ComfyUI tab with any missing
+ * VELORN marker nodes for the given slot injected off to the side of the
+ * graph. The user wires them in and re-saves to My Workflows — no guessing
+ * about which existing nodes to retitle.
+ */
+export async function openCustomLibraryWorkflowWithMarkerStubs(id, kind = 'keyframe') {
+  const read = await readCustomLibraryWorkflowGraph(id)
+  if (!read.success) return read
+  try {
+    const graph = JSON.parse(JSON.stringify(read.uiWorkflow))
+    const scan = scanUiWorkflowForCustomEndpoints(graph, kind)
+    const added = injectMarkerStubNodes(graph, kind, scan.missingKeys || [])
+    const result = await openUiWorkflowInComfyUi(graph, { label: read.title })
+    return { ...result, added }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Could not open the saved workflow.',
+    }
+  }
+}
+
+/** Read a saved workflow's UI-format graph (e.g. for VELORN marker scans). */
+export async function readCustomLibraryWorkflowGraph(id) {
+  await loadCustomWorkflowLibrary()
+  const entry = entriesById.get(String(id || '').trim())
+  if (!entry) return { success: false, error: 'That workflow is no longer in the library.' }
+  try {
+    const record = await readLibraryRecord(entry)
+    if (!record?.uiWorkflow) throw new Error('The saved workflow file is missing its graph.')
+    return { success: true, title: entry.title, uiWorkflow: record.uiWorkflow }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Could not read the saved workflow.',
+    }
+  }
+}
+
+/**
+ * Convert a saved workflow's UI graph to API (prompt) format through the
+ * local ComfyUI — the same graphToPrompt path the template importer uses, so
+ * ComfyUI must be reachable.
+ */
+export async function convertCustomLibraryWorkflowToApi(id) {
+  const api = typeof window !== 'undefined' ? window.electronAPI : null
+  if (!api?.convertComfyWorkflowGraph) {
+    return { success: false, error: 'Converting workflows is only available in the desktop build.' }
+  }
+  const read = await readCustomLibraryWorkflowGraph(id)
+  if (!read.success) return read
+  try {
+    const conversion = await api.convertComfyWorkflowGraph({
+      workflowGraph: read.uiWorkflow,
+      comfyBaseUrl: getLocalComfyConnectionSync().httpBase,
+    })
+    if (!conversion?.success || !conversion.output) {
+      throw new Error(conversion?.error || 'ComfyUI could not convert this workflow — make sure ComfyUI is running.')
+    }
+    return { success: true, title: read.title, apiWorkflow: conversion.output }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Could not convert the saved workflow.',
     }
   }
 }

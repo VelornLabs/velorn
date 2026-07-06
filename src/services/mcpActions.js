@@ -1,4 +1,4 @@
-import useTimelineStore from '../stores/timelineStore'
+import useTimelineStore, { isSyncLockedClip } from '../stores/timelineStore'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useAssetsStore from '../stores/assetsStore'
 import { useFrameForAIStore } from '../stores/frameForAIStore'
@@ -1909,6 +1909,40 @@ async function handleQueueTimelineGenerationBatch(payload = {}) {
   })
 }
 
+async function handleQueueTimelineTemplateGeneration(payload = {}) {
+  if (typeof window === 'undefined') {
+    throw new Error('Template generation queue bridge is only available in the renderer.')
+  }
+
+  const timeoutMs = Math.min(180000, Math.max(1000, Number(payload.timeoutMs) || 60000))
+  return await new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (callback, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      callback(value)
+    }
+
+    const timeout = setTimeout(() => {
+      finish(reject, new Error('Generate workspace did not respond to the MCP template generation request. Open the Generate tab and try again.'))
+    }, timeoutMs)
+
+    window.dispatchEvent(new CustomEvent('comfystudio-mcp-queue-template-generation', {
+      detail: {
+        ...payload,
+        respond: (result = {}) => {
+          if (result?.success === false) {
+            finish(reject, new Error(result.error || result.message || 'Could not queue template generation.'))
+            return
+          }
+          finish(resolve, result)
+        },
+      },
+    }))
+  })
+}
+
 async function handleQueuePromptGenerationBatch(payload = {}) {
   if (typeof window === 'undefined') {
     throw new Error('Prompt generation batch queue bridge is only available in the renderer.')
@@ -2339,6 +2373,445 @@ function normalizeClipEditEntries(payload = {}) {
       clipId: String(entry?.clipId || entry?.id || '').trim(),
     }))
     .filter((entry) => entry.clipId)
+}
+
+function getClipTimeScaleForMcp(clip) {
+  const baseScale = clip?.sourceTimeScale
+    || (clip?.timelineFps && clip?.sourceFps ? clip.timelineFps / clip.sourceFps : 1)
+  const speed = Number(clip?.speed)
+  const speedScale = Number.isFinite(speed) && speed > 0 ? speed : 1
+  return baseScale * speedScale
+}
+
+function getClipEndTime(clip) {
+  return (Number(clip?.startTime) || 0) + (Number(clip?.duration) || 0)
+}
+
+// Mirrors the Timeline razor (splitClipAtTime): resize the original down to the
+// left piece and add a new right piece. Effects/keyframes stay on the left
+// piece, matching in-app razor behavior. Caller owns history.
+function splitTimelineClipAtTime(clip, splitPosition) {
+  const splitTime = splitPosition - clip.startTime
+  const remainder = clip.duration - splitTime
+  const enabled = clip.enabled !== false
+
+  let asset = null
+  if (clip.type !== 'text' && clip.type !== 'shape' && clip.type !== 'adjustment') {
+    asset = useAssetsStore.getState().getAssetById?.(clip.assetId)
+    if (!asset) throw new Error(`Clip "${clip.id}" has no loadable source asset to split.`)
+  }
+
+  useTimelineStore.getState().resizeClip?.(clip.id, splitTime)
+
+  if (clip.type === 'text') {
+    return useTimelineStore.getState().addTextClip?.(clip.trackId, {
+      ...(clip.textProperties || {}),
+      duration: remainder,
+      enabled,
+      saveHistory: false,
+    }, splitPosition)
+  }
+
+  if (clip.type === 'shape') {
+    return useTimelineStore.getState().addShapeClip?.(clip.trackId, {
+      shapeProperties: clip.shapeProperties || {},
+      duration: remainder,
+      name: clip.name,
+      transform: clip.transform || {},
+      enabled,
+      saveHistory: false,
+    }, splitPosition)
+  }
+
+  if (clip.type === 'adjustment') {
+    return useTimelineStore.getState().addAdjustmentClip?.(clip.trackId, splitPosition, {
+      duration: remainder,
+      name: clip.name,
+      adjustments: clip.adjustments || {},
+      transform: clip.transform || {},
+      enabled,
+      saveHistory: false,
+    })
+  }
+
+  const timeScale = getClipTimeScaleForMcp(clip)
+  const sourceTimeAtCut = (clip.trimStart || 0) + splitTime * timeScale
+  const sourceTrimEnd = sourceTimeAtCut + remainder * timeScale
+  const rightClip = useTimelineStore.getState().addClip?.(
+    clip.trackId,
+    asset,
+    splitPosition,
+    Number(useTimelineStore.getState().timelineFps) || 24,
+    {
+      duration: remainder,
+      trimStart: sourceTimeAtCut,
+      trimEnd: sourceTrimEnd,
+      enabled,
+      // The in-app razor drops these on the right piece; carry them so split
+      // media clips keep their layout and label.
+      ...(clip.transform ? { transform: safeClone(clip.transform) } : {}),
+      ...(clip.labelColor ? { labelColor: clip.labelColor } : {}),
+      ...(clip.type === 'audio' ? { gainDb: clip.gainDb, fadeIn: clip.fadeIn, fadeOut: clip.fadeOut } : {}),
+      saveHistory: false,
+    }
+  )
+  // addClip always derives type from the asset (e.g. a video file's audio
+  // track clip has type 'audio' but an asset.type of 'video'); patch it back
+  // so the split piece matches the original instead of silently becoming a
+  // visual clip that tools filtering on clip.type === 'audio' won't find.
+  if (rightClip && clip.type && rightClip.type !== clip.type) {
+    useTimelineStore.setState((state) => ({
+      clips: state.clips.map((candidate) => (
+        candidate.id === rightClip.id ? { ...candidate, type: clip.type } : candidate
+      )),
+    }))
+    rightClip.type = clip.type
+  }
+  return rightClip
+}
+
+function collectSplitTargets(payload = {}) {
+  const state = useTimelineStore.getState()
+  const clips = state.clips || []
+  const tracks = state.tracks || []
+  const fps = Number(state.timelineFps) || 24
+  const halfFrame = 0.5 / fps
+
+  const rawTime = Number(payload.timeSeconds ?? payload.time)
+  const requestedTime = Number.isFinite(rawTime) ? Math.max(0, rawTime) : (Number(state.playheadPosition) || 0)
+  // Snap to a frame boundary: resizeClip rounds durations to frames, so an
+  // unaligned cut would leave a sub-frame source overlap between the pieces.
+  const timeSeconds = Math.round(requestedTime * fps) / fps
+
+  const explicitIds = payload.clipId
+    ? [String(payload.clipId)]
+    : (Array.isArray(payload.clipIds) ? payload.clipIds.map((id) => String(id)) : null)
+
+  const candidates = explicitIds
+    ? explicitIds.map((id) => clips.find((clip) => clip.id === id) || { id, missing: true })
+    : clips.filter((clip) => timeSeconds > clip.startTime && timeSeconds < getClipEndTime(clip))
+
+  const targets = []
+  const warnings = []
+  for (const clip of candidates) {
+    if (clip.missing) {
+      warnings.push(`Clip "${clip.id}" was not found.`)
+      continue
+    }
+    const track = tracks.find((candidate) => candidate.id === clip.trackId)
+    if (track?.locked) {
+      warnings.push(`Clip "${clip.id}" is on locked track "${track.name}" and was skipped.`)
+      continue
+    }
+    if (isSyncLockedClip(clip)) {
+      warnings.push(`Clip "${clip.id}" is sync-locked and was skipped.`)
+      continue
+    }
+    if (timeSeconds <= clip.startTime + halfFrame || timeSeconds >= getClipEndTime(clip) - halfFrame) {
+      if (explicitIds) {
+        warnings.push(`Time ${timeSeconds.toFixed(3)}s is not strictly inside clip "${clip.id}" (${clip.startTime.toFixed(3)}s to ${getClipEndTime(clip).toFixed(3)}s).`)
+      }
+      continue
+    }
+    targets.push(clip)
+  }
+
+  return { timeSeconds, targets, warnings, explicit: Boolean(explicitIds) }
+}
+
+function handleSplitClip(payload = {}) {
+  const { timeSeconds, targets, warnings } = collectSplitTargets(payload)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'split_clip',
+      message: targets.length
+        ? `Split plan only. ${targets.length} clip${targets.length === 1 ? '' : 's'} would be split at ${timeSeconds.toFixed(3)}s.`
+        : `No splittable clips at ${timeSeconds.toFixed(3)}s.`,
+      timeSeconds,
+      targets: targets.map((clip) => summarizeClip(clip)),
+      warnings,
+    }
+  }
+
+  if (!targets.length) {
+    throw new Error(`No splittable clips at ${timeSeconds.toFixed(3)}s.${warnings.length ? ` ${warnings.join(' ')}` : ''}`)
+  }
+
+  useTimelineStore.getState().saveToHistory?.()
+  const splits = []
+  for (const clip of targets) {
+    const rightClip = splitTimelineClipAtTime(clip, timeSeconds)
+    splits.push({
+      leftClipId: clip.id,
+      rightClipId: rightClip?.id || null,
+      trackId: clip.trackId,
+      name: clip.name || clip.id,
+    })
+  }
+
+  return {
+    success: true,
+    action: 'split_clip',
+    message: `Split ${splits.length} clip${splits.length === 1 ? '' : 's'} at ${timeSeconds.toFixed(3)}s.`,
+    timeSeconds,
+    splits,
+    warnings,
+  }
+}
+
+function planExtractRange(payload = {}) {
+  const state = useTimelineStore.getState()
+  const fps = Number(state.timelineFps) || 24
+  const halfFrame = 0.5 / fps
+  const startSeconds = Number(payload.startSeconds ?? payload.start)
+  const endSeconds = Number(payload.endSeconds ?? payload.end)
+  if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds)) {
+    throw new Error('Provide startSeconds and endSeconds for the range to extract.')
+  }
+  const start = Math.round(Math.max(0, startSeconds) * fps) / fps
+  const end = Math.round(Math.max(0, endSeconds) * fps) / fps
+  if (end - start < 1 / fps) {
+    throw new Error(`The extract range must be at least one frame (${(1 / fps).toFixed(4)}s).`)
+  }
+
+  const requestedTrackIds = Array.isArray(payload.trackIds) && payload.trackIds.length
+    ? new Set(payload.trackIds.map((id) => String(id)))
+    : null
+  const tracks = state.tracks || []
+  const warnings = []
+  const activeTrackIds = new Set()
+  for (const track of tracks) {
+    if (requestedTrackIds && !requestedTrackIds.has(track.id)) continue
+    if (track.locked) {
+      warnings.push(`Track "${track.name}" is locked and was skipped; its clips will not be cut or rippled, which can break sync.`)
+      continue
+    }
+    activeTrackIds.add(track.id)
+  }
+  if (!activeTrackIds.size) throw new Error('No unlocked tracks matched the request.')
+
+  const ripple = payload.ripple !== false
+  const clips = (state.clips || []).filter((clip) => activeTrackIds.has(clip.trackId))
+  const splitAtStart = []
+  const splitAtEnd = []
+  const remove = []
+  const shift = []
+  for (const clip of clips) {
+    const clipStart = Number(clip.startTime) || 0
+    const clipEnd = getClipEndTime(clip)
+    if (clipEnd <= start + halfFrame) continue
+    if (isSyncLockedClip(clip)) {
+      warnings.push(`Clip "${clip.id}" is sync-locked and was skipped; it will not be cut or rippled.`)
+      continue
+    }
+    const straddlesStart = clipStart < start - halfFrame && clipEnd > start + halfFrame
+    const straddlesEnd = clipStart < end - halfFrame && clipEnd > end + halfFrame
+    if (straddlesStart) splitAtStart.push(clip)
+    if (straddlesEnd) splitAtEnd.push(clip)
+    if (clipStart >= start - halfFrame && clipEnd <= end + halfFrame) remove.push(clip)
+    if (ripple && clipStart >= end - halfFrame) shift.push(clip)
+  }
+
+  const markerCount = (state.markers || []).length
+  if (markerCount > 0 && ripple) {
+    warnings.push(`${markerCount} timeline marker${markerCount === 1 ? '' : 's'} will not be shifted; adjust markers separately if needed.`)
+  }
+  if (requestedTrackIds) {
+    warnings.push('Removing a clip also removes its linked audio/video partner even when the partner is on a track outside trackIds (app link expansion).')
+  }
+
+  return { start, end, delta: end - start, ripple, halfFrame, activeTrackIds, splitAtStart, splitAtEnd, remove, shift, warnings }
+}
+
+function handleExtractRange(payload = {}) {
+  const plan = planExtractRange(payload)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'extract_range',
+      message: `Extract plan only. Would cut ${plan.start.toFixed(3)}s to ${plan.end.toFixed(3)}s (${plan.delta.toFixed(3)}s)${plan.ripple ? ' and ripple later clips left' : ''}.`,
+      plan: {
+        startSeconds: plan.start,
+        endSeconds: plan.end,
+        deltaSeconds: plan.delta,
+        ripple: plan.ripple,
+        splitAtStart: plan.splitAtStart.map((clip) => ({ id: clip.id, name: clip.name || clip.id })),
+        splitAtEnd: plan.splitAtEnd.map((clip) => ({ id: clip.id, name: clip.name || clip.id })),
+        removeCount: plan.remove.length,
+        removed: plan.remove.map((clip) => ({ id: clip.id, name: clip.name || clip.id, trackId: clip.trackId })),
+        shiftCount: plan.shift.length,
+      },
+      warnings: plan.warnings,
+    }
+  }
+
+  useTimelineStore.getState().saveToHistory?.()
+
+  // Split boundary clips first, re-planning between passes because splits
+  // change clip ids and extents.
+  for (const clip of planExtractRange({ ...payload, ripple: plan.ripple }).splitAtStart) {
+    splitTimelineClipAtTime(clip, plan.start)
+  }
+  for (const clip of planExtractRange({ ...payload, ripple: plan.ripple }).splitAtEnd) {
+    splitTimelineClipAtTime(clip, plan.end)
+  }
+
+  const finalPlan = planExtractRange({ ...payload, ripple: plan.ripple })
+  const removedIds = []
+  for (const clip of finalPlan.remove) {
+    useTimelineStore.getState().removeClip?.(clip.id, false)
+    removedIds.push(clip.id)
+  }
+
+  let shiftedCount = 0
+  if (finalPlan.ripple) {
+    const shiftClips = [...finalPlan.shift]
+      .filter((clip) => !removedIds.includes(clip.id))
+      .sort((a, b) => (Number(a.startTime) || 0) - (Number(b.startTime) || 0))
+    for (const clip of shiftClips) {
+      const nextStart = Math.max(0, (Number(clip.startTime) || 0) - finalPlan.delta)
+      useTimelineStore.getState().moveClip?.(clip.id, clip.trackId, nextStart, false)
+      shiftedCount += 1
+    }
+  }
+
+  return {
+    success: true,
+    action: 'extract_range',
+    message: `Extracted ${finalPlan.start.toFixed(3)}s to ${finalPlan.end.toFixed(3)}s: removed ${removedIds.length} clip${removedIds.length === 1 ? '' : 's'}${finalPlan.ripple ? `, shifted ${shiftedCount} clip${shiftedCount === 1 ? '' : 's'} left by ${finalPlan.delta.toFixed(3)}s` : ''}.`,
+    startSeconds: finalPlan.start,
+    endSeconds: finalPlan.end,
+    deltaSeconds: finalPlan.delta,
+    removedClipIds: removedIds,
+    shiftedClipCount: shiftedCount,
+    warnings: finalPlan.warnings,
+  }
+}
+
+function handleSetClipSpeed(payload = {}) {
+  const state = useTimelineStore.getState()
+  const clips = state.clips || []
+  const ids = payload.clipId
+    ? [String(payload.clipId)]
+    : (Array.isArray(payload.clipIds) ? payload.clipIds.map((id) => String(id)) : [])
+  if (!ids.length) throw new Error('Provide clipId or clipIds.')
+
+  const hasSpeed = payload.speed != null
+  const hasReverse = typeof payload.reverse === 'boolean'
+  if (!hasSpeed && !hasReverse) throw new Error('Provide speed (0.1 to 8) and/or reverse.')
+  const speed = hasSpeed ? Math.max(0.1, Math.min(8, Number(payload.speed) || 1)) : null
+
+  const targets = []
+  const warnings = []
+  for (const id of ids) {
+    const clip = clips.find((candidate) => candidate.id === id)
+    if (!clip) { warnings.push(`Clip "${id}" was not found.`); continue }
+    if (clip.type === 'image' && hasSpeed) { warnings.push(`Clip "${id}" is an image; speed does not apply.`); continue }
+    targets.push(clip)
+  }
+  if (!targets.length) throw new Error(`No clips to retime. ${warnings.join(' ')}`)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'set_clip_speed',
+      message: `Retime plan only. ${targets.length} clip${targets.length === 1 ? '' : 's'} would be updated${hasSpeed ? ` to ${speed}x` : ''}${hasReverse ? ` (reverse: ${payload.reverse})` : ''}. Duration changes with speed; linked audio of video clips is retimed with them.`,
+      targets: targets.map((clip) => ({ id: clip.id, name: clip.name || clip.id, currentSpeed: Number(clip.speed) || 1, currentDuration: clip.duration, reverse: Boolean(clip.reverse) })),
+      warnings,
+    }
+  }
+
+  useTimelineStore.getState().saveToHistory?.()
+  for (const clip of targets) {
+    if (hasSpeed) useTimelineStore.getState().updateClipSpeed?.(clip.id, speed, false)
+    if (hasReverse) useTimelineStore.getState().updateClipReverse?.(clip.id, payload.reverse, false)
+  }
+
+  const nextClips = useTimelineStore.getState().clips || []
+  return {
+    success: true,
+    action: 'set_clip_speed',
+    message: `Updated ${targets.length} clip${targets.length === 1 ? '' : 's'}.`,
+    clips: targets.map((clip) => {
+      const next = nextClips.find((candidate) => candidate.id === clip.id)
+      return {
+        id: clip.id,
+        name: clip.name || clip.id,
+        speed: Number(next?.speed) || 1,
+        reverse: Boolean(next?.reverse),
+        duration: next?.duration ?? clip.duration,
+      }
+    }),
+    warnings,
+  }
+}
+
+function handleSetClipAudio(payload = {}) {
+  const state = useTimelineStore.getState()
+  const clips = state.clips || []
+  const tracks = state.tracks || []
+  const audioTrackIds = new Set(tracks.filter((track) => track.type === 'audio').map((track) => track.id))
+  const ids = payload.clipId
+    ? [String(payload.clipId)]
+    : (Array.isArray(payload.clipIds) ? payload.clipIds.map((id) => String(id)) : [])
+  if (!ids.length) throw new Error('Provide clipId or clipIds.')
+
+  const updates = {}
+  if (payload.gainDb != null) updates.gainDb = Number(payload.gainDb)
+  if (payload.fadeInSeconds != null || payload.fadeIn != null) updates.fadeIn = Math.max(0, Number(payload.fadeInSeconds ?? payload.fadeIn) || 0)
+  if (payload.fadeOutSeconds != null || payload.fadeOut != null) updates.fadeOut = Math.max(0, Number(payload.fadeOutSeconds ?? payload.fadeOut) || 0)
+  if (!Object.keys(updates).length) throw new Error('Provide gainDb, fadeInSeconds, and/or fadeOutSeconds.')
+
+  const targets = []
+  const warnings = []
+  for (const id of ids) {
+    const clip = clips.find((candidate) => candidate.id === id)
+    if (!clip) { warnings.push(`Clip "${id}" was not found.`); continue }
+    if (clip.type === 'audio') { targets.push(clip); continue }
+    // Convenience: a video clip resolves to its linked audio clip (same asset on an audio track).
+    const linked = clip.type === 'video'
+      ? clips.find((candidate) => candidate.type === 'audio' && candidate.assetId === clip.assetId && audioTrackIds.has(candidate.trackId))
+      : null
+    if (linked) {
+      warnings.push(`Clip "${id}" is a video clip; applied to its linked audio clip "${linked.id}".`)
+      targets.push(linked)
+    } else {
+      warnings.push(`Clip "${id}" is not an audio clip and has no linked audio; skipped. To silence a clip use set_clips_enabled.`)
+    }
+  }
+  const uniqueTargets = [...new Map(targets.map((clip) => [clip.id, clip])).values()]
+  if (!uniqueTargets.length) throw new Error(`No audio clips to update. ${warnings.join(' ')}`)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'set_clip_audio',
+      message: `Audio update plan only. ${uniqueTargets.length} audio clip${uniqueTargets.length === 1 ? '' : 's'} would be updated. Fades are clamped to each clip's duration.`,
+      updates,
+      targets: uniqueTargets.map((clip) => ({ id: clip.id, name: clip.name || clip.id, gainDb: clip.gainDb ?? 0, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0, duration: clip.duration })),
+      warnings,
+    }
+  }
+
+  useTimelineStore.getState().saveToHistory?.()
+  for (const clip of uniqueTargets) {
+    useTimelineStore.getState().updateAudioClipProperties?.(clip.id, updates, false)
+  }
+
+  const nextClips = useTimelineStore.getState().clips || []
+  return {
+    success: true,
+    action: 'set_clip_audio',
+    message: `Updated audio on ${uniqueTargets.length} clip${uniqueTargets.length === 1 ? '' : 's'}.`,
+    clips: uniqueTargets.map((clip) => {
+      const next = nextClips.find((candidate) => candidate.id === clip.id) || clip
+      return { id: clip.id, name: clip.name || clip.id, gainDb: next.gainDb ?? 0, fadeIn: next.fadeIn ?? 0, fadeOut: next.fadeOut ?? 0 }
+    }),
+    warnings,
+  }
 }
 
 function handleMoveClips(payload = {}) {
@@ -6839,6 +7312,8 @@ async function handleMcpAction(request = {}) {
       return handleQueuePreparedGeneration(request.payload || {})
     case 'queue_timeline_generation_batch':
       return handleQueueTimelineGenerationBatch(request.payload || {})
+    case 'queue_timeline_template_generation':
+      return handleQueueTimelineTemplateGeneration(request.payload || {})
     case 'queue_prompt_generation_batch':
       return handleQueuePromptGenerationBatch(request.payload || {})
     case 'inspect_timeline_frame':
@@ -6883,6 +7358,14 @@ async function handleMcpAction(request = {}) {
       return handleMoveClips(request.payload || {})
     case 'trim_clips':
       return handleTrimClips(request.payload || {})
+    case 'split_clip':
+      return handleSplitClip(request.payload || {})
+    case 'extract_range':
+      return handleExtractRange(request.payload || {})
+    case 'set_clip_speed':
+      return handleSetClipSpeed(request.payload || {})
+    case 'set_clip_audio':
+      return handleSetClipAudio(request.payload || {})
     case 'delete_clips':
       return handleDeleteClips(request.payload || {})
     case 'add_asset_to_timeline':
