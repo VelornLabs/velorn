@@ -6,6 +6,7 @@ import { getAdjustmentValue, mergeAdjustmentSettings, normalizeAdjustmentSetting
 import { clampAudioFadeDuration } from '../utils/audioClipFades'
 import { normalizeAudioClipGainDb } from '../utils/audioClipGain'
 import { CLIP_COMPOSITE_MODE, normalizeClipCompositeMode } from '../utils/layerCompositing'
+import { DEFAULT_LINE_THICKNESS, DEFAULT_SHAPE_PROPERTIES, getShapeDisplayName, normalizeShapeProperties } from '../utils/shapes'
 import {
   quantizeTimeToFrame as roundToFrame,
   roundDurationToFrame,
@@ -289,6 +290,10 @@ const applyInferredSyncLockToClip = (clip, assetsById, fps = FRAME_RATE) => {
 
 const dedupeClipIds = (clipIds = []) => [...new Set((clipIds || []).filter(Boolean))]
 const RIPPLE_TIME_EPSILON = 1e-6
+const normalizeClipLabelColor = (color) => {
+  const value = String(color || '').trim()
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : ''
+}
 
 const expandClipIdsWithLinked = (clips, clipIds = []) => {
   const sourceIds = dedupeClipIds(clipIds)
@@ -491,12 +496,13 @@ const getNextClipCounter = (clips = [], fallback = 1) => {
 
 const isAdjustmentClipType = (clip) => clip?.type === 'adjustment'
 const isInfinitelyExtendableClipType = (clip) => (
-  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text'
+  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text' || clip?.type === 'shape'
 )
 const supportsClipAdjustments = (clip) => (
   clip?.type === 'video'
   || clip?.type === 'image'
   || clip?.type === 'text'
+  || clip?.type === 'shape'
   || clip?.type === 'adjustment'
 )
 
@@ -504,6 +510,7 @@ const supportsLowerLayerCompositeMode = (clip) => (
   clip?.type === 'video'
   || clip?.type === 'image'
   || clip?.type === 'text'
+  || clip?.type === 'shape'
 )
 
 const floorDurationToFrame = (duration, fps) => {
@@ -563,10 +570,14 @@ const clampFiniteMediaClipToSource = (clip, fps) => {
 const createDefaultClipTransform = () => ({
   positionX: 0,
   positionY: 0,
+  positionZ: 0,
   scaleX: 100,
   scaleY: 100,
   scaleLinked: true,
   rotation: 0,
+  rotationX: 0,
+  rotationY: 0,
+  perspective: 1200,
   anchorX: 50,
   anchorY: 50,
   opacity: 100,
@@ -576,6 +587,10 @@ const createDefaultClipTransform = () => ({
   cropBottom: 0,
   cropLeft: 0,
   cropRight: 0,
+  motionBlurEnabled: false,
+  motionBlurMode: 'auto',
+  motionBlurSamples: 8,
+  motionBlurShutter: 180,
   blendMode: 'normal',
   blur: 0,
 })
@@ -669,7 +684,10 @@ export const useTimelineStore = create(
   // always uses asset.path. Hydrated from localStorage on boot in PreviewPanel.
   useProxyPlaybackForAssets: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-use-playback-proxies') === 'true'),
   glslPreviewQuality: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-glsl-preview-quality')) || 'full',
-  previewCompositorMode: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-preview-compositor-mode')) || 'canvas',
+  // 'gpu' composites the preview through the shared WebGL2 compositor
+  // (services/gpuCompositor.js — same engine as export); 'canvas' is the
+  // 2D fallback / kill switch. A stored explicit choice is respected.
+  previewCompositorMode: (typeof localStorage !== 'undefined' && localStorage.getItem('comfystudio-preview-compositor-mode')) || 'gpu',
   showTimelineClipThumbnails: (typeof localStorage === 'undefined' || localStorage.getItem('comfystudio-show-timeline-clip-thumbnails') !== 'false'),
   
   // Snapping settings
@@ -685,7 +703,12 @@ export const useTimelineStore = create(
   // In/Out points for three-point editing
   inPoint: null, // Timeline in-point (seconds)
   outPoint: null, // Timeline out-point (seconds)
-  
+
+  // Render In→Out status for the timeline ruler (transient, not persisted —
+  // getProjectData never includes it; PreviewPanel's render flow owns it).
+  // { status: 'rendering'|'cached'|'stale', progress, rangeStart, rangeEnd, signature } | null
+  rangeRenderState: null,
+
   // Undo/Redo history
   history: [], // Array of past states
   historyIndex: -1, // Current position in history (-1 means at present state)
@@ -1174,10 +1197,14 @@ export const useTimelineStore = create(
       transform: {
         positionX: 0,
         positionY: 0,
+        positionZ: 0,
         scaleX: 100,
         scaleY: 100,
         scaleLinked: true,
         rotation: 0,
+        rotationX: 0,
+        rotationY: 0,
+        perspective: 1200,
         anchorX: 50,
         anchorY: 50,
         opacity: 100,
@@ -1187,6 +1214,10 @@ export const useTimelineStore = create(
         cropBottom: 0,
         cropLeft: 0,
         cropRight: 0,
+        motionBlurEnabled: false,
+        motionBlurMode: 'auto',
+        motionBlurSamples: 8,
+        motionBlurShutter: 180,
         blendMode: 'normal',
         blur: 0,
       },
@@ -1209,6 +1240,75 @@ export const useTimelineStore = create(
       duration: Math.max(state.duration, calculatedStartTime + newClip.duration + 10)
     }))
     
+    return newClip
+  },
+
+  /**
+   * Add a native shape clip to the timeline.
+   * @param {string} trackId - Target video track ID
+   * @param {object} shapeOptions - Shape configuration options
+   * @param {number|null} startTime - Start time (null = end of existing clips)
+   */
+  addShapeClip: (trackId, shapeOptions = {}, startTime = null) => {
+    const state = get()
+    const track = state.tracks.find(t => t.id === trackId)
+    if (!track || track.type !== 'video') return null
+    const safeClipCounter = getNextClipCounter(state.clips, state.clipCounter || 1)
+
+    if (shapeOptions?.saveHistory !== false) {
+      get().saveToHistory()
+    }
+
+    const fps = state.timelineFps || 24
+    const trackClips = state.clips.filter(c => c.trackId === trackId)
+    const rawStartTime = startTime ?? trackClips.reduce((max, clip) =>
+      Math.max(max, clip.startTime + clip.duration), 0
+    )
+    const calculatedStartTime = roundToFrame(rawStartTime, fps)
+    const duration = roundDurationToFrame(shapeOptions.duration || 5, fps)
+    const shapeProperties = normalizeShapeProperties(shapeOptions.shapeProperties || shapeOptions)
+    const shapeName = shapeOptions.name || getShapeDisplayName(shapeProperties)
+
+    const newClip = {
+      id: `clip-${safeClipCounter}`,
+      trackId,
+      assetId: null,
+      name: shapeName,
+      startTime: calculatedStartTime,
+      duration,
+      sourceDuration: duration,
+      trimStart: 0,
+      trimEnd: duration,
+      color: '#2f6f88',
+      type: 'shape',
+      enabled: shapeOptions?.enabled !== false,
+      compositeLowerLayers: CLIP_COMPOSITE_MODE.AUTO,
+      url: null,
+      thumbnail: null,
+      shapeProperties,
+      transform: {
+        ...createDefaultClipTransform(),
+        ...(shapeOptions.transform || {}),
+        blendMode: shapeOptions.transform?.blendMode ?? 'normal',
+      },
+    }
+
+    const { clips: updatedClips, addedCount } = get().resolveOverlaps(
+      trackId,
+      newClip.id,
+      calculatedStartTime,
+      duration,
+      undefined,
+      safeClipCounter + 1
+    )
+
+    set((state) => ({
+      clips: [...updatedClips, newClip],
+      clipCounter: Math.max(state.clipCounter, safeClipCounter + 1 + addedCount),
+      selectedClipIds: [newClip.id],
+      duration: Math.max(state.duration, calculatedStartTime + newClip.duration + 10)
+    }))
+
     return newClip
   },
 
@@ -1315,11 +1415,76 @@ export const useTimelineStore = create(
   },
 
   /**
+   * Update shape clip properties.
+   * @param {string} clipId - The shape clip to update
+   * @param {object} shapeUpdates - Partial shape properties object
+   * @param {boolean} saveHistory - Whether to save to history
+   */
+  updateShapeProperties: (clipId, shapeUpdates, saveHistory = false) => {
+    if (saveHistory) {
+      get().saveToHistory()
+    }
+
+    set((state) => ({
+      clips: state.clips.map(clip => {
+        if (clip.id !== clipId || clip.type !== 'shape') return clip
+
+        const currentShape = normalizeShapeProperties(clip.shapeProperties || {})
+        const hasWidthUpdate = Object.prototype.hasOwnProperty.call(shapeUpdates || {}, 'width')
+        const hasHeightUpdate = Object.prototype.hasOwnProperty.call(shapeUpdates || {}, 'height')
+        const shouldLinkSize = Object.prototype.hasOwnProperty.call(shapeUpdates || {}, 'sizeLinked')
+          ? shapeUpdates.sizeLinked !== false
+          : currentShape.sizeLinked !== false
+        const nextShapeInput = { ...currentShape, ...shapeUpdates, sizeLinked: shouldLinkSize }
+        const switchedFromLineToSolid = currentShape.shapeType === 'line' && shapeUpdates?.shapeType && shapeUpdates.shapeType !== 'line'
+        if (shapeUpdates?.shapeType === 'line' && !hasHeightUpdate) {
+          nextShapeInput.sizeLinked = false
+          nextShapeInput.height = DEFAULT_LINE_THICKNESS
+        } else if (switchedFromLineToSolid) {
+          nextShapeInput.sizeLinked = DEFAULT_SHAPE_PROPERTIES.sizeLinked
+          if (!hasWidthUpdate && !hasHeightUpdate) {
+            nextShapeInput.width = DEFAULT_SHAPE_PROPERTIES.width
+            nextShapeInput.height = DEFAULT_SHAPE_PROPERTIES.height
+          } else if (hasWidthUpdate && !hasHeightUpdate) {
+            nextShapeInput.height = nextShapeInput.sizeLinked
+              ? Math.max(1, Number(shapeUpdates.width) || DEFAULT_SHAPE_PROPERTIES.height)
+              : DEFAULT_SHAPE_PROPERTIES.height
+          } else if (!hasWidthUpdate && hasHeightUpdate) {
+            nextShapeInput.width = nextShapeInput.sizeLinked
+              ? Math.max(1, Number(shapeUpdates.height) || DEFAULT_SHAPE_PROPERTIES.width)
+              : DEFAULT_SHAPE_PROPERTIES.width
+          }
+        }
+        if (!switchedFromLineToSolid && nextShapeInput.sizeLinked && hasWidthUpdate && !hasHeightUpdate) {
+          const currentWidth = Math.max(1, Number(currentShape.width) || 1)
+          const currentHeight = Math.max(1, Number(currentShape.height) || 1)
+          nextShapeInput.height = Math.max(1, Math.round((Number(shapeUpdates.width) || currentWidth) * (currentHeight / currentWidth)))
+        } else if (!switchedFromLineToSolid && nextShapeInput.sizeLinked && hasHeightUpdate && !hasWidthUpdate) {
+          const currentWidth = Math.max(1, Number(currentShape.width) || 1)
+          const currentHeight = Math.max(1, Number(currentShape.height) || 1)
+          nextShapeInput.width = Math.max(1, Math.round((Number(shapeUpdates.height) || currentHeight) * (currentWidth / currentHeight)))
+        }
+        const updatedShape = normalizeShapeProperties(nextShapeInput)
+        const newName = shapeUpdates?.name || clip.name || getShapeDisplayName(updatedShape)
+
+        return {
+          ...clip,
+          name: newName,
+          shapeProperties: updatedShape,
+        }
+      })
+    }))
+  },
+
+  /**
    * Remove a clip (or multiple clips if they're selected)
    */
-  removeClip: (clipId) => {
-    // Save to history before modifying
-    get().saveToHistory()
+  removeClip: (clipId, saveHistory = true) => {
+    // Save to history before modifying (batch callers that own their own
+    // checkpoint pass false to keep the whole edit a single undo step)
+    if (saveHistory) {
+      get().saveToHistory()
+    }
 
     set((state) => {
       const targetIds = new Set(expandClipIdsWithLinked(state.clips, [clipId]))
@@ -1662,6 +1827,40 @@ export const useTimelineStore = create(
           thumbnail: null,
           textProperties: { ...(template.textProperties || {}) },
           transform: { ...(template.transform || {}), blendMode: template.transform?.blendMode ?? 'normal' },
+          ...(pastedLinkGroupId ? { linkGroupId: pastedLinkGroupId } : {}),
+          keyframes: template.keyframes ? JSON.parse(JSON.stringify(template.keyframes)) : undefined,
+        }
+        clipCounter += 1
+        const result = get().resolveOverlaps(trackId, newClip.id, clipStartTime, newClip.duration, clips, clipCounter)
+        clips = [...result.clips, newClip]
+        clipCounter += result.addedCount
+        newIds.push(newClip.id)
+      } else if (template.type === 'shape') {
+        const rawDuration = template.duration ?? 5
+        const duration = roundDurationToFrame(rawDuration, fps)
+        const shapeProperties = normalizeShapeProperties(template.shapeProperties || {})
+        const newClip = {
+          id: `clip-${clipCounter}`,
+          trackId,
+          assetId: null,
+          name: template.name || getShapeDisplayName(shapeProperties),
+          startTime: clipStartTime,
+          duration,
+          sourceDuration: duration,
+          trimStart: 0,
+          trimEnd: duration,
+          color: '#2f6f88',
+          type: 'shape',
+          enabled: template.enabled !== false,
+          compositeLowerLayers: normalizeClipCompositeMode(template.compositeLowerLayers),
+          url: null,
+          thumbnail: null,
+          shapeProperties,
+          transform: {
+            ...createDefaultClipTransform(),
+            ...(template.transform || {}),
+            blendMode: template.transform?.blendMode ?? 'normal',
+          },
           ...(pastedLinkGroupId ? { linkGroupId: pastedLinkGroupId } : {}),
           keyframes: template.keyframes ? JSON.parse(JSON.stringify(template.keyframes)) : undefined,
         }
@@ -2454,18 +2653,22 @@ export const useTimelineStore = create(
         
         // Ensure transform object exists (for legacy clips)
         const currentTransform = clip.transform || {
-          positionX: 0, positionY: 0,
+          positionX: 0, positionY: 0, positionZ: 0,
           scaleX: 100, scaleY: 100, scaleLinked: true,
-          rotation: 0, anchorX: 50, anchorY: 50, opacity: 100,
+          rotation: 0, rotationX: 0, rotationY: 0, perspective: 1200, anchorX: 50, anchorY: 50, opacity: 100,
           flipH: false, flipV: false,
           cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0,
+          motionBlurEnabled: false, motionBlurMode: 'auto', motionBlurSamples: 8, motionBlurShutter: 180,
           blendMode: 'normal',
           blur: 0,
         }
         
         // Handle linked scale: if scaleLinked and one scale changed, update both
         let finalUpdates = { ...transformUpdates }
-        if (currentTransform.scaleLinked) {
+        const shouldKeepScaleLinked = Object.prototype.hasOwnProperty.call(transformUpdates, 'scaleLinked')
+          ? transformUpdates.scaleLinked
+          : currentTransform.scaleLinked
+        if (shouldKeepScaleLinked) {
           if ('scaleX' in transformUpdates && !('scaleY' in transformUpdates)) {
             finalUpdates.scaleY = transformUpdates.scaleX
           } else if ('scaleY' in transformUpdates && !('scaleX' in transformUpdates)) {
@@ -2572,11 +2775,12 @@ export const useTimelineStore = create(
           ? {
               ...clip,
               transform: {
-                positionX: 0, positionY: 0,
+                positionX: 0, positionY: 0, positionZ: 0,
                 scaleX: 100, scaleY: 100, scaleLinked: true,
-                rotation: 0, anchorX: 50, anchorY: 50, opacity: 100,
+                rotation: 0, rotationX: 0, rotationY: 0, perspective: 1200, anchorX: 50, anchorY: 50, opacity: 100,
                 flipH: false, flipV: false,
                 cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0,
+                motionBlurEnabled: false, motionBlurMode: 'auto', motionBlurSamples: 8, motionBlurShutter: 180,
                 blendMode: 'normal',
                 blur: 0,
               }
@@ -2848,9 +3052,13 @@ export const useTimelineStore = create(
       // Add new keyframe with current transform value
       const adjustmentValue = getAdjustmentValue(clip.adjustments || {}, property)
       const hasAdjustmentValue = adjustmentValue !== undefined
+      const shapeProperties = clip.type === 'shape' ? normalizeShapeProperties(clip.shapeProperties || {}) : null
+      const hasShapeValue = shapeProperties && Object.prototype.hasOwnProperty.call(shapeProperties, property)
       const currentValue = hasAdjustmentValue
         ? adjustmentValue
-        : (clip.transform?.[property] ?? adjustmentValue ?? 0)
+        : hasShapeValue
+          ? shapeProperties[property]
+          : (clip.transform?.[property] ?? adjustmentValue ?? 0)
       get().setKeyframe(clipId, property, clipTime, currentValue, 'easeInOut', { saveHistory: true })
       // If scale is linked, also add keyframe for the other scale property
       if (isLinked) {
@@ -3339,7 +3547,7 @@ export const useTimelineStore = create(
    * @param {string} cacheUrl - Blob URL of the cached video
    * @param {string} cachePath - Optional path to the cached file on disk
    */
-  setCacheUrl: (clipId, cacheUrl, cachePath = null) => {
+  setCacheUrl: (clipId, cacheUrl, cachePath = null, cacheKind = null, cacheSignature = null) => {
     set((state) => ({
       clips: state.clips.map(clip => {
         if (clip.id !== clipId) return clip
@@ -3347,6 +3555,11 @@ export const useTimelineStore = create(
           ...clip,
           cacheUrl,
           cachePath, // Path to the file on disk (for persistence)
+          // 'full' bakes carry transform/effects/speed/text inside the file
+          // and are validated by content signature; legacy (null) bakes keep
+          // the old mask-only contract.
+          cacheKind: cacheUrl ? cacheKind : null,
+          cacheSignature: cacheUrl ? cacheSignature : null,
           cacheStatus: cacheUrl ? 'cached' : 'none',
           cacheProgress: cacheUrl ? 100 : 0,
         }
@@ -3388,6 +3601,9 @@ export const useTimelineStore = create(
           cacheStatus: 'none',
           cacheProgress: 0,
           cacheUrl: null,
+          cachePath: null,
+          cacheKind: null,
+          cacheSignature: null,
         }
       })
     }))
@@ -3422,7 +3638,7 @@ export const useTimelineStore = create(
     }
   },
   setPreviewCompositorMode: (mode) => {
-    const normalized = ['canvas', 'dom'].includes(mode) ? mode : 'canvas'
+    const normalized = ['canvas', 'dom', 'gpu'].includes(mode) ? mode : 'gpu'
     set({ previewCompositorMode: normalized })
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('comfystudio-preview-compositor-mode', normalized)
@@ -4418,6 +4634,38 @@ export const useTimelineStore = create(
   },
 
   /**
+   * Set or clear the visible label color for one or more timeline clips.
+   */
+  setClipLabelColor: (clipIds, color) => {
+    const state = get()
+    const targetIds = dedupeClipIds(Array.isArray(clipIds) ? clipIds : [clipIds])
+    if (targetIds.length === 0) return
+
+    const targetSet = new Set(targetIds)
+    const labelColor = normalizeClipLabelColor(color)
+    const hasChanges = state.clips.some((clip) => (
+      targetSet.has(clip.id) && normalizeClipLabelColor(clip.labelColor) !== labelColor
+    ))
+    if (!hasChanges) return
+
+    get().saveToHistory()
+    set((current) => ({
+      clips: current.clips.map((clip) => {
+        if (!targetSet.has(clip.id)) return clip
+        if (!labelColor) {
+          const nextClip = { ...clip }
+          delete nextClip.labelColor
+          return nextClip
+        }
+        return {
+          ...clip,
+          labelColor,
+        }
+      }),
+    }))
+  },
+
+  /**
    * Add a new track
    * @param {string} type - 'video' | 'audio'
    * @param {object} options - For audio: { channels: 'mono' | 'stereo' }
@@ -4455,11 +4703,16 @@ export const useTimelineStore = create(
     }
     
     set((state) => {
-      // For video tracks, add to the beginning (top)
+      // For video tracks, add to the beginning (top) by default.
       // For audio tracks, add to the end (bottom)
       if (type === 'video') {
         const videoTracks = state.tracks.filter(t => t.type === 'video')
         const audioTracks = state.tracks.filter(t => t.type === 'audio')
+        if (options?.position === 'bottom' || options?.placement === 'bottom') {
+          return {
+            tracks: [...videoTracks, newTrack, ...audioTracks]
+          }
+        }
         return {
           tracks: [newTrack, ...videoTracks, ...audioTracks]
         }
@@ -4838,6 +5091,13 @@ export const useTimelineStore = create(
    */
   clearInOutPoints: () => {
     set({ inPoint: null, outPoint: null })
+  },
+
+  /**
+   * Update the transient Render In→Out status shown on the timeline ruler.
+   */
+  setRangeRenderState: (rangeRenderState = null) => {
+    set({ rangeRenderState })
   },
 
   /**

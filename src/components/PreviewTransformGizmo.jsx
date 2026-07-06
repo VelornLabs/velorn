@@ -43,10 +43,29 @@ function snapToStep(value, step) {
   return Math.round(value / step) * step
 }
 
+function getAxisScaleUpdates(drag, e, snap) {
+  const offsetX = Math.max(8, Math.abs(e.clientX - drag.centerX))
+  const offsetY = Math.max(8, Math.abs(e.clientY - drag.centerY))
+  const factorX = Math.max(0.01, offsetX / drag.startOffsetX)
+  const factorY = Math.max(0.01, offsetY / drag.startOffsetY)
+  let scaleX = clampScale(drag.startTransform.scaleX * factorX)
+  let scaleY = clampScale(drag.startTransform.scaleY * factorY)
+  if (snap) {
+    scaleX = snapToStep(scaleX, SCALE_SNAP_STEP)
+    scaleY = snapToStep(scaleY, SCALE_SNAP_STEP)
+  }
+  return {
+    scaleX: roundTo(scaleX, 2),
+    scaleY: roundTo(scaleY, 2),
+    scaleLinked: false,
+  }
+}
+
 export default function PreviewTransformGizmo({
   clip,
   transform,
   buildVideoTransform,
+  frameRect = null,
   previewScale,
   zoomScale = 1,
   disabled = false,
@@ -67,11 +86,25 @@ export default function PreviewTransformGizmo({
 
   const frameStyle = useMemo(() => {
     const style = (typeof buildVideoTransform === 'function' ? buildVideoTransform(transform) : {}) || {}
+    const safeRect = frameRect
+      && Number.isFinite(Number(frameRect.x))
+      && Number.isFinite(Number(frameRect.y))
+      && Number(frameRect.width) > 0
+      && Number(frameRect.height) > 0
+      ? {
+          left: `${Number(frameRect.x)}px`,
+          top: `${Number(frameRect.y)}px`,
+          width: `${Number(frameRect.width)}px`,
+          height: `${Number(frameRect.height)}px`,
+        }
+      : { inset: 0 }
+
     return {
+      ...safeRect,
       transform: style.transform,
       transformOrigin: style.transformOrigin || '50% 50%',
     }
-  }, [buildVideoTransform, transform])
+  }, [buildVideoTransform, frameRect, transform])
 
   const beginDrag = useCallback((mode, e) => {
     if (!clip || disabled) return
@@ -131,18 +164,22 @@ export default function PreviewTransformGizmo({
           positionX: roundTo(positionX),
           positionY: roundTo(positionY),
         }
-      } else if (drag.mode === 'scale-uniform') {
-        const distance = Math.max(8, Math.hypot(e.clientX - drag.centerX, e.clientY - drag.centerY))
-        const factor = Math.max(0.01, distance / drag.startDistance)
-        let scaleX = clampScale(drag.startTransform.scaleX * factor)
-        let scaleY = clampScale(drag.startTransform.scaleY * factor)
-        if (snap) {
-          scaleX = snapToStep(scaleX, SCALE_SNAP_STEP)
-          scaleY = snapToStep(scaleY, SCALE_SNAP_STEP)
-        }
-        updates = {
-          scaleX: roundTo(scaleX, 2),
-          scaleY: roundTo(scaleY, 2),
+      } else if (drag.mode === 'scale-corner') {
+        if (e.altKey) {
+          updates = getAxisScaleUpdates(drag, e, snap)
+        } else {
+          const distance = Math.max(8, Math.hypot(e.clientX - drag.centerX, e.clientY - drag.centerY))
+          const factor = Math.max(0.01, distance / drag.startDistance)
+          let scaleX = clampScale(drag.startTransform.scaleX * factor)
+          let scaleY = clampScale(drag.startTransform.scaleY * factor)
+          if (snap) {
+            scaleX = snapToStep(scaleX, SCALE_SNAP_STEP)
+            scaleY = snapToStep(scaleY, SCALE_SNAP_STEP)
+          }
+          updates = {
+            scaleX: roundTo(scaleX, 2),
+            scaleY: roundTo(scaleY, 2),
+          }
         }
       } else if (drag.mode === 'scale-x') {
         const offsetX = Math.max(8, Math.abs(e.clientX - drag.centerX))
@@ -153,6 +190,7 @@ export default function PreviewTransformGizmo({
         }
         updates = {
           scaleX: roundTo(scaleX, 2),
+          scaleLinked: false,
         }
       } else if (drag.mode === 'scale-y') {
         const offsetY = Math.max(8, Math.abs(e.clientY - drag.centerY))
@@ -163,6 +201,7 @@ export default function PreviewTransformGizmo({
         }
         updates = {
           scaleY: roundTo(scaleY, 2),
+          scaleLinked: false,
         }
       } else if (drag.mode === 'rotate') {
         const angle = Math.atan2(e.clientY - drag.centerY, e.clientX - drag.centerX)
@@ -208,7 +247,7 @@ export default function PreviewTransformGizmo({
     <div className="absolute inset-0 overflow-visible pointer-events-none z-40">
       <div
         ref={frameRef}
-        className={`absolute inset-0 overflow-visible pointer-events-auto ${disabled ? 'cursor-default' : 'cursor-move'}`}
+        className={`absolute overflow-visible pointer-events-auto ${disabled ? 'cursor-default' : 'cursor-move'}`}
         style={frameStyle}
         title="Drag to move. Hold Shift to snap."
         onPointerDown={(e) => beginDrag('move', e)}
@@ -224,29 +263,29 @@ export default function PreviewTransformGizmo({
               type="button"
               aria-label="Scale from top-left"
               className="absolute -left-2 -top-2 w-3.5 h-3.5 rounded-[3px] bg-sf-accent border border-white/85 cursor-nwse-resize shadow-[0_0_10px_rgba(0,0,0,0.35)]"
-              title="Scale uniformly (Shift snaps)"
-              onPointerDown={(e) => beginDrag('scale-uniform', e)}
+              title="Scale uniformly (Alt/Option breaks uniform scale, Shift snaps)"
+              onPointerDown={(e) => beginDrag('scale-corner', e)}
             />
             <button
               type="button"
               aria-label="Scale from top-right"
               className="absolute -right-2 -top-2 w-3.5 h-3.5 rounded-[3px] bg-sf-accent border border-white/85 cursor-nesw-resize shadow-[0_0_10px_rgba(0,0,0,0.35)]"
-              title="Scale uniformly (Shift snaps)"
-              onPointerDown={(e) => beginDrag('scale-uniform', e)}
+              title="Scale uniformly (Alt/Option breaks uniform scale, Shift snaps)"
+              onPointerDown={(e) => beginDrag('scale-corner', e)}
             />
             <button
               type="button"
               aria-label="Scale from bottom-left"
               className="absolute -left-2 -bottom-2 w-3.5 h-3.5 rounded-[3px] bg-sf-accent border border-white/85 cursor-nesw-resize shadow-[0_0_10px_rgba(0,0,0,0.35)]"
-              title="Scale uniformly (Shift snaps)"
-              onPointerDown={(e) => beginDrag('scale-uniform', e)}
+              title="Scale uniformly (Alt/Option breaks uniform scale, Shift snaps)"
+              onPointerDown={(e) => beginDrag('scale-corner', e)}
             />
             <button
               type="button"
               aria-label="Scale from bottom-right"
               className="absolute -right-2 -bottom-2 w-3.5 h-3.5 rounded-[3px] bg-sf-accent border border-white/85 cursor-nwse-resize shadow-[0_0_10px_rgba(0,0,0,0.35)]"
-              title="Scale uniformly (Shift snaps)"
-              onPointerDown={(e) => beginDrag('scale-uniform', e)}
+              title="Scale uniformly (Alt/Option breaks uniform scale, Shift snaps)"
+              onPointerDown={(e) => beginDrag('scale-corner', e)}
             />
             <button
               type="button"
@@ -279,31 +318,39 @@ export default function PreviewTransformGizmo({
             <button
               type="button"
               aria-label="Rotate from top-left corner"
-              className="absolute -left-7 -top-7 w-4.5 h-4.5 rounded-full bg-sf-dark-950/95 border-2 border-sf-accent shadow-[0_0_14px_rgba(0,0,0,0.45)] pointer-events-auto cursor-grab active:cursor-grabbing"
+              className="absolute -left-8 -top-8 flex h-6 w-6 items-center justify-center rounded-full bg-sf-dark-950/40 pointer-events-auto cursor-grab active:cursor-grabbing"
               title="Rotate from corner (Shift snaps to 5deg)"
               onPointerDown={(e) => beginDrag('rotate', e)}
-            />
+            >
+              <span className="h-4 w-4 rounded-full bg-sf-dark-950/95 border-2 border-sf-accent shadow-[0_0_14px_rgba(0,0,0,0.45)]" />
+            </button>
             <button
               type="button"
               aria-label="Rotate from top-right corner"
-              className="absolute -right-7 -top-7 w-4.5 h-4.5 rounded-full bg-sf-dark-950/95 border-2 border-sf-accent shadow-[0_0_14px_rgba(0,0,0,0.45)] pointer-events-auto cursor-grab active:cursor-grabbing"
+              className="absolute -right-8 -top-8 flex h-6 w-6 items-center justify-center rounded-full bg-sf-dark-950/40 pointer-events-auto cursor-grab active:cursor-grabbing"
               title="Rotate from corner (Shift snaps to 5deg)"
               onPointerDown={(e) => beginDrag('rotate', e)}
-            />
+            >
+              <span className="h-4 w-4 rounded-full bg-sf-dark-950/95 border-2 border-sf-accent shadow-[0_0_14px_rgba(0,0,0,0.45)]" />
+            </button>
             <button
               type="button"
               aria-label="Rotate from bottom-left corner"
-              className="absolute -left-7 -bottom-7 w-4.5 h-4.5 rounded-full bg-sf-dark-950/95 border-2 border-sf-accent shadow-[0_0_14px_rgba(0,0,0,0.45)] pointer-events-auto cursor-grab active:cursor-grabbing"
+              className="absolute -left-8 -bottom-8 flex h-6 w-6 items-center justify-center rounded-full bg-sf-dark-950/40 pointer-events-auto cursor-grab active:cursor-grabbing"
               title="Rotate from corner (Shift snaps to 5deg)"
               onPointerDown={(e) => beginDrag('rotate', e)}
-            />
+            >
+              <span className="h-4 w-4 rounded-full bg-sf-dark-950/95 border-2 border-sf-accent shadow-[0_0_14px_rgba(0,0,0,0.45)]" />
+            </button>
             <button
               type="button"
               aria-label="Rotate from bottom-right corner"
-              className="absolute -right-7 -bottom-7 w-4.5 h-4.5 rounded-full bg-sf-dark-950/95 border-2 border-sf-accent shadow-[0_0_14px_rgba(0,0,0,0.45)] pointer-events-auto cursor-grab active:cursor-grabbing"
+              className="absolute -right-8 -bottom-8 flex h-6 w-6 items-center justify-center rounded-full bg-sf-dark-950/40 pointer-events-auto cursor-grab active:cursor-grabbing"
               title="Rotate from corner (Shift snaps to 5deg)"
               onPointerDown={(e) => beginDrag('rotate', e)}
-            />
+            >
+              <span className="h-4 w-4 rounded-full bg-sf-dark-950/95 border-2 border-sf-accent shadow-[0_0_14px_rgba(0,0,0,0.45)]" />
+            </button>
           </>
         )}
       </div>

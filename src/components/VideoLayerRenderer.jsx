@@ -4,7 +4,7 @@ import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
 import videoCache from '../services/videoCache'
 import renderCacheService from '../services/renderCache'
-import { getAnimatedTransform, getAnimatedAdjustmentSettings } from '../utils/keyframes'
+import { getAnimatedTransform, getAnimatedAdjustmentSettings, getAnimatedTextProperties, getAnimatedShapeProperties } from '../utils/keyframes'
 import { loadRenderCache, saveRenderCache } from '../services/fileSystem'
 import { hasUsablePlaybackCache } from '../services/playbackCache'
 import { getSpriteFramePosition } from '../services/thumbnailSprites'
@@ -31,6 +31,7 @@ import {
 } from '../utils/effects'
 import { canUseGlslEffects, hasGlslEffect, snapshotAdjustmentGlslEffectsForOverlay } from '../utils/glslEffects'
 import { cullVisualLayerEntries } from '../utils/layerCompositing'
+import { getShapePolygonPoints, getShapeSvgProps, normalizeShapeProperties } from '../utils/shapes'
 import ClipEffectSvgFilter from './effects/ClipEffectSvgFilter'
 import GlslEffectCanvas from './effects/GlslEffectCanvas'
 
@@ -2218,7 +2219,7 @@ const TextLayer = memo(function TextLayer({
     [letterboxEffect, clipTime]
   )
   const combinedFilter = [clipEffectsFilterValue, adjustmentFilterValue, transformStyle.filter].filter(Boolean).join(' ') || undefined
-  const textProps = clip.textProperties || {}
+  const textProps = useMemo(() => getAnimatedTextProperties(clip, clipTime), [clip, clipTime])
   const safePreviewScale = Number.isFinite(previewScale) && previewScale > 0 ? previewScale : 1
   const scaledFontSize = (textProps.fontSize || 64) * safePreviewScale
   const scaledStrokeWidth = (textProps.strokeWidth || 0) * safePreviewScale
@@ -2316,6 +2317,215 @@ const TextLayer = memo(function TextLayer({
             <div style={letterboxOverlayStyles.inner} />
           </div>
         )}
+      </div>
+    </>
+  )
+})
+
+const ShapeLayer = memo(function ShapeLayer({
+  clip,
+  track,
+  layerIndex,
+  playheadPosition,
+  buildVideoTransform,
+  onClipPointerDown,
+  previewScale = 1,
+}) {
+  if (!clip || clip.type !== 'shape') return null
+
+  const clipTime = playheadPosition - (clip?.startTime || 0)
+  const animatedTransform = useMemo(() => {
+    const base = getAnimatedTransform(clip, clipTime)
+    return applyEffectsToTransform(base, clip?.effects, clipTime)
+  }, [clip, clipTime])
+  const transformStyle = buildVideoTransform(animatedTransform)
+  const shapeProps = useMemo(
+    () => getAnimatedShapeProperties(clip, clipTime) || normalizeShapeProperties(clip.shapeProperties || {}),
+    [clip, clipTime]
+  )
+  const svgProps = useMemo(
+    () => getShapeSvgProps(shapeProps),
+    [shapeProps]
+  )
+  const safePreviewScale = Number.isFinite(previewScale) && previewScale > 0 ? previewScale : 1
+  const shapeWidth = Math.max(1, shapeProps.width * safePreviewScale)
+  const shapeHeight = Math.max(1, shapeProps.height * safePreviewScale)
+  const adjustmentSettings = useMemo(() => (
+    normalizeAdjustmentSettings(getAnimatedAdjustmentSettings(clip, clipTime) || clip?.adjustments || {})
+  ), [clip, clipTime])
+  const hasTonalAdjustments = useMemo(
+    () => hasTonalAdjustmentEffect(adjustmentSettings),
+    [adjustmentSettings]
+  )
+  const adjustmentFilterId = useMemo(
+    () => `clip-adjustment-${sanitizeAdjustmentFilterId(clip?.id)}-shape`,
+    [clip?.id]
+  )
+  const adjustmentFilterValue = useMemo(() => {
+    if (hasTonalAdjustments) {
+      return `url(#${adjustmentFilterId})`
+    }
+    const filterValue = buildCssFilterFromAdjustments(adjustmentSettings)
+    return filterValue !== 'none' ? filterValue : undefined
+  }, [adjustmentFilterId, adjustmentSettings, hasTonalAdjustments])
+  const hasClipPixelEffects = hasPixelFilterEffect(clip?.effects)
+  const clipEffectsFilterId = useMemo(
+    () => getClipEffectFilterId(clip?.id, 'shape'),
+    [clip?.id]
+  )
+  const clipEffectsFilterValue = hasClipPixelEffects ? `url(#${clipEffectsFilterId})` : undefined
+  const combinedFilter = [clipEffectsFilterValue, adjustmentFilterValue, transformStyle.filter].filter(Boolean).join(' ') || undefined
+
+  const renderShapeNode = () => {
+    const renderStroke = svgProps.strokeWidth > 0 && svgProps.strokeOpacity > 0
+    const renderFill = shapeProps.shapeType !== 'line' && svgProps.fillOpacity > 0
+
+    if (shapeProps.shapeType === 'ellipse') {
+      return (
+        <>
+          {renderStroke && (
+            <ellipse
+              cx={shapeProps.width / 2}
+              cy={shapeProps.height / 2}
+              rx={shapeProps.width / 2}
+              ry={shapeProps.height / 2}
+              fill="none"
+              stroke={svgProps.strokeColor}
+              strokeOpacity={svgProps.strokeOpacity}
+              strokeWidth={svgProps.strokeWidth}
+            />
+          )}
+          {renderFill && (
+            <ellipse
+              cx={shapeProps.width / 2}
+              cy={shapeProps.height / 2}
+              rx={shapeProps.width / 2}
+              ry={shapeProps.height / 2}
+              fill={shapeProps.fillColor}
+              fillOpacity={svgProps.fillOpacity}
+              stroke="none"
+            />
+          )}
+        </>
+      )
+    }
+    if (shapeProps.shapeType === 'line') {
+      return (
+        <line
+          x1="0"
+          y1={shapeProps.height / 2}
+          x2={shapeProps.width}
+          y2={shapeProps.height / 2}
+          stroke={svgProps.strokeColor}
+          strokeOpacity={svgProps.strokeOpacity}
+          strokeWidth={svgProps.strokeWidth}
+          strokeLinecap="round"
+        />
+      )
+    }
+    if (shapeProps.shapeType === 'polygon') {
+      const points = getShapePolygonPoints(shapeProps.width, shapeProps.height, shapeProps.sides)
+        .map((point) => `${point.x},${point.y}`)
+        .join(' ')
+      return (
+        <>
+          {renderStroke && (
+            <polygon
+              points={points}
+              fill="none"
+              stroke={svgProps.strokeColor}
+              strokeOpacity={svgProps.strokeOpacity}
+              strokeWidth={svgProps.strokeWidth}
+              strokeLinejoin="round"
+            />
+          )}
+          {renderFill && (
+            <polygon
+              points={points}
+              fill={shapeProps.fillColor}
+              fillOpacity={svgProps.fillOpacity}
+              stroke="none"
+            />
+          )}
+        </>
+      )
+    }
+    return (
+      <>
+        {renderStroke && (
+          <rect
+            x="0"
+            y="0"
+            width={shapeProps.width}
+            height={shapeProps.height}
+            rx={shapeProps.shapeType === 'roundedRectangle' ? shapeProps.cornerRadius : 0}
+            ry={shapeProps.shapeType === 'roundedRectangle' ? shapeProps.cornerRadius : 0}
+            fill="none"
+            stroke={svgProps.strokeColor}
+            strokeOpacity={svgProps.strokeOpacity}
+            strokeWidth={svgProps.strokeWidth}
+          />
+        )}
+        {renderFill && (
+          <rect
+            x="0"
+            y="0"
+            width={shapeProps.width}
+            height={shapeProps.height}
+            rx={shapeProps.shapeType === 'roundedRectangle' ? shapeProps.cornerRadius : 0}
+            ry={shapeProps.shapeType === 'roundedRectangle' ? shapeProps.cornerRadius : 0}
+            fill={shapeProps.fillColor}
+            fillOpacity={svgProps.fillOpacity}
+            stroke="none"
+          />
+        )}
+      </>
+    )
+  }
+
+  return (
+    <>
+      {hasTonalAdjustments && (
+        <AdjustmentSvgFilter filterId={adjustmentFilterId} settings={adjustmentSettings} />
+      )}
+      {hasClipPixelEffects && (
+        <ClipEffectSvgFilter
+          filterId={clipEffectsFilterId}
+          effects={clip?.effects}
+          clipTime={clipTime}
+        />
+      )}
+      <div
+        className="absolute inset-0 flex items-center justify-center pointer-events-none"
+        style={{
+          zIndex: layerIndex + 1,
+        }}
+      >
+        <div
+          className="pointer-events-auto"
+          onPointerDown={(e) => {
+            if (typeof onClipPointerDown === 'function') {
+              onClipPointerDown(clip, e)
+            }
+          }}
+          style={{
+            width: `${shapeWidth}px`,
+            height: `${shapeHeight}px`,
+            ...transformStyle,
+            filter: combinedFilter,
+          }}
+        >
+          <svg
+            width="100%"
+            height="100%"
+            viewBox={`0 0 ${shapeProps.width} ${shapeProps.height}`}
+            preserveAspectRatio="none"
+            overflow="visible"
+            aria-label={clip.name || 'Shape'}
+          >
+            {renderShapeNode()}
+          </svg>
+        </div>
       </div>
     </>
   )
@@ -2986,6 +3196,20 @@ function VideoLayerRenderer({
             getClipTransform={getClipTransform}
             onClipPointerDown={onClipPointerDown}
             onClipDoubleClick={onClipDoubleClick}
+            previewScale={previewScale}
+          />
+        )
+      }
+      if (clip.type === 'shape') {
+        return (
+          <ShapeLayer
+            key={`shape-${track.id}-${clip.id}`}
+            clip={clip}
+            track={track}
+            layerIndex={visualIndex}
+            playheadPosition={playheadPosition}
+            buildVideoTransform={buildVideoTransform}
+            onClipPointerDown={onClipPointerDown}
             previewScale={previewScale}
           />
         )

@@ -229,7 +229,7 @@ function buildClipElement(item, timebase, timelineHeight) {
 }
 
 export function buildFcpXml({
-  projectName = 'ComfyStudio Project',
+  projectName = 'Velorn Project',
   timelineName = 'Timeline',
   timelineSettings = {},
   timeline = {},
@@ -268,7 +268,7 @@ export function buildFcpXml({
   const sequenceDurationFrames = Math.max(secondsToFrames(computedEnd || 1, timebase), 1)
   const formatId = 'r1'
   const resourceEntries = [
-    `    <format id="${formatId}" name="ComfyStudio ${width}x${height} ${timebase.fps}fps" frameDuration="${timebase.frameDuration}" width="${width}" height="${height}" colorSpace="1-1-1 (Rec. 709)"/>`,
+    `    <format id="${formatId}" name="Velorn ${width}x${height} ${timebase.fps}fps" frameDuration="${timebase.frameDuration}" width="${width}" height="${height}" colorSpace="1-1-1 (Rec. 709)"/>`,
     ...buildResourceEntries(exportClips, timebase, formatId),
   ]
   const clipElements = exportClips.map((item) => buildClipElement(item, timebase, height))
@@ -282,11 +282,11 @@ export function buildFcpXml({
     ...resourceEntries,
     '  </resources>',
     '  <library>',
-    `    <event name="${escapeXml(sanitizeName(projectName, 'ComfyStudio Project'))}">`,
+    `    <event name="${escapeXml(sanitizeName(projectName, 'Velorn Project'))}">`,
     `      <project name="${escapeXml(sanitizeName(timelineName, 'Timeline'))}" uid="${escapeXml(safeProjectId)}">`,
     `        <sequence format="${formatId}" duration="${formatFrames(sequenceDurationFrames, timebase)}" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">`,
     '          <spine>',
-    `            <gap name="ComfyStudio Timeline" offset="0s" start="0s" duration="${formatFrames(sequenceDurationFrames, timebase)}">`,
+    `            <gap name="Velorn Timeline" offset="0s" start="0s" duration="${formatFrames(sequenceDurationFrames, timebase)}">`,
     ...clipElements,
     '            </gap>',
     '          </spine>',

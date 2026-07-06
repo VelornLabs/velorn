@@ -1,4 +1,4 @@
-# ComfyStudio Cloud (Lite) — Design Notes
+# Velorn Cloud (Lite) — Design Notes
 
 > Status: **Future / parked.** Not planned for the current release cycle. This
 > document captures research and architectural thinking from April 2026 so we
@@ -9,7 +9,7 @@
 
 ## 1. The idea in one sentence
 
-A second build of ComfyStudio — tentatively **ComfyStudio Cloud** (or
+A second build of Velorn — tentatively **Velorn Cloud** (or
 **Lite**) — that ships **without** a local ComfyUI runtime and instead talks
 to a hosted ComfyUI backend. Target audience: Mac users, low-end laptops,
 Chromebook-adjacent machines, or anyone who only wants to run API-based
@@ -52,9 +52,9 @@ at a hosted endpoint and swap the auth.
 - **Base URL:** `https://cloud.comfy.org`
 - **Auth:** single header — `X-API-Key: <user's key>`. Keys generated at
   [platform.comfy.org/login](https://platform.comfy.org/login).
-- **Endpoints that map directly to what ComfyStudio already calls:**
+- **Endpoints that map directly to what Velorn already calls:**
 
-  | ComfyStudio needs | Comfy Cloud endpoint |
+  | Velorn needs | Comfy Cloud endpoint |
   | --- | --- |
   | Queue prompt | `POST /api/prompt` |
   | Fetch outputs | `GET  /api/history/{prompt_id}` |
@@ -92,7 +92,7 @@ at a hosted endpoint and swap the auth.
 
 If Comfy.org's Cloud API changes policy, gets throttled, or pricing moves the
 wrong way, these are vendor-neutral fallbacks that preserve the same
-ComfyStudio-Lite architecture:
+Velorn-Lite architecture:
 
 1. **Comfy Deploy** ([comfydeploy.com](https://comfydeploy.com)) — explicitly
    built to expose ComfyUI via third-party API.
@@ -141,7 +141,7 @@ can pick a default ("Ships ready for Comfy Cloud") without locking us in.
   [keytar](https://github.com/atom/node-keytar) (or equivalent).
 - A **ComfyUI tab** that's a `BrowserView` pointed at
   `https://app.comfy.org/<session>` (or wherever their web editor lives).
-  User opens/edits custom workflows in-situ. ComfyStudio still captures their
+  User opens/edits custom workflows in-situ. Velorn still captures their
   outputs via the same auto-import bridge.
 - A **"Bring your own endpoint"** power-user mode — a URL + API key text
   pair in Settings. Preserves the vendor-neutral positioning.
@@ -203,14 +203,14 @@ and version-pin our expectations.
 
 ## 7. Product positioning (for when this becomes a shipped SKU)
 
-- **Name candidates:** ComfyStudio Cloud, ComfyStudio Lite, ComfyStudio Go.
+- **Name candidates:** Velorn Cloud, Velorn Lite, Velorn Go.
 - **Tagline direction:** "Runs on any laptop. Pay per generation. Zero setup."
-- **Distinct from full ComfyStudio:** different icon, different onboarding,
+- **Distinct from full Velorn:** different icon, different onboarding,
   different landing page. Don't cannibalize — users self-select by hardware.
 - **Pricing model:** user pays Comfy.org directly for compute. We optionally
   wrap a small markup + a managed-credits flow later. MVP: just BYO key.
 - **Migration path:** a user who outgrows Lite (wants custom models, local
-  LoRAs, offline use) can switch to full ComfyStudio with the same project
+  LoRAs, offline use) can switch to full Velorn with the same project
   files, same asset library, same workflow JSONs. Enforcing file-format
   parity across the two SKUs is a first-class requirement.
 
@@ -233,7 +233,7 @@ plus QA across Mac / Windows / (maybe) Linux.**
 ## 9. What to do right now: nothing
 
 This document exists so that when we're ready we don't have to re-derive
-any of this. The current release cycle stays focused on full ComfyStudio
+any of this. The current release cycle stays focused on full Velorn
 (local ComfyUI, starter-pack install, the auto-import bridge, mask rendering,
 context menu polish, the WAN 2.2 timeout adaptivity, etc.).
 

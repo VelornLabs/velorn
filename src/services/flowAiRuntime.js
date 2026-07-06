@@ -1047,7 +1047,7 @@ async function configureWorkflow(workflowId, workflowJson, context) {
         fps: context.fps,
         seed: context.seed,
         filenamePrefix: context.outputPrefix || 'video/flow_ai_wan',
-        qualityPreset: context.wanQualityPreset || 'face-lock',
+        qualityPreset: context.wanQualityPreset || 'balanced',
       })
     case 'ltx23-i2v':
       return modifier(workflowJson, {
@@ -1242,7 +1242,7 @@ async function buildExecutionContext(document, node) {
     bpm: Number(node?.data?.bpm) || 120,
     keyscale: String(node?.data?.keyscale || 'C Major').trim(),
     seed: Number.isFinite(seed) ? seed : Math.floor(Math.random() * 1000000),
-    wanQualityPreset: String(node?.data?.wanQualityPreset || 'face-lock').trim(),
+    wanQualityPreset: String(node?.data?.wanQualityPreset || 'balanced').trim(),
     variantCount,
     imageVariantBehavior,
     uploadedFilename,

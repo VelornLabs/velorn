@@ -2,16 +2,24 @@ import { Fragment, useEffect, useState } from 'react'
 import { Copy, Minus, Square, X } from 'lucide-react'
 import ComfyLauncherChip from './ComfyLauncherChip'
 import CreditsChip from './CreditsChip'
+import GenerationMonitorChip from './GenerationMonitorChip'
 
 const TOP_TABS = [
   { id: 'editor', label: 'Editor' },
   { id: 'generate', label: 'Generate' },
+  { id: 'agent', label: 'Agent' },
   { id: 'flow-ai', label: 'Flow AI' },
   { id: 'mog', label: 'MoGraph' },
   { id: 'stock', label: 'Stock' },
   { id: 'comfyui', label: 'ComfyUI' },
   { id: 'export', label: 'Export' },
 ]
+
+const HIDDEN_TOP_TAB_IDS = new Set([
+  'agent',
+  'flow-ai',
+  'mog',
+])
 
 function TitleBar({
   projectName,
@@ -20,7 +28,7 @@ function TitleBar({
   centerInsetLeft = 0,
   centerInsetRight = 0,
 }) {
-  const tabs = TOP_TABS
+  const tabs = TOP_TABS.filter((tab) => !HIDDEN_TOP_TAB_IDS.has(tab.id))
   const [windowState, setWindowState] = useState({
     isMaximized: false,
     isFullScreen: false,
@@ -120,6 +128,7 @@ function TitleBar({
       {/* Right - Launcher chip + Window Controls (Windows style) */}
       <div className="no-drag flex items-center">
         <CreditsChip size="xs" className="mr-1" />
+        <GenerationMonitorChip onOpenGenerate={() => onTabChange?.('generate')} />
         <ComfyLauncherChip />
         <button
           onClick={handleMinimize}

@@ -2,7 +2,7 @@
 
 ## Our Standard
 
-ComfyStudio is committed to a welcoming, respectful, and constructive community.
+Velorn is committed to a welcoming, respectful, and constructive community.
 
 Examples of behavior that help build that environment:
 

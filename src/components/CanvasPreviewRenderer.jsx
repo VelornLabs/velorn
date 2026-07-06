@@ -3,7 +3,7 @@ import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import videoCache from '../services/videoCache'
 import { hasUsablePlaybackCache } from '../services/playbackCache'
-import { getAnimatedAdjustmentSettings, getAnimatedTransform } from '../utils/keyframes'
+import { getAnimatedAdjustmentSettings, getAnimatedTransform, getAnimatedShapeProperties } from '../utils/keyframes'
 import {
   applyAdjustmentSettingsToImageData,
   buildCssFilterFromAdjustments,
@@ -11,11 +11,13 @@ import {
   hasTonalAdjustmentEffect,
   normalizeAdjustmentSettings,
 } from '../utils/adjustments'
+import { applyAdjustmentSettingsToCanvasGpu } from '../utils/adjustmentsGpu'
 import {
   applyBlurPassesToCanvas,
   applyEffectsToTransform,
   applyGlowPassesToCanvas,
   applyPixelEffectsToImageData,
+  buildManagedEffectGpuPasses,
   drawLetterboxOverlay,
   drawVignetteOverlay,
   getActiveLetterboxEffect,
@@ -27,19 +29,36 @@ import {
 } from '../utils/effects'
 import { applyGlslEffectsToCanvas, canUseGlslEffects, getGlslPreviewQualityScale, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
+import { applyTransitionClip, getFadeOverlayInfo, getTransitionStyleForClip } from '../utils/transitionStyles'
+import { isFullBakeFresh } from '../utils/clipBakeSignature'
+import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
+import { applyVelocityMotionBlurToCanvas, buildVelocityBlurUniformValues, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 import {
   applyClipCrop,
   applyClipTransform,
+  drawPerspectiveClipSource,
   drawText,
+  getApproxTransformScale,
   getBaseDrawRect,
+  getClipQuadCorners,
+  hasPerspectiveClipTransform,
+  routeGpuLayerColorBlur,
 } from '../services/exporter'
+import { createGpuCompositor } from '../services/gpuCompositor'
+import { drawShape, getShapeCanvasRect } from '../utils/shapes'
 
 const PRELOAD_LOOKAHEAD = 2.5
 const PLAYBACK_DIAG_KEY = 'comfystudio-playback-diag'
 const SCRUB_ACTIVE_WINDOW_MS = 220
 const SCRUB_SETTLE_DELAY_MS = SCRUB_ACTIVE_WINDOW_MS + 45
-const SCRUB_SEEK_MIN_INTERVAL_MS = 75
 const SCRUB_READY_TOLERANCE = 0.18
+// If a scrub seek never presents a frame (element evicted, src cleared),
+// allow a replacement seek after this long instead of blocking the element.
+const SCRUB_SEEK_STALL_MS = 400
+// How long playback may hold the previous frame while a visible clip's
+// media is not yet drawable (cold element at a cut, mid-seek decoder dip)
+// before black is allowed through.
+const PLAYBACK_UNREADY_HOLD_MS = 400
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 
@@ -96,8 +115,15 @@ function getClipPlaybackTimeAtTimeline(clip, timelineTime, endOffset = 0.01, opt
 
 function resolvePreviewUrl(clip, getAssetById, useProxyPlaybackForAssets) {
   if (!clip) return null
-  if (clip.type === 'video' && clip.cacheStatus === 'cached' && clip.cacheUrl) {
-    return clip.cacheUrl
+  // Render caches: legacy (mask) bakes apply to video clips; full bakes
+  // (cacheKind 'full') turn any clip type into a video source but are only
+  // used while their content signature is fresh.
+  if (clip.cacheStatus === 'cached' && clip.cacheUrl) {
+    if (clip.cacheKind === 'full') {
+      if (isFullBakeFresh(clip)) return clip.cacheUrl
+    } else if (clip.type === 'video') {
+      return clip.cacheUrl
+    }
   }
   const asset = clip.assetId ? getAssetById(clip.assetId) : null
   if (clip.type === 'video') {
@@ -109,121 +135,8 @@ function resolvePreviewUrl(clip, getAssetById, useProxyPlaybackForAssets) {
   return asset?.url || clip.url || null
 }
 
-function getTransitionCanvasStyle(transitionInfo, isVideoA) {
-  if (!transitionInfo) {
-    return { opacity: isVideoA ? 1 : 0, display: isVideoA }
-  }
-
-  const { transition, progress } = transitionInfo
-  const type = transition?.type || 'dissolve'
-  const zoomAmount = transition?.settings?.zoomAmount ?? 0.1
-  const blurAmount = transition?.settings?.blurAmount ?? 8
-  const edgeMode = transition?.kind === 'edge'
-  const edge = transitionInfo?.edge
-  const effectiveIsVideoA = edgeMode ? edge === 'out' : isVideoA
-
-  const base = {
-    opacity: 1,
-    translateX: 0,
-    translateY: 0,
-    scale: 1,
-    clipInset: null,
-    blur: 0,
-    display: true,
-  }
-
-  if (edgeMode && (type === 'fade-black' || type === 'fade-white')) {
-    const opacity = effectiveIsVideoA ? 1 - progress : progress
-    return { ...base, opacity }
-  }
-
-  if (effectiveIsVideoA) {
-    switch (type) {
-      case 'dissolve':
-        return { ...base, opacity: 1 }
-      case 'fade-black':
-      case 'fade-white':
-        return { ...base, opacity: progress < 0.5 ? 1 - progress * 2 : 0 }
-      case 'wipe-left':
-        return { ...base, clipInset: { top: 0, right: progress, bottom: 0, left: 0 } }
-      case 'wipe-right':
-        return { ...base, clipInset: { top: 0, right: 0, bottom: 0, left: progress } }
-      case 'wipe-up':
-        return { ...base, clipInset: { top: 0, right: 0, bottom: progress, left: 0 } }
-      case 'wipe-down':
-        return { ...base, clipInset: { top: progress, right: 0, bottom: 0, left: 0 } }
-      case 'slide-left':
-        return { ...base, translateX: -progress }
-      case 'slide-right':
-        return { ...base, translateX: progress }
-      case 'slide-up':
-        return { ...base, translateY: -progress }
-      case 'slide-down':
-        return { ...base, translateY: progress }
-      case 'zoom-in':
-        return { ...base, scale: 1 + progress * zoomAmount, opacity: 1 - progress }
-      case 'zoom-out':
-        return { ...base, scale: 1 - progress * zoomAmount, opacity: 1 - progress }
-      case 'blur':
-        return { ...base, blur: progress * blurAmount, opacity: 1 - progress }
-      default:
-        return { ...base, opacity: 1 - progress }
-    }
-  }
-
-  switch (type) {
-    case 'dissolve':
-      return { ...base, opacity: progress }
-    case 'fade-black':
-    case 'fade-white':
-      return { ...base, opacity: progress > 0.5 ? (progress - 0.5) * 2 : 0 }
-    case 'wipe-left':
-      return { ...base, clipInset: { top: 0, right: 0, bottom: 0, left: 1 - progress } }
-    case 'wipe-right':
-      return { ...base, clipInset: { top: 0, right: 1 - progress, bottom: 0, left: 0 } }
-    case 'wipe-up':
-      return { ...base, clipInset: { top: 1 - progress, right: 0, bottom: 0, left: 0 } }
-    case 'wipe-down':
-      return { ...base, clipInset: { top: 0, right: 0, bottom: 1 - progress, left: 0 } }
-    case 'slide-left':
-      return { ...base, translateX: 1 - progress }
-    case 'slide-right':
-      return { ...base, translateX: -(1 - progress) }
-    case 'slide-up':
-      return { ...base, translateY: 1 - progress }
-    case 'slide-down':
-      return { ...base, translateY: -(1 - progress) }
-    case 'zoom-in':
-      return { ...base, scale: 1 - zoomAmount + progress * zoomAmount, opacity: progress }
-    case 'zoom-out':
-      return { ...base, scale: 1 + zoomAmount - progress * zoomAmount, opacity: progress }
-    case 'blur':
-      return { ...base, blur: (1 - progress) * blurAmount, opacity: progress }
-    default:
-      return { ...base, opacity: progress }
-  }
-}
-
-function getFadeOverlayOpacity(transitionInfo) {
-  if (!transitionInfo) return null
-  const type = transitionInfo.transition?.type
-  if (type !== 'fade-black' && type !== 'fade-white') return null
-  const progress = transitionInfo.progress ?? 0
-  if (transitionInfo.transition?.kind === 'edge') return null
-  return progress < 0.5 ? progress * 2 : (1 - progress) * 2
-}
-
-function applyTransitionClip(ctx, rect, transitionStyle) {
-  if (!transitionStyle?.clipInset) return
-  const { top, right, bottom, left } = transitionStyle.clipInset
-  const insetTop = rect.height * top
-  const insetRight = rect.width * right
-  const insetBottom = rect.height * bottom
-  const insetLeft = rect.width * left
-  ctx.beginPath()
-  ctx.rect(insetLeft, insetTop, rect.width - insetLeft - insetRight, rect.height - insetTop - insetBottom)
-  ctx.clip()
-}
+// Transition style math lives in ../utils/transitionStyles — shared with the
+// exporter so preview and export can never drift.
 
 function hasManagedCanvasEffect(clip, clipTime) {
   if (!clip) return false
@@ -279,17 +192,6 @@ function ensureCanvasSize(canvas, width, height) {
   if (canvas.height !== height) canvas.height = height
 }
 
-function getTransitionStyleForClip(transitionInfo, clip) {
-  if (!transitionInfo || !clip) return null
-  if (transitionInfo.transition?.kind === 'edge') {
-    if (transitionInfo.clip?.id !== clip.id) return null
-    return getTransitionCanvasStyle(transitionInfo, transitionInfo.edge === 'out')
-  }
-  if (transitionInfo.clipA?.id === clip.id) return getTransitionCanvasStyle(transitionInfo, true)
-  if (transitionInfo.clipB?.id === clip.id) return getTransitionCanvasStyle(transitionInfo, false)
-  return null
-}
-
 function getVisualLayerClips(state, time) {
   const activeClips = state.getActiveClipsAtTime(time)
   return activeClips
@@ -299,6 +201,116 @@ function getVisualLayerClips(state, time) {
       const indexB = state.tracks.findIndex(t => t.id === b.track.id)
       return indexB - indexA
     })
+}
+
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    const number = Number(value)
+    if (Number.isFinite(number) && number > 0) return number
+  }
+  return null
+}
+
+function getAssetMediaDimensions(asset) {
+  return {
+    width: firstPositiveNumber(asset?.settings?.width, asset?.width, asset?.metadata?.width, asset?.mediaInfo?.width),
+    height: firstPositiveNumber(asset?.settings?.height, asset?.height, asset?.metadata?.height, asset?.mediaInfo?.height),
+  }
+}
+
+function getClipHitSourceDimensions({ clip, clipTime = 0, state, getAssetById, imageCacheRef, canvasWidth, canvasHeight }) {
+  if (clip?.type === 'text') {
+    return { width: canvasWidth, height: canvasHeight }
+  }
+  if (clip?.type === 'shape') {
+    const shapeProperties = getAnimatedShapeProperties(clip, clipTime) || clip.shapeProperties
+    const rect = getShapeCanvasRect(shapeProperties, canvasWidth, canvasHeight)
+    return { width: rect.width, height: rect.height }
+  }
+
+  const asset = clip?.assetId ? getAssetById(clip.assetId) : null
+  if (clip?.type === 'image') {
+    const clipUrl = resolvePreviewUrl(clip, getAssetById, state.useProxyPlaybackForAssets)
+    const cachedImage = clipUrl ? imageCacheRef.current.get(clipUrl) : null
+    const loadedImage = cachedImage?.loaded ? cachedImage.image : null
+    return {
+      width: firstPositiveNumber(loadedImage?.naturalWidth, loadedImage?.width, asset?.settings?.width, asset?.width),
+      height: firstPositiveNumber(loadedImage?.naturalHeight, loadedImage?.height, asset?.settings?.height, asset?.height),
+    }
+  }
+
+  if (clip?.type === 'video') {
+    const dimensions = getAssetMediaDimensions(asset)
+    return {
+      width: firstPositiveNumber(dimensions.width, clip?.sourceWidth, clip?.width),
+      height: firstPositiveNumber(dimensions.height, clip?.sourceHeight, clip?.height),
+    }
+  }
+
+  return { width: null, height: null }
+}
+
+function getVisibleHitRect(rect, transform = {}, transitionStyle = null) {
+  const cropTop = clamp(Number(transform?.cropTop) || 0, 0, 100)
+  const cropBottom = clamp(Number(transform?.cropBottom) || 0, 0, 100)
+  const cropLeft = clamp(Number(transform?.cropLeft) || 0, 0, 100)
+  const cropRight = clamp(Number(transform?.cropRight) || 0, 0, 100)
+  let left = rect.width * (cropLeft / 100)
+  let right = rect.width - rect.width * (cropRight / 100)
+  let top = rect.height * (cropTop / 100)
+  let bottom = rect.height - rect.height * (cropBottom / 100)
+
+  if (transitionStyle?.clipInset) {
+    const inset = transitionStyle.clipInset
+    left = Math.max(left, rect.width * (Number(inset.left) || 0))
+    right = Math.min(right, rect.width - rect.width * (Number(inset.right) || 0))
+    top = Math.max(top, rect.height * (Number(inset.top) || 0))
+    bottom = Math.min(bottom, rect.height - rect.height * (Number(inset.bottom) || 0))
+  }
+
+  return {
+    left: clamp(left, 0, rect.width),
+    right: clamp(right, 0, rect.width),
+    top: clamp(top, 0, rect.height),
+    bottom: clamp(bottom, 0, rect.height),
+  }
+}
+
+function clipContainsCanvasPoint(point, clip, rect, transform = {}, transitionStyle = null) {
+  if (!point || !clip || !rect) return false
+  if (transitionStyle?.display === false) return false
+
+  const opacity = ((transitionStyle?.opacity ?? 1) * ((Number(transform?.opacity) || 100) / 100))
+  if (opacity <= 0.001) return false
+
+  const anchorX = Number.isFinite(Number(transform?.anchorX)) ? Number(transform.anchorX) : 50
+  const anchorY = Number.isFinite(Number(transform?.anchorY)) ? Number(transform.anchorY) : 50
+  const anchorPxX = rect.width * (anchorX / 100)
+  const anchorPxY = rect.height * (anchorY / 100)
+  const transitionScale = Number(transitionStyle?.scale) || 1
+  const scaleX = ((Number(transform?.scaleX) || 100) / 100) * (transform?.flipH ? -1 : 1) * transitionScale
+  const scaleY = ((Number(transform?.scaleY) || 100) / 100) * (transform?.flipV ? -1 : 1) * transitionScale
+  if (Math.abs(scaleX) < 0.0001 || Math.abs(scaleY) < 0.0001) return false
+
+  const centerX = rect.x + anchorPxX + (Number(transform?.positionX) || 0) + (transitionStyle?.translateX || 0) * rect.width
+  const centerY = rect.y + anchorPxY + (Number(transform?.positionY) || 0) + (transitionStyle?.translateY || 0) * rect.height
+  const rotation = ((Number(transform?.rotation) || 0) * Math.PI) / 180
+  const cos = Math.cos(-rotation)
+  const sin = Math.sin(-rotation)
+  const dx = point.x - centerX
+  const dy = point.y - centerY
+  const rotatedX = dx * cos - dy * sin
+  const rotatedY = dx * sin + dy * cos
+  const localX = rotatedX / scaleX + anchorPxX
+  const localY = rotatedY / scaleY + anchorPxY
+  const visible = getVisibleHitRect(rect, transform, transitionStyle)
+
+  return (
+    localX >= visible.left
+    && localX <= visible.right
+    && localY >= visible.top
+    && localY <= visible.bottom
+  )
 }
 
 function getMaskInfo(clip, getAssetById, time, isCachedRender = false) {
@@ -357,7 +369,8 @@ function CanvasPreviewRenderer({
   const deferredDrawRafRef = useRef(0)
   const scrubSettleTimerRef = useRef(0)
   const scrubPreviewStateRef = useRef({ lastPlayhead: 0, activeUntil: 0 })
-  const scrubSeekThrottleRef = useRef(new Map())
+  const scrubPendingSeeksRef = useRef(new WeakMap())
+  const unreadyHoldUntilRef = useRef(0)
   const hasPaintedFrameRef = useRef(false)
   const lastPreloadTimeRef = useRef(0)
   const lastDrawTimeRef = useRef(null)
@@ -477,6 +490,71 @@ function CanvasPreviewRenderer({
     }, 40)
   }, [])
 
+  // Completion-driven scrub seeking: at most one in-flight seek per video
+  // element. Assigning currentTime restarts an in-flight seek, so a fixed
+  // throttle re-issued per mousemove starves frame presentation whenever
+  // per-seek decode latency exceeds the throttle interval — the preview
+  // freezes for the whole drag. Waiting for the seek to present, repainting,
+  // and letting the next drawFrame retarget tracks the playhead at whatever
+  // rate the decoder can actually sustain. 'seeked' fires on demux, not
+  // presentation, so prefer requestVideoFrameCallback (same pattern as
+  // exporter.js).
+  const issueScrubSeek = useCallback((video, targetTime) => {
+    const pendingSeeks = scrubPendingSeeksRef.current
+    const pending = pendingSeeks.get(video)
+    const nowMs = getNowMs()
+    if (pending && nowMs - pending.issuedAt < SCRUB_SEEK_STALL_MS) return
+    pendingSeeks.set(video, { issuedAt: nowMs })
+    const finish = () => {
+      pendingSeeks.delete(video)
+      drawFrameRef.current?.()
+    }
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      video.requestVideoFrameCallback(() => finish())
+    } else {
+      video.addEventListener('seeked', finish, { once: true })
+    }
+    video.currentTime = targetTime
+  }, [])
+
+  // Phase 4: the live preview composites through the same WebGL2 compositor
+  // as export (previewCompositorMode 'gpu', the default; 'canvas' is the 2D
+  // fallback / kill switch). One compositor instance per timeline size;
+  // WebGL2 init failure or context loss falls back to the 2D path.
+  const gpuPreviewRef = useRef({ compositor: null, width: 0, height: 0, failed: false })
+  useEffect(() => () => {
+    gpuPreviewRef.current.compositor?.dispose()
+    gpuPreviewRef.current.compositor = null
+  }, [])
+  const getGpuStage = useCallback((width, height, mode) => {
+    if (mode !== 'gpu' || !width || !height) return null
+    const holder = gpuPreviewRef.current
+    if (holder.failed) return null
+    if (holder.compositor && (holder.width !== width || holder.height !== height)) {
+      holder.compositor.dispose()
+      holder.compositor = null
+    }
+    if (holder.compositor?.isContextLost()) {
+      // GL calls on a lost context are silently ignored, so dispose is safe;
+      // this frame renders 2D and the next frame rebuilds.
+      holder.compositor.dispose()
+      holder.compositor = null
+      return null
+    }
+    if (!holder.compositor) {
+      holder.compositor = createGpuCompositor({ width, height, transparent: false })
+      holder.width = width
+      holder.height = height
+      if (holder.compositor) {
+        console.log('[Preview] GPU compositor active (WebGL2). setPreviewCompositorMode("canvas") for the 2D compositor.')
+      } else {
+        holder.failed = true
+        console.warn('[Preview] WebGL2 unavailable; using the 2D compositor.')
+      }
+    }
+    return holder.compositor
+  }, [])
+
   const applyAdvancedAdjustmentsToCanvas = useCallback((sourceCanvas, settings, width, height, extraBlurPx = null) => {
     const buffers = buffersRef.current
     if (!buffers.processedCanvas) {
@@ -485,30 +563,47 @@ function CanvasPreviewRenderer({
     }
     ensureCanvasSize(buffers.processedCanvas, width, height)
     ensureCanvasSize(buffers.adjustmentCanvas, width, height)
-    const processedCtx = buffers.processedCanvas.getContext('2d', { willReadFrequently: true })
     const adjustmentCtx = buffers.adjustmentCanvas.getContext('2d')
-    processedCtx.clearRect(0, 0, width, height)
-    processedCtx.filter = 'none'
-    processedCtx.globalAlpha = 1
-    processedCtx.globalCompositeOperation = 'source-over'
-    processedCtx.drawImage(sourceCanvas, 0, 0)
-
     const normalizedSettings = normalizeAdjustmentSettings(settings)
-    const frameData = processedCtx.getImageData(0, 0, width, height)
-    applyAdjustmentSettingsToImageData(frameData, normalizedSettings)
-    processedCtx.putImageData(frameData, 0, 0)
+
+    // GPU grade first — the same shader the export compositor uses. The
+    // CPU pixel loop below is the no-WebGL2 fallback only; it is far too
+    // slow for playback (full-frame getImageData + per-pixel JS per clip
+    // per frame). The GPU output canvas is kept separate from
+    // processedCanvas so the fallback's willReadFrequently hint never
+    // forces the fast path's canvases into CPU backing.
+    let gradedCanvas = null
+    if (!buffers.gpuGradeCanvas) {
+      buffers.gpuGradeCanvas = document.createElement('canvas')
+    }
+    ensureCanvasSize(buffers.gpuGradeCanvas, width, height)
+    const gpuGradeCtx = buffers.gpuGradeCanvas.getContext('2d')
+    if (applyAdjustmentSettingsToCanvasGpu(sourceCanvas, gpuGradeCtx, width, height, normalizedSettings)) {
+      gradedCanvas = buffers.gpuGradeCanvas
+    } else {
+      const processedCtx = buffers.processedCanvas.getContext('2d', { willReadFrequently: true })
+      processedCtx.clearRect(0, 0, width, height)
+      processedCtx.filter = 'none'
+      processedCtx.globalAlpha = 1
+      processedCtx.globalCompositeOperation = 'source-over'
+      processedCtx.drawImage(sourceCanvas, 0, 0)
+      const frameData = processedCtx.getImageData(0, 0, width, height)
+      applyAdjustmentSettingsToImageData(frameData, normalizedSettings)
+      processedCtx.putImageData(frameData, 0, 0)
+      gradedCanvas = buffers.processedCanvas
+    }
 
     const totalBlur = Math.max(0, normalizedSettings.blur + (Number(extraBlurPx) || 0))
     if (totalBlur > 0) {
       adjustmentCtx.clearRect(0, 0, width, height)
       adjustmentCtx.save()
       adjustmentCtx.filter = `blur(${totalBlur}px)`
-      adjustmentCtx.drawImage(buffers.processedCanvas, 0, 0)
+      adjustmentCtx.drawImage(gradedCanvas, 0, 0)
       adjustmentCtx.restore()
       return buffers.adjustmentCanvas
     }
 
-    return buffers.processedCanvas
+    return gradedCanvas
   }, [])
 
   const drawVisualClip = useCallback((ctx, entry, time, transitionInfo, state, frameIndex) => {
@@ -517,9 +612,19 @@ function CanvasPreviewRenderer({
     const height = state.height
     const getAssetById = useAssetsStore.getState().getAssetById
     const clipTime = time - (clip.startTime || 0)
+    // Full render bakes carry transform/effects/adjustments/masks/speed and
+    // text animation inside the baked file; only opacity + blend mode (and
+    // transitions) stay live. Stale bakes (content edited since render)
+    // automatically fall back to the live path.
+    const isFullBake = isFullBakeFresh(clip)
     const transitionStyle = getTransitionStyleForClip(transitionInfo, clip)
-    const baseTransform = getAnimatedTransform(clip, clipTime) || clip.transform || {}
-    const clipTransform = applyEffectsToTransform(baseTransform, clip.effects, clipTime)
+    const resolveClipTransformAtTime = (sampleClipTime) => (
+      applyEffectsToTransform(getAnimatedTransform(clip, sampleClipTime) || clip.transform || {}, clip.effects, sampleClipTime)
+    )
+    const liveClipTransform = resolveClipTransformAtTime(clipTime)
+    const clipTransform = isFullBake
+      ? { opacity: liveClipTransform.opacity, blendMode: liveClipTransform.blendMode }
+      : liveClipTransform
     const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
     const clipOpacity = (transitionStyle?.opacity ?? 1) * baseOpacity
     if (clipOpacity <= 0.001 || transitionStyle?.display === false) return
@@ -527,22 +632,33 @@ function CanvasPreviewRenderer({
     const blendMode = clipTransform?.blendMode || 'normal'
     const blurPx = transitionStyle?.blur ?? (clipTransform?.blur > 0 ? clipTransform.blur : null)
     const adjustmentSettings = normalizeAdjustmentSettings(
-      getAnimatedAdjustmentSettings(clip, clipTime) || clip.adjustments || {}
+      isFullBake ? {} : (getAnimatedAdjustmentSettings(clip, clipTime) || clip.adjustments || {})
     )
     const usesTonalAdjustments = hasTonalAdjustmentEffect(adjustmentSettings)
     const adjustmentFilter = buildCssFilterFromAdjustments(adjustmentSettings)
     const clipAdjustmentFilterValue = adjustmentFilter !== 'none' ? adjustmentFilter : null
-    const usesManagedEffects = hasManagedCanvasEffect(clip, clipTime)
+    const usesManagedEffects = !isFullBake && hasManagedCanvasEffect(clip, clipTime)
     const glslQualityScale = getGlslPreviewQualityScale(state.glslPreviewQuality)
+    const timelineFps = state.timelineFps || state.fps || 24
+    const velocityMotionBlur = (!isFullBake && canUseVelocityMotionBlur())
+      ? getVelocityMotionBlurOptions(clip, clipTime, timelineFps, resolveClipTransformAtTime)
+      : null
+    const motionBlurSamples = (velocityMotionBlur || isFullBake)
+      ? [{ clipTime, weight: 1 }]
+      : getMotionBlurSamples(clip, clipTime, timelineFps, 'preview')
+    const hasMotionBlurSamples = motionBlurSamples.length > 1
 
     const buffers = buffersRef.current
     if (!buffers.offCanvas) {
       buffers.offCanvas = document.createElement('canvas')
       buffers.maskCanvas = document.createElement('canvas')
+      buffers.perspectiveCanvas = document.createElement('canvas')
     }
     ensureCanvasSize(buffers.offCanvas, width, height)
     ensureCanvasSize(buffers.maskCanvas, width, height)
-    const offCtx = buffers.offCanvas.getContext('2d', { willReadFrequently: usesTonalAdjustments || usesManagedEffects })
+    // Tonal grades read pixels on the GPU now; only the managed ImageData
+    // effects still read this canvas back on the CPU.
+    const offCtx = buffers.offCanvas.getContext('2d', { willReadFrequently: usesManagedEffects })
     const maskCtx = buffers.maskCanvas.getContext('2d', { willReadFrequently: true })
     offCtx.clearRect(0, 0, width, height)
     offCtx.save()
@@ -553,13 +669,72 @@ function CanvasPreviewRenderer({
     if (blurPx != null) filterParts.push(`blur(${blurPx}px)`)
     offCtx.filter = filterParts.length > 0 ? filterParts.join(' ') : 'none'
 
-    let rect = getBaseDrawRect(width, height, width, height)
-    if (clip.type === 'text') {
-      applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
-      applyClipCrop(offCtx, rect, clipTransform)
-      applyTransitionClip(offCtx, rect, transitionStyle)
-      drawText(offCtx, rect, clip, 1)
-      offCtx.restore()
+    if ((clip.type === 'text' || clip.type === 'shape') && !isFullBake) {
+      const isShapeClip = clip.type === 'shape'
+      const getTextShapeFrame = (sampleClipTime) => {
+        const animatedShapeProperties = isShapeClip ? getAnimatedShapeProperties(clip, sampleClipTime) : null
+        const shapeClip = isShapeClip ? { ...clip, shapeProperties: animatedShapeProperties || clip.shapeProperties } : clip
+        const rect = isShapeClip
+          ? getShapeCanvasRect(shapeClip.shapeProperties, width, height)
+          : getBaseDrawRect(width, height, width, height)
+        return { shapeClip, rect }
+      }
+      const drawNativeClip = (targetCtx, rect, shapeClip, sampleClipTime) => {
+        if (isShapeClip) {
+          drawShape(targetCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, shapeClip)
+        } else {
+          drawText(targetCtx, rect, clip, 1, sampleClipTime)
+        }
+      }
+      const drawTextShapeSample = (targetCtx, sample, targetFilter = 'none') => {
+        const sampleTransform = resolveClipTransformAtTime(sample.clipTime)
+        const { shapeClip, rect } = getTextShapeFrame(sample.clipTime)
+        targetCtx.save()
+        targetCtx.globalAlpha = sample.weight
+        targetCtx.filter = targetFilter
+        targetCtx.globalCompositeOperation = 'source-over'
+        if (hasPerspectiveClipTransform(sampleTransform)) {
+          ensureCanvasSize(buffers.perspectiveCanvas, Math.max(1, Math.ceil(rect.width)), Math.max(1, Math.ceil(rect.height)))
+          const nativeCtx = buffers.perspectiveCanvas.getContext('2d', { alpha: true })
+          nativeCtx.clearRect(0, 0, buffers.perspectiveCanvas.width, buffers.perspectiveCanvas.height)
+          nativeCtx.save()
+          drawNativeClip(nativeCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, shapeClip, sample.clipTime)
+          nativeCtx.restore()
+          drawPerspectiveClipSource(targetCtx, buffers.perspectiveCanvas, rect, sampleTransform, transitionStyle)
+        } else {
+          applyClipTransform(targetCtx, rect, sampleTransform, transitionStyle)
+          applyClipCrop(targetCtx, rect, sampleTransform)
+          applyTransitionClip(targetCtx, rect, transitionStyle)
+          drawNativeClip(targetCtx, rect, shapeClip, sample.clipTime)
+        }
+        targetCtx.restore()
+      }
+      const drawTextShapeSamplesToOffCanvas = (targetFilter = 'none') => {
+        offCtx.clearRect(0, 0, width, height)
+        for (const sample of motionBlurSamples) {
+          drawTextShapeSample(offCtx, sample, targetFilter)
+        }
+      }
+      if (hasPerspectiveClipTransform(clipTransform)) {
+        // Perspective clips render through a temporary source canvas. Treat
+        // that path like motion blur so the perspective sample can be rebuilt
+        // for each sub-frame before post-processing.
+        drawTextShapeSamplesToOffCanvas(offCtx.filter)
+        offCtx.restore()
+      } else if (hasMotionBlurSamples) {
+        drawTextShapeSamplesToOffCanvas(offCtx.filter)
+        offCtx.restore()
+      } else {
+        const { shapeClip, rect } = getTextShapeFrame(clipTime)
+        applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
+        applyClipCrop(offCtx, rect, clipTransform)
+        applyTransitionClip(offCtx, rect, transitionStyle)
+        drawNativeClip(offCtx, rect, shapeClip, clipTime)
+        offCtx.restore()
+      }
+      if (velocityMotionBlur) {
+        applyVelocityMotionBlurToCanvas(buffers.offCanvas, offCtx, width, height, velocityMotionBlur)
+      }
     } else {
       const clipUrl = resolvePreviewUrl(clip, getAssetById, state.useProxyPlaybackForAssets)
       if (!clipUrl) {
@@ -570,12 +745,12 @@ function CanvasPreviewRenderer({
       let drawSource = null
       let sourceWidth = width
       let sourceHeight = height
-      const isCachedRender = clip.type === 'video' && clip.cacheStatus === 'cached' && clip.cacheUrl && clipUrl === clip.cacheUrl
-      if (clip.type === 'video') {
+      const isCachedRender = clip.cacheStatus === 'cached' && clip.cacheUrl && clipUrl === clip.cacheUrl
+      if (clip.type === 'video' || isFullBake) {
         const video = videoCache.getVideoElement({ ...clip, url: clipUrl })
         if (!video) {
           offCtx.restore()
-          return
+          return 'unready'
         }
         const transitionPlayback = getClipPlaybackTimingAtTimeline(clip, time, 0.01, {
           allowHandles: !!transitionStyle,
@@ -613,7 +788,7 @@ function CanvasPreviewRenderer({
         }
         if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
           offCtx.restore()
-          return
+          return 'unready'
         }
         sourceWidth = video.videoWidth || width
         sourceHeight = video.videoHeight || height
@@ -622,7 +797,8 @@ function CanvasPreviewRenderer({
         const image = getImageForUrl(clipUrl)
         if (!image) {
           offCtx.restore()
-          return
+          // Still decoding → hold; permanently failed → let it stay absent.
+          return imageCacheRef.current.get(clipUrl)?.failed ? undefined : 'unready'
         }
         sourceWidth = image.naturalWidth || width
         sourceHeight = image.naturalHeight || height
@@ -634,11 +810,105 @@ function CanvasPreviewRenderer({
         return
       }
 
-      rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
-      applyClipTransform(offCtx, rect, clipTransform, transitionStyle)
-      applyClipCrop(offCtx, rect, clipTransform)
-      applyTransitionClip(offCtx, rect, transitionStyle)
-      offCtx.drawImage(drawSource, 0, 0, rect.width, rect.height)
+      // GPU compositor path: native transforms/masks/effects, mirroring the
+      // exporter's GPU block. Masked clips with velocity blur keep the 2D
+      // path (same exclusion as export).
+      const gpuStage = state.gpuStage
+      const gpuMaskInfo = gpuStage ? getMaskInfo(clip, getAssetById, time, isCachedRender) : null
+      if (gpuStage && !(velocityMotionBlur && gpuMaskInfo)) {
+        offCtx.restore()
+        const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
+        // Full bakes carry the transform inside the baked pixels — draw
+        // them neutral, same contract as the exporter.
+        const sampleTransformFor = (sampleClipTime) => (
+          isFullBake ? clipTransform : resolveClipTransformAtTime(sampleClipTime)
+        )
+        const gpuSamples = []
+        for (const sample of motionBlurSamples) {
+          const corners = getClipQuadCorners(rect, sampleTransformFor(sample.clipTime), transitionStyle)
+          if (corners) {
+            gpuSamples.push({
+              source: drawSource,
+              sourceKey: clip.id,
+              sourceVersion: `${clipUrl}|${Number(drawSource.currentTime) || 0}`,
+              corners,
+              weight: sample.weight,
+            })
+          }
+        }
+        if (gpuSamples.length === 0) return
+
+        let gpuMaskSpec = null
+        if (gpuMaskInfo?.url) {
+          const maskImage = getImageForUrl(gpuMaskInfo.url)
+          if (maskImage) {
+            const maskCorners = getClipQuadCorners(rect, sampleTransformFor(clipTime), transitionStyle)
+            if (maskCorners) {
+              gpuMaskSpec = {
+                source: maskImage,
+                sourceKey: `${clip.id}:mask`,
+                sourceVersion: gpuMaskInfo.url,
+                corners: maskCorners,
+                invert: !!gpuMaskInfo.invertMask,
+                blurPx: (!usesTonalAdjustments && blurPx != null)
+                  ? blurPx * getApproxTransformScale(clipTransform, transitionStyle)
+                  : null,
+              }
+            }
+          }
+        }
+
+        const routed = routeGpuLayerColorBlur({
+          usesTonalAdjustments,
+          hasMask: !!gpuMaskSpec,
+          adjustmentSettings,
+          colorSettings: clipAdjustmentFilterValue ? adjustmentSettings : null,
+          adjustmentBlur: adjustmentSettings.blur > 0 ? adjustmentSettings.blur : 0,
+          transformBlur: blurPx != null ? blurPx : 0,
+          deviceScale: getApproxTransformScale(clipTransform, transitionStyle),
+        })
+        gpuStage.drawLayer({
+          samples: gpuSamples,
+          velocity: velocityMotionBlur ? buildVelocityBlurUniformValues(velocityMotionBlur) : null,
+          mask: gpuMaskSpec,
+          managedPasses: usesManagedEffects
+            ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
+            : null,
+          ...routed,
+          opacity: clipOpacity,
+          blendMode,
+        })
+        return
+      }
+
+      const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
+      // Full bakes carry the transform INSIDE the baked pixels — drawing
+      // them with the live transform applies it twice (scale 162% became
+      // ~262%, keyframed moves re-animated on top of the baked motion).
+      // Legacy mask bakes keep the live transform by contract.
+      const getSampleTransform = (sampleClipTime) => (
+        isFullBake ? clipTransform : resolveClipTransformAtTime(sampleClipTime)
+      )
+      const drawMediaSample = (targetCtx, source, sample, targetFilter = 'none') => {
+        const sampleTransform = getSampleTransform(sample.clipTime)
+        targetCtx.save()
+        targetCtx.globalAlpha = sample.weight
+        targetCtx.globalCompositeOperation = 'source-over'
+        targetCtx.filter = targetFilter
+        if (hasPerspectiveClipTransform(sampleTransform)) {
+          drawPerspectiveClipSource(targetCtx, source, rect, sampleTransform, transitionStyle)
+        } else {
+          applyClipTransform(targetCtx, rect, sampleTransform, transitionStyle)
+          applyClipCrop(targetCtx, rect, sampleTransform)
+          applyTransitionClip(targetCtx, rect, transitionStyle)
+          targetCtx.drawImage(source, 0, 0, rect.width, rect.height)
+        }
+        targetCtx.restore()
+      }
+      offCtx.clearRect(0, 0, width, height)
+      for (const sample of motionBlurSamples) {
+        drawMediaSample(offCtx, drawSource, sample, offCtx.filter)
+      }
       offCtx.restore()
 
       const maskInfo = getMaskInfo(clip, getAssetById, time, isCachedRender)
@@ -646,13 +916,9 @@ function CanvasPreviewRenderer({
         const maskCanvas = getProcessedMaskForUrl(maskInfo.url)
         if (maskCanvas) {
           maskCtx.clearRect(0, 0, width, height)
-          maskCtx.save()
-          maskCtx.filter = blurPx != null ? `blur(${blurPx}px)` : 'none'
-          applyClipTransform(maskCtx, rect, clipTransform, transitionStyle)
-          applyClipCrop(maskCtx, rect, clipTransform)
-          applyTransitionClip(maskCtx, rect, transitionStyle)
-          maskCtx.drawImage(maskCanvas, 0, 0, rect.width, rect.height)
-          maskCtx.restore()
+          for (const sample of motionBlurSamples) {
+            drawMediaSample(maskCtx, maskCanvas, sample, blurPx != null ? `blur(${blurPx}px)` : 'none')
+          }
 
           offCtx.save()
           offCtx.globalCompositeOperation = maskInfo.invertMask ? 'destination-out' : 'destination-in'
@@ -660,6 +926,38 @@ function CanvasPreviewRenderer({
           offCtx.restore()
         }
       }
+      if (velocityMotionBlur) {
+        applyVelocityMotionBlurToCanvas(buffers.offCanvas, offCtx, width, height, velocityMotionBlur)
+      }
+    }
+
+    // GPU compositor path for clips that rastered through the 2D helpers
+    // above (text/shape, and masked+velocity media): the full-frame raster
+    // becomes a GPU layer; tonal + managed effects run as native passes.
+    if (state.gpuStage) {
+      const totalTonalBlur = adjustmentSettings.blur + (blurPx != null ? blurPx : 0)
+      state.gpuStage.drawLayer({
+        samples: [{
+          source: buffers.offCanvas,
+          sourceKey: `${clip.id}:2d`,
+          sourceVersion: frameIndex,
+          corners: [
+            { x: 0, y: 0, u: 0, v: 0, w: 1 },
+            { x: width, y: 0, u: 1, v: 0, w: 1 },
+            { x: 0, y: height, u: 0, v: 1, w: 1 },
+            { x: width, y: height, u: 1, v: 1, w: 1 },
+          ],
+          weight: 1,
+        }],
+        tonalSettings: usesTonalAdjustments ? adjustmentSettings : null,
+        blurPx: usesTonalAdjustments && totalTonalBlur > 0 ? totalTonalBlur : null,
+        managedPasses: usesManagedEffects
+          ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
+          : null,
+        opacity: clipOpacity,
+        blendMode,
+      })
+      return
     }
 
     let outputCanvas = buffers.offCanvas
@@ -692,6 +990,27 @@ function CanvasPreviewRenderer({
     const adjustmentIsActive = hasAdjustmentEffect(adjustmentSettings)
     const glslQualityScale = getGlslPreviewQualityScale(state.glslPreviewQuality)
     if (!adjustmentIsActive && !usesManagedEffects) return
+
+    // GPU compositor path: fully native adjustment layer (color/tonal/blur
+    // grade of the stage + managed chain), mirroring the exporter.
+    if (state.gpuStage) {
+      const rect = getBaseDrawRect(width, height, width, height)
+      const corners = getClipQuadCorners(rect, clipTransform, null)
+      if (!corners) return
+      const opacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
+      const blendMode = clipTransform.blendMode || 'normal'
+      state.gpuStage.drawAdjustment({
+        corners,
+        colorSettings: adjustmentSettings,
+        blurPx: adjustmentSettings.blur > 0 ? adjustmentSettings.blur : null,
+        managedPasses: usesManagedEffects
+          ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
+          : null,
+        opacity,
+        blendMode,
+      })
+      return
+    }
 
     const buffers = buffersRef.current
     if (!buffers.adjustmentCanvas) buffers.adjustmentCanvas = document.createElement('canvas')
@@ -730,9 +1049,13 @@ function CanvasPreviewRenderer({
     ctx.globalAlpha = opacity
     ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
     ctx.filter = 'none'
-    applyClipTransform(ctx, rect, clipTransform, null)
-    applyClipCrop(ctx, rect, clipTransform)
-    ctx.drawImage(outputCanvas, 0, 0, rect.width, rect.height)
+    if (hasPerspectiveClipTransform(clipTransform)) {
+      drawPerspectiveClipSource(ctx, outputCanvas, rect, clipTransform, null)
+    } else {
+      applyClipTransform(ctx, rect, clipTransform, null)
+      applyClipCrop(ctx, rect, clipTransform)
+      ctx.drawImage(outputCanvas, 0, 0, rect.width, rect.height)
+    }
     ctx.restore()
   }, [applyAdvancedAdjustmentsToCanvas])
 
@@ -757,11 +1080,24 @@ function CanvasPreviewRenderer({
       const url = resolvePreviewUrl(clip, getAssetById, state.useProxyPlaybackForAssets)
       if (!url) return
       const video = videoCache.getVideoElement({ ...clip, url }, true)
-      if (!video || video.readyState < 1 || isActive) return
+      if (!video || isActive) return
       const targetTimelineTime = isForward ? clipStart : clipEnd
       const targetTime = getClipPlaybackTimeAtTimeline(clip, targetTimelineTime)
-      if (Math.abs((video.currentTime || 0) - targetTime) > 0.03) {
-        video.currentTime = targetTime
+      if (video.readyState >= 1) {
+        if (Math.abs((video.currentTime || 0) - targetTime) > 0.03) {
+          video.currentTime = targetTime
+        }
+      } else if (video.dataset.parkSeekPending !== '1') {
+        // Cold element: park it at the clip's entry frame the moment its
+        // metadata arrives instead of waiting for a later 250ms preload
+        // pass — by then the cut may already be on screen.
+        video.dataset.parkSeekPending = '1'
+        video.addEventListener('loadedmetadata', () => {
+          delete video.dataset.parkSeekPending
+          if (Math.abs((video.currentTime || 0) - targetTime) > 0.03) {
+            video.currentTime = targetTime
+          }
+        }, { once: true })
       }
     })
   }, [])
@@ -818,7 +1154,7 @@ function CanvasPreviewRenderer({
 
     if (shouldGateVideoReadiness) {
       for (const { clip } of visualClips) {
-        if (!clip || clip.type !== 'video') continue
+        if (!clip || (clip.type !== 'video' && !isFullBakeFresh(clip))) continue
         const seekDriven = isSeekDrivenPlayback(state, clip)
         const isTransitionClip = transitionClipIds.has(clip.id)
         if (state.isPlaying && !seekDriven && !isTransitionClip && !loopSeekHoldActive) continue
@@ -848,12 +1184,7 @@ function CanvasPreviewRenderer({
           : (seekDriven ? 0.12 : ((isTransitionClip && state.isPlaying && !loopSeekHoldActive) ? 0.16 : 0.025))
         if (Math.abs((video.currentTime || 0) - targetTime) > readyTolerance) {
           if (state.isScrubbingPreview) {
-            const throttleKey = clip.id || clip.assetId || clipUrl
-            const lastSeekAt = scrubSeekThrottleRef.current.get(throttleKey) || 0
-            if (nowMs - lastSeekAt >= SCRUB_SEEK_MIN_INTERVAL_MS) {
-              video.currentTime = targetTime
-              scrubSeekThrottleRef.current.set(throttleKey, nowMs)
-            }
+            issueScrubSeek(video, targetTime)
             scheduleDeferredDraw('scrub-video-seek')
             if (video.readyState >= 2 && video.videoWidth && video.videoHeight) continue
             return
@@ -905,26 +1236,59 @@ function CanvasPreviewRenderer({
     stageCtx.fillStyle = '#000000'
     stageCtx.fillRect(0, 0, width, height)
 
+    // GPU compositing: clips draw into the WebGL2 stage instead of
+    // stageCtx; the finished frame blits into stageCanvas below so all the
+    // hold/blit/last-frame logic stays identical.
+    const gpuStage = getGpuStage(width, height, state.previewCompositorMode)
+    if (gpuStage) gpuStage.beginFrame()
+    const clipState = { ...state, width, height, fps, gpuStage }
+
+    let sawUnreadyVisual = false
     for (const entry of visualClips) {
       const { clip } = entry
       if (!clip) continue
       if (clip.type === 'adjustment') {
-        applyAdjustmentLayer(stageCtx, clip, time, frameIndex, { ...state, width, height, fps })
+        applyAdjustmentLayer(stageCtx, clip, time, frameIndex, clipState)
         continue
       }
-      if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text') {
-        drawVisualClip(stageCtx, entry, time, transitionInfo, { ...state, width, height, fps }, frameIndex)
+      if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text' || clip.type === 'shape') {
+        const status = drawVisualClip(stageCtx, entry, time, transitionInfo, clipState, frameIndex)
+        if (status === 'unready') sawUnreadyVisual = true
       }
     }
 
-    const overlayOpacity = getFadeOverlayOpacity(transitionInfo)
-    if (overlayOpacity !== null) {
-      const type = transitionInfo?.transition?.type
-      stageCtx.save()
-      stageCtx.globalAlpha = overlayOpacity
-      stageCtx.fillStyle = type === 'fade-white' ? '#FFFFFF' : '#000000'
-      stageCtx.fillRect(0, 0, width, height)
-      stageCtx.restore()
+    const fadeOverlay = getFadeOverlayInfo(transitionInfo)
+    if (fadeOverlay && fadeOverlay.opacity > 0.001) {
+      if (gpuStage) {
+        gpuStage.drawFill(fadeOverlay.color, Math.min(1, fadeOverlay.opacity))
+      } else {
+        stageCtx.save()
+        stageCtx.globalAlpha = Math.min(1, fadeOverlay.opacity)
+        stageCtx.fillStyle = fadeOverlay.color
+        stageCtx.fillRect(0, 0, width, height)
+        stageCtx.restore()
+      }
+    }
+
+    if (gpuStage) {
+      gpuStage.present()
+      stageCtx.drawImage(gpuStage.canvas, 0, 0)
+    }
+
+    // A clip that should be visible couldn't draw yet (cold element at a
+    // cut, mid-seek decoder dip, image still decoding). Blitting now would
+    // flash the black stage and poison the held frame, so keep the previous
+    // frame on screen briefly — the rAF loop retries every tick while
+    // playing. Bounded so a permanently broken source degrades to black
+    // instead of freezing playback on a stale frame.
+    if (state.isPlaying && sawUnreadyVisual && hasPaintedFrameRef.current && lastFrameCanvasRef.current) {
+      if (!unreadyHoldUntilRef.current) {
+        unreadyHoldUntilRef.current = nowMs + PLAYBACK_UNREADY_HOLD_MS
+        logCanvasDiag('unready-hold:start', { time: Number(time.toFixed(3)) })
+      }
+      if (nowMs < unreadyHoldUntilRef.current) return
+    } else if (!sawUnreadyVisual && unreadyHoldUntilRef.current) {
+      unreadyHoldUntilRef.current = 0
     }
 
     ctx.clearRect(0, 0, width, height)
@@ -942,7 +1306,7 @@ function CanvasPreviewRenderer({
     if (loopSeekHoldActive) {
       loopSeekHoldUntilRef.current = 0
     }
-  }, [applyAdjustmentLayer, drawVisualClip, preloadVideosAroundTime, safeFps, safeHeight, safeWidth, scheduleDeferredDraw])
+  }, [applyAdjustmentLayer, drawVisualClip, issueScrubSeek, preloadVideosAroundTime, safeFps, safeHeight, safeWidth, scheduleDeferredDraw])
 
   drawFrameRef.current = drawFrame
 
@@ -953,7 +1317,6 @@ function CanvasPreviewRenderer({
     if (isPlaying) {
       scrubState.lastPlayhead = currentPlayhead
       scrubState.activeUntil = 0
-      scrubSeekThrottleRef.current.clear()
       if (scrubSettleTimerRef.current) {
         window.clearTimeout(scrubSettleTimerRef.current)
         scrubSettleTimerRef.current = 0
@@ -974,6 +1337,22 @@ function CanvasPreviewRenderer({
       drawFrameRef.current?.()
     }, SCRUB_SETTLE_DELAY_MS)
   }, [isPlaying, playheadPosition])
+
+  // Timeline dispatches this on scrub mouseup. Exit scrub mode and run the
+  // strict-tolerance draw immediately instead of waiting out the settle
+  // timer, so the released frame commits as fast as the seek can resolve.
+  useEffect(() => {
+    const handleScrubEnd = () => {
+      scrubPreviewStateRef.current.activeUntil = 0
+      if (scrubSettleTimerRef.current) {
+        window.clearTimeout(scrubSettleTimerRef.current)
+        scrubSettleTimerRef.current = 0
+      }
+      drawFrameRef.current?.()
+    }
+    window.addEventListener('comfystudio:timeline-scrub-end', handleScrubEnd)
+    return () => window.removeEventListener('comfystudio:timeline-scrub-end', handleScrubEnd)
+  }, [])
 
   useEffect(() => {
     let animationFrame = 0
@@ -1025,17 +1404,64 @@ function CanvasPreviewRenderer({
     glslPreviewQuality,
   ])
 
-  const activeSelectableClip = useMemo(() => {
+  const getSelectableClipAtPointerEvent = useCallback((event) => {
+    const canvas = canvasRef.current
+    if (!canvas || !event) return null
+
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return null
+
+    const width = latestRef.current.width || safeWidth
+    const height = latestRef.current.height || safeHeight
+    const point = {
+      x: ((event.clientX - rect.left) / rect.width) * width,
+      y: ((event.clientY - rect.top) / rect.height) * height,
+    }
+
     const state = useTimelineStore.getState()
-    const visualClips = getVisualLayerClips(state, playheadPosition)
+    const time = state.playheadPosition || 0
+    const transitionInfo = state.getTransitionAtTime(time)
+    const transitionClipIds = getTransitionClipIds(transitionInfo)
+    const getAssetById = useAssetsStore.getState().getAssetById
+    const visualClips = cullVisualLayerEntries(getVisualLayerClips(state, time), {
+      time,
+      getAssetById,
+      transitionClipIds,
+      timelineWidth: width,
+      timelineHeight: height,
+    })
+
     for (let index = visualClips.length - 1; index >= 0; index -= 1) {
       const clip = visualClips[index]?.clip
-      if (clip && (clip.type === 'video' || clip.type === 'image' || clip.type === 'text')) {
+      if (!clip || !['video', 'image', 'text', 'shape'].includes(clip.type)) continue
+
+      const clipTime = time - (clip.startTime || 0)
+      const transitionStyle = getTransitionStyleForClip(transitionInfo, clip)
+      const baseTransform = getAnimatedTransform(clip, clipTime) || clip.transform || {}
+      const clipTransform = applyEffectsToTransform(baseTransform, clip.effects, clipTime)
+      const { width: sourceWidth, height: sourceHeight } = getClipHitSourceDimensions({
+        clip,
+        clipTime,
+        state,
+        getAssetById,
+        imageCacheRef,
+        canvasWidth: width,
+        canvasHeight: height,
+      })
+      const animatedShapeProperties = clip.type === 'shape'
+        ? getAnimatedShapeProperties(clip, clipTime) || clip.shapeProperties
+        : null
+      const drawRect = clip.type === 'shape'
+        ? getShapeCanvasRect(animatedShapeProperties, width, height)
+        : getBaseDrawRect(sourceWidth || width, sourceHeight || height, width, height)
+
+      if (clipContainsCanvasPoint(point, clip, drawRect, clipTransform, transitionStyle)) {
         return clip
       }
     }
+
     return null
-  }, [clips, tracks, playheadPosition])
+  }, [safeHeight, safeWidth])
 
   return (
     <canvas
@@ -1045,13 +1471,15 @@ function CanvasPreviewRenderer({
       height={safeHeight}
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={(event) => {
-        if (activeSelectableClip && typeof onClipPointerDown === 'function') {
-          onClipPointerDown(activeSelectableClip, event)
+        const selectableClip = getSelectableClipAtPointerEvent(event)
+        if (selectableClip && typeof onClipPointerDown === 'function') {
+          onClipPointerDown(selectableClip, event)
         }
       }}
       onDoubleClick={(event) => {
-        if (activeSelectableClip?.type === 'text' && typeof onClipDoubleClick === 'function') {
-          onClipDoubleClick(activeSelectableClip, event)
+        const selectableClip = getSelectableClipAtPointerEvent(event)
+        if (selectableClip?.type === 'text' && typeof onClipDoubleClick === 'function') {
+          onClipDoubleClick(selectableClip, event)
         }
       }}
       style={{

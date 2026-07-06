@@ -443,7 +443,7 @@ function createBaseNodeData(type) {
         duration: 5,
         fps: 24,
         seed: randomSeed(),
-        wanQualityPreset: 'face-lock',
+        wanQualityPreset: 'balanced',
         status: 'idle',
         statusMessage: '',
         error: '',

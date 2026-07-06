@@ -1,4 +1,4 @@
-# ComfyStudio v0.1.13 Release Notes
+# Velorn v0.1.13 Release Notes
 
 ## Downloads
 
@@ -20,7 +20,7 @@
 
 - Reframes onboarding around a simple ready-to-generate path: Projects Folder, ComfyUI Connection, Workflow Setup, and Ready To Generate
 - Adds starter kits in Workflow Setup so users pick the kind of project they want to make instead of manually decoding every workflow graph
-- Updates site copy to position ComfyStudio as a full AI video workstation: generate, direct, edit, upscale, and finish with local, cloud, or hybrid workflows
+- Updates site copy to position Velorn as a full AI video workstation: generate, direct, edit, upscale, and finish with local, cloud, or hybrid workflows
 - Makes Music Video Project Cast and Style Cards feel like first-class project controls, not hidden prompt plumbing
 
 ## Fixes
@@ -39,6 +39,6 @@
 
 ## Known Notes
 
-- ComfyStudio still depends on a separate local ComfyUI installation
+- Velorn still depends on a separate local ComfyUI installation
 - Built-in workflow setup checks still assume standard model filenames unless users run custom workflows directly in the ComfyUI tab
 - Extra ComfyUI model paths are tracked as a future workflow setup compatibility improvement

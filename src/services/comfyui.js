@@ -25,28 +25,32 @@ const COMFY_BINARY_EVENT_TYPES = Object.freeze({
   TEXT: 3,
 })
 const UTF8_DECODER = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8') : null
+// Canonical marker titles are VELORN_*; legacy COMFYSTUDIO_* titles from
+// graphs tagged before the rename still match (see endpointTitleAliases).
 export const CUSTOM_KEYFRAME_ENDPOINTS = Object.freeze({
-  inputImage: 'COMFYSTUDIO_INPUT_IMAGE',
-  prompt: 'COMFYSTUDIO_PROMPT',
-  seed: 'COMFYSTUDIO_SEED',
-  width: 'COMFYSTUDIO_WIDTH',
-  height: 'COMFYSTUDIO_HEIGHT',
-  referenceImage1: 'COMFYSTUDIO_REFERENCE_IMAGE_1',
-  referenceImage2: 'COMFYSTUDIO_REFERENCE_IMAGE_2',
-  outputImage: 'COMFYSTUDIO_OUTPUT_IMAGE',
+  inputImage: 'VELORN_INPUT_IMAGE',
+  prompt: 'VELORN_PROMPT',
+  seed: 'VELORN_SEED',
+  width: 'VELORN_WIDTH',
+  height: 'VELORN_HEIGHT',
+  referenceImage1: 'VELORN_REFERENCE_IMAGE_1',
+  referenceImage2: 'VELORN_REFERENCE_IMAGE_2',
+  outputImage: 'VELORN_OUTPUT_IMAGE',
 })
 export const CUSTOM_VIDEO_ENDPOINTS = Object.freeze({
-  inputImage: 'COMFYSTUDIO_INPUT_IMAGE',
-  prompt: 'COMFYSTUDIO_PROMPT',
-  seed: 'COMFYSTUDIO_SEED',
-  width: 'COMFYSTUDIO_WIDTH',
-  height: 'COMFYSTUDIO_HEIGHT',
-  fps: 'COMFYSTUDIO_FPS',
-  duration: 'COMFYSTUDIO_DURATION',
-  inputAudio: 'COMFYSTUDIO_AUDIO',
-  outputVideo: 'COMFYSTUDIO_OUTPUT_VIDEO',
+  inputImage: 'VELORN_INPUT_IMAGE',
+  prompt: 'VELORN_PROMPT',
+  seed: 'VELORN_SEED',
+  width: 'VELORN_WIDTH',
+  height: 'VELORN_HEIGHT',
+  fps: 'VELORN_FPS',
+  duration: 'VELORN_DURATION',
+  inputAudio: 'VELORN_AUDIO',
+  outputVideo: 'VELORN_OUTPUT_VIDEO',
 })
-const COMFYSTUDIO_OUTPUT_RESIZE_TITLE = 'ComfyStudio Output Resize'
+const VELORN_OUTPUT_RESIZE_TITLE = 'Velorn Output Resize'
+const LEGACY_COMFYSTUDIO_OUTPUT_RESIZE_TITLE = 'ComfyStudio Output Resize'
+const OUTPUT_RESIZE_TITLES = [VELORN_OUTPUT_RESIZE_TITLE, LEGACY_COMFYSTUDIO_OUTPUT_RESIZE_TITLE]
 
 function parseNumericLike(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -63,9 +67,16 @@ function normalizeEndpointTitle(value = '') {
   return String(value || '').trim().toUpperCase()
 }
 
+function endpointTitleAliases(endpointName) {
+  return [endpointName, endpointName.replace(/^VELORN_/, 'COMFYSTUDIO_')]
+}
+
+function titleMatchesEndpoint(title, endpointName) {
+  return Boolean(title) && endpointTitleAliases(endpointName).some((name) => title.includes(name))
+}
+
 function nodeHasEndpointTitle(node, endpointName) {
-  const title = normalizeEndpointTitle(node?._meta?.title)
-  return Boolean(title && title.includes(endpointName))
+  return titleMatchesEndpoint(normalizeEndpointTitle(node?._meta?.title), endpointName)
 }
 
 function findCustomEndpointNodes(workflow, endpointConfig) {
@@ -87,6 +98,41 @@ function findCustomKeyframeEndpointNodes(workflow) {
 
 function findCustomVideoEndpointNodes(workflow) {
   return findCustomEndpointNodes(workflow, CUSTOM_VIDEO_ENDPOINTS)
+}
+
+const REQUIRED_CUSTOM_KEYFRAME_ENDPOINT_KEYS = ['inputImage', 'prompt', 'outputImage']
+const REQUIRED_CUSTOM_VIDEO_ENDPOINT_KEYS = ['inputImage', 'prompt', 'outputVideo']
+
+/**
+ * Pre-check a UI-format graph (as saved in the personal workflow library)
+ * against a custom slot's COMFYSTUDIO node-title contract. Mirrors the
+ * required markers of validateCustomKeyframeWorkflow /
+ * validateCustomVideoWorkflow but reads LiteGraph `node.title`, so it can run
+ * without converting the graph to API format first.
+ */
+export function scanUiWorkflowForCustomEndpoints(uiWorkflow, kind = 'keyframe') {
+  const isVideo = kind === 'video'
+  const config = isVideo ? CUSTOM_VIDEO_ENDPOINTS : CUSTOM_KEYFRAME_ENDPOINTS
+  const requiredKeys = isVideo ? REQUIRED_CUSTOM_VIDEO_ENDPOINT_KEYS : REQUIRED_CUSTOM_KEYFRAME_ENDPOINT_KEYS
+
+  const titles = []
+  const nodeLists = [uiWorkflow?.nodes]
+  for (const subgraph of uiWorkflow?.definitions?.subgraphs || []) nodeLists.push(subgraph?.nodes)
+  for (const nodes of nodeLists) {
+    if (!Array.isArray(nodes)) continue
+    for (const node of nodes) {
+      const title = normalizeEndpointTitle(node?.title)
+      if (title) titles.push(title)
+    }
+  }
+
+  const found = {}
+  for (const [key, endpointName] of Object.entries(config)) {
+    found[key] = titles.some((title) => titleMatchesEndpoint(title, endpointName))
+  }
+  const missingKeys = requiredKeys.filter((key) => !found[key])
+  const missing = missingKeys.map((key) => config[key])
+  return { eligible: missing.length === 0, found, missing, missingKeys }
 }
 
 function firstWritableInputKey(node, preferredKeys = []) {
@@ -170,13 +216,13 @@ export function addQwenImageEditResolutionControls(workflow, options = {}) {
     }
   }
 
-  let resizeNodeId = findNodeIdByTitle(workflow, COMFYSTUDIO_OUTPUT_RESIZE_TITLE)
+  let resizeNodeId = findOutputResizeNodeId(workflow)
   if (!resizeNodeId) {
     resizeNodeId = getUniqueWorkflowNodeId(workflow, 'comfystudio_output_resize')
     workflow[resizeNodeId] = {
       class_type: 'ImageScale',
       inputs: {},
-      _meta: { title: COMFYSTUDIO_OUTPUT_RESIZE_TITLE },
+      _meta: { title: VELORN_OUTPUT_RESIZE_TITLE },
     }
   }
 
@@ -192,7 +238,7 @@ export function addQwenImageEditResolutionControls(workflow, options = {}) {
   }
   resizeNode._meta = {
     ...(resizeNode._meta || {}),
-    title: resizeNode._meta?.title || COMFYSTUDIO_OUTPUT_RESIZE_TITLE,
+    title: VELORN_OUTPUT_RESIZE_TITLE,
   }
 
   const resizeRef = [resizeNodeId, 0]
@@ -210,12 +256,24 @@ export function addQwenImageEditResolutionControls(workflow, options = {}) {
 }
 
 function normalizeComfyStudioOutputResize(workflow) {
-  const resizeNodeId = findNodeIdByTitle(workflow, COMFYSTUDIO_OUTPUT_RESIZE_TITLE)
+  const resizeNodeId = findOutputResizeNodeId(workflow)
   const resizeNode = resizeNodeId ? workflow?.[resizeNodeId] : null
   if (resizeNode?.class_type === 'ImageScale' && resizeNode.inputs) {
     resizeNode.inputs.crop = 'center'
+    resizeNode._meta = {
+      ...(resizeNode._meta || {}),
+      title: VELORN_OUTPUT_RESIZE_TITLE,
+    }
   }
   return workflow
+}
+
+function findOutputResizeNodeId(workflow) {
+  for (const title of OUTPUT_RESIZE_TITLES) {
+    const nodeId = findNodeIdByTitle(workflow, title)
+    if (nodeId) return nodeId
+  }
+  return null
 }
 
 export function validateCustomKeyframeWorkflow(workflow, options = {}) {
@@ -1282,7 +1340,7 @@ export function modifyMaskWorkflow(workflow, options = {}) {
   const {
     inputFilename = '',       // The uploaded filename in ComfyUI
     textPrompt = '',          // What to segment (e.g., "person on the left")
-    outputPrefix = 'ComfyStudioMask',  // Output filename prefix
+    outputPrefix = 'VelornMask',  // Output filename prefix
     scoreThreshold = 0.04,    // Detection sensitivity (lower = more sensitive)
     frameIdx = 0,             // Which frame to use for initial detection
   } = options;
@@ -1344,49 +1402,84 @@ export function modifyWAN22Workflow(workflow, options = {}) {
     frames = 81,
     fps = 16,
     seed = Math.floor(Math.random() * 1000000000000),
-    filenamePrefix = 'video/ComfyStudio_wan',
+    filenamePrefix = 'video/Velorn_wan',
     qualityPreset = 'balanced', // balanced | face-lock
   } = options
 
   const modified = JSON.parse(JSON.stringify(workflow))
   const useFaceLockPreset = String(qualityPreset || 'balanced') === 'face-lock'
-  const positivePrompt = useFaceLockPreset
-    ? `${prompt}. Keep the exact same person identity in every frame: same face, eyes, skin tone, hairstyle, and bone structure. Preserve facial consistency during motion.`
-    : prompt
-  const negativeWithFaceLock = [
-    negativePrompt,
-    useFaceLockPreset ? 'identity drift, different person, changing face, face morphing, deformed face' : '',
-  ]
-    .filter(Boolean)
-    .join(', ')
+  const positivePrompt = String(prompt || '')
+  const effectiveNegativePrompt = String(negativePrompt || '')
 
   const samplerSteps = useFaceLockPreset ? 6 : 4
   const samplerCfg = useFaceLockPreset ? 1.3 : 1
   const splitStep = Math.max(2, Math.floor(samplerSteps / 2))
   const modelShift = useFaceLockPreset ? 4.5 : 5.0
   const loraStrength = useFaceLockPreset ? 1.05 : 1.0
+  const numericFps = Math.max(1, Math.round(Number(fps) || 16))
+  const numericFrames = Math.max(2, Math.round(Number(frames) || 81))
+  const numericDuration = Math.max(0.1, (numericFrames - 1) / numericFps)
 
-  // Positive prompt (node 93)
-  if (modified['93']) {
-    modified['93'].inputs.text = positivePrompt
+  const findNodeId = (predicate) => {
+    for (const [nodeId, node] of Object.entries(modified || {})) {
+      if (predicate(node, nodeId)) return nodeId
+    }
+    return null
   }
-  // Negative prompt (node 89)
-  if (modified['89']) {
-    modified['89'].inputs.text = negativeWithFaceLock
+
+  const findNodeByClassAndTitle = (classType, titlePattern) => findNodeId((node) => (
+    String(node?.class_type || '') === classType
+    && titlePattern.test(String(node?._meta?.title || ''))
+  ))
+
+  const findPrimitiveByTitle = (titlePattern) => findNodeId((node) => (
+    /^Primitive/.test(String(node?.class_type || ''))
+    && titlePattern.test(String(node?._meta?.title || ''))
+  ))
+
+  const setNodeInput = (nodeId, key, value) => {
+    if (!nodeId || !modified[nodeId]?.inputs) return false
+    modified[nodeId].inputs[key] = value
+    return true
   }
-  // Image input (node 97)
-  if (modified['97']) {
-    modified['97'].inputs.image = inputImage
+
+  const setDirectNodeInput = (nodeId, key, value) => {
+    if (!nodeId || !modified[nodeId]?.inputs) return false
+    if (Array.isArray(modified[nodeId].inputs[key])) return false
+    modified[nodeId].inputs[key] = value
+    return true
   }
-  // Resolution + frame count (node 98 - WanImageToVideo)
-  if (modified['98']) {
-    modified['98'].inputs.width = width
-    modified['98'].inputs.height = height
-    modified['98'].inputs.length = frames
+
+  const positiveNodeId = modified['93']
+    ? '93'
+    : findNodeByClassAndTitle('CLIPTextEncode', /positive\s*prompt/i)
+      || findNodeId((node) => (
+        String(node?.class_type || '') === 'CLIPTextEncode'
+        && 'text' in (node.inputs || {})
+      ))
+  const negativeNodeId = modified['89']
+    ? '89'
+    : findNodeByClassAndTitle('CLIPTextEncode', /negative\s*prompt/i)
+  const imageNodeId = modified['97']
+    ? '97'
+    : findFirstNodeIdByClass(modified, 'LoadImage')
+  const wanNodeId = modified['98']
+    ? '98'
+    : findFirstNodeIdByClass(modified, 'WanImageToVideo')
+  const createVideoNodeId = modified['94']
+    ? '94'
+    : findFirstNodeIdByClass(modified, 'CreateVideo')
+
+  setNodeInput(positiveNodeId, 'text', positivePrompt)
+  setNodeInput(negativeNodeId, 'text', effectiveNegativePrompt)
+  setNodeInput(imageNodeId, 'image', inputImage)
+  setNodeInput(wanNodeId, 'width', width)
+  setNodeInput(wanNodeId, 'height', height)
+  if (!setDirectNodeInput(wanNodeId, 'length', numericFrames)) {
+    setNodeInput(findPrimitiveByTitle(/\bduration\b/i), 'value', numericDuration)
   }
-  // FPS (node 94 - CreateVideo)
-  if (modified['94']) {
-    modified['94'].inputs.fps = fps
+  if (!setDirectNodeInput(createVideoNodeId, 'fps', numericFps)) {
+    setNodeInput(findPrimitiveByTitle(/\bfps\b/i), 'value', numericFps)
   }
   // Seed (node 86 - KSamplerAdvanced 1st pass)
   if (modified['86']) {
@@ -1403,6 +1496,18 @@ export function modifyWAN22Workflow(workflow, options = {}) {
     modified['85'].inputs.cfg = samplerCfg
     modified['85'].inputs.start_at_step = splitStep
     modified['85'].inputs.end_at_step = samplerSteps
+  }
+  for (const [, node] of Object.entries(modified)) {
+    if (node?.class_type !== 'KSamplerAdvanced' || !node.inputs) continue
+    if ('noise_seed' in node.inputs && node.inputs.add_noise === 'enable') {
+      node.inputs.noise_seed = seed
+    }
+    if (!Array.isArray(node.inputs.steps) && !modified['85'] && !modified['86']) {
+      node.inputs.steps = samplerSteps
+    }
+    if (!Array.isArray(node.inputs.cfg) && !modified['85'] && !modified['86']) {
+      node.inputs.cfg = samplerCfg
+    }
   }
   // LoRA strength tuning (nodes 101/102)
   if (modified['101']) {
@@ -1459,6 +1564,7 @@ export function modifyLTX23I2VWorkflow(workflow, options = {}) {
   }
   numericDuration = Math.max(1, Math.round(numericDuration))
   const numericSeed = Math.round(Number(seed) || Math.floor(Math.random() * 1000000000000))
+  const effectiveNegativePrompt = String(negativePrompt || '')
 
   const setInput = (nodeId, key, value) => {
     if (modified[nodeId]?.inputs && key in modified[nodeId].inputs) modified[nodeId].inputs[key] = value
@@ -1469,7 +1575,7 @@ export function modifyLTX23I2VWorkflow(workflow, options = {}) {
   // 320:299 height, 320:300 fps, 320:301 duration (seconds), 320:276/320:277 seeds.
   if (inputImage) setInput('269', 'image', inputImage)
   if (prompt) setInput('320:319', 'value', prompt)
-  if (negativePrompt) setInput('320:313', 'text', negativePrompt)
+  setInput('320:313', 'text', effectiveNegativePrompt)
   // prompt_enhance (320:328): when true, our prompt is routed through the LTX2
   // prompt enhancer (gemma). We now send a clean verbatim prompt, so enhancing
   // is safe and matches the ComfyUI setup that lip-syncs. (Set false to send the
@@ -1514,6 +1620,7 @@ export function modifyLTX23IA2VWorkflow(workflow, options = {}) {
   const numericDuration = Math.max(1, Number(duration) || 9)
   const numericFps = Math.max(1, Math.round(Number(fps) || 24))
   const numericSeed = Math.round(Number(seed) || Math.floor(Math.random() * 1000000000000))
+  const effectiveNegativePrompt = String(negativePrompt || '')
 
   for (const imageNodeId of ['269', '345']) {
     if (modified[imageNodeId]?.inputs && inputImage) {
@@ -1533,7 +1640,7 @@ export function modifyLTX23IA2VWorkflow(workflow, options = {}) {
   }
 
   if (modified['340:314']?.inputs && 'text' in modified['340:314'].inputs) {
-    modified['340:314'].inputs.text = negativePrompt || modified['340:314'].inputs.text
+    modified['340:314'].inputs.text = effectiveNegativePrompt
   }
 
   if (modified['340:330']?.inputs && 'value' in modified['340:330'].inputs) {
@@ -1601,6 +1708,7 @@ export function modifyLTX23IdLoraWorkflow(workflow, options = {}) {
   const numericDuration = Math.max(1, Number(duration) || 5)
   const numericFps = Math.max(1, Math.round(Number(fps) || 24))
   const numericSeed = Math.round(Number(seed) || Math.floor(Math.random() * 1000000000000))
+  const effectiveNegativePrompt = String(negativePrompt || '')
 
   const setInput = (nodeId, key, value) => {
     if (modified[nodeId]?.inputs && key in modified[nodeId].inputs) modified[nodeId].inputs[key] = value
@@ -1612,7 +1720,7 @@ export function modifyLTX23IdLoraWorkflow(workflow, options = {}) {
     delete modified['276'].inputs.audioUI
   }
   if (prompt) setInput('340:319', 'value', prompt)
-  if (negativePrompt) setInput('340:314', 'text', negativePrompt)
+  setInput('340:314', 'text', effectiveNegativePrompt)
   setInput('340:330', 'value', numericWidth)
   setInput('340:324', 'value', numericHeight)
   setInput('340:323', 'value', numericFps)
@@ -1692,11 +1800,11 @@ export function modifyMultipleAnglesWorkflow(workflow, options = {}) {
     }
   }
 
-  // Update save prefixes to ComfyStudio
+  // Update save prefixes to Velorn
   const saveNodes = { '31': 'close_up', '34': 'wide_shot', '36': '45_right', '38': '90_right', '47': '90_left', '41': 'aerial_view', '43': 'low_angle', '45': '45_left' }
   for (const [nodeId, suffix] of Object.entries(saveNodes)) {
     if (modified[nodeId]) {
-      modified[nodeId].inputs.filename_prefix = `ComfyStudio-${suffix}`
+      modified[nodeId].inputs.filename_prefix = `Velorn-${suffix}`
     }
   }
 
@@ -1708,10 +1816,10 @@ export function modifyMultipleAnglesWorkflow(workflow, options = {}) {
  *
  * Contract:
  * - Required node titles:
- *   COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_PROMPT, COMFYSTUDIO_OUTPUT_IMAGE
+ *   VELORN_INPUT_IMAGE, VELORN_PROMPT, VELORN_OUTPUT_IMAGE
  * - Optional node titles:
- *   COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT,
- *   COMFYSTUDIO_REFERENCE_IMAGE_1, COMFYSTUDIO_REFERENCE_IMAGE_2
+ *   VELORN_SEED, VELORN_WIDTH, VELORN_HEIGHT,
+ *   VELORN_REFERENCE_IMAGE_1, VELORN_REFERENCE_IMAGE_2
  */
 export function modifyCustomKeyframeWorkflow(workflow, options = {}) {
   const {
@@ -1769,10 +1877,10 @@ export function modifyCustomKeyframeWorkflow(workflow, options = {}) {
  *
  * Contract:
  * - Required node titles:
- *   COMFYSTUDIO_INPUT_IMAGE, COMFYSTUDIO_PROMPT, COMFYSTUDIO_OUTPUT_VIDEO
+ *   VELORN_INPUT_IMAGE, VELORN_PROMPT, VELORN_OUTPUT_VIDEO
  * - Optional node titles:
- *   COMFYSTUDIO_SEED, COMFYSTUDIO_WIDTH, COMFYSTUDIO_HEIGHT,
- *   COMFYSTUDIO_FPS, COMFYSTUDIO_DURATION, COMFYSTUDIO_AUDIO
+ *   VELORN_SEED, VELORN_WIDTH, VELORN_HEIGHT,
+ *   VELORN_FPS, VELORN_DURATION, VELORN_AUDIO
  */
 export function modifyCustomVideoWorkflow(workflow, options = {}) {
   const {
@@ -1895,7 +2003,7 @@ export function modifyQwenImageEdit2509Workflow(workflow, options = {}) {
     }
     // Save Image: set prefix
     if (cls === 'SaveImage' && node.inputs && 'filename_prefix' in node.inputs) {
-      node.inputs.filename_prefix = filenamePrefix || node.inputs.filename_prefix || 'image/ComfyStudio_edit'
+      node.inputs.filename_prefix = filenamePrefix || node.inputs.filename_prefix || 'image/Velorn_edit'
     }
   }
 
@@ -3177,7 +3285,7 @@ export function modifyMusicWorkflow(workflow, options = {}) {
   }
   // Output prefix (node 107)
   if (modified['107']) {
-    modified['107'].inputs.filename_prefix = 'audio/ComfyStudio'
+    modified['107'].inputs.filename_prefix = 'audio/Velorn'
   }
 
   return modified

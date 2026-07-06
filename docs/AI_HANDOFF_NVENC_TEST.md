@@ -29,8 +29,8 @@
   - `release-test/win-unpacked/resources/bin/ffprobe-static/win32/x64/ffprobe.exe`
 
 ## Test artifacts created
-- `release-test/ComfyStudio-0.1.5-setup-x64.exe`
-- `release-test/ComfyStudio-0.1.5-portable-x64.exe`
+- `release-test/Velorn-0.1.5-setup-x64.exe`
+- `release-test/Velorn-0.1.5-portable-x64.exe`
 
 ## Commit
 - Git commit created by AI: `1627711`

@@ -35,7 +35,7 @@ These are intended for manual inspection and setup inside ComfyUI.
 
 When you run a workflow in plain ComfyUI, outputs go to your normal ComfyUI output folders.
 
-When you run the workflow through ComfyStudio, generated assets are routed back into the project structure used by the app.
+When you run the workflow through Velorn, generated assets are routed back into the project structure used by the app.
 
 ## Good workflow-prep loop
 
@@ -43,4 +43,4 @@ When you run the workflow through ComfyStudio, generated assets are routed back 
 2. Let ComfyUI reveal missing nodes or model files.
 3. Install the missing nodes and place the missing models in the folders above.
 4. Re-open the workflow in ComfyUI to confirm everything resolves.
-5. Return to ComfyStudio and use `Re-check` before queueing.
+5. Return to Velorn and use `Re-check` before queueing.

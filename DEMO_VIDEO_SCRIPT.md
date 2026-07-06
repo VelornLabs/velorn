@@ -1,4 +1,4 @@
-# ComfyStudio — 2–3 Minute Demo Video Script
+# Velorn — 2–3 Minute Demo Video Script
 
 Use this as a shooting guide: what to show, what to say, and rough timings. Total target: **2–3 minutes**.
 
@@ -9,7 +9,7 @@ Use this as a shooting guide: what to show, what to say, and rough timings. Tota
 **On screen:** App open on Welcome Screen or Editor with a small project.
 
 **Say something like:**
-- "This is ComfyStudio — an AI animatic and video editor that runs ComfyUI inside the app."
+- "This is Velorn — an AI animatic and video editor that runs ComfyUI inside the app."
 - "You get a Resolve-style timeline, and you can generate or extend video, images, and music without leaving the editor."
 
 **Do:** If starting from Welcome, click into a recent project so we’re in the Editor quickly.
@@ -86,7 +86,7 @@ Pick 1–2 of these so you stay under 3 minutes:
 **On screen:** Back to Editor or Welcome Screen.
 
 **Say:**
-- "ComfyStudio will be free and open source. I’m still working on workflow management so it works with everyone’s ComfyUI setup — local or cloud."
+- "Velorn will be free and open source. I’m still working on workflow management so it works with everyone’s ComfyUI setup — local or cloud."
 - "If you’re on r/comfyui, thanks for the interest; link to the repo and a longer walkthrough will come once that’s ready. Cheers."
 
 ---
@@ -103,6 +103,6 @@ Pick 1–2 of these so you stay under 3 minutes:
 
 ## One-Liner for Thumbnail / Description
 
-**"ComfyStudio — Resolve-style editor with ComfyUI built in. Edit, generate, and extend video in one app."**
+**"Velorn — Resolve-style editor with ComfyUI built in. Edit, generate, and extend video in one app."**
 
 Use this script as a roadmap; adjust wording to your style and cut any section if you’re over time.

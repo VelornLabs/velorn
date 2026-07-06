@@ -1,7 +1,7 @@
 {
-  "name": "comfystudio",
+  "name": "velorn",
   "version": "0.1.23",
-  "description": "AI-Powered Animatic Studio for Pre-Production",
+  "description": "AI-native video editing built around real creative timelines, generative workflows, and local agent control.",
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -28,14 +28,14 @@
     "video-editing",
     "electron"
   ],
-  "author": "ComfyStudio contributors",
+  "author": "Velorn contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JaimeIsMe/comfystudio.git"
+    "url": "git+https://github.com/VelornLabs/velorn.git"
   },
-  "homepage": "https://github.com/JaimeIsMe/comfystudio",
+  "homepage": "https://velorn.ai",
   "bugs": {
-    "url": "https://github.com/JaimeIsMe/comfystudio/issues"
+    "url": "https://github.com/VelornLabs/velorn/issues"
   },
   "license": "GPL-3.0-only",
   "dependencies": {
@@ -48,6 +48,7 @@
     "jsonata": "^2.1.0",
     "jspdf": "^4.2.0",
     "lucide-react": "^0.294.0",
+    "mp4box": "^2.4.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "zustand": "^4.4.7"
@@ -69,7 +70,7 @@
   },
   "build": {
     "appId": "com.comfystudio.app",
-    "productName": "ComfyStudio",
+    "productName": "Velorn",
     "copyright": "Copyright © 2024-2026",
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
@@ -161,7 +162,7 @@
       ],
       "icon": "build/icons",
       "category": "Video",
-      "maintainer": "ComfyStudio contributors <opensource@comfystudio.app>",
+      "maintainer": "Velorn contributors <opensource@velorn.ai>",
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
     },
     "nsis": {

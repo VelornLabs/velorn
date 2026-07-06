@@ -2,7 +2,7 @@
 
 This folder defines the optional `Workflow Starter Pack` for advanced ComfyUI users.
 
-Most ComfyStudio users should download the desktop app and rely on the in-app dependency checks. The starter pack exists for people who prefer to inspect workflows directly in ComfyUI, install missing nodes/models manually, and validate their environment outside the app.
+Most Velorn users should download the desktop app and rely on the in-app dependency checks. The starter pack exists for people who prefer to inspect workflows directly in ComfyUI, install missing nodes/models manually, and validate their environment outside the app.
 
 ## What this pack includes
 

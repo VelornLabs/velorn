@@ -416,7 +416,7 @@ export async function runTopazVideoUpscale(options = {}) {
   })
 
   if (!result?.filename) {
-    throw new Error('Topaz finished but ComfyStudio could not find the upscaled video output.')
+    throw new Error('Topaz finished but Velorn could not find the upscaled video output.')
   }
 
   emitStatus({

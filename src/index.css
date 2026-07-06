@@ -10,7 +10,37 @@
    ============================================= */
 
 :root {
-  /* ---- High Contrast (default) ---- */
+  /* ---- Velorn (default) ---- */
+  --sf-dark-950: 3 6 16;
+  --sf-dark-900: 8 12 26;
+  --sf-dark-800: 17 23 42;
+  --sf-dark-700: 31 31 58;
+  --sf-dark-600: 48 43 82;
+  --sf-dark-500: 76 66 112;
+  --sf-dark-400: 112 98 150;
+
+  --sf-accent: 152 112 0;
+  --sf-accent-hover: 174 130 16;
+  --sf-accent-muted: 116 86 20;
+
+  --sf-blue: 92 155 220;
+  --sf-blue-hover: 112 176 240;
+  --sf-blue-muted: 62 118 184;
+
+  --sf-clip-video: 54 138 178;
+  --sf-clip-audio: 126 78 172;
+  --sf-clip-text: 190 140 42;
+
+  --sf-success: 60 190 138;
+  --sf-warning: 152 112 0;
+  --sf-error: 238 92 118;
+
+  --sf-text-primary: 244 238 248;
+  --sf-text-secondary: 214 207 226;
+  --sf-text-muted: 160 151 180;
+}
+
+[data-theme="high-contrast"] {
   --sf-dark-950: 0 0 0;
   --sf-dark-900: 10 10 12;
   --sf-dark-800: 20 20 24;
@@ -90,6 +120,36 @@
   --sf-text-primary: 222 222 230;
   --sf-text-secondary: 158 158 170;
   --sf-text-muted: 110 110 124;
+}
+
+[data-theme="velorn"] {
+  --sf-dark-950: 3 6 16;
+  --sf-dark-900: 8 12 26;
+  --sf-dark-800: 17 23 42;
+  --sf-dark-700: 31 31 58;
+  --sf-dark-600: 48 43 82;
+  --sf-dark-500: 76 66 112;
+  --sf-dark-400: 112 98 150;
+
+  --sf-accent: 152 112 0;
+  --sf-accent-hover: 174 130 16;
+  --sf-accent-muted: 116 86 20;
+
+  --sf-blue: 92 155 220;
+  --sf-blue-hover: 112 176 240;
+  --sf-blue-muted: 62 118 184;
+
+  --sf-clip-video: 54 138 178;
+  --sf-clip-audio: 126 78 172;
+  --sf-clip-text: 190 140 42;
+
+  --sf-success: 60 190 138;
+  --sf-warning: 152 112 0;
+  --sf-error: 238 92 118;
+
+  --sf-text-primary: 244 238 248;
+  --sf-text-secondary: 214 207 226;
+  --sf-text-muted: 160 151 180;
 }
 
 [data-theme="arctic"] {

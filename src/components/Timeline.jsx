@@ -9,6 +9,8 @@ import {
 import useTimelineStore, { buildClipSyncLock, isMusicVideoSyncCapableClip, isSyncLockedClip } from '../stores/timelineStore'
 import useProjectStore from '../stores/projectStore'
 import renderCacheService from '../services/renderCache'
+import { isClipRenderable, renderClipToCache } from '../services/clipRenderCache'
+import { isFullBakeFresh } from '../utils/clipBakeSignature'
 import { deleteRenderCache } from '../services/fileSystem'
 import { clearDiskCacheUrl } from './VideoLayerRenderer'
 import useAssetsStore from '../stores/assetsStore'
@@ -49,10 +51,33 @@ const PLAYHEAD_SCRUB_AUTO_SCROLL_MAX_STEP_PX = 28
 const MIN_INTERACTIVE_CLIP_WIDTH_PX = 24
 const TIMELINE_VIDEO_THUMB_WIDTH_PX = 90
 const MAX_TIMELINE_VIDEO_THUMBNAILS = 12
+const CLIP_LABEL_COLOR_OPTIONS = Object.freeze([
+  { label: 'Clear label', color: '' },
+  { label: 'Red', color: '#ef4444' },
+  { label: 'Orange', color: '#f97316' },
+  { label: 'Yellow', color: '#eab308' },
+  { label: 'Green', color: '#22c55e' },
+  { label: 'Cyan', color: '#06b6d4' },
+  { label: 'Blue', color: '#3b82f6' },
+  { label: 'Purple', color: '#a855f7' },
+  { label: 'Pink', color: '#ec4899' },
+])
+const getClipLabelColorValue = (clip) => (
+  typeof clip?.labelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(clip.labelColor.trim())
+    ? clip.labelColor.trim().toLowerCase()
+    : ''
+)
+const getClipLabelTintOpacity = (clip) => {
+  if (!clip) return 0.28
+  if (clip.type === 'audio') return 0.34
+  if (clip.type === 'text' || clip.type === 'adjustment') return 0.42
+  return 0.3
+}
+const getClipLabelFooterOpacity = (clip) => (clip?.type === 'audio' ? 0.5 : 0.62)
 
 // Resolve-style audio track/waveform colors
 const AUDIO_TRACK_BG = '#2d4038'
-const AUDIO_WAVEFORM_FILL = 'rgba(238, 255, 249, 0.94)'
+const AUDIO_WAVEFORM_FILL = 'rgba(196, 208, 202, 0.6)'
 const AUDIO_WAVEFORM_CENTER_LINE = 'rgba(255,255,255,0.32)'
 const AUDIO_CLIP_ACCENT = '#4a6b5c'
 const ADJACENT_CLIP_UI_GAP_SECONDS = 0.5
@@ -174,7 +199,7 @@ const parseFrameOffsetInput = (value, fps) => {
 
 const getClipSourceDurationForExtension = (clip) => {
   if (!clip) return Infinity
-  if (clip.type === 'image' || clip.type === 'adjustment' || clip.type === 'text') return Infinity
+  if (clip.type === 'image' || clip.type === 'adjustment' || clip.type === 'text' || clip.type === 'shape') return Infinity
   const raw = clip.sourceDuration
   if (raw === Infinity || raw === 'Infinity') return Infinity
   const parsed = Number(raw)
@@ -184,7 +209,7 @@ const getClipSourceDurationForExtension = (clip) => {
 }
 
 const isInfinitelyExtendableClip = (clip) => (
-  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text'
+  clip?.type === 'image' || clip?.type === 'adjustment' || clip?.type === 'text' || clip?.type === 'shape'
 )
 
 const getAudioWaveformContext = () => {
@@ -197,40 +222,38 @@ const getAudioWaveformContext = () => {
 }
 
 const buildWaveformPeaks = (audioBuffer, sampleCount = DEFAULT_WAVEFORM_SAMPLES) => {
-  const channelCount = Math.max(1, audioBuffer.numberOfChannels || 1)
+  // Per-channel peaks (up to stereo), true levels — no per-file
+  // normalization, matching the main-process ffmpeg extraction.
+  const channelCount = Math.max(1, Math.min(2, audioBuffer.numberOfChannels || 1))
   const totalSamples = Math.max(1, audioBuffer.length || 1)
   const buckets = Math.max(32, sampleCount)
   const bucketSize = Math.max(1, Math.floor(totalSamples / buckets))
-  const peaks = new Float32Array(buckets)
+  const channelPeaks = []
 
-  for (let i = 0; i < buckets; i++) {
-    const start = i * bucketSize
-    const end = i === buckets - 1 ? totalSamples : Math.min(totalSamples, start + bucketSize)
-    const span = Math.max(1, end - start)
-    const stride = Math.max(1, Math.floor(span / 64))
-    let peak = 0
-
-    for (let channel = 0; channel < channelCount; channel++) {
-      const data = audioBuffer.getChannelData(channel)
-      for (let s = start; s < end; s += stride) {
+  for (let channel = 0; channel < channelCount; channel++) {
+    const data = audioBuffer.getChannelData(channel)
+    const peaksForChannel = new Array(buckets).fill(0)
+    for (let i = 0; i < buckets; i++) {
+      const start = i * bucketSize
+      const end = i === buckets - 1 ? totalSamples : Math.min(totalSamples, start + bucketSize)
+      let peak = 0
+      for (let s = start; s < end; s++) {
         const amp = Math.abs(data[s] || 0)
         if (amp > peak) peak = amp
       }
+      peaksForChannel[i] = Math.min(1, peak)
     }
-    peaks[i] = peak
+    channelPeaks.push(peaksForChannel)
   }
 
-  let maxPeak = 0
-  for (let i = 0; i < peaks.length; i++) {
-    if (peaks[i] > maxPeak) maxPeak = peaks[i]
-  }
-  if (maxPeak > 0) {
-    for (let i = 0; i < peaks.length; i++) {
-      peaks[i] = peaks[i] / maxPeak
-    }
-  }
+  const peaks = channelPeaks.length > 1
+    ? channelPeaks[0].map((value, i) => Math.max(value, channelPeaks[1][i]))
+    : channelPeaks[0]
 
-  return peaks
+  return {
+    peaks,
+    channelPeaks: channelPeaks.length > 1 ? channelPeaks : null,
+  }
 }
 
 const isNativeMediaUrl = (url) => /^file:\/\//i.test(url) || /^comfystudio:\/\//i.test(url)
@@ -257,6 +280,9 @@ const getAudioWaveformData = async (url, sampleCount = DEFAULT_WAVEFORM_SAMPLES)
       if (result?.success && Array.isArray(result.peaks)) {
         return {
           peaks: result.peaks,
+          channelPeaks: Array.isArray(result.channelPeaks) && result.channelPeaks.length >= 2
+            ? result.channelPeaks
+            : null,
           duration: Number(result.duration) || 0
         }
       }
@@ -275,8 +301,8 @@ const getAudioWaveformData = async (url, sampleCount = DEFAULT_WAVEFORM_SAMPLES)
     if (!response.ok) throw new Error(`Failed to load audio: ${response.status}`)
     const arrayBuffer = await response.arrayBuffer()
     const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
-    const peaks = buildWaveformPeaks(audioBuffer, sampleCount)
-    return { peaks, duration: audioBuffer.duration || 0 }
+    const built = buildWaveformPeaks(audioBuffer, sampleCount)
+    return { ...built, duration: audioBuffer.duration || 0 }
   })().then((result) => {
     AUDIO_WAVEFORM_PENDING.delete(key)
     if (result) AUDIO_WAVEFORM_CACHE.set(key, result)
@@ -304,7 +330,7 @@ function getWaveformSampleCount(pixelCount) {
   return Math.min(32768, sampleCount)
 }
 
-function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
+function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null, stereo = false }) {
   const [waveform, setWaveform] = useState(null)
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   const containerRef = useRef(null)
@@ -344,10 +370,15 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     return () => ro.disconnect()
   }, [clipWidth])
 
-  const amplitudePixels = useMemo(() => {
+  const lanePixels = useMemo(() => {
     if (!waveform?.peaks?.length) return null
 
-    const peaks = waveform.peaks
+    // One lane per rendered channel: stereo tracks with per-channel data get
+    // L and R lanes; everything else renders the combined mono lane.
+    const laneSources = stereo && Array.isArray(waveform.channelPeaks) && waveform.channelPeaks.length >= 2
+      ? waveform.channelPeaks
+      : [waveform.peaks]
+
     const sourceDurationFromClip = Number(clip.sourceDuration)
     const sourceDuration = Number.isFinite(sourceDurationFromClip) && sourceDurationFromClip > 0
       ? sourceDurationFromClip
@@ -360,29 +391,31 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     const sourceSpan = Math.max(0.0001, trimEnd - trimStart)
     const isReverse = Boolean(clip.reverse)
 
-    const out = new Array(pixelCount)
-    for (let i = 0; i < pixelCount; i++) {
-      const startProgress = i / pixelCount
-      const endProgress = (i + 1) / pixelCount
-      const startTime = isReverse
-        ? trimEnd - (endProgress * sourceSpan)
-        : trimStart + (startProgress * sourceSpan)
-      const endTime = isReverse
-        ? trimEnd - (startProgress * sourceSpan)
-        : trimStart + (endProgress * sourceSpan)
-      const normalizedStart = Math.max(0, Math.min(0.999999, startTime / sourceDuration))
-      const normalizedEnd = Math.max(0, Math.min(0.999999, endTime / sourceDuration))
-      const leftIndex = Math.max(0, Math.floor(normalizedStart * (peaks.length - 1)))
-      const rightIndex = Math.min(peaks.length - 1, Math.ceil(normalizedEnd * (peaks.length - 1)))
-      let peak = 0
-      for (let peakIndex = leftIndex; peakIndex <= rightIndex; peakIndex += 1) {
-        const value = Number(peaks[peakIndex] || 0)
-        if (value > peak) peak = value
+    return laneSources.map((peaks) => {
+      const out = new Array(pixelCount)
+      for (let i = 0; i < pixelCount; i++) {
+        const startProgress = i / pixelCount
+        const endProgress = (i + 1) / pixelCount
+        const startTime = isReverse
+          ? trimEnd - (endProgress * sourceSpan)
+          : trimStart + (startProgress * sourceSpan)
+        const endTime = isReverse
+          ? trimEnd - (startProgress * sourceSpan)
+          : trimStart + (endProgress * sourceSpan)
+        const normalizedStart = Math.max(0, Math.min(0.999999, startTime / sourceDuration))
+        const normalizedEnd = Math.max(0, Math.min(0.999999, endTime / sourceDuration))
+        const leftIndex = Math.max(0, Math.floor(normalizedStart * (peaks.length - 1)))
+        const rightIndex = Math.min(peaks.length - 1, Math.ceil(normalizedEnd * (peaks.length - 1)))
+        let peak = 0
+        for (let peakIndex = leftIndex; peakIndex <= rightIndex; peakIndex += 1) {
+          const value = Number(peaks[peakIndex] || 0)
+          if (value > peak) peak = value
+        }
+        out[i] = Math.max(0.006, Math.min(1, peak))
       }
-      out[i] = Math.max(0.015, Math.min(1, peak))
-    }
-    return out
-  }, [waveform, clip.sourceDuration, clip.trimStart, clip.trimEnd, clip.reverse, pixelCount])
+      return out
+    })
+  }, [waveform, stereo, clip.sourceDuration, clip.trimStart, clip.trimEnd, clip.reverse, pixelCount])
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current
@@ -403,33 +436,47 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null }) {
     ctx.fillStyle = AUDIO_TRACK_BG
     ctx.fillRect(0, 0, w, h)
 
-    const centerY = h / 2
-    const halfH = (h / 2) * 0.88
-    const n = amplitudePixels ? amplitudePixels.length : 0
+    // One horizontal lane per channel (stereo pair = L on top, R below),
+    // each mirrored around its own lane center — Flame/Resolve style.
+    const laneCount = lanePixels ? lanePixels.length : 1
+    const laneHeight = h / laneCount
 
-    if (n > 0) {
-      ctx.strokeStyle = AUDIO_WAVEFORM_FILL
-      ctx.lineWidth = 1
-      ctx.lineCap = 'butt'
-      ctx.beginPath()
-      for (let i = 0; i < n; i++) {
-        const x = ((i + 0.5) / n) * w
-        const amp = amplitudePixels[i] ?? 0.1
-        const y1 = centerY - amp * halfH
-        const y2 = centerY + amp * halfH
-        ctx.moveTo(x, y1)
-        ctx.lineTo(x, y2)
+    for (let lane = 0; lane < laneCount; lane++) {
+      const centerY = laneHeight * (lane + 0.5)
+      const halfH = (laneHeight / 2) * 0.88
+      const amps = lanePixels ? lanePixels[lane] : null
+      const n = amps ? amps.length : 0
+
+      if (n > 0) {
+        // Filled mirrored envelope (top edge across, bottom edge back) —
+        // reads as one connected waveform body like Flame/Resolve, instead
+        // of isolated per-column sticks.
+        ctx.fillStyle = AUDIO_WAVEFORM_FILL
+        ctx.beginPath()
+        ctx.moveTo(0, centerY - (amps[0] ?? 0) * halfH)
+        for (let i = 0; i < n; i++) {
+          const x = ((i + 0.5) / n) * w
+          ctx.lineTo(x, centerY - (amps[i] ?? 0) * halfH)
+        }
+        ctx.lineTo(w, centerY - (amps[n - 1] ?? 0) * halfH)
+        ctx.lineTo(w, centerY + (amps[n - 1] ?? 0) * halfH)
+        for (let i = n - 1; i >= 0; i--) {
+          const x = ((i + 0.5) / n) * w
+          ctx.lineTo(x, centerY + (amps[i] ?? 0) * halfH)
+        }
+        ctx.lineTo(0, centerY + (amps[0] ?? 0) * halfH)
+        ctx.closePath()
+        ctx.fill()
       }
+
+      ctx.strokeStyle = AUDIO_WAVEFORM_CENTER_LINE
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(0, centerY)
+      ctx.lineTo(w, centerY)
       ctx.stroke()
     }
-
-    ctx.strokeStyle = AUDIO_WAVEFORM_CENTER_LINE
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(0, centerY)
-    ctx.lineTo(w, centerY)
-    ctx.stroke()
-  }, [containerSize, amplitudePixels])
+  }, [containerSize, lanePixels])
 
   return (
     <div
@@ -663,10 +710,12 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     rippleEditMode,
     inPoint,
     outPoint,
+    rangeRenderState,
     markers,
     selectedMarkerId,
     addClip,
     addTextClip,
+    addShapeClip,
     removeClip,
     removeSelectedClips,
     rippleDeleteClipIds,
@@ -688,6 +737,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     toggleTrackLock,
     toggleTrackVisibility,
     setClipsEnabled,
+    setClipLabelColor,
     addTrack,
     addTransition,
     removeTransition,
@@ -764,6 +814,11 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     }
     return newClip
   }, [preferredVideoTrack, addTextClip, playheadPosition, requestTextEdit])
+  const addShapeClipAtPlayhead = useCallback((options = {}) => {
+    const targetTrack = preferredVideoTrack
+    if (!targetTrack) return null
+    return addShapeClip(targetTrack.id, options, playheadPosition)
+  }, [preferredVideoTrack, addShapeClip, playheadPosition])
   const handleUndoAction = useCallback(() => {
     if (projectCanUndo && (!canUndo() || projectHistoryLastChangedAt > timelineHistoryLastChangedAt)) {
       return undoTimelineStructureChange()
@@ -997,11 +1052,28 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     () => clipContextSelectionClips.length > 0 && clipContextSelectionClips.every((clip) => !isClipEnabled(clip)),
     [clipContextSelectionClips, isClipEnabled]
   )
+  const clipContextActiveLabelColor = useMemo(() => {
+    if (clipContextSelectionClips.length === 0) return ''
+    const firstColor = getClipLabelColorValue(clipContextSelectionClips[0])
+    const allSameColor = clipContextSelectionClips.every((clip) => getClipLabelColorValue(clip) === firstColor)
+    return allSameColor ? firstColor : null
+  }, [clipContextSelectionClips])
 
   const setClipSelectionEnabled = useCallback((clipIds, enabled) => {
     if (!Array.isArray(clipIds) || clipIds.length === 0) return
     setClipsEnabled(clipIds, enabled)
   }, [setClipsEnabled])
+
+  const applyClipLabelColor = useCallback((labelColor) => {
+    const targetIds = clipContextSelectionIds.length > 0
+      ? clipContextSelectionIds
+      : (clipContextMenu?.clipId ? [clipContextMenu.clipId] : [])
+    if (targetIds.length === 0) return
+
+    setClipLabelColor(targetIds, labelColor)
+    setMaskSubmenuOpen(false)
+    setClipContextMenu(null)
+  }, [clipContextMenu?.clipId, clipContextSelectionIds, setClipLabelColor])
 
   const toggleClipSelectionEnabled = useCallback((clipIds = selectedClipIds) => {
     const targetClips = (clipIds || [])
@@ -1163,7 +1235,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   // Helper to get clip URL - uses asset store URL if available (handles refreshed blob URLs)
   const getClipUrl = (clip) => {
     if (!clip) return null
-    if (clip.type === 'text') return null
+    if (clip.type === 'text' || clip.type === 'shape') return null
     // Try to get current URL from assets store (may have been regenerated after refresh)
     if (clip.assetId) {
       const assetUrl = getAssetUrl(clip.assetId)
@@ -1816,6 +1888,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     const handleMouseUp = () => {
       stopAutoScroll()
       setIsScrubbing(false)
+      // Let the preview renderer commit the precise frame immediately
+      // instead of waiting out its scrub-settle timer.
+      window.dispatchEvent(new CustomEvent('comfystudio:timeline-scrub-end'))
     }
 
     // Add listeners to window so dragging works even outside the timeline
@@ -2247,7 +2322,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     const remainder = clip.duration - splitTime
 
     let asset = null
-    if (clip.type !== 'text' && clip.type !== 'adjustment') {
+    if (clip.type !== 'text' && clip.type !== 'shape' && clip.type !== 'adjustment') {
       asset = assets.find(a => a.id === clip.assetId)
       if (!asset) return null
     }
@@ -2266,6 +2341,17 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         saveHistory: false,
       }
       return addTextClip(clip.trackId, textOptions, splitPosition)
+    }
+
+    if (clip.type === 'shape') {
+      return addShapeClip(clip.trackId, {
+        shapeProperties: clip.shapeProperties || {},
+        duration: remainder,
+        name: clip.name,
+        transform: clip.transform || {},
+        enabled: isClipEnabled(clip),
+        saveHistory: false,
+      }, splitPosition)
     }
 
     if (clip.type === 'adjustment') {
@@ -2295,7 +2381,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         : {}),
       saveHistory: false,
     })
-  }, [assets, saveToHistory, resizeClip, addTextClip, addAdjustmentClip, addClip, timelineFps, isClipEnabled])
+  }, [assets, saveToHistory, resizeClip, addTextClip, addShapeClip, addAdjustmentClip, addClip, timelineFps, isClipEnabled])
 
   const splitAllTracksAtPlayhead = useCallback(() => {
     const clipsToSplit = clips.filter(
@@ -2637,7 +2723,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [toggleSnapping, toggleRippleEdit, addMarker, selectedClipIds, selectedGap, selectedTransitionId, selectedMarkerId, removeSelectedClips, rippleDeleteSelectedClips, rippleDeleteSelectedGap, removeTransition, removeMarker, clearSelection, selectMarker, clips, handleUndoAction, handleRedoAction, activeTrackId, playheadPosition, saveToHistory, resizeClip, addClip, addTextClip, addTextClipAtPlayhead, addAdjustmentClip, updateClipTrim, assets, timelineFps, copySelectedClips, pasteClipsAtPlayhead, copiedClips, selectClipsFromPlayheadToEnd, selectClipsFromTimelineStartToPlayhead, splitClipAtTime, splitAllTracksAtPlayhead, openMoveOffsetDialog, openDurationDeltaDialog, moveOffsetDialogOpen, durationDeltaDialogOpen, editorHotkeys, linkSelectedClips, unlinkSelectedClips, lockSyncClips, unlockSyncLockedClips, toggleClipSelectionEnabled, applyZoomWithPlayheadPivot, zoom, rippleEditMode, activeTrackClipAtPlayhead, canDeleteCurrentSelection, handleCopySelection, handleDeleteCurrentSelection, handlePasteAtPlayhead, handleSplitActiveTrackAtPlayhead, jumpPlayheadToClipBoundary, jumpPlayheadToMarker, clipContextSyncEligibleClips, clipContextSyncLockByClipId, clipContextAllSyncLocked])
+  }, [toggleSnapping, toggleRippleEdit, addMarker, selectedClipIds, selectedGap, selectedTransitionId, selectedMarkerId, removeSelectedClips, rippleDeleteSelectedClips, rippleDeleteSelectedGap, removeTransition, removeMarker, clearSelection, selectMarker, clips, handleUndoAction, handleRedoAction, activeTrackId, playheadPosition, saveToHistory, resizeClip, addClip, addTextClip, addShapeClip, addTextClipAtPlayhead, addShapeClipAtPlayhead, addAdjustmentClip, updateClipTrim, assets, timelineFps, copySelectedClips, pasteClipsAtPlayhead, copiedClips, selectClipsFromPlayheadToEnd, selectClipsFromTimelineStartToPlayhead, splitClipAtTime, splitAllTracksAtPlayhead, openMoveOffsetDialog, openDurationDeltaDialog, moveOffsetDialogOpen, durationDeltaDialogOpen, editorHotkeys, linkSelectedClips, unlinkSelectedClips, lockSyncClips, unlockSyncLockedClips, toggleClipSelectionEnabled, applyZoomWithPlayheadPivot, zoom, rippleEditMode, activeTrackClipAtPlayhead, canDeleteCurrentSelection, handleCopySelection, handleDeleteCurrentSelection, handlePasteAtPlayhead, handleSplitActiveTrackAtPlayhead, jumpPlayheadToClipBoundary, jumpPlayheadToMarker, clipContextSyncEligibleClips, clipContextSyncLockByClipId, clipContextAllSyncLocked])
 
   // Spacebar panning key state (dedicated listeners so keyup cannot get "stuck")
   useEffect(() => {
@@ -3283,10 +3369,27 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   }, [clipContextMenu])
 
   // Context menu actions
+  const renderableSelectedClips = useMemo(() => (
+    selectedClipIds
+      .map((id) => clips.find(c => c.id === id))
+      .filter((clip) => isClipRenderable(clip))
+  ), [selectedClipIds, clips])
+
+  const handleRenderClips = useCallback(async (targetClips) => {
+    for (const target of targetClips) {
+      if (!isClipRenderable(target)) continue
+      try {
+        await renderClipToCache(target.id)
+      } catch (err) {
+        console.warn('[RenderCache] Clip render failed:', target?.id, err)
+      }
+    }
+  }, [])
+
   const handleContextMenuAction = (action) => {
     const clip = clips.find(c => c.id === clipContextMenu?.clipId)
     if (!clip) return
-    
+
     switch (action) {
       case 'add-mask':
         if (!(clip.type === 'video' || clip.type === 'image')) break
@@ -3294,6 +3397,15 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         selectClip(clip.id)
         requestMaskPicker(clip.id, { openPicker: true })
         break
+      case 'render-cache': {
+        const targetIds = selectedClipIds.includes(clip.id) ? selectedClipIds : [clip.id]
+        const targets = targetIds
+          .map((clipId) => clips.find(c => c.id === clipId))
+          .filter(Boolean)
+        void handleRenderClips(targets)
+        setClipContextMenu(null)
+        break
+      }
       case 'flush-cache': {
         const targetIds = selectedClipIds.includes(clip.id) ? selectedClipIds : [clip.id]
         targetIds.forEach((clipId) => {
@@ -3325,6 +3437,14 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
         if (clip.type === 'text') {
           const textOptions = { ...(clip.textProperties || {}), duration: clip.duration, enabled: isClipEnabled(clip) }
           addTextClip(clip.trackId, textOptions, clip.startTime + clip.duration + 0.1)
+        } else if (clip.type === 'shape') {
+          addShapeClip(clip.trackId, {
+            shapeProperties: clip.shapeProperties || {},
+            duration: clip.duration,
+            name: clip.name,
+            transform: clip.transform || {},
+            enabled: isClipEnabled(clip),
+          }, clip.startTime + clip.duration + 0.1)
         } else if (clip.type === 'adjustment') {
           addAdjustmentClip(clip.trackId, clip.startTime + clip.duration + 0.1, {
             duration: clip.duration,
@@ -4516,6 +4636,17 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
               Text
             </button>
             <button
+              onClick={() => addShapeClipAtPlayhead()}
+              disabled={!preferredVideoTrack}
+              className={toolbarButtonClass}
+              title={preferredVideoTrack
+                ? `Add a shape clip on ${preferredVideoTrack.name} at the playhead`
+                : 'Add a video track to create shapes at the playhead'}
+            >
+              <Square className="w-3 h-3 text-cyan-300" />
+              Shape
+            </button>
+            <button
               onClick={handleOpenTimelineCaptions}
               className={toolbarButtonClass}
               title="Transcribe the timeline's audio and add animated captions on a new top track"
@@ -4584,6 +4715,17 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
             >
               {selectedClipsShouldEnable ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
               {selectedClipsShouldEnable ? 'Enable' : 'Disable'}
+            </button>
+            <button
+              onClick={() => { void handleRenderClips(renderableSelectedClips) }}
+              disabled={renderableSelectedClips.length === 0}
+              className={toolbarButtonClass}
+              title={renderableSelectedClips.length > 0
+                ? `Render ${renderableSelectedClips.length > 1 ? `${renderableSelectedClips.length} selected clips` : 'the selected clip'} to cache for smooth playback`
+                : 'Select clips to render them to cache'}
+            >
+              <Zap className="w-3 h-3" />
+              Render
             </button>
             <button
               onClick={handleDeleteCurrentSelection}
@@ -4941,7 +5083,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
             const headerHeight = getTrackHeight(track)
             const audioTrackNumber = index + 1
             const channelLabels = isStereo
-              ? [`A${audioTrackNumber}L`, `A${audioTrackNumber}R`]
+              ? [`A${audioTrackNumber}.L`, `A${audioTrackNumber}.R`]
               : [`A${audioTrackNumber}`]
             
             return (
@@ -4993,22 +5135,30 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   </div>
                 ) : (
                   <div
-                    className="flex-1 min-w-0 cursor-pointer"
+                    className="flex-1 min-w-0 flex items-center gap-2 cursor-pointer"
                     onDoubleClick={(e) => { e.stopPropagation(); handleStartRename(track) }}
                     title="Double-click to rename"
                   >
-                    <span className="text-[11px] text-sf-text-primary truncate block leading-tight hover:text-sf-accent">
+                    <span className="text-[11px] text-sf-text-primary truncate leading-tight hover:text-sf-accent">
                       {track.name}
                     </span>
-                    <div className="mt-0.5 flex items-center gap-1.5">
-                      {channelLabels.map((label) => (
-                        <span
-                          key={label}
-                          className="px-1 py-0 rounded border border-sf-dark-500 bg-sf-dark-700/70 text-[9px] text-sf-text-muted leading-none"
-                        >
-                          {label}
-                        </span>
-                      ))}
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {isStereo && (
+                        <Link
+                          className="w-2.5 h-2.5 text-sf-text-muted/60 flex-shrink-0"
+                          title="Stereo pair"
+                        />
+                      )}
+                      <div className={isStereo ? 'flex flex-col gap-1 items-start' : 'flex items-center'}>
+                        {channelLabels.map((label) => (
+                          <span
+                            key={label}
+                            className="px-1 py-0.5 rounded border border-sf-dark-500 bg-sf-dark-700/70 text-[9px] text-sf-text-muted leading-none"
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -5210,6 +5360,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   const clipMediaUrl = shouldRenderClipThumbnails && (clip.type === 'image' || clip.type === 'video')
                     ? getClipUrl(clip)
                     : null
+                  const clipLabelColor = getClipLabelColorValue(clip)
                   
                   return (
                   <div
@@ -5273,6 +5424,28 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                         width: `${renderedClipWidth}px`,
                       }}
                     >
+                    {/* Render-cache status strip (Resolve-style): purple grows
+                        with render progress, green = cached and fresh,
+                        amber = content edited since the bake (outdated).
+                        Bottom edge — the TOP 3px slot belongs to the clip
+                        label-color strip (z-20, later in DOM), which would
+                        paint over anything we put there. */}
+                    {clip.cacheStatus === 'rendering' && (
+                      <div
+                        className="absolute bottom-0 left-0 h-[3px] bg-purple-400 z-20 pointer-events-none"
+                        style={{ width: `${Math.max(4, Math.min(100, Number(clip.cacheProgress) || 0))}%` }}
+                      />
+                    )}
+                    {clip.cacheStatus === 'cached' && (
+                      <div
+                        className={`absolute bottom-0 left-0 right-0 h-[3px] z-20 pointer-events-none ${
+                          clip.cacheKind !== 'full' || isFullBakeFresh(clip) ? 'bg-emerald-400/90' : 'bg-amber-400/90'
+                        }`}
+                      />
+                    )}
+                    {clip.cacheStatus === 'invalid' && (
+                      <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-amber-400/90 z-20 pointer-events-none" />
+                    )}
                     {(() => {
                       const edgeTransitions = edgeTransitionsByClipId.get(clip.id) || []
                       const hasIn = edgeTransitions.some(t => t.edge === 'in')
@@ -5578,6 +5751,29 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                           <EyeOff className="w-2.5 h-2.5" />
                           <span>Off</span>
                         </div>
+                      </>
+                    )}
+
+                    {clipLabelColor && (
+                      <>
+                        <div
+                          className="absolute inset-0 z-[6] pointer-events-none"
+                          style={{
+                            backgroundColor: clipLabelColor,
+                            opacity: getClipLabelTintOpacity(clip),
+                          }}
+                        />
+                        <div
+                          className="absolute inset-x-0 bottom-0 z-[7] h-[14px] pointer-events-none"
+                          style={{
+                            backgroundColor: clipLabelColor,
+                            opacity: getClipLabelFooterOpacity(clip),
+                          }}
+                        />
+                        <div
+                          className="absolute inset-x-0 top-0 z-20 h-[3px] pointer-events-none"
+                          style={{ backgroundColor: clipLabelColor }}
+                        />
                       </>
                     )}
 
@@ -5948,6 +6144,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                     ? null
                     : Math.max(18, Math.min(renderedClipWidth - 18, activeFadeHandleX))
                   const clipAsset = clip.assetId ? getAssetById(clip.assetId) : null
+                  const clipLabelColor = getClipLabelColorValue(clip)
                   const nativeWaveformInput = (
                     (clipAsset?.absolutePath || null)
                     || (isNativeMediaUrl(clipAsset?.playbackCacheUrl) ? clipAsset.playbackCacheUrl : null)
@@ -6005,6 +6202,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                       clipWidth={clipWidth}
                       clipUrl={clipUrl}
                       waveformInput={waveformInput}
+                      stereo={isStereoContent}
                     />
 
                     {fadeInWidth > 0 && (
@@ -6062,6 +6260,29 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                           <EyeOff className="w-2.5 h-2.5" />
                           <span>Off</span>
                         </div>
+                      </>
+                    )}
+
+                    {clipLabelColor && (
+                      <>
+                        <div
+                          className="absolute inset-0 z-[6] pointer-events-none"
+                          style={{
+                            backgroundColor: clipLabelColor,
+                            opacity: getClipLabelTintOpacity(clip),
+                          }}
+                        />
+                        <div
+                          className="absolute inset-x-0 bottom-0 z-[7] h-[14px] pointer-events-none"
+                          style={{
+                            backgroundColor: clipLabelColor,
+                            opacity: getClipLabelFooterOpacity(clip),
+                          }}
+                        />
+                        <div
+                          className="absolute inset-x-0 top-0 z-20 h-[3px] pointer-events-none"
+                          style={{ backgroundColor: clipLabelColor }}
+                        />
                       </>
                     )}
                     
@@ -6222,6 +6443,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           {markers.map((marker, index) => {
             const isSelected = marker.id === selectedMarkerId
             const markerLabel = marker.label?.trim() || `M${index + 1}`
+            const markerColor = /^#[0-9a-fA-F]{6}$/.test(marker.color || '') ? marker.color : '#06b6d4'
             return (
               <div
                 key={marker.id}
@@ -6232,16 +6454,24 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   className={`absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-px ${
                     isSelected
                       ? 'bg-cyan-200 shadow-[0_0_8px_rgba(103,232,249,0.45)]'
-                      : 'bg-cyan-400/70'
+                      : ''
                   }`}
+                  style={isSelected ? undefined : {
+                    backgroundColor: markerColor,
+                    boxShadow: `0 0 8px ${markerColor}66`,
+                  }}
                 />
                 <button
                   data-marker-handle="true"
                   className={`absolute -top-1 left-1/2 -translate-x-1/2 h-4 min-w-[18px] px-1 pointer-events-auto transition-all rounded-[4px] border shadow-[0_4px_10px_rgba(0,0,0,0.35)] flex items-center justify-center gap-1 ${
                     isSelected
                       ? 'border-cyan-100/80 bg-cyan-300 text-slate-950'
-                      : 'border-cyan-300/45 bg-cyan-500/85 text-white hover:bg-cyan-400'
+                      : 'text-white hover:brightness-110'
                   }`}
+                  style={isSelected ? undefined : {
+                    backgroundColor: markerColor,
+                    borderColor: `${markerColor}aa`,
+                  }}
                   onMouseDown={(e) => {
                     e.stopPropagation()
                     e.preventDefault()
@@ -6261,8 +6491,9 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                 </button>
                 <div
                   className={`absolute top-3 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rotate-45 ${
-                    isSelected ? 'bg-cyan-300' : 'bg-cyan-500/90'
+                    isSelected ? 'bg-cyan-300' : ''
                   }`}
+                  style={isSelected ? undefined : { backgroundColor: markerColor }}
                 />
                 {isSelected && (
                   <div className="absolute top-5 left-2 text-[9px] px-1.5 py-0.5 rounded border border-cyan-400/35 bg-slate-950/92 text-cyan-100 whitespace-nowrap pointer-events-none font-mono shadow-[0_6px_14px_rgba(0,0,0,0.35)]">
@@ -6303,11 +6534,29 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           {inPoint !== null && outPoint !== null && inPoint < outPoint && (
             <div
               className="absolute top-0 bottom-0 bg-[#5a7a9e]/10 z-5 pointer-events-none border-t border-b border-[#5a7a9e]/30"
-              style={{ 
+              style={{
                 left: `${inPoint * pixelsPerSecond}px`,
                 width: `${(outPoint - inPoint) * pixelsPerSecond}px`
               }}
-            />
+            >
+              {/* Render In→Out status strip — same color language as the
+                  per-clip render strip (purple rendering / green fresh /
+                  amber stale) */}
+              {rangeRenderState
+                && Math.abs((rangeRenderState.rangeStart ?? -1) - inPoint) < 0.001
+                && Math.abs((rangeRenderState.rangeEnd ?? -1) - outPoint) < 0.001 && (
+                <div className="absolute left-0 bottom-0 h-[3px] w-full bg-sf-dark-900/60">
+                  {rangeRenderState.status === 'rendering' && (
+                    <div
+                      className="h-full bg-purple-400/90"
+                      style={{ width: `${Math.max(4, Math.min(100, Number(rangeRenderState.progress) || 0))}%` }}
+                    />
+                  )}
+                  {rangeRenderState.status === 'cached' && <div className="h-full w-full bg-emerald-400/90" />}
+                  {rangeRenderState.status === 'stale' && <div className="h-full w-full bg-amber-400/90" />}
+                </div>
+              )}
+            </div>
           )}
           
           {/* Snap Guide Lines */}
@@ -6447,7 +6696,7 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
       {clipContextMenu && (
         <div
           ref={clipContextMenuRef}
-          className="fixed z-50 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl py-1 min-w-[160px]"
+          className="fixed z-50 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl py-1 min-w-[240px]"
           style={{
             left: `${clipContextMenuPosition.x}px`,
             top: `${clipContextMenuPosition.y}px`,
@@ -6474,12 +6723,12 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                     // Decide which side of the parent menu to open the
                     // submenu on. We don't know the exact submenu width
                     // before render, but `min-w-[220px]` is a safe lower
-                    // bound; the parent menu is `min-w-[160px]`. If opening
+                    // bound; the parent menu is `min-w-[240px]`. If opening
                     // to the right would push the submenu off the viewport
                     // edge (or close enough to it that it would feel
                     // cramped), we flip to the left instead.
                     const SUBMENU_MIN_WIDTH = 220
-                    const PARENT_MIN_WIDTH = 160
+                    const PARENT_MIN_WIDTH = 240
                     const EDGE_MARGIN = 12
                     const viewportWidth = typeof window !== 'undefined'
                       ? window.innerWidth
@@ -6523,6 +6772,27 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                     )
                   })()}
                 </div>
+                <div className="h-px bg-sf-dark-600 my-1" />
+              </>
+            )
+          })()}
+          {(() => {
+            const contextClip = clips.find(c => c.id === clipContextMenu.clipId)
+            if (!isClipRenderable(contextClip)) return null
+            const isRenderingClip = contextClip?.cacheStatus === 'rendering'
+            const renderLabel = isRenderingClip
+              ? 'Rendering…'
+              : (contextClip?.cacheStatus === 'cached' ? 'Re-render Clip' : 'Render Clip')
+            return (
+              <>
+                <button
+                  onClick={() => handleContextMenuAction('render-cache')}
+                  disabled={isRenderingClip}
+                  className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-default"
+                >
+                  <Zap className="w-3 h-3 text-sf-text-muted" />
+                  <span>{renderLabel}</span>
+                </button>
                 <div className="h-px bg-sf-dark-600 my-1" />
               </>
             )
@@ -6592,6 +6862,37 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
               <span className="ml-auto text-sf-text-muted text-[10px]">{addTransitionHotkeyLabel}</span>
             </button>
           )}
+          <div className="h-px bg-sf-dark-600 my-1" />
+          <div className="px-3 py-2">
+            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-sf-text-muted">
+              <Flag className="w-3 h-3" />
+              <span>Label color</span>
+            </div>
+            <div className="grid grid-cols-9 gap-1">
+              {CLIP_LABEL_COLOR_OPTIONS.map((option) => {
+                const isActive = clipContextActiveLabelColor !== null && clipContextActiveLabelColor === option.color
+                return (
+                  <button
+                    key={option.label}
+                    type="button"
+                    onClick={() => applyClipLabelColor(option.color)}
+                    className={`h-5 w-5 rounded border flex items-center justify-center transition-colors ${
+                      isActive
+                        ? 'border-white ring-1 ring-white/70'
+                        : 'border-sf-dark-500 hover:border-sf-text-secondary'
+                    } ${option.color ? '' : 'bg-sf-dark-900'}`}
+                    style={option.color ? { backgroundColor: option.color } : undefined}
+                    title={option.label}
+                    aria-label={option.label}
+                  >
+                    {!option.color && <X className="w-3 h-3 text-sf-text-muted" />}
+                    {option.color && isActive && <Check className="w-3 h-3 text-white drop-shadow" />}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="h-px bg-sf-dark-600 my-1" />
           <button
             onClick={() => handleContextMenuAction('toggle-enabled')}
             className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors"

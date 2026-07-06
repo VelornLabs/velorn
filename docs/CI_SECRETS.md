@@ -43,7 +43,7 @@ Add these repository secrets in `Settings > Secrets and variables > Actions`:
 On the Mac that already has a working signing identity:
 
 1. Open `Keychain Access`.
-2. Find the `Developer ID Application` certificate for the ComfyStudio team.
+2. Find the `Developer ID Application` certificate for the Velorn team.
 3. Export it as a `.p12` file.
 4. Set a password during export.
 5. Base64-encode the `.p12` and store that result in the `CSC_LINK` GitHub secret.

@@ -16,14 +16,29 @@ import MusicVideoEasyMode from './generate/MusicVideoEasyMode'
 import ShortFilmEasyMode from './generate/ShortFilmEasyMode'
 import WorkflowBrowser from './generate/WorkflowBrowser'
 import WorkflowDetail from './generate/WorkflowDetail'
+import TemplateDetail from './generate/TemplateDetail'
+import {
+  IMPORTED_WORKFLOWS_CHANGED_EVENT,
+  IMPORTED_WORKFLOW_ID_PREFIX,
+  getImportedManifestById,
+  getImportedManifestByWorkflowId,
+  getImportedWorkflowEntry,
+  isImportedWorkflowId,
+  loadImportedWorkflowsFromDisk,
+} from '../config/importedWorkflowRegistry'
+import { applyImportedWorkflowBindings } from '../services/importedWorkflowBindings'
+import { fetchComfyTemplateCatalog } from '../services/comfyTemplateCatalog'
+import { importComfyTemplate } from '../services/templateImporter'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
 import useComfyUI from '../hooks/useComfyUI'
 import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
 import useTimelineStore from '../stores/timelineStore'
+import useGenerationMonitorStore from '../stores/generationMonitorStore'
 import { useFrameForAIStore } from '../stores/frameForAIStore'
 import { BUILTIN_WORKFLOW_PATHS } from '../config/workflowRegistry'
 import { comfyui, validateCustomKeyframeWorkflow, validateCustomVideoWorkflow } from '../services/comfyui'
+import { convertCustomLibraryWorkflowToApi } from '../services/customWorkflowLibrary'
 import { markPromptHandledByApp } from '../services/comfyPromptGuard'
 import {
   GENERATION_COMPLETION_SOUND_CHANGED_EVENT,
@@ -47,6 +62,7 @@ import {
 } from '../utils/yoloPlanning'
 import { checkWorkflowDependencies, buildMissingDependencyClipboardText } from '../services/workflowDependencies'
 import { openApiWorkflowInComfyUi, openBundledWorkflowInComfyUi } from '../services/workflowSetupManager'
+import { useWorkflowSetupFlow } from '../hooks/useWorkflowSetupFlow'
 import {
   getComfyLauncherSnapshot,
   isComfyLauncherAvailable,
@@ -190,6 +206,59 @@ const EMPTY_COMFYSTUDIO_BRIDGE_STATUS = Object.freeze({
   error: '',
   restartRequired: false,
 })
+
+function normalizeTemplateSearchText(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function compactTemplateSearchText(value) {
+  return normalizeTemplateSearchText(value).replace(/\s+/g, '')
+}
+
+function scoreTemplateMatch(template, query) {
+  const normalizedQuery = normalizeTemplateSearchText(query)
+  const compactQuery = compactTemplateSearchText(query)
+  if (!normalizedQuery && !compactQuery) return 0
+
+  const normalizedName = normalizeTemplateSearchText(template?.name)
+  const normalizedTitle = normalizeTemplateSearchText(template?.title)
+  const normalizedCategory = normalizeTemplateSearchText(template?.categoryLabel)
+  const normalizedTags = normalizeTemplateSearchText((template?.tags || []).join(' '))
+  const normalizedModels = normalizeTemplateSearchText((template?.models || []).join(' '))
+  const haystack = [normalizedName, normalizedTitle, normalizedCategory, normalizedTags, normalizedModels]
+    .filter(Boolean)
+    .join(' ')
+  const compactName = compactTemplateSearchText(template?.name)
+  const compactTitle = compactTemplateSearchText(template?.title)
+  const compactHaystack = compactTemplateSearchText(haystack)
+
+  if (normalizedName === normalizedQuery || normalizedTitle === normalizedQuery) return 1000
+  if (compactName === compactQuery || compactTitle === compactQuery) return 950
+  if (normalizedName.includes(normalizedQuery) || normalizedTitle.includes(normalizedQuery)) return 800
+  if (compactName.includes(compactQuery) || compactTitle.includes(compactQuery)) return 760
+
+  const tokens = normalizedQuery.split(' ').filter(Boolean)
+  if (tokens.length > 0) {
+    const matched = tokens.filter((token) => haystack.includes(token) || compactHaystack.includes(token)).length
+    if (matched === tokens.length) return 600 + matched
+    if (matched > 0) return 250 + matched
+  }
+
+  return 0
+}
+
+function resolveComfyTemplateFromCatalog(templates = [], query = '') {
+  const scored = templates
+    .map((template) => ({ template, score: scoreTemplateMatch(template, query) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || (b.template?.usage || 0) - (a.template?.usage || 0))
+  return scored[0]?.template || null
+}
 
 function normalizeCustomKeyframeWorkflow(value) {
   if (!value || typeof value !== 'object') return { ...EMPTY_CUSTOM_KEYFRAME_WORKFLOW }
@@ -380,7 +449,7 @@ function buildGenerationErrorClipboardText({
   generationMode = '',
 } = {}) {
   const lines = [
-    'ComfyStudio error report',
+    'Velorn error report',
     `Timestamp: ${new Date().toISOString()}`,
   ]
 
@@ -2036,7 +2105,7 @@ function buildMusicVideoCoveragePlanPrompt(coveragePlan) {
     'B-roll, environmental, and detail coverage must tile as adjacent video clips: each shot has a Start at, and its Length should end exactly at the next shot Start at. The final shot must end at the full audio duration.',
     'B-roll shot starts must NOT be constrained to lyric/SRT offsets. Use lyric timings only as emotional/story landmarks, then create continuous b-roll coverage between and beyond those lyric moments.',
     'Do not write one long take for any pass. Break every pass into 2-8 second clips aligned to the song timing.',
-    'Use the exact Coverage type and Coverage label fields shown below so ComfyStudio can group the shots later.',
+    'Use the exact Coverage type and Coverage label fields shown below so Velorn can group the shots later.',
   ]
   plan.sections.forEach((section, index) => {
     lines.push(`  Coverage ${index + 1}: ${section.label}`)
@@ -3312,10 +3381,15 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const [category, setCategory] = useState(persistedState?.category || 'video')
   const [workflowId, setWorkflowId] = useState(persistedState?.workflowId || 'wan22-i2v')
   const [selectedWorkflowManifestId, setSelectedWorkflowManifestId] = useState(persistedState?.selectedWorkflowManifestId || persistedState?.workflowId || 'wan22-i2v')
-  const [workflowRoute, setWorkflowRoute] = useState(() => (
-    getWorkflowManifestByWorkflowId(persistedState?.workflowId || 'wan22-i2v')?.route || 'local'
-  ))
+  const [workflowRoute, setWorkflowRoute] = useState(() => {
+    // Manifests keep data-level local/cloud routes; the browser shows both
+    // under the single "Featured" tab.
+    const manifestRoute = getWorkflowManifestByWorkflowId(persistedState?.workflowId || 'wan22-i2v')?.route || 'local'
+    return manifestRoute === 'local' || manifestRoute === 'cloud' ? 'featured' : manifestRoute
+  })
   const [workflowDetailOpen, setWorkflowDetailOpen] = useState(false)
+  const [selectedComfyTemplate, setSelectedComfyTemplate] = useState(null)
+  const [importedWorkflowsVersion, setImportedWorkflowsVersion] = useState(0)
   const [latestWorkflowPreview, setLatestWorkflowPreview] = useState(null)
 
   // Input asset (store ID, will resolve to object)
@@ -3329,6 +3403,11 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       : {}
   )
   const [selectedAssetFields, setSelectedAssetFields] = useState({})
+  const [templateParameterValues, setTemplateParameterValues] = useState(
+    persistedState?.templateParameterValues && typeof persistedState.templateParameterValues === 'object'
+      ? persistedState.templateParameterValues
+      : {}
+  )
   const [activeAssetSlotId, setActiveAssetSlotId] = useState(persistedState?.activeAssetSlotId || 'asset')
   const [frameTime, setFrameTime] = useState(persistedState?.frameTime || 0)
 
@@ -3345,7 +3424,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const [fps, setFps] = useState(persistedState?.fps || 24)
   const [interpolationMultiplier, setInterpolationMultiplier] = useState(persistedState?.interpolationMultiplier || 4)
   const [enableFpsMultiplier, setEnableFpsMultiplier] = useState(persistedState?.enableFpsMultiplier || false)
-  const [wanQualityPreset, setWanQualityPreset] = useState(persistedState?.wanQualityPreset || 'face-lock')
+  const [wanQualityPreset, setWanQualityPreset] = useState(persistedState?.wanQualityPreset || 'balanced')
 
   // Image edit settings
   const [editSteps, setEditSteps] = useState(persistedState?.editSteps || 40)
@@ -3602,6 +3681,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     getGenerationCompletionSoundSettings()
   ))
   const [activeJobId, setActiveJobId] = useState(null)
+  const publishGenerationMonitorQueue = useGenerationMonitorStore((state) => state.publishQueue)
+  const resetGenerationMonitor = useGenerationMonitorStore((state) => state.reset)
   const processingRef = useRef(false)
   const queueRef = useRef([])
   const startedJobIdsRef = useRef(new Set())
@@ -3704,11 +3785,49 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   // When opened with timeline frame, switch to video i2v and use that frame as input
   useEffect(() => {
     if (frameForAI) {
+      const nextWorkflowId = String(frameForAI.workflowId || 'wan22-i2v').trim() || 'wan22-i2v'
+      const manifest = getWorkflowManifestByWorkflowId(nextWorkflowId)
+      setGenerationMode('single')
       setCategory('video')
-      setWorkflowId('wan22-i2v')
+      setWorkflowId(nextWorkflowId)
+      if (manifest) {
+        setSelectedWorkflowManifestId(manifest.id)
+        setWorkflowRoute(manifest.route || 'local')
+      }
       setFormError(null)
     }
-  }, [frameForAI?.blobUrl])
+  }, [frameForAI?.blobUrl, frameForAI?.workflowId])
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const nextWorkflowId = String(detail.workflowId || frameForAI?.workflowId || 'ltx23-i2v').trim() || 'ltx23-i2v'
+      const manifest = getWorkflowManifestByWorkflowId(nextWorkflowId)
+      setGenerationMode('single')
+      setCategory(String(detail.category || 'video').trim().toLowerCase() || 'video')
+      setWorkflowId(nextWorkflowId)
+      if (manifest) {
+        setSelectedWorkflowManifestId(manifest.id)
+        setWorkflowRoute(manifest.route || 'local')
+      }
+      setSelectedAssetId(null)
+      setSelectedAsset(null)
+      if (typeof detail.prompt === 'string' && detail.prompt.trim()) setPrompt(detail.prompt)
+      if (typeof detail.negativePrompt === 'string' && detail.negativePrompt.trim()) setNegativePrompt(detail.negativePrompt)
+      if (Number.isFinite(Number(detail.duration)) && Number(detail.duration) > 0) setDuration(Number(detail.duration))
+      if (Number.isFinite(Number(detail.fps)) && Number(detail.fps) > 0) setFps(Number(detail.fps))
+      if (detail.resolution && Number.isFinite(Number(detail.resolution.width)) && Number.isFinite(Number(detail.resolution.height))) {
+        setResolution({
+          width: Number(detail.resolution.width),
+          height: Number(detail.resolution.height),
+        })
+      }
+      setFormError(null)
+      addComfyLog('status', `MCP prepared timeline frame for ${getWorkflowDisplayLabel(nextWorkflowId) || nextWorkflowId}. Review settings, then click Generate when ready.`)
+    }
+    window.addEventListener('comfystudio-mcp-prepare-generation', handler)
+    return () => window.removeEventListener('comfystudio-mcp-prepare-generation', handler)
+  }, [addComfyLog, frameForAI?.workflowId])
 
   // Restore selected asset from ID when assets are available
   useEffect(() => {
@@ -3776,6 +3895,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         selectedAssetId,
         selectedAudioAssetId,
         selectedAssetFieldIds,
+        templateParameterValues,
         activeAssetSlotId,
         frameTime,
         prompt,
@@ -3867,6 +3987,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     selectedAssetId,
     selectedAudioAssetId,
     selectedAssetFieldIds,
+    templateParameterValues,
     activeAssetSlotId,
     frameTime,
     prompt,
@@ -3944,6 +4065,18 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   useEffect(() => {
     queueRef.current = generationQueue
   }, [generationQueue])
+
+  useEffect(() => {
+    publishGenerationMonitorQueue({
+      jobs: generationQueue,
+      activeJobId,
+      isConnected,
+    })
+  }, [activeJobId, generationQueue, isConnected, publishGenerationMonitorQueue])
+
+  useEffect(() => () => {
+    resetGenerationMonitor()
+  }, [resetGenerationMonitor])
 
   useEffect(() => {
     generationCompletionSoundSettingsRef.current = generationCompletionSoundSettings
@@ -4077,10 +4210,24 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   )
 
   // Current workflow info
-  const currentWorkflow = useMemo(
-    () => currentCategoryWorkflows.find((workflow) => workflow.id === workflowId) || currentCategoryWorkflows[0],
-    [currentCategoryWorkflows, workflowId]
-  )
+  const currentWorkflow = useMemo(() => {
+    const staticMatch = currentCategoryWorkflows.find((workflow) => workflow.id === workflowId)
+    if (staticMatch) return staticMatch
+    // Imported templates aren't in the static category lists — synthesize
+    // their info from the manifest so the sidebar doesn't show a builtin's.
+    const importedManifest = getImportedManifestByWorkflowId(workflowId)
+    if (importedManifest) {
+      return {
+        id: importedManifest.workflowId,
+        label: importedManifest.title,
+        category: importedManifest.outputType === 'audio' ? 'audio' : importedManifest.outputType === 'image' ? 'image' : 'video',
+        needsImage: Boolean(importedManifest.needsImage),
+        description: importedManifest.description,
+      }
+    }
+    return currentCategoryWorkflows[0]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- importedWorkflowsVersion invalidates the registry lookup
+  }, [currentCategoryWorkflows, workflowId, importedWorkflowsVersion])
   const formErrorTroubleshootingHints = useMemo(
     () => buildGenerationErrorTroubleshootingHints(formError),
     [formError]
@@ -4107,16 +4254,21 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   }, [currentWorkflow, formError, formErrorTroubleshootingHints, generationMode])
   const activeWorkflowBrowserMode = generationMode === 'yolo' ? 'create' : 'generate'
   const visibleWorkflowManifests = useMemo(() => (
+    // Curated manifests only: the ComfyUI templates route is a launcher into
+    // the embedded ComfyUI tab, not an import source for Local/Cloud.
     GENERATE_WORKFLOW_CATALOG.filter((workflow) => (
       !workflow.hidden
         && workflow.mode === activeWorkflowBrowserMode
         && (activeWorkflowBrowserMode === 'create'
           ? workflow.route === 'local'
-          : workflow.route === workflowRoute)
+          : workflowRoute === 'featured'
+            ? (workflow.route === 'local' || workflow.route === 'cloud')
+            : workflow.route === workflowRoute)
     ))
   ), [activeWorkflowBrowserMode, workflowRoute])
   const selectedWorkflowManifest = useMemo(() => (
     GENERATE_WORKFLOW_CATALOG.find((workflow) => !workflow.hidden && workflow.id === selectedWorkflowManifestId)
+      || getImportedManifestById(selectedWorkflowManifestId)
       || (() => {
         const manifest = getWorkflowManifestByWorkflowId(workflowId)
         return manifest?.hidden ? null : manifest
@@ -4124,6 +4276,25 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       || visibleWorkflowManifests[0]
       || null
   ), [selectedWorkflowManifestId, visibleWorkflowManifests, workflowId])
+
+  useEffect(() => {
+    const parameterFields = (selectedWorkflowManifest?.fields || [])
+      .filter((field) => field?.templateParameter)
+    if (parameterFields.length === 0) return
+
+    setTemplateParameterValues((prev) => {
+      let changed = false
+      const next = { ...(prev || {}) }
+      for (const field of parameterFields) {
+        if (!field?.id || Object.prototype.hasOwnProperty.call(next, field.id)) continue
+        if (typeof field.defaultValue === 'undefined') continue
+        next[field.id] = field.defaultValue
+        changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [selectedWorkflowManifest])
+
   const assetInputSlots = useMemo(() => (
     (selectedWorkflowManifest?.fields || [])
       .filter((field) => (
@@ -4179,6 +4350,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
   // When category changes, pick default workflow
   useEffect(() => {
+    // Imported template ids live outside the static category lists — don't
+    // stomp them back to a builtin default.
+    if (isImportedWorkflowId(workflowId)) return
     if (currentCategoryWorkflows.length > 0 && !currentCategoryWorkflows.find((workflow) => workflow.id === workflowId)) {
       setWorkflowId(currentCategoryWorkflows[0].id)
     }
@@ -4188,7 +4362,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     if (!manifest) return
 
     setSelectedWorkflowManifestId(manifest.id)
-    setWorkflowRoute(manifest.route || 'local')
+    setWorkflowRoute(manifest.route === 'local' || manifest.route === 'cloud' ? 'featured' : (manifest.route || 'featured'))
     setFormError(null)
     setWorkflowDetailOpen(true)
 
@@ -4218,7 +4392,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     }
 
     setGenerationMode('single')
-    if (!manifest.runnable || !manifest.workflowId) {
+    // Imported templates are not queueable until their field bindings land,
+    // but selecting one must still drive the dependency check so Set up works.
+    if (!manifest.workflowId || (!manifest.runnable && !manifest.imported)) {
       setFormError('This workflow is in the catalog as a preview. Add its workflow graph and bindings before queueing it.')
       return
     }
@@ -4235,7 +4411,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const handleWorkflowRouteChange = useCallback((nextRoute) => {
     setWorkflowRoute(nextRoute)
     setWorkflowDetailOpen(false)
+    setSelectedComfyTemplate(null)
   }, [])
+
 
   useEffect(() => {
     if (generationMode !== 'single' || category !== 'video' || videoDurationPresets.length === 0) return
@@ -4272,7 +4450,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     const manifest = getWorkflowManifestByWorkflowId(workflowId)
     if (!manifest) return
     setSelectedWorkflowManifestId(manifest.id)
-    setWorkflowRoute(manifest.route || 'local')
+    setWorkflowRoute(manifest.route === 'local' || manifest.route === 'cloud' ? 'featured' : (manifest.route || 'featured'))
   }, [workflowId])
 
   const runWorkflowDependencyCheck = useCallback(async () => {
@@ -4330,6 +4508,23 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     window.addEventListener(COMFY_PARTNER_KEY_CHANGED_EVENT, handler)
     return () => window.removeEventListener(COMFY_PARTNER_KEY_CHANGED_EVENT, handler)
   }, [runWorkflowDependencyCheck])
+
+  const workflowSetupFlow = useWorkflowSetupFlow({
+    dependencyCheck,
+    isConnected,
+    recheck: runWorkflowDependencyCheck,
+  })
+
+  useEffect(() => {
+    void loadImportedWorkflowsFromDisk()
+  }, [])
+
+  useEffect(() => {
+    const handler = () => setImportedWorkflowsVersion((version) => version + 1)
+    window.addEventListener(IMPORTED_WORKFLOWS_CHANGED_EVENT, handler)
+    return () => window.removeEventListener(IMPORTED_WORKFLOWS_CHANGED_EVENT, handler)
+  }, [])
+
 
   const validateDependenciesForQueue = useCallback(async (workflowIds, queueLabel) => {
     const normalizedIds = Array.from(new Set(
@@ -4553,7 +4748,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const handleImportYoloMusicAudio = useCallback(async () => {
     if (yoloMusicAudioImporting) return
     if (!currentProjectHandle) {
-      setFormError('Open or create a project first so ComfyStudio can import the song file.')
+      setFormError('Open or create a project first so Velorn can import the song file.')
       addComfyLog('error', 'Song audio import requires an open project folder.')
       return
     }
@@ -4620,7 +4815,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   const handleImportYoloMusicCastImage = useCallback(async () => {
     if (yoloMusicCastImageImporting) return null
     if (!currentProjectHandle) {
-      setFormError('Open or create a project first so ComfyStudio can import the reference image.')
+      setFormError('Open or create a project first so Velorn can import the reference image.')
       addComfyLog('error', 'Cast reference import requires an open project folder.')
       return null
     }
@@ -4722,16 +4917,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           image: '',
         },
         _meta: {
-          title: 'COMFYSTUDIO_INPUT_IMAGE',
+          title: 'VELORN_INPUT_IMAGE',
         },
       },
       '2': {
         class_type: 'PrimitiveStringMultiline',
         inputs: {
-          value: 'ComfyStudio will inject the shot keyframe prompt here.',
+          value: 'Velorn will inject the shot keyframe prompt here.',
         },
         _meta: {
-          title: 'COMFYSTUDIO_PROMPT',
+          title: 'VELORN_PROMPT',
         },
       },
       '3': {
@@ -4740,7 +4935,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 0,
         },
         _meta: {
-          title: 'COMFYSTUDIO_SEED',
+          title: 'VELORN_SEED',
         },
       },
       '4': {
@@ -4749,7 +4944,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 1280,
         },
         _meta: {
-          title: 'COMFYSTUDIO_WIDTH',
+          title: 'VELORN_WIDTH',
         },
       },
       '5': {
@@ -4758,7 +4953,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 720,
         },
         _meta: {
-          title: 'COMFYSTUDIO_HEIGHT',
+          title: 'VELORN_HEIGHT',
         },
       },
       '6': {
@@ -4771,7 +4966,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           crop: 'center',
         },
         _meta: {
-          title: 'ComfyStudio Output Resize',
+          title: 'Velorn Output Resize',
         },
       },
       '7': {
@@ -4781,13 +4976,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           filename_prefix: 'image/custom_keyframe_starter',
         },
         _meta: {
-          title: 'COMFYSTUDIO_OUTPUT_IMAGE',
+          title: 'VELORN_OUTPUT_IMAGE',
         },
       },
     }
     const validation = validateCustomKeyframeWorkflow(starter)
     return {
-      name: 'ComfyStudio custom keyframe starter',
+      name: 'Velorn custom keyframe starter',
       workflow: starter,
       jsonText: JSON.stringify(starter, null, 2),
       validation,
@@ -4802,16 +4997,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           image: '',
         },
         _meta: {
-          title: 'COMFYSTUDIO_INPUT_IMAGE',
+          title: 'VELORN_INPUT_IMAGE',
         },
       },
       '2': {
         class_type: 'PrimitiveStringMultiline',
         inputs: {
-          value: 'ComfyStudio will inject the ad shot keyframe prompt here.',
+          value: 'Velorn will inject the ad shot keyframe prompt here.',
         },
         _meta: {
-          title: 'COMFYSTUDIO_PROMPT',
+          title: 'VELORN_PROMPT',
         },
       },
       '3': {
@@ -4820,7 +5015,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 0,
         },
         _meta: {
-          title: 'COMFYSTUDIO_SEED',
+          title: 'VELORN_SEED',
         },
       },
       '4': {
@@ -4829,7 +5024,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 1280,
         },
         _meta: {
-          title: 'COMFYSTUDIO_WIDTH',
+          title: 'VELORN_WIDTH',
         },
       },
       '5': {
@@ -4838,7 +5033,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 720,
         },
         _meta: {
-          title: 'COMFYSTUDIO_HEIGHT',
+          title: 'VELORN_HEIGHT',
         },
       },
       '6': {
@@ -4851,7 +5046,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           crop: 'center',
         },
         _meta: {
-          title: 'ComfyStudio Output Resize',
+          title: 'Velorn Output Resize',
         },
       },
       '7': {
@@ -4861,13 +5056,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           filename_prefix: 'image/custom_ad_keyframe_starter',
         },
         _meta: {
-          title: 'COMFYSTUDIO_OUTPUT_IMAGE',
+          title: 'VELORN_OUTPUT_IMAGE',
         },
       },
     }
     const validation = validateCustomKeyframeWorkflow(starter, { requireInputImage: false })
     return {
-      name: 'ComfyStudio custom ad keyframe starter',
+      name: 'Velorn custom ad keyframe starter',
       workflow: starter,
       jsonText: JSON.stringify(starter, null, 2),
       validation,
@@ -4882,16 +5077,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           image: '',
         },
         _meta: {
-          title: 'COMFYSTUDIO_INPUT_IMAGE',
+          title: 'VELORN_INPUT_IMAGE',
         },
       },
       '2': {
         class_type: 'PrimitiveStringMultiline',
         inputs: {
-          value: 'ComfyStudio will inject the shot video prompt here.',
+          value: 'Velorn will inject the shot video prompt here.',
         },
         _meta: {
-          title: 'COMFYSTUDIO_PROMPT',
+          title: 'VELORN_PROMPT',
         },
       },
       '3': {
@@ -4900,7 +5095,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 0,
         },
         _meta: {
-          title: 'COMFYSTUDIO_SEED',
+          title: 'VELORN_SEED',
         },
       },
       '4': {
@@ -4909,7 +5104,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 1280,
         },
         _meta: {
-          title: 'COMFYSTUDIO_WIDTH',
+          title: 'VELORN_WIDTH',
         },
       },
       '5': {
@@ -4918,7 +5113,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 720,
         },
         _meta: {
-          title: 'COMFYSTUDIO_HEIGHT',
+          title: 'VELORN_HEIGHT',
         },
       },
       '6': {
@@ -4927,7 +5122,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 24,
         },
         _meta: {
-          title: 'COMFYSTUDIO_FPS',
+          title: 'VELORN_FPS',
         },
       },
       '7': {
@@ -4936,7 +5131,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 5,
         },
         _meta: {
-          title: 'COMFYSTUDIO_DURATION',
+          title: 'VELORN_DURATION',
         },
       },
       '8': {
@@ -4945,7 +5140,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           audio: '',
         },
         _meta: {
-          title: 'COMFYSTUDIO_AUDIO',
+          title: 'VELORN_AUDIO',
         },
       },
       '9': {
@@ -4958,7 +5153,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           crop: 'center',
         },
         _meta: {
-          title: 'ComfyStudio Output Resize',
+          title: 'Velorn Output Resize',
         },
       },
       '10': {
@@ -4968,13 +5163,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           filename_prefix: 'video/custom_video_starter',
         },
         _meta: {
-          title: 'COMFYSTUDIO_OUTPUT_VIDEO',
+          title: 'VELORN_OUTPUT_VIDEO',
         },
       },
     }
     const validation = validateCustomVideoWorkflow(starter)
     return {
-      name: 'ComfyStudio custom video starter',
+      name: 'Velorn custom video starter',
       workflow: starter,
       jsonText: JSON.stringify(starter, null, 2),
       validation,
@@ -5037,7 +5232,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           filename_prefix: 'image/custom_generate_starter',
         },
         _meta: {
-          title: 'COMFYSTUDIO_OUTPUT_IMAGE',
+          title: 'VELORN_OUTPUT_IMAGE',
         },
       },
     }
@@ -5047,7 +5242,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       validateOptionalEndpoints: false,
     })
     return {
-      name: 'ComfyStudio custom image starter',
+      name: 'Velorn custom image starter',
       workflow: starter,
       jsonText: JSON.stringify(starter, null, 2),
       validation,
@@ -5062,16 +5257,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           image: '',
         },
         _meta: {
-          title: 'COMFYSTUDIO_INPUT_IMAGE',
+          title: 'VELORN_INPUT_IMAGE',
         },
       },
       '2': {
         class_type: 'PrimitiveStringMultiline',
         inputs: {
-          value: 'ComfyStudio will inject the video prompt here.',
+          value: 'Velorn will inject the video prompt here.',
         },
         _meta: {
-          title: 'COMFYSTUDIO_PROMPT',
+          title: 'VELORN_PROMPT',
         },
       },
       '3': {
@@ -5080,7 +5275,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 0,
         },
         _meta: {
-          title: 'COMFYSTUDIO_SEED',
+          title: 'VELORN_SEED',
         },
       },
       '4': {
@@ -5089,7 +5284,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 1280,
         },
         _meta: {
-          title: 'COMFYSTUDIO_WIDTH',
+          title: 'VELORN_WIDTH',
         },
       },
       '5': {
@@ -5098,7 +5293,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 720,
         },
         _meta: {
-          title: 'COMFYSTUDIO_HEIGHT',
+          title: 'VELORN_HEIGHT',
         },
       },
       '6': {
@@ -5107,7 +5302,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 24,
         },
         _meta: {
-          title: 'COMFYSTUDIO_FPS',
+          title: 'VELORN_FPS',
         },
       },
       '7': {
@@ -5116,7 +5311,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           value: 5,
         },
         _meta: {
-          title: 'COMFYSTUDIO_DURATION',
+          title: 'VELORN_DURATION',
         },
       },
       '8': {
@@ -5125,7 +5320,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           audio: '',
         },
         _meta: {
-          title: 'COMFYSTUDIO_AUDIO',
+          title: 'VELORN_AUDIO',
         },
       },
       '9': {
@@ -5138,7 +5333,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           crop: 'center',
         },
         _meta: {
-          title: 'ComfyStudio Output Resize',
+          title: 'Velorn Output Resize',
         },
       },
       '10': {
@@ -5148,13 +5343,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           filename_prefix: 'video/custom_generate_starter',
         },
         _meta: {
-          title: 'COMFYSTUDIO_OUTPUT_VIDEO',
+          title: 'VELORN_OUTPUT_VIDEO',
         },
       },
     }
     const validation = validateCustomVideoWorkflow(starter, { requireInputImage: false })
     return {
-      name: 'ComfyStudio custom video starter',
+      name: 'Velorn custom video starter',
       workflow: starter,
       jsonText: JSON.stringify(starter, null, 2),
       validation,
@@ -5583,13 +5778,48 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     addComfyLog('status', 'Cleared custom video workflow.')
   }, [addComfyLog])
 
+  const handleUseYoloMusicLibraryWorkflow = useCallback(async (libraryId, kind = 'keyframe') => {
+    const isVideo = kind === 'video'
+    setCustomWorkflowBridgeTarget(isVideo ? 'music-video' : 'music-keyframe')
+    try {
+      const converted = await convertCustomLibraryWorkflowToApi(libraryId)
+      if (!converted?.success) throw new Error(converted?.error || 'Could not convert the saved workflow.')
+
+      const validation = isVideo
+        ? validateCustomVideoWorkflow(converted.apiWorkflow)
+        : validateCustomKeyframeWorkflow(converted.apiWorkflow)
+      const record = {
+        name: converted.title || 'Saved workflow',
+        jsonText: JSON.stringify(converted.apiWorkflow, null, 2),
+        updatedAt: Date.now(),
+      }
+      if (isVideo) {
+        setYoloMusicCustomVideoWorkflow(record)
+        setYoloMusicVideoWorkflowId(CUSTOM_MUSIC_VIDEO_WORKFLOW_ID)
+      } else {
+        setYoloMusicCustomKeyframeWorkflow(record)
+        setYoloMusicKeyframeWorkflowId(CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID)
+      }
+      setFormError(validation.ok ? null : validation.message)
+      addComfyLog(validation.ok ? 'ok' : 'warning', validation.ok
+        ? `Loaded saved workflow into the custom ${isVideo ? 'video' : 'keyframe'} slot: ${record.name}`
+        : `Saved workflow "${record.name}" loaded but is not ready: ${validation.message}`)
+      return { success: true }
+    } catch (error) {
+      const message = error?.message || 'Could not load the saved workflow.'
+      setFormError(message)
+      addComfyLog('error', message)
+      return { success: false, error: message }
+    }
+  }, [addComfyLog, setYoloMusicKeyframeWorkflowId, setYoloMusicVideoWorkflowId])
+
   const handleCheckYoloMusicCustomKeyframeBridge = useCallback(async ({ silent = false } = {}) => {
     const bridge = typeof window !== 'undefined' ? window.electronAPI?.comfyBridge : null
     if (!bridge?.getStatus) {
       const unavailable = normalizeComfyStudioBridgeStatus({
         state: 'unavailable',
         installed: false,
-        message: 'ComfyStudio Bridge is only available in the desktop app.',
+        message: 'Velorn Bridge is only available in the desktop app.',
       })
       setYoloMusicCustomKeyframeBridgeStatus(unavailable)
       if (!silent) addComfyLog('warning', unavailable.message)
@@ -5609,7 +5839,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       const next = normalizeComfyStudioBridgeStatus({
         state: 'unavailable',
         installed: false,
-        error: error?.message || 'Could not check the ComfyStudio Bridge.',
+        error: error?.message || 'Could not check the Velorn Bridge.',
       })
       setYoloMusicCustomKeyframeBridgeStatus(next)
       if (!silent) addComfyLog('error', next.message)
@@ -6939,7 +7169,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     setGenerationQueue(prev => prev.map(job => {
       if (job.id !== jobId) return job
       const updates = typeof updater === 'function' ? updater(job) : updater
-      return { ...job, ...updates }
+      const next = { ...job, ...updates }
+      const statusChanged = updates && Object.prototype.hasOwnProperty.call(updates, 'status') && updates.status !== job.status
+      if (statusChanged && ACTIVE_JOB_STATUSES.includes(next.status) && !next.startedAt) {
+        next.startedAt = Date.now()
+      }
+      if (statusChanged && (next.status === 'done' || next.status === 'error') && !next.completedAt) {
+        next.completedAt = Date.now()
+        const start = Number(next.startedAt || next.createdAt)
+        if (Number.isFinite(start) && start > 0) {
+          next.elapsedMs = Math.max(0, next.completedAt - start)
+        }
+      }
+      return next
     }))
   }, [])
 
@@ -6948,7 +7190,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     setGenerationQueue(prev => prev.map(job => {
       if (job.promptId !== promptId) return job
       const updates = typeof updater === 'function' ? updater(job) : updater
-      return { ...job, ...updates }
+      const next = { ...job, ...updates }
+      const statusChanged = updates && Object.prototype.hasOwnProperty.call(updates, 'status') && updates.status !== job.status
+      if (statusChanged && ACTIVE_JOB_STATUSES.includes(next.status) && !next.startedAt) {
+        next.startedAt = Date.now()
+      }
+      if (statusChanged && (next.status === 'done' || next.status === 'error') && !next.completedAt) {
+        next.completedAt = Date.now()
+        const start = Number(next.startedAt || next.createdAt)
+        if (Number.isFinite(start) && start > 0) {
+          next.elapsedMs = Math.max(0, next.completedAt - start)
+        }
+      }
+      return next
     }))
   }, [])
 
@@ -7381,7 +7635,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       const unavailable = normalizeComfyStudioBridgeStatus({
         state: 'unavailable',
         installed: false,
-        message: 'ComfyStudio Bridge is only available in the desktop app.',
+        message: 'Velorn Bridge is only available in the desktop app.',
       })
       setYoloMusicCustomKeyframeBridgeStatus(unavailable)
       addComfyLog('warning', unavailable.message)
@@ -7395,7 +7649,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       setYoloMusicCustomKeyframeBridgeStatus(status)
 
       if (!result?.success) {
-        addComfyLog('error', status.message || status.error || 'Could not install the ComfyStudio Bridge.')
+        addComfyLog('error', status.message || status.error || 'Could not install the Velorn Bridge.')
         return status
       }
 
@@ -7404,7 +7658,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
       const restartNow = await requestConfirm({
         title: 'Restart ComfyUI now?',
-        message: 'The ComfyStudio Bridge is installed. Restart ComfyUI now to load the Send to ComfyStudio button.\n\nIf this ComfyUI session was started outside ComfyStudio, restart it manually and then re-check the bridge.',
+        message: 'The Velorn Bridge is installed. Restart ComfyUI now to load the Send to Velorn button.\n\nIf this ComfyUI session was started outside Velorn, restart it manually and then re-check the bridge.',
         confirmLabel: 'Restart ComfyUI',
         cancelLabel: 'Later',
         tone: 'primary',
@@ -7447,7 +7701,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       const next = normalizeComfyStudioBridgeStatus({
         state: 'unavailable',
         installed: false,
-        error: error?.message || 'Could not install the ComfyStudio Bridge.',
+        error: error?.message || 'Could not install the Velorn Bridge.',
       })
       setYoloMusicCustomKeyframeBridgeStatus(next)
       addComfyLog('error', next.message)
@@ -7615,6 +7869,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       audioAssetId: selectedWorkflowManifest?.requiresAudio ? (selectedAudioAsset?.id || null) : null,
       audioAssetName: selectedWorkflowManifest?.requiresAudio ? (selectedAudioAsset?.name || '') : '',
       assetFieldIds,
+      templateParameters: { ...(templateParameterValues || {}) },
       inputFromTimelineFrame: false,
       referenceAssetId1: workflowId === 'image-edit' ? referenceAssetId1 : null,
       referenceAssetId2: workflowId === 'image-edit' ? referenceAssetId2 : null,
@@ -7698,6 +7953,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     selectedWorkflowManifest?.needsImage,
     selectedWorkflowManifest?.fields,
     selectedWorkflowManifest?.title,
+    templateParameterValues,
     wanQualityPreset,
     workflowId,
   ])
@@ -11431,37 +11687,51 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
   ])
 
   const handleGenerate = () => {
-    if (!isConnected && !allowQueueWhileWaiting) return
+    if (!isConnected && !allowQueueWhileWaiting) {
+      return {
+        success: false,
+        message: 'ComfyUI is not connected yet. Start ComfyUI, then queue generation.',
+      }
+    }
     if (!isConnected && launcherCanAutoStart) {
       void startComfyLauncher()
     }
     if (generationMode === 'yolo') {
       void handleQueueYoloStoryboards()
-      return
+      return {
+        success: true,
+        queued: null,
+        message: 'Queued the current Create workflow action.',
+      }
     }
     if (selectedWorkflowManifest && !selectedWorkflowManifest.runnable) {
-      setFormError('This workflow is in the catalog as a preview. Add its workflow graph and bindings before queueing it.')
-      return
+      const message = 'This workflow is in the catalog as a preview. Add its workflow graph and bindings before queueing it.'
+      setFormError(message)
+      return { success: false, message }
     }
     if (dependencyCheckInProgress) {
-      setFormError('Checking workflow dependencies. Please wait a moment and try again.')
-      return
+      const message = 'Checking workflow dependencies. Please wait a moment and try again.'
+      setFormError(message)
+      return { success: false, message }
     }
     if (hasBlockingDependencies) {
-      setFormError('Missing required workflow dependencies. Install the missing items listed below and re-check.')
-      return
+      const message = 'Missing required workflow dependencies. Install the missing items listed below and re-check.'
+      setFormError(message)
+      return { success: false, message }
     }
     const canUseTimelineFrame = isSingleVideoWorkflowId(workflowId)
     const usingTimelineFrame = !!frameForAI?.file && canUseTimelineFrame
     const requiresPrimaryAsset = Boolean(primaryAssetSlot) || (currentWorkflow?.needsImage && assetInputSlots.length === 0)
     if (requiresPrimaryAsset && !selectedAsset && !usingTimelineFrame) {
       const primaryLabel = primaryAssetSlot?.label || 'input asset'
-      setFormError(`Please select ${String(primaryLabel).toLowerCase()}${canUseTimelineFrame ? ' or use a timeline frame' : ''} first`)
-      return
+      const message = `Please select ${String(primaryLabel).toLowerCase()}${canUseTimelineFrame ? ' or use a timeline frame' : ''} first`
+      setFormError(message)
+      return { success: false, message }
     }
     if (selectedWorkflowManifest?.requiresAudio && !selectedAudioAsset) {
-      setFormError('Please select conditioning audio for this workflow first')
-      return
+      const message = 'Please select conditioning audio for this workflow first'
+      setFormError(message)
+      return { success: false, message }
     }
     const missingRequiredAssetField = (selectedWorkflowManifest?.fields || []).find((field) => (
       field?.type === 'assetSelect' &&
@@ -11470,16 +11740,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       !selectedAssetFields[field.id]
     ))
     if (missingRequiredAssetField) {
-      setFormError(`Please select ${String(missingRequiredAssetField.label || missingRequiredAssetField.id).toLowerCase()} for this workflow first`)
-      return
+      const message = `Please select ${String(missingRequiredAssetField.label || missingRequiredAssetField.id).toLowerCase()} for this workflow first`
+      setFormError(message)
+      return { success: false, message }
     }
     if (workflowId === CUSTOM_GENERATE_IMAGE_WORKFLOW_ID && !customGenerateImageValidation.ok) {
-      setFormError(customGenerateImageValidation.message || 'Load and validate a custom image workflow before queueing.')
-      return
+      const message = customGenerateImageValidation.message || 'Load and validate a custom image workflow before queueing.'
+      setFormError(message)
+      return { success: false, message }
     }
     if (workflowId === CUSTOM_GENERATE_VIDEO_WORKFLOW_ID && !customGenerateVideoValidation.ok) {
-      setFormError(customGenerateVideoValidation.message || 'Load and validate a custom video workflow before queueing.')
-      return
+      const message = customGenerateVideoValidation.message || 'Load and validate a custom video workflow before queueing.'
+      setFormError(message)
+      return { success: false, message }
     }
 
     setFormError(null)
@@ -11506,7 +11779,1023 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     })
 
     enqueueJob(job)
+    return {
+      success: true,
+      queued: 1,
+      message: `Queued ${job.workflowLabel || job.workflowId || 'generation'}.`,
+      job: {
+        id: job.id,
+        workflowId: job.workflowId,
+        workflowLabel: job.workflowLabel,
+        category: job.category,
+        prompt: job.prompt,
+        inputFromTimelineFrame: Boolean(job.inputFromTimelineFrame),
+        inputAssetId: job.inputAssetId || null,
+        inputAssetName: job.inputAssetName || '',
+        duration: job.duration,
+        fps: job.fps,
+        resolution: job.resolution,
+        status: job.status,
+      },
+    }
   }
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const respond = typeof detail.respond === 'function' ? detail.respond : null
+      if (!respond) return
+
+      const canUseTimelineFrame = isSingleVideoWorkflowId(workflowId)
+      const usingTimelineFrame = Boolean(frameForAI?.file && canUseTimelineFrame)
+      const status = {
+        generationMode,
+        category,
+        workflowId,
+        workflowLabel: selectedWorkflowManifest?.title || currentWorkflow?.label || workflowId,
+        canUseTimelineFrame,
+        hasTimelineFrame: Boolean(frameForAI?.file),
+        usingTimelineFrame,
+        isConnected,
+        allowQueueWhileWaiting,
+        queuedCount: queueRef.current.filter((job) => job.status === 'queued').length,
+        activeCount: queueRef.current.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
+        prompt: fullPrompt,
+        negativePrompt,
+        duration,
+        fps,
+        resolution: category === 'image' ? effectiveImageResolution : resolution,
+      }
+
+      if (detail.previewOnly !== false) {
+        respond({
+          success: true,
+          previewOnly: true,
+          action: 'queue_prepared_generation',
+          message: usingTimelineFrame
+            ? 'Prepared generation can be queued. No generation was queued in preview mode.'
+            : 'Generate state inspected. No generation was queued in preview mode.',
+          status,
+        })
+        return
+      }
+
+      if (generationMode !== 'single') {
+        respond({
+          success: false,
+          error: 'MCP queue_prepared_generation only supports the single Generate tab mode right now.',
+          status,
+        })
+        return
+      }
+      if (detail.requireTimelineFrame !== false && !usingTimelineFrame) {
+        respond({
+          success: false,
+          error: 'No prepared timeline frame is staged in Generate. Run prepare_generation_from_timeline_context first, or call with requireTimelineFrame=false.',
+          status,
+        })
+        return
+      }
+
+      const result = handleGenerate()
+      if (!result?.success) {
+        respond({
+          success: false,
+          error: result?.message || 'Could not queue the prepared generation.',
+          status,
+        })
+        return
+      }
+
+      addComfyLog('status', `MCP queued prepared generation: ${result.job?.workflowLabel || result.job?.workflowId || workflowId}`)
+      respond({
+        success: true,
+        action: 'queue_prepared_generation',
+        message: result.message || 'Prepared generation queued.',
+        status: {
+          ...status,
+          queuedCount: status.queuedCount + (Number(result.queued) || 0),
+        },
+        result,
+      })
+    }
+
+    window.addEventListener('comfystudio-mcp-queue-prepared-generation', handler)
+    return () => window.removeEventListener('comfystudio-mcp-queue-prepared-generation', handler)
+  }, [
+    addComfyLog,
+    allowQueueWhileWaiting,
+    category,
+    currentWorkflow?.label,
+    duration,
+    effectiveImageResolution,
+    fps,
+    frameForAI?.file,
+    fullPrompt,
+    generationMode,
+    handleGenerate,
+    isConnected,
+    negativePrompt,
+    resolution,
+    selectedWorkflowManifest?.title,
+    workflowId,
+  ])
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const respond = typeof detail.respond === 'function' ? detail.respond : null
+      if (!respond) return
+
+      const run = async () => {
+        const requestedJobs = Array.isArray(detail.jobs) ? detail.jobs : []
+        const workflowIds = Array.from(new Set(
+          requestedJobs
+            .map((job) => String(job?.workflowId || '').trim())
+            .filter(Boolean)
+        ))
+        const frameState = useFrameForAIStore.getState().frame
+        const status = {
+          action: 'queue_timeline_generation_batch',
+          requestedJobCount: requestedJobs.length,
+          workflowIds,
+          hasTimelineFrame: Boolean(frameState?.file),
+          isConnected,
+          allowQueueWhileWaiting,
+          queuedCount: queueRef.current.filter((job) => job.status === 'queued').length,
+          activeCount: queueRef.current.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
+        }
+
+        if (detail.previewOnly !== false) {
+          respond({
+            success: true,
+            previewOnly: true,
+            action: 'queue_timeline_generation_batch',
+            message: `Timeline generation batch inspected. No generation was queued. Planned ${requestedJobs.length} job${requestedJobs.length === 1 ? '' : 's'}.`,
+            status,
+            jobs: requestedJobs,
+          })
+          return
+        }
+
+        if (requestedJobs.length === 0) {
+          respond({ success: false, error: 'No timeline generation batch jobs were provided.', status })
+          return
+        }
+        if (workflowIds.length === 0 || requestedJobs.some((job) => !String(job?.workflowId || '').trim())) {
+          respond({ success: false, error: 'Every timeline generation batch job needs a workflowId.', status })
+          return
+        }
+        if (requestedJobs.length > 24) {
+          respond({ success: false, error: 'Timeline generation batch is too large. Queue 24 jobs or fewer at a time.', status })
+          return
+        }
+        if (!frameState?.file) {
+          respond({ success: false, error: 'No captured timeline frame is available for the batch.', status })
+          return
+        }
+        const unsupportedWorkflow = workflowIds.find((id) => !isSingleVideoWorkflowId(id))
+        if (unsupportedWorkflow) {
+          respond({ success: false, error: `Workflow ${unsupportedWorkflow} cannot use a timeline frame batch.`, status })
+          return
+        }
+        const previewWorkflow = workflowIds.find((id) => {
+          const manifest = getWorkflowManifestByWorkflowId(id)
+          return manifest && manifest.runnable === false
+        })
+        if (previewWorkflow) {
+          respond({ success: false, error: `Workflow ${getWorkflowDisplayLabel(previewWorkflow) || previewWorkflow} is a catalog preview and cannot be queued yet.`, status })
+          return
+        }
+        if (!isConnected && !allowQueueWhileWaiting) {
+          respond({ success: false, error: 'ComfyUI is not connected yet. Start ComfyUI, then queue generation.', status })
+          return
+        }
+        if (!isConnected && launcherCanAutoStart) {
+          void startComfyLauncher()
+        }
+
+        const depsOk = await validateDependenciesForQueue(workflowIds, 'MCP timeline generation batch')
+        if (!depsOk) {
+          respond({ success: false, error: 'Missing required workflow dependencies for this timeline generation batch.', status })
+          return
+        }
+
+        const batchId = detail.batchId || `mcp_batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        const settings = detail.generationSettings || {}
+        const finiteOrNull = (value) => {
+          if (value === null || typeof value === 'undefined' || value === '') return null
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : null
+        }
+        const positiveOrNull = (value) => {
+          const parsed = finiteOrNull(value)
+          return parsed !== null && parsed > 0 ? parsed : null
+        }
+        const coerceResolution = (value) => {
+          if (value && typeof value === 'object') {
+            const width = Number(value.width)
+            const height = Number(value.height)
+            if (Number.isFinite(width) && Number.isFinite(height)) {
+              return {
+                width: Math.max(16, Math.round(width)),
+                height: Math.max(16, Math.round(height)),
+              }
+            }
+          }
+          return resolution
+        }
+        const mergeResolutionFields = (...sources) => {
+          for (const source of sources) {
+            if (!source || typeof source !== 'object') continue
+            const direct = coerceResolution(source.resolution || source.outputResolution || source.size)
+            if (direct !== resolution) return direct
+            const width = Number(source.width ?? source.outputWidth)
+            const height = Number(source.height ?? source.outputHeight)
+            if (Number.isFinite(width) && Number.isFinite(height)) {
+              return coerceResolution({ width, height })
+            }
+          }
+          return resolution
+        }
+        const createdJobs = requestedJobs.map((request, index) => {
+          const wfId = String(request?.workflowId || '').trim()
+          const jobDuration = positiveOrNull(request.durationSeconds ?? request.duration ?? settings.durationSeconds ?? detail.durationSeconds ?? detail.duration) ?? positiveOrNull(duration) ?? 5
+          const jobFps = positiveOrNull(request.fps ?? settings.fps ?? detail.fps) ?? positiveOrNull(fps) ?? 24
+          const jobSeed = finiteOrNull(request.seed) ?? Math.floor(Math.random() * 2147483647)
+          const jobResolution = mergeResolutionFields(request, settings, detail)
+          const jobPrompt = String(request.prompt ?? detail.prompt ?? fullPrompt ?? '').trim()
+          const jobNegativePrompt = String(request.negativePrompt ?? detail.negativePrompt ?? negativePrompt ?? '').trim()
+          const workflowLabel = String(request.workflowLabel || getWorkflowDisplayLabel(wfId) || wfId || 'Video').trim()
+          const sourceFrameLabel = detail.source?.frame?.timecode || detail.frame?.timecode || ''
+
+          return createQueuedJob({
+            category: 'video',
+            workflowId: wfId,
+            workflowLabel,
+            needsImage: true,
+            inputAssetType: 'image',
+            inputAssetId: null,
+            inputAssetName: sourceFrameLabel ? `Timeline frame ${sourceFrameLabel}` : 'Timeline frame',
+            inputFromTimelineFrame: true,
+            audioAssetId: null,
+            audioAssetName: '',
+            assetFieldIds: {},
+            referenceAssetId1: null,
+            referenceAssetId2: null,
+            prompt: jobPrompt,
+            negativePrompt: jobNegativePrompt,
+            seed: jobSeed,
+            duration: jobDuration,
+            fps: jobFps,
+            resolution: jobResolution,
+            status: 'queued',
+            progress: 0,
+            mcpBatch: {
+              id: batchId,
+              action: 'queue_timeline_generation_batch',
+              index: index + 1,
+              total: requestedJobs.length,
+              workflowVariation: Number(request.variation) || null,
+              workflowVariationCount: Number(request.variationCount) || null,
+              sourceFrame: detail.frame || detail.source?.frame || null,
+            },
+          })
+        })
+
+        setFormError(null)
+        setGenerationQueue((prev) => [...prev, ...createdJobs])
+        addComfyLog('status', `MCP queued ${createdJobs.length} timeline generation variation${createdJobs.length === 1 ? '' : 's'} from one frame.`)
+
+        respond({
+          success: true,
+          previewOnly: false,
+          action: 'queue_timeline_generation_batch',
+          message: `Queued ${createdJobs.length} timeline generation variation${createdJobs.length === 1 ? '' : 's'}.`,
+          status: {
+            ...status,
+            queuedCount: status.queuedCount + createdJobs.length,
+          },
+          jobs: createdJobs.map((job) => ({
+            id: job.id,
+            workflowId: job.workflowId,
+            workflowLabel: job.workflowLabel,
+            prompt: job.prompt,
+            seed: job.seed,
+            duration: job.duration,
+            fps: job.fps,
+            resolution: job.resolution,
+            inputFromTimelineFrame: Boolean(job.inputFromTimelineFrame),
+            status: job.status,
+          })),
+        })
+      }
+
+      void run().catch((error) => {
+        respond({
+          success: false,
+          error: error instanceof Error ? error.message : String(error || 'Could not queue timeline generation batch.'),
+        })
+      })
+    }
+
+    window.addEventListener('comfystudio-mcp-queue-timeline-generation-batch', handler)
+    return () => window.removeEventListener('comfystudio-mcp-queue-timeline-generation-batch', handler)
+  }, [
+    addComfyLog,
+    allowQueueWhileWaiting,
+    createQueuedJob,
+    duration,
+    fps,
+    fullPrompt,
+    isConnected,
+    launcherCanAutoStart,
+    negativePrompt,
+    resolution,
+    startComfyLauncher,
+    validateDependenciesForQueue,
+  ])
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const respond = typeof detail.respond === 'function' ? detail.respond : null
+      if (!respond) return
+
+      const run = async () => {
+        const finiteOrNull = (value) => {
+          if (value === null || typeof value === 'undefined' || value === '') return null
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : null
+        }
+        const positiveOrNull = (value) => {
+          const parsed = finiteOrNull(value)
+          return parsed !== null && parsed > 0 ? parsed : null
+        }
+        const coerceResolution = (value, fallback = resolution) => {
+          if (value && typeof value === 'object') {
+            const width = Number(value.width)
+            const height = Number(value.height)
+            if (Number.isFinite(width) && Number.isFinite(height)) {
+              return {
+                width: Math.max(16, Math.round(width)),
+                height: Math.max(16, Math.round(height)),
+              }
+            }
+          }
+          return fallback
+        }
+        const gcdInteger = (a, b) => {
+          let x = Math.abs(Math.round(Number(a) || 0))
+          let y = Math.abs(Math.round(Number(b) || 0))
+          while (y) {
+            const next = x % y
+            x = y
+            y = next
+          }
+          return x || 1
+        }
+        const aspectParametersFromResolution = (value) => {
+          const width = Number(value?.width)
+          const height = Number(value?.height)
+          if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null
+          const divisor = gcdInteger(width, height)
+          return {
+            width: Math.max(1, Math.round(width / divisor)),
+            height: Math.max(1, Math.round(height / divisor)),
+          }
+        }
+        const mergeTemplateParameters = (settings, detail, requestedResolution) => {
+          const explicit = {
+            ...(settings?.templateParameters && typeof settings.templateParameters === 'object' ? settings.templateParameters : {}),
+            ...(settings?.parameters && typeof settings.parameters === 'object' ? settings.parameters : {}),
+            ...(detail?.templateParameters && typeof detail.templateParameters === 'object' ? detail.templateParameters : {}),
+            ...(detail?.parameters && typeof detail.parameters === 'object' ? detail.parameters : {}),
+          }
+          const next = { ...explicit }
+          const aspect = aspectParametersFromResolution(requestedResolution)
+          if (aspect) {
+            if (typeof next.target_aspect_w === 'undefined') next.target_aspect_w = aspect.width
+            if (typeof next.target_aspect_h === 'undefined') next.target_aspect_h = aspect.height
+            if (typeof next.width === 'undefined') next.width = Math.round(Number(requestedResolution.width))
+            if (typeof next.height === 'undefined') next.height = Math.round(Number(requestedResolution.height))
+          }
+          return next
+        }
+
+        const templateInput = detail.template && typeof detail.template === 'object' ? detail.template : null
+        const templateQuery = String(
+          detail.templateName
+            || detail.templateId
+            || detail.templateTitle
+            || detail.templateQuery
+            || detail.query
+            || templateInput?.name
+            || templateInput?.title
+            || detail.template
+            || ''
+        ).trim()
+        const sourceAssetId = String(
+          detail.inputAssetId
+            || detail.assetId
+            || detail.sourceAssetId
+            || detail.sourceClip?.asset?.id
+            || detail.source?.sourceClip?.asset?.id
+            || ''
+        ).trim()
+        const sourceAsset = assets.find((asset) => asset?.id === sourceAssetId) || null
+        const status = {
+          action: 'queue_timeline_template_generation',
+          templateQuery,
+          sourceAssetId: sourceAssetId || null,
+          sourceAssetType: sourceAsset?.type || null,
+          isConnected,
+          allowQueueWhileWaiting,
+          queuedCount: queueRef.current.filter((job) => job.status === 'queued').length,
+          activeCount: queueRef.current.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
+        }
+
+        if (!templateQuery && !templateInput?.workflowUrl) {
+          respond({ success: false, error: 'A ComfyUI template name or query is required.', status })
+          return
+        }
+        if (!sourceAsset) {
+          respond({ success: false, error: 'The source timeline asset could not be found.', status })
+          return
+        }
+        if (!['video', 'image'].includes(sourceAsset.type)) {
+          respond({ success: false, error: 'Template timeline generation needs a video or image source asset.', status })
+          return
+        }
+
+        let catalog = null
+        let catalogError = ''
+        try {
+          catalog = await fetchComfyTemplateCatalog({ forceRefresh: detail.forceRefreshTemplates === true })
+        } catch (error) {
+          catalogError = error instanceof Error ? error.message : String(error || 'Could not fetch template catalog.')
+        }
+        const catalogTemplate = catalog ? resolveComfyTemplateFromCatalog(catalog.templates || [], templateQuery) : null
+        const template = catalogTemplate || (templateInput?.workflowUrl ? templateInput : null)
+        if (!template) {
+          respond({
+            success: false,
+            error: catalogError
+              ? `No ComfyUI template matched "${templateQuery}" and the catalog could not be refreshed: ${catalogError}`
+              : `No ComfyUI template matched "${templateQuery}".`,
+            status: {
+              ...status,
+              catalogTemplateCount: (catalog?.templates || []).length,
+            },
+          })
+          return
+        }
+
+        const importedWorkflowId = `${IMPORTED_WORKFLOW_ID_PREFIX}${template.name}`
+        let importedEntry = getImportedWorkflowEntry(importedWorkflowId)
+        let manifest = importedEntry?.manifest || null
+        const settings = detail.generationSettings || {}
+        const prompt = String(detail.prompt ?? settings.prompt ?? fullPrompt ?? '').trim()
+        const negativePromptText = String(detail.negativePrompt ?? settings.negativePrompt ?? negativePrompt ?? '').trim()
+        const sourceDuration = positiveOrNull(detail.sourceClip?.duration ?? detail.source?.sourceClip?.duration ?? sourceAsset.duration)
+        const requestedDuration = positiveOrNull(settings.durationSeconds ?? detail.durationSeconds ?? detail.duration) ?? sourceDuration ?? positiveOrNull(duration) ?? 5
+        const requestedFps = positiveOrNull(settings.fps ?? detail.fps) ?? positiveOrNull(fps) ?? 24
+        const requestedResolution = coerceResolution(
+          settings.resolution || detail.resolution || detail.outputResolution || detail.size,
+          resolution
+        )
+        const seedValue = finiteOrNull(detail.seed ?? settings.seed) ?? Math.floor(Math.random() * 2147483647)
+        const requestedTemplateParameters = mergeTemplateParameters(settings, detail, requestedResolution)
+        const hasRequestedTemplateParameters = Object.keys(requestedTemplateParameters).length > 0
+        const requiredAssetFieldIds = detail.assetFieldIds && typeof detail.assetFieldIds === 'object'
+          ? detail.assetFieldIds
+          : {}
+        const importedParameterBindings = Array.isArray(importedEntry?.bindings?.parameters)
+          ? importedEntry.bindings.parameters
+          : []
+        const needsParameterBindings = hasRequestedTemplateParameters
+          && importedEntry
+          && importedParameterBindings.length === 0
+
+        const previewPlan = {
+          template: {
+            name: template.name,
+            title: template.title,
+            categoryLabel: template.categoryLabel,
+            models: template.models || [],
+            tags: template.tags || [],
+            workflowUrl: template.workflowUrl,
+            sourceUrl: template.sourceUrl,
+          },
+          imported: Boolean(importedEntry && !importedEntry.conversionIncomplete),
+          importedWorkflowId,
+          sourceAsset: {
+            id: sourceAsset.id,
+            name: sourceAsset.name,
+            type: sourceAsset.type,
+            width: sourceAsset.width || null,
+            height: sourceAsset.height || null,
+            duration: sourceAsset.duration || null,
+          },
+          prompt,
+          negativePrompt: negativePromptText,
+          seed: seedValue,
+          durationSeconds: requestedDuration,
+          fps: requestedFps,
+          resolution: requestedResolution,
+          templateParameters: requestedTemplateParameters,
+          willRefreshParameterBindings: Boolean(needsParameterBindings),
+        }
+
+        if (detail.previewOnly !== false) {
+          respond({
+            success: true,
+            previewOnly: true,
+            action: 'queue_timeline_template_generation',
+            message: importedEntry?.conversionIncomplete
+              ? 'Template generation inspected. The template is imported but not runnable yet; applying will retry the import.'
+              : 'Template generation inspected. No template import and no generation was queued.',
+            status,
+            plan: previewPlan,
+          })
+          return
+        }
+
+        if (!importedEntry || importedEntry.conversionIncomplete || importedEntry.manifest?.runnable === false || needsParameterBindings) {
+          if (!isConnected) {
+            if (launcherCanAutoStart) void startComfyLauncher()
+            respond({
+              success: false,
+              error: 'This template needs to be imported before it can be queued, and ComfyUI is not connected. Start ComfyUI, then try again.',
+              status,
+              plan: previewPlan,
+            })
+            return
+          }
+          const importResult = await importComfyTemplate(template, {
+            onProgress: (_step, message) => {
+              if (message) addComfyLog('status', `MCP template import: ${message}`)
+            },
+          })
+          importedEntry = importResult?.entry || null
+          manifest = importedEntry?.manifest || null
+        }
+
+        if (!importedEntry || !manifest) {
+          respond({ success: false, error: 'The ComfyUI template could not be imported.', status, plan: previewPlan })
+          return
+        }
+        if (manifest.runnable === false || importedEntry.conversionIncomplete) {
+          respond({ success: false, error: 'The imported template is not runnable yet. Install its missing nodes/models, then re-import it.', status, plan: previewPlan })
+          return
+        }
+
+        const primaryAssetType = manifest.inputAssetType || (sourceAsset.type === 'video' ? 'video' : 'image')
+        if (primaryAssetType === 'video' && sourceAsset.type !== 'video') {
+          respond({ success: false, error: `Template ${manifest.title || template.title} needs an input video, but the source asset is ${sourceAsset.type}.`, status, plan: previewPlan })
+          return
+        }
+        if (primaryAssetType === 'image' && !['image', 'video'].includes(sourceAsset.type)) {
+          respond({ success: false, error: `Template ${manifest.title || template.title} needs an input image or video frame.`, status, plan: previewPlan })
+          return
+        }
+
+        const requiredAssetFields = (manifest.fields || [])
+          .filter((field) => field?.type === 'assetSelect' && field.required)
+        const normalizedAssetFieldIds = {}
+        for (const field of requiredAssetFields) {
+          const assetId = String(requiredAssetFieldIds[field.id] || '').trim()
+          if (!assetId) {
+            respond({ success: false, error: `Template ${manifest.title || template.title} needs required asset field "${field.label || field.id}".`, status, plan: previewPlan })
+            return
+          }
+          const fieldAsset = assets.find((asset) => asset?.id === assetId)
+          if (!fieldAsset) {
+            respond({ success: false, error: `Asset for required field "${field.label || field.id}" was not found.`, status, plan: previewPlan })
+            return
+          }
+          if (field.assetType && fieldAsset.type !== field.assetType) {
+            respond({ success: false, error: `Field "${field.label || field.id}" needs a ${field.assetType} asset, but got ${fieldAsset.type}.`, status, plan: previewPlan })
+            return
+          }
+          normalizedAssetFieldIds[field.id] = assetId
+        }
+
+        if (!isConnected && !allowQueueWhileWaiting) {
+          respond({ success: false, error: 'ComfyUI is not connected yet. Start ComfyUI, then queue generation.', status, plan: previewPlan })
+          return
+        }
+        if (!isConnected && launcherCanAutoStart) {
+          void startComfyLauncher()
+        }
+
+        const depsOk = await validateDependenciesForQueue([importedEntry.workflowId], 'MCP template generation')
+        if (!depsOk) {
+          respond({ success: false, error: 'Missing required workflow dependencies for this template generation.', status, plan: previewPlan })
+          return
+        }
+
+        const outputType = String(manifest.outputType || 'video').toLowerCase()
+        const jobCategory = outputType === 'image' ? 'image' : outputType === 'audio' ? 'audio' : 'video'
+        const job = createQueuedJob({
+          category: jobCategory,
+          workflowId: importedEntry.workflowId,
+          workflowLabel: manifest.title || template.title || importedEntry.workflowId,
+          needsImage: Boolean(manifest.needsImage || manifest.inputAssetType),
+          inputAssetType: primaryAssetType,
+          inputAssetId: sourceAsset.id,
+          inputAssetName: sourceAsset.name || '',
+          inputFromTimelineFrame: false,
+          audioAssetId: null,
+          audioAssetName: '',
+          assetFieldIds: normalizedAssetFieldIds,
+          referenceAssetId1: null,
+          referenceAssetId2: null,
+          prompt,
+          negativePrompt: negativePromptText,
+          seed: seedValue,
+          duration: requestedDuration,
+          fps: requestedFps,
+          resolution: requestedResolution,
+          templateParameters: requestedTemplateParameters,
+          folderId: detail.folderId || detail.outputFolderId || null,
+          status: 'queued',
+          progress: 0,
+          mcpBatch: {
+            id: detail.batchId || `mcp_template_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            action: 'queue_timeline_template_generation',
+            templateName: template.name,
+            sourceClipId: detail.sourceClip?.id || detail.source?.sourceClip?.id || null,
+          },
+        })
+
+        setFormError(null)
+        setGenerationQueue((prev) => [...prev, job])
+        addComfyLog('status', `MCP queued template generation: ${job.workflowLabel}`)
+
+        respond({
+          success: true,
+          previewOnly: false,
+          action: 'queue_timeline_template_generation',
+          message: `Queued template generation: ${job.workflowLabel}.`,
+          status: {
+            ...status,
+            queuedCount: status.queuedCount + 1,
+          },
+          plan: {
+            ...previewPlan,
+            imported: true,
+            importedWorkflowId: importedEntry.workflowId,
+          },
+          job: {
+            id: job.id,
+            workflowId: job.workflowId,
+            workflowLabel: job.workflowLabel,
+            category: job.category,
+            inputAssetId: job.inputAssetId,
+            inputAssetType: job.inputAssetType,
+            prompt: job.prompt,
+            seed: job.seed,
+            duration: job.duration,
+            fps: job.fps,
+            resolution: job.resolution,
+            templateParameters: job.templateParameters,
+            folderId: job.folderId || null,
+            status: job.status,
+          },
+        })
+      }
+
+      void run().catch((error) => {
+        respond({
+          success: false,
+          error: error instanceof Error ? error.message : String(error || 'Could not queue template generation.'),
+        })
+      })
+    }
+
+    window.addEventListener('comfystudio-mcp-queue-template-generation', handler)
+    return () => window.removeEventListener('comfystudio-mcp-queue-template-generation', handler)
+  }, [
+    addComfyLog,
+    allowQueueWhileWaiting,
+    assets,
+    createQueuedJob,
+    duration,
+    fps,
+    fullPrompt,
+    isConnected,
+    launcherCanAutoStart,
+    negativePrompt,
+    resolution,
+    startComfyLauncher,
+    validateDependenciesForQueue,
+  ])
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event?.detail || {}
+      const respond = typeof detail.respond === 'function' ? detail.respond : null
+      if (!respond) return
+
+      const run = async () => {
+        const requestedJobs = Array.isArray(detail.jobs) ? detail.jobs : []
+        const workflowIds = Array.from(new Set(
+          requestedJobs
+            .map((job) => String(job?.workflowId || '').trim())
+            .filter(Boolean)
+        ))
+        const status = {
+          action: 'queue_prompt_generation_batch',
+          requestedJobCount: requestedJobs.length,
+          workflowIds,
+          isConnected,
+          allowQueueWhileWaiting,
+          queuedCount: queueRef.current.filter((job) => job.status === 'queued').length,
+          activeCount: queueRef.current.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
+        }
+
+        if (detail.previewOnly !== false) {
+          respond({
+            success: true,
+            previewOnly: true,
+            action: 'queue_prompt_generation_batch',
+            message: `Prompt generation batch inspected. No generation was queued. Planned ${requestedJobs.length} job${requestedJobs.length === 1 ? '' : 's'}.`,
+            status,
+            jobs: requestedJobs,
+          })
+          return
+        }
+
+        if (requestedJobs.length === 0) {
+          respond({ success: false, error: 'No prompt generation batch jobs were provided.', status })
+          return
+        }
+        if (requestedJobs.length > 24) {
+          respond({ success: false, error: 'Prompt generation batch is too large. Queue 24 jobs or fewer at a time.', status })
+          return
+        }
+        if (workflowIds.length === 0 || requestedJobs.some((job) => !String(job?.workflowId || '').trim())) {
+          respond({ success: false, error: 'Every prompt generation batch job needs a workflowId.', status })
+          return
+        }
+        const missingPrompt = requestedJobs.find((job) => !String(job?.prompt || '').trim())
+        if (missingPrompt) {
+          respond({ success: false, error: 'Every prompt generation batch job needs prompt text.', status })
+          return
+        }
+        const normalizeMcpPromptAssetFieldIds = (job = {}) => {
+          const result = {}
+          const direct = job?.assetFieldIds && typeof job.assetFieldIds === 'object'
+            ? job.assetFieldIds
+            : {}
+          Object.entries(direct).forEach(([fieldId, assetId]) => {
+            const key = String(fieldId || '').trim()
+            const id = String(assetId || '').trim()
+            if (key && id) result[key] = id
+          })
+          const referenceIds = Array.isArray(job?.referenceImages)
+            ? job.referenceImages
+            : Array.isArray(job?.referenceAssetIds)
+              ? job.referenceAssetIds
+              : []
+          referenceIds.slice(0, 4).forEach((assetId, index) => {
+            const id = String(assetId || '').trim()
+            if (id) result[`referenceImage${index + 1}`] = id
+          })
+          for (let index = 1; index <= 4; index += 1) {
+            const id = String(job?.[`referenceImage${index}`] || job?.[`referenceAssetId${index}`] || '').trim()
+            if (id) result[`referenceImage${index}`] = id
+          }
+          return result
+        }
+        const requestedFolderIds = Array.from(new Set(
+          requestedJobs
+            .map((job) => String(job?.folderId || job?.outputFolderId || detail.folderId || detail.outputFolderId || '').trim())
+            .filter(Boolean)
+        ))
+        if (requestedFolderIds.length > 0) {
+          const existingFolderIds = new Set((useAssetsStore.getState().folders || []).map((folder) => folder?.id).filter(Boolean))
+          const missingFolderIds = requestedFolderIds.filter((folderId) => !existingFolderIds.has(folderId))
+          if (missingFolderIds.length > 0) {
+            respond({ success: false, error: `Unknown asset folder ID${missingFolderIds.length === 1 ? '' : 's'}: ${missingFolderIds.join(', ')}`, status })
+            return
+          }
+        }
+        const assetById = new Map((assets || []).map((asset) => [asset?.id, asset]).filter(([id]) => Boolean(id)))
+        const missingAssetIds = []
+        const wrongTypeAssetFields = []
+        for (const job of requestedJobs) {
+          const manifest = getWorkflowManifestByWorkflowId(String(job?.workflowId || '').trim())
+          const fieldsById = new Map((manifest?.fields || []).map((field) => [field?.id, field]).filter(([id]) => Boolean(id)))
+          for (const [fieldId, assetId] of Object.entries(normalizeMcpPromptAssetFieldIds(job))) {
+            const asset = assetById.get(assetId)
+            if (!asset) {
+              missingAssetIds.push(assetId)
+              continue
+            }
+            const expectedType = fieldsById.get(fieldId)?.assetType
+            if (expectedType && String(asset.type || '').toLowerCase() !== String(expectedType).toLowerCase()) {
+              wrongTypeAssetFields.push(`${fieldId} expected ${expectedType}, got ${asset.type || 'unknown'} (${assetId})`)
+            }
+          }
+        }
+        if (missingAssetIds.length > 0) {
+          respond({ success: false, error: `Unknown reference/input asset ID${missingAssetIds.length === 1 ? '' : 's'}: ${Array.from(new Set(missingAssetIds)).join(', ')}`, status })
+          return
+        }
+        if (wrongTypeAssetFields.length > 0) {
+          respond({ success: false, error: `Invalid reference/input asset type: ${wrongTypeAssetFields.join('; ')}`, status })
+          return
+        }
+
+        for (const id of workflowIds) {
+          const manifest = getWorkflowManifestByWorkflowId(id)
+          const label = getWorkflowDisplayLabel(id) || id
+          if (!manifest) {
+            respond({ success: false, error: `Unknown Velorn workflow: ${id}`, status })
+            return
+          }
+          if (manifest.runnable === false) {
+            respond({ success: false, error: `Workflow ${label} is a catalog preview and cannot be queued yet.`, status })
+            return
+          }
+          if (manifest.needsImage || manifest.requiresAudio) {
+            respond({ success: false, error: `Workflow ${label} is not prompt-only. Use a timeline-frame or asset-based MCP tool instead.`, status })
+            return
+          }
+          const requiredAssetFields = (manifest.fields || []).filter((field) => field?.type === 'assetSelect' && field.required)
+          const missingRequiredAssetField = requestedJobs
+            .filter((job) => String(job?.workflowId || '').trim() === id)
+            .flatMap((job) => {
+              const assetFieldIds = normalizeMcpPromptAssetFieldIds(job)
+              return requiredAssetFields
+                .filter((field) => !assetFieldIds[field.id])
+                .map((field) => field.id)
+            })[0]
+          if (missingRequiredAssetField) {
+            respond({ success: false, error: `Workflow ${label} needs asset field "${missingRequiredAssetField}". Provide it in jobs[].assetFieldIds or jobs[].referenceImages.`, status })
+            return
+          }
+          if (!['image', 'video'].includes(manifest.outputType)) {
+            respond({ success: false, error: `Workflow ${label} outputs ${manifest.outputType || 'an unsupported type'}; prompt batches currently support image and video only.`, status })
+            return
+          }
+        }
+
+        if (!isConnected && !allowQueueWhileWaiting) {
+          respond({ success: false, error: 'ComfyUI is not connected yet. Start ComfyUI, then queue generation.', status })
+          return
+        }
+        if (!isConnected && launcherCanAutoStart) {
+          void startComfyLauncher()
+        }
+
+        const depsOk = await validateDependenciesForQueue(workflowIds, 'MCP prompt generation batch')
+        if (!depsOk) {
+          respond({ success: false, error: 'Missing required workflow dependencies for this prompt generation batch.', status })
+          return
+        }
+
+        const batchId = detail.batchId || `mcp_prompt_batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        const settings = detail.generationSettings || {}
+        const finiteOrNull = (value) => {
+          if (value === null || typeof value === 'undefined' || value === '') return null
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : null
+        }
+        const positiveOrNull = (value) => {
+          const parsed = finiteOrNull(value)
+          return parsed !== null && parsed > 0 ? parsed : null
+        }
+        const coerceResolution = (value, fallback) => {
+          if (value && typeof value === 'object') {
+            const width = Number(value.width)
+            const height = Number(value.height)
+            if (Number.isFinite(width) && Number.isFinite(height)) {
+              return {
+                width: Math.max(16, Math.round(width)),
+                height: Math.max(16, Math.round(height)),
+              }
+            }
+          }
+          return fallback
+        }
+
+        const createdJobs = requestedJobs.map((request, index) => {
+          const wfId = String(request?.workflowId || '').trim()
+          const manifest = getWorkflowManifestByWorkflowId(wfId)
+          const outputType = String(request.outputType || manifest?.outputType || 'image').toLowerCase()
+          const jobCategory = outputType === 'video' ? 'video' : 'image'
+          const fallbackResolution = jobCategory === 'image' ? effectiveImageResolution : resolution
+          const jobResolution = coerceResolution(request.resolution || settings.resolution || detail.resolution, fallbackResolution)
+          const jobDuration = jobCategory === 'video'
+            ? (positiveOrNull(request.durationSeconds ?? request.duration ?? settings.durationSeconds ?? detail.durationSeconds ?? detail.duration) ?? positiveOrNull(duration) ?? 5)
+            : 0
+          const jobFps = jobCategory === 'video'
+            ? (positiveOrNull(request.fps ?? settings.fps ?? detail.fps) ?? positiveOrNull(fps) ?? 24)
+            : 0
+          const jobSeed = finiteOrNull(request.seed) ?? Math.floor(Math.random() * 2147483647)
+          const workflowLabel = String(request.workflowLabel || manifest?.title || getWorkflowDisplayLabel(wfId) || wfId || 'Generation').trim()
+          const promptLabel = String(request.promptLabel || '').trim()
+          const outputFolderId = String(request.folderId || request.outputFolderId || detail.folderId || detail.outputFolderId || '').trim() || null
+          const assetFieldIds = normalizeMcpPromptAssetFieldIds(request)
+
+          const jobOverrides = {
+            category: jobCategory,
+            workflowId: wfId,
+            workflowLabel,
+            needsImage: false,
+            inputAssetType: null,
+            inputAssetId: null,
+            inputAssetName: '',
+            inputFromTimelineFrame: false,
+            audioAssetId: null,
+            audioAssetName: '',
+            assetFieldIds,
+            referenceAssetId1: null,
+            referenceAssetId2: null,
+            prompt: String(request.prompt || '').trim(),
+            negativePrompt: String(request.negativePrompt ?? detail.negativePrompt ?? negativePrompt ?? '').trim(),
+            seed: jobSeed,
+            duration: jobDuration,
+            fps: jobFps,
+            resolution: jobResolution,
+            folderId: outputFolderId,
+            status: 'queued',
+            progress: 0,
+            mcpBatch: {
+              id: batchId,
+              action: 'queue_prompt_generation_batch',
+              index: index + 1,
+              total: requestedJobs.length,
+              promptLabel: promptLabel || null,
+              promptIndex: Number(request.promptIndex) || null,
+              promptCount: Number(request.promptCount) || null,
+              workflowVariation: Number(request.variation) || null,
+              workflowVariationCount: Number(request.variationCount) || null,
+            },
+          }
+          if (Object.prototype.hasOwnProperty.call(request, 'generateAudio')) {
+            jobOverrides.generateAudio = Boolean(request.generateAudio)
+          }
+          return createQueuedJob(jobOverrides)
+        })
+
+        setFormError(null)
+        setGenerationQueue((prev) => [...prev, ...createdJobs])
+        addComfyLog('status', `MCP queued ${createdJobs.length} prompt generation job${createdJobs.length === 1 ? '' : 's'}.`)
+
+        respond({
+          success: true,
+          previewOnly: false,
+          action: 'queue_prompt_generation_batch',
+          message: `Queued ${createdJobs.length} prompt generation job${createdJobs.length === 1 ? '' : 's'}.`,
+          status: {
+            ...status,
+            queuedCount: status.queuedCount + createdJobs.length,
+          },
+          jobs: createdJobs.map((job) => ({
+            id: job.id,
+            workflowId: job.workflowId,
+            workflowLabel: job.workflowLabel,
+            category: job.category,
+            prompt: job.prompt,
+            seed: job.seed,
+            duration: job.duration,
+            fps: job.fps,
+            resolution: job.resolution,
+            assetFieldIds: job.assetFieldIds || {},
+            generateAudio: job.generateAudio ?? null,
+            folderId: job.folderId || null,
+            status: job.status,
+          })),
+        })
+      }
+
+      void run().catch((error) => {
+        respond({
+          success: false,
+          error: error instanceof Error ? error.message : String(error || 'Could not queue prompt generation batch.'),
+        })
+      })
+    }
+
+    window.addEventListener('comfystudio-mcp-queue-prompt-generation-batch', handler)
+    return () => window.removeEventListener('comfystudio-mcp-queue-prompt-generation-batch', handler)
+  }, [
+    addComfyLog,
+    allowQueueWhileWaiting,
+    createQueuedJob,
+    duration,
+    effectiveImageResolution,
+    fps,
+    isConnected,
+    launcherCanAutoStart,
+    negativePrompt,
+    resolution,
+    validateDependenciesForQueue,
+  ])
 
   // Poll for result
   const pollForResult = async (promptId, wfId, onProgress, expectedOutputPrefix = '') => {
@@ -11752,7 +13041,18 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         if (!outputs || typeof outputs !== 'object') continue
 
         // ── VIDEO detection: scan ALL nodes, ALL keys ──
-        // Check known video keys first (videos, gifs), then any array key with video-like filenames
+        // Collect every matching video: multi-output templates (e.g. imported
+        // graphs that save both a result and a side-by-side comparison) write
+        // more than one, and returning only the first drops the real output.
+        const videos = []
+        const videoSignatures = new Set()
+        const pushUniqueVideo = (info) => {
+          if (!info?.filename) return
+          const signature = `${info.filename}|${info.subfolder || ''}|${info.outputType || 'output'}`
+          if (videoSignatures.has(signature)) return
+          videoSignatures.add(signature)
+          videos.push(info)
+        }
         for (const nodeId of Object.keys(outputs)) {
           const nodeOut = outputs[nodeId]
           if (!nodeOut || typeof nodeOut !== 'object') continue
@@ -11766,7 +13066,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
               ))
               if (info) {
                 console.log(`[pollForResult] Found video in node ${nodeId}.${key}:`, info)
-                return { type: 'video', ...info }
+                pushUniqueVideo(info)
               }
             }
           }
@@ -11781,11 +13081,13 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
               ))
               if (info && isVideoFilename(info.filename)) {
                 console.log(`[pollForResult] Found video in node ${nodeId}.${key} (by extension):`, info)
-                return { type: 'video', ...info }
+                pushUniqueVideo(info)
               }
             }
           }
         }
+        if (videos.length === 1) return { type: 'video', ...videos[0] }
+        if (videos.length > 1) return { type: 'videos', items: videos.map((info) => ({ type: 'video', ...info })) }
 
         // ── IMAGE detection: scan ALL nodes, ALL keys ──
         const images = []
@@ -12024,6 +13326,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       ...(GENERATED_ASSET_FOLDERS[kind] || ['Generated']),
       getWorkflowFolderName(kind),
     ]
+    const requestedOutputFolderId = String(job?.folderId || job?.outputFolderId || '').trim() || null
+    const activeFolderExists = (folderId) => {
+      if (!folderId || !importsIntoActiveProject) return false
+      return (useAssetsStore.getState().folders || []).some((folder) => folder?.id === folderId)
+    }
+    const getGeneratedFolderId = (kind, pathSegments) => {
+      if (!importsIntoActiveProject) return null
+      if (requestedOutputFolderId && activeFolderExists(requestedOutputFolderId)) return requestedOutputFolderId
+      return ensureAssetFolderPath(pathSegments || generatedFolderPath(kind))
+    }
     const saveImportedAssetRecord = async (assetRecord, folderPathSegments) => {
       if (importsIntoActiveProject) {
         const addedAsset = addAsset(assetRecord)
@@ -12040,70 +13352,81 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       return persistedAsset
     }
 
-    if (result.type === 'video') {
-      if (markImportedSignature('video', result.filename, result.subfolder, result.outputType)) {
-        addComfyLog('status', `Skipped duplicate video import: ${result.filename}`)
+    if (result.type === 'video' || result.type === 'videos') {
+      const videoItems = (result.type === 'videos' ? result.items : [result]).filter(Boolean)
+      const freshVideoItems = videoItems.filter((item) => {
+        if (markImportedSignature('video', item.filename, item.subfolder, item.outputType)) {
+          addComfyLog('status', `Skipped duplicate video import: ${item.filename}`)
+          return false
+        }
+        return true
+      })
+      if (freshVideoItems.length === 0) {
         return { didImportAny: false, importedAssets }
       }
       const shortFilmVideoName = shortFilmMeta?.kind === 'shot-video'
         ? `VID ${String((Number(shortFilmMeta.shotIndex) || 0) + 1).padStart(2, '0')} - ${shortFilmMeta.shotTitle || 'Shot'}`
         : ''
       const generatedVideoFolderPath = generatedFolderPath('video')
-      const generatedVideoFolderId = importsIntoActiveProject ? ensureAssetFolderPath(generatedVideoFolderPath) : null
-      try {
-        const videoFile = await comfyui.downloadVideo(result.filename, result.subfolder, result.outputType)
-        const assetInfo = await importAsset(targetProjectHandle, videoFile, 'video')
-        const blobUrl = importsIntoActiveProject ? URL.createObjectURL(videoFile) : null
-        const newAsset = await saveImportedAssetRecord({
-          ...assetInfo,
-          name: shortFilmVideoName || resolvedName,
-          type: 'video',
-          url: blobUrl,
-          prompt: jobPrompt,
-          isImported: true,
-          yolo: directorMeta || undefined,
-          shortFilm: shortFilmMeta || undefined,
-          folderId: generatedVideoFolderId,
-          settings: {
-            duration: jobDuration,
-            fps: jobFps,
-            resolution: jobResolution ? `${jobResolution.width}x${jobResolution.height}` : undefined,
-            seed: jobSeed,
-            inputAssetId: job?.inputAssetId || undefined,
-            keyframeAssetId: job?.inputAssetId || shortFilmMeta?.keyframeAssetId || undefined,
+      const generatedVideoFolderId = getGeneratedFolderId('video', generatedVideoFolderPath)
+      for (let videoIndex = 0; videoIndex < freshVideoItems.length; videoIndex += 1) {
+        const item = freshVideoItems[videoIndex]
+        const videoAssetName = `${shortFilmVideoName || resolvedName}${freshVideoItems.length > 1 ? ` (${videoIndex + 1})` : ''}`
+        try {
+          const videoFile = await comfyui.downloadVideo(item.filename, item.subfolder, item.outputType)
+          const assetInfo = await importAsset(targetProjectHandle, videoFile, 'video')
+          const blobUrl = importsIntoActiveProject ? URL.createObjectURL(videoFile) : null
+          const newAsset = await saveImportedAssetRecord({
+            ...assetInfo,
+            name: videoAssetName,
+            type: 'video',
+            url: blobUrl,
+            prompt: jobPrompt,
+            isImported: true,
+            yolo: directorMeta || undefined,
+            shortFilm: shortFilmMeta || undefined,
+            folderId: generatedVideoFolderId,
+            settings: {
+              duration: jobDuration,
+              fps: jobFps,
+              resolution: jobResolution ? `${jobResolution.width}x${jobResolution.height}` : undefined,
+              seed: jobSeed,
+              inputAssetId: job?.inputAssetId || undefined,
+              keyframeAssetId: job?.inputAssetId || shortFilmMeta?.keyframeAssetId || undefined,
+            }
+          }, generatedVideoFolderPath)
+          if (newAsset) importedAssets.push(newAsset)
+          didImportAny = true
+          if (isElectron() && importsIntoActiveProject && currentProjectHandle && newAsset?.absolutePath) {
+            enqueuePlaybackTranscode(currentProjectHandle, newAsset.id, newAsset.absolutePath).catch(() => {})
+            if (isProxyPlaybackEnabled()) {
+              enqueueProxyTranscode(currentProjectHandle, newAsset.id, newAsset.absolutePath).catch(() => {})
+            }
           }
-        }, generatedVideoFolderPath)
-        if (newAsset) importedAssets.push(newAsset)
-        didImportAny = true
-        if (isElectron() && importsIntoActiveProject && currentProjectHandle && newAsset?.absolutePath) {
-          enqueuePlaybackTranscode(currentProjectHandle, newAsset.id, newAsset.absolutePath).catch(() => {})
-          if (isProxyPlaybackEnabled()) {
-            enqueueProxyTranscode(currentProjectHandle, newAsset.id, newAsset.absolutePath).catch(() => {})
-          }
+        } catch (err) {
+          console.error('Failed to save video:', err)
+          if (!importsIntoActiveProject) throw err
+          // Fallback: use ComfyUI URL
+          const url = comfyui.getMediaUrl(item.filename, item.subfolder, item.outputType)
+          const fallbackAsset = addAsset({
+            name: videoAssetName,
+            type: 'video',
+            url,
+            prompt: jobPrompt,
+            yolo: directorMeta || undefined,
+            shortFilm: shortFilmMeta || undefined,
+            folderId: generatedVideoFolderId,
+            settings: {
+              duration: jobDuration,
+              fps: jobFps,
+              seed: jobSeed,
+              inputAssetId: job?.inputAssetId || undefined,
+              keyframeAssetId: job?.inputAssetId || shortFilmMeta?.keyframeAssetId || undefined,
+            }
+          })
+          if (fallbackAsset) importedAssets.push(fallbackAsset)
+          didImportAny = true
         }
-      } catch (err) {
-        console.error('Failed to save video:', err)
-        if (!importsIntoActiveProject) throw err
-        // Fallback: use ComfyUI URL
-        const url = comfyui.getMediaUrl(result.filename, result.subfolder, result.outputType)
-        const fallbackAsset = addAsset({
-          name: shortFilmVideoName || resolvedName,
-          type: 'video',
-          url,
-          prompt: jobPrompt,
-          yolo: directorMeta || undefined,
-          shortFilm: shortFilmMeta || undefined,
-          folderId: generatedVideoFolderId,
-          settings: {
-            duration: jobDuration,
-            fps: jobFps,
-            seed: jobSeed,
-            inputAssetId: job?.inputAssetId || undefined,
-            keyframeAssetId: job?.inputAssetId || shortFilmMeta?.keyframeAssetId || undefined,
-          }
-        })
-        if (fallbackAsset) importedAssets.push(fallbackAsset)
-        didImportAny = true
       }
     } else if (result.type === 'images') {
       let generatedImageFolderId = null
@@ -12135,7 +13458,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         const img = imageItems[imageIndex]
         if (markImportedSignature('image', img.filename, img.subfolder, img.outputType)) continue
         if (!generatedImageFolderId) {
-          generatedImageFolderId = importsIntoActiveProject ? ensureAssetFolderPath(generatedImageFolderPath) : null
+          generatedImageFolderId = getGeneratedFolderId('image', generatedImageFolderPath)
         }
         try {
           const imageFile = await comfyui.downloadImage(img.filename, img.subfolder, img.outputType)
@@ -12207,7 +13530,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         return { didImportAny: false, importedAssets }
       }
       const generatedAudioFolderPath = generatedFolderPath('audio')
-      const generatedAudioFolderId = importsIntoActiveProject ? ensureAssetFolderPath(generatedAudioFolderPath) : null
+      const generatedAudioFolderId = getGeneratedFolderId('audio', generatedAudioFolderPath)
       const shortFilmVoiceName = shortFilmMeta?.kind === 'dialogue-voice'
         ? `VO ${String((Number(shortFilmMeta.lineIndex) || 0) + 1).padStart(2, '0')} - ${shortFilmMeta.speaker || 'Character'}`
         : ''
@@ -12464,7 +13787,14 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         }
         return new File([result.data], filename, { type: mimeType })
       }
-      const outputPrefix = (
+      const importedJobEntry = isImportedWorkflowId(job.workflowId) ? getImportedWorkflowEntry(job.workflowId) : null
+      const outputPrefix = importedJobEntry ? (
+        `${importedJobEntry.manifest?.outputType === 'image'
+          ? 'image'
+          : importedJobEntry.manifest?.outputType === 'audio'
+            ? 'audio'
+            : 'video'}/comfystudio_${outputToken}`
+      ) : (
         isSingleVideoWorkflowId(job.workflowId) ||
         job.workflowId === 'ltx23-t2v' ||
         job.workflowId === 'wan22-t2v' ||
@@ -12713,6 +14043,19 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
         } catch (error) {
           throw new Error(`Custom workflow JSON is invalid: ${error?.message || error}`)
         }
+      } else if (isImportedWorkflowId(job.workflowId)) {
+        const importedEntry = getImportedWorkflowEntry(job.workflowId)
+        const read = importedEntry?.workflowPath && window.electronAPI?.readFile
+          ? await window.electronAPI.readFile(importedEntry.workflowPath, { encoding: 'utf8' })
+          : null
+        if (!read?.success || !read.data) {
+          throw new Error(read?.error || 'Could not read the imported workflow file. Try re-importing the template.')
+        }
+        try {
+          workflowJson = JSON.parse(read.data)
+        } catch (error) {
+          throw new Error(`Imported workflow file is corrupt: ${error?.message || error}. Re-import the template.`)
+        }
       } else {
         const workflowPath = BUILTIN_WORKFLOW_PATHS[job.workflowId]
         if (!workflowPath) throw new Error('Unknown workflow: ' + job.workflowId)
@@ -12771,8 +14114,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             frames: Math.round(job.duration * job.fps) + 1,
             fps: job.fps,
             seed: job.seed,
-            filenamePrefix: outputPrefix || 'video/ComfyStudio_wan',
-            qualityPreset: job.wanQualityPreset || 'face-lock',
+            filenamePrefix: outputPrefix || 'video/Velorn_wan',
+            qualityPreset: job.wanQualityPreset || 'balanced',
           })
           break
         case 'ltx23-i2v':
@@ -12962,7 +14305,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             width: job.resolution?.width,
             height: job.resolution?.height,
             referenceImages: referenceFilenames,
-            filenamePrefix: outputPrefix || 'image/ComfyStudio_edit',
+            filenamePrefix: outputPrefix || 'image/Velorn_edit',
           })
           break
         case CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID:
@@ -13133,6 +14476,22 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           })
           break
         default:
+          if (importedJobEntry?.bindings) {
+            modifiedWorkflow = applyImportedWorkflowBindings(workflowJson, importedJobEntry.bindings, {
+              prompt: job.prompt,
+              negativePrompt: job.negativePrompt,
+              seed: job.seed,
+              inputImage: uploadedFilename,
+              inputVideo: uploadedVideoFilename,
+              assetFieldFilenames,
+              templateParameters: job.templateParameters,
+              filenamePrefix: outputPrefix,
+            })
+            break
+          }
+          if (importedJobEntry) {
+            throw new Error('This imported template predates field bindings. Re-import it from the ComfyUI tab.')
+          }
           throw new Error('Unhandled workflow: ' + job.workflowId)
       }
 
@@ -13282,6 +14641,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     selectedAsset,
     audioAsset: selectedAudioAsset,
     ...selectedAssetFields,
+    ...templateParameterValues,
     prompt,
     musicTags,
     lyrics,
@@ -13315,6 +14675,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
 
   const workflowDetailActions = {
     onGenerate: handleGenerate,
+    onOpenApiKeyDialog: () => setApiKeyDialogOpen(true),
     onPreviewAssetIndexChange: (nextIndex) => {
       setLatestWorkflowPreview((prev) => {
         if (!prev || prev.workflowId !== selectedPreviewWorkflowId) return prev
@@ -13391,6 +14752,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           setSeed(value)
           break
         default:
+          if ((selectedWorkflowManifest?.fields || []).some((field) => field?.id === key && field?.templateParameter)) {
+            setTemplateParameterValues((prev) => ({ ...(prev || {}), [key]: value }))
+          }
           break
       }
     },
@@ -13426,7 +14790,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             {!launcherIsBooting && !launcherWaitingForExternal && launcherCanAutoStart && (
               <>
                 <span className="font-semibold">ComfyUI is offline.</span>{' '}
-                <span className="text-sky-200/85">Hit Start (or just queue a job) and ComfyStudio will boot it for you.</span>
+                <span className="text-sky-200/85">Hit Start (or just queue a job) and Velorn will boot it for you.</span>
               </>
             )}
           </div>
@@ -13444,10 +14808,9 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
       {/* Header */}
       <div className="h-12 flex items-center justify-between px-4 border-b border-sf-dark-700">
         <div className="flex items-center gap-3">
-          <Sparkles className="w-4 h-4 text-sf-accent" />
-          <span className="text-sm font-semibold text-sf-text-primary">Generate</span>
-
-          <div className="flex items-center gap-1 ml-4 p-1 rounded-lg bg-sf-dark-800 border border-sf-dark-700">
+          {/* No wordmark: the app tab already says "Generate", and the mode
+              chips act as the page title. */}
+          <div className="flex items-center gap-1 p-1 rounded-lg bg-sf-dark-800 border border-sf-dark-700">
             <button
               onClick={() => {
                 setGenerationMode('single')
@@ -13464,7 +14827,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
               }}
               className={`px-3 py-1 rounded text-xs transition-colors ${generationMode === 'yolo' ? 'bg-sf-accent text-white' : 'text-sf-text-muted hover:text-sf-text-primary'}`}
             >
-              Create <span className="ml-1 text-[9px] opacity-75">Beta</span>
+              Director
             </button>
           </div>
         </div>
@@ -13548,18 +14911,29 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             {generationMode === 'single' && (
               <>
                 {!workflowDetailOpen ? (
-                  <WorkflowBrowser
-                    workflows={visibleWorkflowManifests}
-                    selectedWorkflowId={selectedWorkflowManifest?.id || workflowId}
-                    route={workflowRoute}
-                    onRouteChange={handleWorkflowRouteChange}
-                    onSelectWorkflow={handleWorkflowManifestSelect}
-                  />
+                  workflowRoute === 'templates' && selectedComfyTemplate ? (
+                    <TemplateDetail
+                      template={selectedComfyTemplate}
+                      onBack={() => setSelectedComfyTemplate(null)}
+                      isConnected={isConnected}
+                    />
+                  ) : (
+                    <WorkflowBrowser
+                      workflows={visibleWorkflowManifests}
+                      selectedWorkflowId={selectedWorkflowManifest?.id || workflowId}
+                      route={workflowRoute}
+                      onRouteChange={handleWorkflowRouteChange}
+                      onSelectWorkflow={handleWorkflowManifestSelect}
+                      onSelectTemplate={setSelectedComfyTemplate}
+                      selectedTemplateName={selectedComfyTemplate?.name || ''}
+                    />
+                  )
                 ) : (
                   <WorkflowDetail
                     workflow={selectedWorkflowManifest}
                     values={workflowDetailValues}
                     actions={workflowDetailActions}
+                    setup={workflowSetupFlow}
                     disabled={isGenerateDisabled}
                     disabledReason={formError || (customGenerateNeedsSetup ? customGenerateDisabledReason : '')}
                     onBack={() => setWorkflowDetailOpen(false)}
@@ -14088,6 +15462,7 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                     handleImportYoloMusicCustomVideoWorkflow={handleImportYoloMusicCustomVideoWorkflow}
                     handleOpenYoloMusicCustomVideoWorkflowInComfyUi={handleOpenYoloMusicCustomVideoWorkflowInComfyUi}
                     handleClearYoloMusicCustomVideoWorkflow={handleClearYoloMusicCustomVideoWorkflow}
+                    handleUseYoloMusicLibraryWorkflow={handleUseYoloMusicLibraryWorkflow}
                     handleYoloMusicCastAdd={handleYoloMusicCastAdd}
                     handleYoloMusicCastRemove={handleYoloMusicCastRemove}
                     handleYoloMusicCastAssetChange={handleYoloMusicCastAssetChange}
@@ -14295,8 +15670,8 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
                               <div className="text-[10px] leading-5 text-sf-text-secondary">
                                 <div className="font-semibold text-sf-text-primary">Lyrics source</div>
                                 {yoloMusicAlignProvidedLyrics
-                                  ? 'Paste plain lyrics below. ComfyStudio listens to the selected audio for timing, then writes your lyrics as SRT.'
-                                  : 'ComfyStudio listens to the selected audio and writes timed SRT output.'}
+                                  ? 'Paste plain lyrics below. Velorn listens to the selected audio for timing, then writes your lyrics as SRT.'
+                                  : 'Velorn listens to the selected audio and writes timed SRT output.'}
                               </div>
                               <div className="inline-flex rounded-lg border border-sf-dark-600 bg-sf-dark-950 p-1">
                                 <button

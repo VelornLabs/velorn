@@ -209,7 +209,7 @@ export default function ApiKeyDialog({
                 {headline || 'Cloud Workflows · Comfy.org API key'}
               </h2>
               <p className="mt-1 text-xs text-sf-text-muted">
-                {subhead || 'Unlocks the cloud-rendered workflows that ship with ComfyStudio.'}
+                {subhead || 'Unlocks the cloud-rendered workflows that ship with Velorn.'}
               </p>
             </div>
           </div>
@@ -358,8 +358,8 @@ export default function ApiKeyDialog({
           )}
 
           <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/40 px-3 py-2.5 text-[11px] text-sf-text-muted">
-            Your key is stored locally on this machine in ComfyStudio's settings.
-            ComfyStudio attaches it as <code className="rounded bg-sf-dark-800 px-1">api_key_comfy_org</code> when it queues a cloud-workflow prompt — it never leaves your computer except to reach Comfy.org.
+            Your key is stored locally on this machine in Velorn's settings.
+            Velorn attaches it as <code className="rounded bg-sf-dark-800 px-1">api_key_comfy_org</code> when it queues a cloud-workflow prompt — it never leaves your computer except to reach Comfy.org.
           </div>
         </div>
 

@@ -290,13 +290,13 @@ function isAbsoluteFilePath(filePath) {
 }
 
 function sanitizeExportBaseName(value) {
-  return String(value || 'ComfyStudio_Timeline')
+  return String(value || 'Velorn_Timeline')
     .trim()
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
     .replace(/\s+/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '')
-    || 'ComfyStudio_Timeline'
+    || 'Velorn_Timeline'
 }
 
 function ExportPanel() {
@@ -338,6 +338,7 @@ function ExportPanel() {
     h264: false,
     h265: false,
     gpuName: null,
+    kind: 'nvenc', // 'nvenc' | 'videotoolbox' — set by the platform-aware check
     error: null,
   })
   const [queueRunning, setQueueRunning] = useState(false)
@@ -367,7 +368,7 @@ function ExportPanel() {
     
     const checkNvenc = async () => {
       if (!window.electronAPI?.checkNvenc) {
-        setNvencStatus({ checked: true, available: false, h264: false, h265: false, gpuName: null, error: 'NVENC check unavailable' })
+        setNvencStatus({ checked: true, available: false, h264: false, h265: false, gpuName: null, kind: 'nvenc', error: 'Hardware encoder check unavailable' })
         return
       }
       try {
@@ -379,6 +380,7 @@ function ExportPanel() {
           h264: !!result.h264,
           h265: !!result.h265,
           gpuName: result.gpuName || null,
+          kind: result.kind || 'nvenc',
           error: result.error || null,
         })
       } catch (err) {
@@ -389,6 +391,7 @@ function ExportPanel() {
           h264: false,
           h265: false,
           gpuName: null,
+          kind: 'nvenc',
           error: err.message,
         })
       }
@@ -416,7 +419,9 @@ function ExportPanel() {
       }
     }
     const onComplete = (data) => {
-      console.log('[ExportPanel] Worker export complete', data)
+      // Stringified so saved devtools logs keep nested fields (frameSources,
+      // perf) instead of collapsing them to {…}.
+      console.log('[ExportPanel] Worker export complete', JSON.stringify(data))
       setExportResult(data)
       setExportStatus('Export complete')
       setExportProgress(100)
@@ -541,27 +546,31 @@ function ExportPanel() {
     : settings.videoCodec === 'h264'
       ? nvencStatus.h264
       : false
+  // NVENC on Windows/Linux, VideoToolbox on macOS — same toggle, same flow.
+  const hardwareKind = nvencStatus.kind || 'nvenc'
+  const hardwareLabel = hardwareKind === 'videotoolbox' ? 'VideoToolbox' : 'NVENC'
+  const hardwareVendorLabel = hardwareKind === 'videotoolbox' ? 'Apple VideoToolbox' : 'NVIDIA NVENC'
   const nvencToggleDisabledReason = useMemo(() => {
     if (settings.format === 'webm' || settings.videoCodec === 'vp9') {
-      return 'NVENC is only used for MP4 H.264/H.265 exports.'
+      return `${hardwareLabel} is only used for MP4 H.264/H.265 exports.`
     }
     if (settings.format === 'prores') {
-      return 'NVENC is not used for ProRes exports.'
+      return `${hardwareLabel} is not used for ProRes exports.`
     }
     if (nvencStatus.checked && !nvencStatus.available) {
-      return 'NVENC not available in your FFmpeg build.'
+      return `${hardwareLabel} not available in your FFmpeg build.`
     }
     if (settings.videoCodec === 'h265' && nvencStatus.checked && !nvencStatus.h265) {
-      return 'HEVC NVENC is not available in your FFmpeg build.'
+      return `HEVC ${hardwareLabel} is not available in your FFmpeg build.`
     }
     if (settings.videoCodec === 'h264' && nvencStatus.checked && !nvencStatus.h264) {
-      return 'H.264 NVENC is not available in your FFmpeg build.'
+      return `H.264 ${hardwareLabel} is not available in your FFmpeg build.`
     }
     return null
-  }, [settings.format, settings.videoCodec, nvencStatus])
+  }, [settings.format, settings.videoCodec, nvencStatus, hardwareLabel])
   const nvencSummaryText = useMemo(() => {
     if (!nvencStatus.checked) {
-      return 'Checking FFmpeg for NVIDIA NVENC support...'
+      return 'Checking FFmpeg for hardware encoder support...'
     }
 
     const gpuPrefix = nvencStatus.gpuName
@@ -569,25 +578,27 @@ function ExportPanel() {
       : ''
 
     if (!nvencStatus.available) {
-      return gpuPrefix + (nvencStatus.error || 'NVENC not detected in FFmpeg. GPU encoding will be unavailable.')
+      return gpuPrefix + (nvencStatus.error || `${hardwareLabel} not detected in FFmpeg. Hardware encoding will be unavailable.`)
     }
 
     if (settings.format === 'webm' || settings.videoCodec === 'vp9') {
-      return `${gpuPrefix}NVENC is ready for MP4 H.264/H.265 exports. Switch from WebM/VP9 to use it.`
+      return `${gpuPrefix}${hardwareLabel} is ready for MP4 H.264/H.265 exports. Switch from WebM/VP9 to use it.`
     }
 
     if (settings.format === 'prores') {
-      return `${gpuPrefix}NVENC is ready for MP4 H.264/H.265 exports. ProRes always uses software encoding.`
+      return `${gpuPrefix}${hardwareLabel} is ready for MP4 H.264/H.265 exports. ProRes always uses software encoding.`
     }
 
     if (selectedNvencCodecSupported) {
-      return `${gpuPrefix}NVENC is ready for faster ${settings.videoCodec === 'h265' ? 'H.265' : 'H.264'} exports.`
+      return `${gpuPrefix}${hardwareLabel} is ready for faster ${settings.videoCodec === 'h265' ? 'H.265' : 'H.264'} exports.`
     }
 
-    return `${gpuPrefix}NVENC is detected, but the current codec is not available in this FFmpeg build.`
-  }, [nvencStatus, selectedNvencCodecSupported, settings.format, settings.videoCodec])
+    return `${gpuPrefix}${hardwareLabel} is detected, but the current codec is not available in this FFmpeg build.`
+  }, [nvencStatus, selectedNvencCodecSupported, settings.format, settings.videoCodec, hardwareLabel])
   const nvencExpectedEncoder = settings.useHardwareEncoder && selectedNvencCodecSupported
-    ? (settings.videoCodec === 'h265' ? 'hevc_nvenc' : 'h264_nvenc')
+    ? (settings.videoCodec === 'h265'
+      ? (hardwareKind === 'videotoolbox' ? 'hevc_videotoolbox' : 'hevc_nvenc')
+      : (hardwareKind === 'videotoolbox' ? 'h264_videotoolbox' : 'h264_nvenc'))
     : null
   
   const handleAddToQueue = () => {
@@ -1074,7 +1085,7 @@ function ExportPanel() {
                 type="button"
                 onClick={handleResetSettings}
                 className="flex items-center gap-1 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1 text-[10px] text-sf-text-muted transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
-                title="Reset export settings to the default ComfyStudio export setup"
+                title="Reset export settings to the default Velorn export setup"
               >
                 <RotateCcw className="h-3 w-3" />
                 Reset defaults
@@ -1095,9 +1106,9 @@ function ExportPanel() {
                     }`}
                     title={exportPreset.summary}
                   >
-                    <div className="text-[11px] font-semibold">{exportPreset.label}</div>
+                    <div className="text-[11px] font-semibold">{exportPreset.label.split('NVENC').join(hardwareLabel)}</div>
                     <div className="mt-1 text-[9px] leading-snug text-sf-text-muted">
-                      {exportPreset.summary}
+                      {exportPreset.summary.split('NVENC').join(hardwareLabel)}
                     </div>
                   </button>
                 )
@@ -1186,9 +1197,9 @@ function ExportPanel() {
                           ? 'bg-sf-accent text-white border-sf-accent'
                           : 'bg-sf-dark-800 text-sf-text-muted border-sf-dark-600'
                       } ${nvencToggleDisabledReason ? 'opacity-50 cursor-not-allowed' : ''}`}
-                      title={nvencToggleDisabledReason || 'Use NVIDIA NVENC for faster MP4 exports'}
+                      title={nvencToggleDisabledReason || `Use ${hardwareVendorLabel} for faster MP4 exports`}
                     >
-                      Use NVIDIA NVENC
+                      Use {hardwareVendorLabel}
                     </button>
                     <span className="text-[10px] text-sf-text-muted">
                       Hardware encoding
@@ -1205,14 +1216,14 @@ function ExportPanel() {
                         ? 'border-sf-accent/40 bg-sf-accent/10 text-sf-accent'
                         : 'border-sf-dark-600 bg-sf-dark-800 text-sf-text-muted'
                     }`}>
-                      H.264 NVENC
+                      H.264 {hardwareLabel}
                     </span>
                     <span className={`px-1.5 py-0.5 rounded border text-[10px] ${
                       nvencStatus.h265
                         ? 'border-sf-accent/40 bg-sf-accent/10 text-sf-accent'
                         : 'border-sf-dark-600 bg-sf-dark-800 text-sf-text-muted'
                     }`}>
-                      H.265 NVENC
+                      H.265 {hardwareLabel}
                     </span>
                     {nvencStatus.gpuName && (
                       <span className="px-1.5 py-0.5 rounded border border-sf-dark-600 bg-sf-dark-800 text-[10px] text-sf-text-secondary">
@@ -1286,7 +1297,7 @@ function ExportPanel() {
                 </div>
                 )}
 
-                {settings.format !== 'prores' && settings.useHardwareEncoder && (
+                {settings.format !== 'prores' && settings.useHardwareEncoder && hardwareKind === 'nvenc' && (
                   <div>
                     <label className="text-[10px] text-sf-text-muted uppercase tracking-wider">NVENC Preset</label>
                     <select

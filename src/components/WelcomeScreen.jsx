@@ -166,6 +166,7 @@ function WelcomeScreen() {
   const [deleteProjectDialog, setDeleteProjectDialog] = useState(null)
   const [deleteProjectError, setDeleteProjectError] = useState('')
   const [isDeletingProject, setIsDeletingProject] = useState(false)
+  const [duplicatingProjectKey, setDuplicatingProjectKey] = useState('')
   
   const {
     isFirstRun,
@@ -179,6 +180,7 @@ function WelcomeScreen() {
     openProjectFromPicker,
     openLatestAutosaveForFailedProject,
     openRecentProject,
+    duplicateProject,
     removeRecentProject,
     clearError,
     getRecentProjectsList,
@@ -201,8 +203,9 @@ function WelcomeScreen() {
     ? Math.round((mediaPreparationCompleted / mediaPreparationTotal) * 100)
     : 0
   const showMediaPreparation = Boolean(isLoading && mediaPreparation?.active && mediaPreparationTotal > 0)
-  const welcomeHeroVideoSrc = getWelcomeAssetPath('welcome-hero.mp4')
-  const welcomeHeroPosterSrc = getWelcomeAssetPath('hero-v1.webp')
+  const welcomeHeroVideoSrc = getWelcomeAssetPath('velorn-project-selection-page.mp4')
+  const welcomeHeroPosterSrc = getWelcomeAssetPath('velorn-home-balanced-plate-4.webp')
+  const desktopMode = isElectronMode()
   
   // Keep partner-key status fresh so the chip in the header reflects
   // changes made from the ApiKeyDialog without remounting.
@@ -310,6 +313,20 @@ function WelcomeScreen() {
     )
   }
 
+  const getProjectKey = (project) => project?.path || project?.name || ''
+
+  const handleDuplicateProject = async (event, project) => {
+    event.stopPropagation()
+    if (!project || duplicatingProjectKey) return
+    const key = getProjectKey(project)
+    setDuplicatingProjectKey(key)
+    try {
+      await duplicateProject(project)
+    } finally {
+      setDuplicatingProjectKey('')
+    }
+  }
+
   const openDeleteProjectDialog = (event, project) => {
     event.stopPropagation()
     setDeleteProjectError('')
@@ -334,7 +351,7 @@ function WelcomeScreen() {
       setDeleteProjectError('This project does not have a folder path available, so it can only be removed from the list.')
       return
     }
-    if (!isElectronMode || !window.electronAPI?.trashItem) {
+    if (!desktopMode || !window.electronAPI?.trashItem) {
       setDeleteProjectError('Moving a project folder to the Recycle Bin is only available in the desktop app.')
       return
     }
@@ -459,18 +476,18 @@ function WelcomeScreen() {
           <div className="max-w-md w-full mx-4">
           {/* Branding */}
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold text-sf-text-primary">ComfyStudio</h1>
+            <h1 className="text-4xl font-bold text-sf-text-primary">Velorn</h1>
           </div>
           
           {/* Browser Support Warning - only show in web mode */}
-          {!isBrowserSupported && !isElectronMode() && (
+          {!isBrowserSupported && !desktopMode && (
             <div className="mb-6 p-4 bg-sf-error/20 border border-sf-error/50 rounded-lg">
               <div className="flex items-start gap-3">
                 <AlertCircle className="w-5 h-5 text-sf-error flex-shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm text-sf-text-primary font-medium">Browser Not Supported</p>
                   <p className="text-xs text-sf-text-muted mt-1">
-                    ComfyStudio requires the File System Access API. Please use Google Chrome or Microsoft Edge.
+                    Velorn requires the File System Access API. Please use Google Chrome or Microsoft Edge.
                   </p>
                 </div>
               </div>
@@ -481,7 +498,7 @@ function WelcomeScreen() {
           <div className="bg-sf-dark-900 border border-sf-dark-700 rounded-xl p-6">
             <h2 className="text-lg font-semibold text-sf-text-primary mb-2 text-center">Set Up Your Workspace</h2>
             <p className="text-sm text-sf-text-muted mb-6">
-              Choose a folder where your ComfyStudio projects and media will be stored. Each project will have its own subfolder with all assets and imported media organized inside.
+              Choose a folder where your Velorn projects and media will be stored. Each project will have its own subfolder with all assets and imported media organized inside.
             </p>
             
             {/* Current Location Display */}
@@ -516,7 +533,7 @@ function WelcomeScreen() {
             {/* Action Button - simple outlined style */}
             <button
               onClick={selectDefaultProjectsLocation}
-              disabled={(!isBrowserSupported && !isElectronMode()) || isLoading}
+              disabled={(!isBrowserSupported && !desktopMode) || isLoading}
               className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-sf-dark-800 hover:bg-sf-dark-700 border border-sf-dark-500 disabled:bg-sf-dark-700 disabled:border-sf-dark-600 disabled:cursor-not-allowed rounded-lg text-sf-text-secondary font-medium transition-colors"
             >
               {isLoading ? (
@@ -544,7 +561,6 @@ function WelcomeScreen() {
   const headerContent = (
     <>
       <div className="flex items-center gap-4">
-        <h1 className="text-xl font-bold text-sf-text-primary drop-shadow">ComfyStudio</h1>
         <div className="flex items-center gap-1.5">
           <ComfyLauncherChip />
           <button
@@ -576,11 +592,11 @@ function WelcomeScreen() {
       <div className="flex items-center gap-3">
         <button
           onClick={() => setGettingStartedOpen(true)}
-          className="flex items-center gap-2 px-3 py-2 hover:bg-sf-dark-800 rounded-lg text-sm text-sf-text-muted hover:text-sf-text-primary font-medium transition-colors"
-          title="Getting started: ComfyUI setup, API keys, workflows"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-sf-text-muted transition-colors hover:bg-sf-dark-800 hover:text-sf-text-primary"
+          title="Guide: setup, API keys, workflows"
+          aria-label="Open guide"
         >
           <Compass className="w-4 h-4" />
-          Getting started
         </button>
         <button
           onClick={openProjectFromPicker}
@@ -607,86 +623,62 @@ function WelcomeScreen() {
       {/* Header bar — always a solid dark strip, never overlaps the image.
           The top border visually separates the header from the native window
           controls strip above it (matches the border below the banner). */}
-      <div className="flex-shrink-0 flex items-center justify-between px-8 py-4 bg-sf-dark-950 border-t border-b border-sf-dark-800/60">
+      <div className="relative z-30 flex-shrink-0 flex items-center justify-between px-8 py-4 bg-sf-dark-950 border-t border-b border-sf-dark-800/60">
         {headerContent}
       </div>
 
       {mediaPreparationBanner}
 
       {showHeroBackground ? (
-        /* Hero band: full-bleed dark outer, centered cinematic inner.
-           On ultrawide monitors the image is capped at max-w-[2400px] so it keeps
-           roughly the same ~2.9:1 aspect as on 1080p, with the viewport edges
-           fading softly into the dark background. */
-        <div className="welcome-hero relative flex-shrink-0 h-[62vh] min-h-[420px] max-h-[720px] overflow-hidden select-none bg-sf-dark-950">
-          <div className="relative mx-auto h-full w-full max-w-[2400px] overflow-hidden">
-            {/* Animated hero with a 5-second cross-dissolve between loop
-                iterations — see HeroVideoLoop for the why and how. The
-                static WebP acts as the poster so the initial paint is
-                instant even before the MP4 has buffered. Audio is
-                stripped from the source and both <video> tags are
-                `muted` so Chromium's autoplay policy lets us start
-                unattended. */}
+        /* Hero band: full-bleed dark outer, centered cinematic inner. */
+        <div className="welcome-hero relative z-0 flex-shrink-0 h-[62vh] min-h-[420px] max-h-[720px] overflow-visible select-none bg-sf-dark-950">
+          <div className="relative mx-auto h-full w-full max-w-[2400px] overflow-visible">
+            {/* Animated branded hero plate. */}
             <HeroVideoLoop
               src={welcomeHeroVideoSrc}
               poster={welcomeHeroPosterSrc}
-              fadeSeconds={5}
-              className="absolute inset-0 w-full h-full object-cover"
-              style={{ objectPosition: 'center 10%' }}
-            />
-            {/* Fallback static image for users with reduced motion. The CSS
-                `prefers-reduced-motion` media query hides the video above
-                and shows this instead. */}
-            <img
-              src={welcomeHeroPosterSrc}
-              alt=""
-              aria-hidden="true"
-              draggable={false}
-              className="hero-reduced-motion-fallback absolute inset-0 w-full h-full object-cover"
-              style={{ objectPosition: 'center 10%' }}
-            />
-            {/* Cinematic vignette — subtle darkening toward corners */}
-            <div
-              className="absolute inset-0 pointer-events-none"
+              fadeSeconds={2}
+              className="absolute inset-x-0 top-0 w-full h-screen object-cover"
               style={{
-                background: 'radial-gradient(ellipse 90% 80% at 50% 45%, transparent 40%, rgba(0,0,0,0.55) 100%)',
+                objectPosition: 'center 10%',
+                transform: 'translateY(-8%) scale(1.08)',
+                transformOrigin: 'center top',
               }}
             />
-            {/* Left / right edge fades — invisible on 1080p (image fills viewport),
-                softly blend into the dark background on ultrawide. */}
-            <div className="absolute inset-y-0 left-0 w-24 bg-gradient-to-r from-sf-dark-950 to-transparent pointer-events-none" />
-            <div className="absolute inset-y-0 right-0 w-24 bg-gradient-to-l from-sf-dark-950 to-transparent pointer-events-none" />
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-screen"
+              style={{
+                background: [
+                  'linear-gradient(90deg, rgba(3, 6, 16, 0.74) 0%, rgba(3, 6, 16, 0.22) 20%, rgba(3, 6, 16, 0) 42%, rgba(3, 6, 16, 0) 58%, rgba(3, 6, 16, 0.24) 80%, rgba(3, 6, 16, 0.76) 100%)',
+                  'linear-gradient(180deg, rgba(3, 6, 16, 0.22) 0%, rgba(3, 6, 16, 0) 28%, rgba(3, 6, 16, 0.18) 64%, rgba(3, 6, 16, 0.68) 100%)',
+                  'radial-gradient(ellipse at center, rgba(3, 6, 16, 0) 0%, rgba(3, 6, 16, 0) 42%, rgba(3, 6, 16, 0.22) 72%, rgba(3, 6, 16, 0.48) 100%)',
+                ].join(', '),
+              }}
+            />
+            <div
+              className="absolute right-[34.1%] whitespace-nowrap text-right text-[7.5px] font-semibold uppercase tracking-[0.22em] text-[#f2d590]/90 pointer-events-none"
+              style={{
+                top: 'clamp(228px, 26.6vh, 296px)',
+                textShadow: '0 0 14px rgba(247, 210, 132, 0.5), 0 0 5px rgba(255, 231, 176, 0.22), 0 1px 8px rgba(0, 0, 0, 0.72)',
+              }}
+            >
+              Generate shots. Shape edits. Deliver stories.
+            </div>
           </div>
-          {/* Bottom fade into the recents surface (spans the full viewport width) */}
-          <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-sf-dark-950 via-sf-dark-950/70 to-transparent pointer-events-none" />
           {/* Subtle attribution */}
           <div className="absolute bottom-3 right-4 text-[10px] uppercase tracking-wider text-white/40 pointer-events-none">
-            Made with ComfyStudio
+            Made with Velorn
           </div>
         </div>
       ) : null}
 
-      {/* Content. When the hero is visible we pull the recents panel UP into
+      {/* Content. When the hero is visible we pull the recents panel up into
           the hero band with a negative top margin so more projects are
-          visible above the fold. The panel background is a vertical gradient
-          that fades from fully transparent at the very top into solid
-          sf-dark-950 over the first ~96px, so the hero's existing bottom
-          fade bleeds through the panel's upper edge and the overlap looks
-          like a soft dissolve rather than a hard cut. relative + z-10 keeps
-          it layered above the hero's own pointer-events overlays. */}
+          visible above the fold. */}
       <div
         className={`flex-1 overflow-auto px-6 pb-8 ${showHeroBackground
-          ? 'relative z-10 -mt-[280px] pt-12'
+          ? 'relative z-10 -mt-[305px] pt-12'
           : 'py-8'}`}
-        style={showHeroBackground ? {
-          // Gradient-only background (no backgroundColor) so the hero is
-          // visible through the alpha=0 region at the very top. The last
-          // stop is alpha=1, and a linear-gradient's final color extends
-          // to the bottom of the element, so everything below the final
-          // stop is effectively solid sf-dark-950.
-          background:
-            'linear-gradient(to bottom, rgb(var(--sf-dark-950) / 0) 0, rgb(var(--sf-dark-950) / 0.35) 100px, rgb(var(--sf-dark-950) / 0.75) 200px, rgb(var(--sf-dark-950) / 1) 275px)',
-        } : undefined}
       >
         <div className="max-w-5xl mx-auto">
         {/* Error Display */}
@@ -715,15 +707,19 @@ function WelcomeScreen() {
         )}
         
         {/* Recent Projects Section */}
-        <div className="mb-8">
+        <div className="relative isolate mb-8">
+          {showHeroBackground && recentProjectsList.length > 0 && (
+            <div
+              className="pointer-events-none absolute -inset-x-7 -top-5 -bottom-6 z-0 rounded-[32px] border border-white/[0.05] shadow-[0_34px_100px_rgba(0,0,0,0.48)] backdrop-blur-[1.5px]"
+              style={{
+                background: 'radial-gradient(ellipse at center, rgba(3, 6, 16, 0.74) 0%, rgba(3, 6, 16, 0.62) 46%, rgba(3, 6, 16, 0.34) 74%, rgba(3, 6, 16, 0) 100%)',
+              }}
+            />
+          )}
+          <div className="relative z-10">
           <div className="flex items-end justify-between mb-4">
-            {/* Dark glass pill behind the title cluster. The hero's fade
-                makes plain drop-shadow text look thin and ghostly up here,
-                so we tuck the title into a semi-transparent panel with a
-                hairline border + backdrop blur. That gives the title the
-                same "readable surface" the project cards have without
-                extending into a full-width bar (which would fight the
-                cards visually). */}
+            {/* Dark glass pill behind the title cluster so it stays readable
+                over busy hero artwork without becoming a full-width bar. */}
             <div className="inline-flex items-center rounded-full border border-white/10 bg-black/55 px-3 py-1 shadow-lg shadow-black/40 backdrop-blur-md">
               <h2 className="text-[13px] font-semibold text-sf-text-primary tracking-tight leading-none">
                 Select a project
@@ -781,6 +777,8 @@ function WelcomeScreen() {
             <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900 shadow-lg shadow-black/40 overflow-hidden divide-y divide-sf-dark-800">
               {recentProjectsList.map((project, index) => {
                 const thumbKey = project.path || project.name
+                const projectKey = getProjectKey(project)
+                const isDuplicating = duplicatingProjectKey === projectKey
                 const resolvedThumb = thumbnailUrls[thumbKey]
                 const resolution = project.settings?.width && project.settings?.height
                   ? `${project.settings.width}×${project.settings.height}`
@@ -818,7 +816,20 @@ function WelcomeScreen() {
                         <span className="w-24 text-right">{formatDate(project.modified)}</span>
                       </div>
                     </button>
-                    {/* Remove from recent */}
+                    {/* Duplicate / remove from recent */}
+                    <button
+                      type="button"
+                      onClick={(e) => handleDuplicateProject(e, project)}
+                      disabled={!desktopMode || !project.path || Boolean(duplicatingProjectKey)}
+                      className="flex-shrink-0 p-1.5 rounded-md hover:bg-sf-dark-700 text-sf-text-muted hover:text-sf-text-primary opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+                      title={desktopMode && project.path ? 'Duplicate project and open copy' : 'Duplicate requires a local project folder'}
+                    >
+                      {isDuplicating ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
                     <button
                       type="button"
                       onClick={(e) => openDeleteProjectDialog(e, project)}
@@ -839,6 +850,8 @@ function WelcomeScreen() {
             >
               {recentProjectsList.map((project, index) => {
                 const thumbKey = project.path || project.name
+                const projectKey = getProjectKey(project)
+                const isDuplicating = duplicatingProjectKey === projectKey
                 const resolvedThumb = thumbnailUrls[thumbKey]
                 const resolution = project.settings?.width && project.settings?.height
                   ? `${project.settings.width}×${project.settings.height}`
@@ -890,25 +903,41 @@ function WelcomeScreen() {
                         </div>
                       </div>
                     </button>
-                    {/* Remove from recent */}
-                    <button
-                      type="button"
-                      onClick={(e) => openDeleteProjectDialog(e, project)}
-                      className="absolute top-1.5 right-1.5 p-1 rounded-md bg-sf-dark-900/90 hover:bg-sf-error/80 text-sf-text-muted hover:text-white opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                      title="Delete or remove project"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {/* Duplicate / remove from recent */}
+                    <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={(e) => handleDuplicateProject(e, project)}
+                        disabled={!desktopMode || !project.path || Boolean(duplicatingProjectKey)}
+                        className="p-1 rounded-md bg-sf-dark-900/90 hover:bg-sf-dark-700 text-sf-text-muted hover:text-sf-text-primary disabled:opacity-30 disabled:cursor-not-allowed"
+                        title={desktopMode && project.path ? 'Duplicate project and open copy' : 'Duplicate requires a local project folder'}
+                      >
+                        {isDuplicating ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => openDeleteProjectDialog(e, project)}
+                        className="p-1 rounded-md bg-sf-dark-900/90 hover:bg-sf-error/80 text-sf-text-muted hover:text-white"
+                        title="Delete or remove project"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 )
               })}
             </div>
           )}
+          </div>
         </div>
         
         {/* Projects Location Info */}
         <div className="text-center text-xs text-sf-text-muted">
-          <p>
+          <p className="inline-flex items-center rounded-full border border-white/10 bg-black/60 px-3 py-1.5 shadow-lg shadow-black/50 backdrop-blur-md">
             Projects and media are saved to: <span className="text-sf-text-secondary">{defaultProjectsLocation || 'Not set'}</span>
             {' '}
             <button 
@@ -1019,7 +1048,7 @@ function WelcomeScreen() {
               <button
                 type="button"
                 onClick={handleTrashProjectFolder}
-                disabled={isDeletingProject || !deleteProjectDialog.path || !isElectronMode}
+                disabled={isDeletingProject || !deleteProjectDialog.path || !desktopMode}
                 className="px-3 py-1.5 rounded bg-sf-error hover:bg-red-500 text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isDeletingProject ? 'Moving...' : 'Move to Recycle Bin'}

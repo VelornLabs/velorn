@@ -3,6 +3,7 @@ import {
   CUSTOM_GENERATE_IMAGE_WORKFLOW_ID,
   CUSTOM_GENERATE_VIDEO_WORKFLOW_ID,
 } from './generateWorkspaceConfig'
+import { getImportedManifestById, getImportedManifestByWorkflowId } from './importedWorkflowRegistry'
 
 const WORKFLOW_ASSET_BASE = (() => {
   const rawBase = typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL
@@ -22,6 +23,8 @@ export const GENERATE_WORKFLOW_ROUTES = Object.freeze({
   local: 'local',
   cloud: 'cloud',
   custom: 'custom',
+  // Live browse of ComfyUI's official template catalog (no local manifests).
+  templates: 'templates',
 })
 
 export const GENERATE_WORKFLOW_CATEGORY_LABELS = Object.freeze({
@@ -154,13 +157,13 @@ const customVideoFields = Object.freeze([
     label: 'Input image',
     type: 'assetSelect',
     assetType: 'image',
-    helper: 'Shown because this graph keeps COMFYSTUDIO_INPUT_IMAGE.',
+    helper: 'Shown because this graph keeps VELORN_INPUT_IMAGE.',
   }),
   field('customAudioAsset', {
     label: 'Audio',
     type: 'assetSelect',
     assetType: 'audio',
-    helper: 'Shown because this graph keeps COMFYSTUDIO_AUDIO.',
+    helper: 'Shown because this graph keeps VELORN_AUDIO.',
   }),
   field('prompt', { label: 'Prompt', type: 'textarea' }),
   field('resolution', { label: 'Size input', type: 'resolution' }),
@@ -757,12 +760,12 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     id: 'custom-image-workflow',
     workflowId: CUSTOM_GENERATE_IMAGE_WORKFLOW_ID,
     title: 'Custom Image Workflow',
-    description: 'Bring your own ComfyUI image graph. ComfyStudio runs it from Generate and imports the output image.',
+    description: 'Bring your own ComfyUI image graph. Velorn runs it from Generate and imports the output image.',
     subtitle: 'Your ComfyUI image graph',
     mode: 'generate',
     route: 'custom',
     category: 'image',
-    provider: 'ComfyStudio',
+    provider: 'Velorn',
     cover: cover('custom-image-workflow.webp'),
     badge: 'Custom',
     runtimeLabel: 'Graph-dependent',
@@ -771,18 +774,21 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     outputType: 'image',
     fields: customImageFields,
     runnable: true,
+    // Superseded by the personal workflow library (save from the ComfyUI tab);
+    // kept hidden because the Director custom-workflow bridges share plumbing.
+    hidden: true,
     tags: ['custom', 'comfyui', 'image', 'image edit', 'text to image'],
   },
   {
     id: 'custom-video-workflow',
     workflowId: CUSTOM_GENERATE_VIDEO_WORKFLOW_ID,
     title: 'Custom Video Workflow',
-    description: 'Bring your own ComfyUI video graph. ComfyStudio exposes only the inputs declared by matching endpoint nodes.',
+    description: 'Bring your own ComfyUI video graph. Velorn exposes only the inputs declared by matching endpoint nodes.',
     subtitle: 'Your ComfyUI video graph',
     mode: 'generate',
     route: 'custom',
     category: 'video',
-    provider: 'ComfyStudio',
+    provider: 'Velorn',
     cover: cover('custom-video-workflow.webp'),
     badge: 'Custom',
     runtimeLabel: 'Graph-dependent',
@@ -791,6 +797,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     outputType: 'video',
     fields: customVideoFields,
     runnable: true,
+    hidden: true,
     tags: ['custom', 'comfyui', 'video', 'image to video', 'text to video', 'audio'],
   },
   {
@@ -801,7 +808,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     mode: 'create',
     route: 'local',
     category: 'create',
-    provider: 'ComfyStudio',
+    provider: 'Velorn',
     cover: cover('ugc-ad-creator.jpg'),
     coverPosition: '50% center',
     badge: 'Beta',
@@ -820,7 +827,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     mode: 'create',
     route: 'local',
     category: 'create',
-    provider: 'ComfyStudio',
+    provider: 'Velorn',
     cover: cover('create-ad.jpg'),
     coverPosition: '65% center',
     badge: 'Beta',
@@ -839,7 +846,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     mode: 'create',
     route: 'local',
     category: 'create',
-    provider: 'ComfyStudio',
+    provider: 'Velorn',
     cover: cover('create-ad.jpg'),
     coverPosition: '65% center',
     badge: 'Easy',
@@ -859,7 +866,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     mode: 'create',
     route: 'local',
     category: 'create',
-    provider: 'ComfyStudio',
+    provider: 'Velorn',
     cover: cover('create-music-video.jpg'),
     coverPosition: '58% center',
     badge: 'Easy',
@@ -878,7 +885,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     mode: 'create',
     route: 'local',
     category: 'create',
-    provider: 'ComfyStudio',
+    provider: 'Velorn',
     cover: cover('create-short-film.jpg'),
     coverPosition: '50% center',
     badge: 'Easy',
@@ -897,7 +904,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     mode: 'create',
     route: 'cloud',
     category: 'create',
-    provider: 'ComfyStudio',
+    provider: 'Velorn',
     cover: cover('multi-angles-scene.webp'),
     badge: 'Beta',
     runtimeLabel: 'Uses cloud video APIs',
@@ -910,9 +917,11 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
 ])
 
 export function getWorkflowManifestByWorkflowId(workflowId) {
-  return GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.workflowId === workflowId) || null
+  return GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.workflowId === workflowId)
+    || getImportedManifestByWorkflowId(workflowId)
 }
 
 export function getWorkflowManifestById(id) {
-  return GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.id === id) || null
+  return GENERATE_WORKFLOW_CATALOG.find((workflow) => workflow.id === id)
+    || getImportedManifestById(id)
 }

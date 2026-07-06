@@ -1,4 +1,4 @@
-# ComfyStudio v0.1.17 Release Notes
+# Velorn v0.1.17 Release Notes
 
 ## Downloads
 
@@ -11,8 +11,8 @@
 
 ## Highlights
 
-- Adds custom ComfyUI workflow support so advanced users can bring their own API workflow JSONs into ComfyStudio.
-- Adds a ComfyStudio Bridge for the embedded ComfyUI tab, including a `Send to ComfyStudio` button for compatible workflows.
+- Adds custom ComfyUI workflow support so advanced users can bring their own API workflow JSONs into Velorn.
+- Adds a Velorn Bridge for the embedded ComfyUI tab, including a `Send to Velorn` button for compatible workflows.
 - Adds custom keyframe and custom video workflow support inside Music Video Creation.
 - Adds the People Wizard to Music Video Creation for creating or reusing character reference images.
 - Improves Music Video Creation shot reruns, preview editing, model selection, custom workflow setup, and asset folder naming.
@@ -85,6 +85,6 @@
 ## Known Notes
 
 - This is still a pre-release.
-- ComfyStudio still depends on a separate local ComfyUI installation.
+- Velorn still depends on a separate local ComfyUI installation.
 - Some custom workflows control their own size, FPS, duration, or audio behavior inside the graph.
 - Paid lip-sync and video providers can behave differently from local LTX workflows, especially with short audio snippets.

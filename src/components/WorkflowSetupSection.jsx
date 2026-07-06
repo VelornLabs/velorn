@@ -1151,7 +1151,7 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
                 )}
                 {isInstallNeedsRestartState && launcherIsExternal && (
                   <div className="mt-3 rounded border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-[11.5px] text-sky-100">
-                    ComfyUI is running outside ComfyStudio — restart it in that window, or stop it and let ComfyStudio manage the next launch (the header chip has Start/Stop/Restart).
+                    ComfyUI is running outside Velorn — restart it in that window, or stop it and let Velorn manage the next launch (the header chip has Start/Stop/Restart).
                   </div>
                 )}
               </div>
@@ -1265,7 +1265,7 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
             </div>
             <div className="mt-0.5 text-amber-100/80">
               {launcherIsExternal
-                ? 'ComfyUI is running outside ComfyStudio — restart it in that window, or stop it and let ComfyStudio manage the next launch.'
+                ? 'ComfyUI is running outside Velorn — restart it in that window, or stop it and let Velorn manage the next launch.'
                 : canRestartViaLauncher
                   ? 'Install more node packs if you\u2019d like, then restart once to apply them all.'
                   : 'No launcher configured. Open Settings → ComfyUI Launcher to set one, or restart manually.'}
@@ -1308,7 +1308,7 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
         </div>
 
         <p className="mt-1 text-[11px] text-sf-text-secondary">
-          Auto-install needs the root of your local ComfyUI install so ComfyStudio knows where to place custom nodes and models.
+          Auto-install needs the root of your local ComfyUI install so Velorn knows where to place custom nodes and models.
         </p>
 
         <div className="mt-3 flex gap-2">
@@ -1391,9 +1391,9 @@ const WorkflowSetupSection = memo(function WorkflowSetupSection() {
             )}
             {installPlan.restartRecommended && (
               launcherOwnsLive ? (
-                <div className="text-emerald-300">Once the install finishes, ComfyStudio will ask if you want to restart ComfyUI now or batch more installs first.</div>
+                <div className="text-emerald-300">Once the install finishes, Velorn will ask if you want to restart ComfyUI now or batch more installs first.</div>
               ) : launcherCanStart ? (
-                <div className="text-emerald-300">After install, ComfyStudio will offer to start ComfyUI so the new nodes load.</div>
+                <div className="text-emerald-300">After install, Velorn will offer to start ComfyUI so the new nodes load.</div>
               ) : launcherIsExternal ? (
                 <div className="text-yellow-300">Restart ComfyUI manually after install so the new nodes load. (Start it from the header chip next time for one-click restarts.)</div>
               ) : (

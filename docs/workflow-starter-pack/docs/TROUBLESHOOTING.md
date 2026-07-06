@@ -23,13 +23,13 @@ Cloud workflows still depend on:
 
 - local ComfyUI being reachable
 - the required partner/custom nodes being installed
-- a valid Comfy account API key in ComfyStudio
+- a valid Comfy account API key in Velorn
 
 If the workflow is cloud-backed, you usually do not need local model weights, but you still need the correct nodes and authentication.
 
-## ComfyStudio says a dependency is missing
+## Velorn says a dependency is missing
 
-Use the workflow inside ComfyUI first, then return to ComfyStudio and click `Re-check`. The starter pack is meant to help you close exactly that gap.
+Use the workflow inside ComfyUI first, then return to Velorn and click `Re-check`. The starter pack is meant to help you close exactly that gap.
 
 ## The starter-pack JSON imports, but a node behaves differently than expected
 

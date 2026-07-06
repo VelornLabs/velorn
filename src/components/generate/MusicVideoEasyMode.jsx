@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CheckCircle2,
   Clipboard,
-  ExternalLink,
   Edit3,
   FileText,
   Film,
@@ -11,7 +10,6 @@ import {
   Maximize2,
   Music,
   Play,
-  RefreshCw,
   Upload,
   UserPlus,
   Wand2,
@@ -34,6 +32,7 @@ import {
   getWorkflowDisplayLabel,
 } from '../../config/generateWorkspaceConfig'
 import { BUILTIN_WORKFLOW_PATHS } from '../../config/workflowRegistry'
+import CustomWorkflowSlotCard from './CustomWorkflowSlotCard'
 
 const DRAFT_STORAGE_KEY = 'comfystudio-music-video-easy-mode-draft-v1'
 const DRAFT_PROJECT_STORAGE_PREFIX = `${DRAFT_STORAGE_KEY}:project:`
@@ -120,7 +119,7 @@ const DEFAULT_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
     id: CUSTOM_MUSIC_VIDEO_WORKFLOW_ID,
     label: 'Custom Workflow',
     runtimeLabel: 'Advanced',
-    description: 'Use your own ComfyUI video workflow as long as it keeps the ComfyStudio input/output endpoints.',
+    description: 'Use your own ComfyUI video workflow as long as it keeps the Velorn input/output endpoints.',
   },
 ])
 const DEFAULT_KEYFRAME_WORKFLOW_OPTIONS = Object.freeze([
@@ -140,7 +139,7 @@ const DEFAULT_KEYFRAME_WORKFLOW_OPTIONS = Object.freeze([
     id: CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID,
     label: 'Custom Workflow',
     runtimeLabel: 'Advanced',
-    description: 'Use your own ComfyUI keyframe workflow as long as it keeps the ComfyStudio input/output endpoints.',
+    description: 'Use your own ComfyUI keyframe workflow as long as it keeps the Velorn input/output endpoints.',
   },
 ])
 const JOB_BUSY_STATUSES = new Set(['queued', 'paused', 'uploading', 'configuring', 'queuing', 'running', 'saving'])
@@ -371,7 +370,7 @@ function getAudioModeHelper(kindId) {
   if (kindId === 'instrumental') {
     return 'No vocals expected. The director script should use b-roll or non-lip-sync performance coverage.'
   }
-  return 'ComfyStudio assumes a normal finished song by default. Lip-sync and b-roll routing still come from the director script.'
+  return 'Velorn assumes a normal finished song by default. Lip-sync and b-roll routing still come from the director script.'
 }
 
 function buildCoveragePlan({ performancePassCount, includeStoryBroll, includeEnvironmentalBroll, includeDetailBroll }) {
@@ -542,6 +541,7 @@ export default function MusicVideoEasyMode({
   handleImportYoloMusicCustomVideoWorkflow,
   handleOpenYoloMusicCustomVideoWorkflowInComfyUi,
   handleClearYoloMusicCustomVideoWorkflow,
+  handleUseYoloMusicLibraryWorkflow,
   yoloActivePlan,
   yoloQueueVariants,
   yoloStoryboardAssetMap,
@@ -788,10 +788,8 @@ export default function MusicVideoEasyMode({
   const customKeyframeWorkflowSelected = selectedKeyframeWorkflowId === CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID
   const customVideoWorkflowSelected = selectedVideoWorkflowId === CUSTOM_MUSIC_VIDEO_WORKFLOW_ID
   const customKeyframeWorkflowLoaded = Boolean(String(yoloMusicCustomKeyframeWorkflow?.jsonText || '').trim())
-  const openCustomKeyframeWorkflowLabel = customKeyframeWorkflowLoaded ? 'Open in ComfyUI' : 'Open Starter in ComfyUI'
   const customKeyframeWorkflowName = String(yoloMusicCustomKeyframeWorkflow?.name || '').trim()
   const customVideoWorkflowLoaded = Boolean(String(yoloMusicCustomVideoWorkflow?.jsonText || '').trim())
-  const openCustomVideoWorkflowLabel = customVideoWorkflowLoaded ? 'Open in ComfyUI' : 'Open Starter in ComfyUI'
   const customVideoWorkflowName = String(yoloMusicCustomVideoWorkflow?.name || '').trim()
   const customKeyframeValidation = yoloMusicCustomKeyframeValidation || {
     ok: false,
@@ -807,23 +805,6 @@ export default function MusicVideoEasyMode({
     warnings: [],
     endpoints: {},
   }
-  const bridgeState = String(customKeyframeBridgeStatus?.state || 'unknown').trim()
-  const bridgeInstalled = Boolean(customKeyframeBridgeStatus?.installed)
-  const bridgeMessage = String(
-    customKeyframeBridgeStatus?.message
-    || customKeyframeBridgeStatus?.error
-    || 'Optional bridge lets ComfyUI send the current graph back to ComfyStudio.'
-  ).trim()
-  const bridgeBadge = bridgeInstalled
-    ? { label: 'Installed', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' }
-    : bridgeState === 'unavailable'
-      ? { label: 'Needs setup', className: 'border-amber-500/40 bg-amber-500/10 text-amber-200' }
-      : bridgeState === 'not_installed'
-        ? { label: 'Optional', className: 'border-sf-accent/40 bg-sf-accent/10 text-sf-accent' }
-        : { label: 'Checking', className: 'border-sf-dark-500 bg-sf-dark-800 text-sf-text-secondary' }
-  const canInstallBridge = typeof handleInstallYoloMusicCustomKeyframeBridge === 'function'
-    && !bridgeInstalled
-    && bridgeState !== 'unavailable'
   const defaultVideoWorkflowId = videoWorkflowOptions[0]?.id || MUSIC_VIDEO_SHOT_WORKFLOW_ID
   const selectedVideoWorkflowSupports1080 = workflowSupports1080Resolution(selectedVideoWorkflowId)
   const storyboardJobMap = useMemo(() => {
@@ -2085,8 +2066,8 @@ export default function MusicVideoEasyMode({
               <div className="text-xs leading-5 text-sf-text-secondary">
                 <div className="font-semibold text-sf-text-primary">Lyrics source</div>
                 {yoloMusicAlignProvidedLyrics
-                  ? 'Paste plain lyrics below. ComfyStudio listens to the selected audio for timing, then writes your lyrics as SRT.'
-                  : 'ComfyStudio listens to the selected audio and writes timed SRT output.'}
+                  ? 'Paste plain lyrics below. Velorn listens to the selected audio for timing, then writes your lyrics as SRT.'
+                  : 'Velorn listens to the selected audio and writes timed SRT output.'}
               </div>
               <div className="inline-flex rounded-lg border border-sf-dark-600 bg-sf-dark-900 p-1">
                 <button
@@ -2991,108 +2972,22 @@ export default function MusicVideoEasyMode({
             </span>
           )}
           {customKeyframeWorkflowSelected && (
-            <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-3">
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-sf-text-muted">Custom workflow contract</span>
-                    <span className={`rounded-full border px-2 py-0.5 text-[10px] ${
-                      customKeyframeValidation.ok
-                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                        : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-                    }`}>
-                      {customKeyframeValidation.ok ? 'Ready' : 'Needs setup'}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-xs text-sf-text-primary">
-                    {customKeyframeWorkflowName || 'No custom workflow loaded'}
-                  </div>
-                  <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-                    Keep these node titles in your ComfyUI graph: <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_INPUT_IMAGE</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_PROMPT</span>, and <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_OUTPUT_IMAGE</span>. Optional: <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_SEED</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_WIDTH</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_HEIGHT</span>.
-                  </p>
-                  <div className={`mt-2 text-[10px] ${customKeyframeValidation.ok ? 'text-emerald-300' : 'text-amber-200'}`}>
-                    {customKeyframeValidation.message}
-                  </div>
-                  {Array.isArray(customKeyframeValidation.warnings) && customKeyframeValidation.warnings.length > 0 && (
-                    <div className="mt-1 text-[10px] text-amber-200">
-                      {customKeyframeValidation.warnings.slice(0, 2).join(' ')}
-                    </div>
-                  )}
-                </div>
-                <div className="grid w-full shrink-0 gap-2 sm:w-auto sm:min-w-[180px]">
-                  <button
-                    type="button"
-                    onClick={handleOpenYoloMusicCustomKeyframeWorkflowInComfyUi}
-                    disabled={!canOpenCustomKeyframeWorkflow}
-                    className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-800 disabled:text-sf-text-muted"
-                    title={customKeyframeWorkflowLoaded ? 'Open the loaded custom workflow in the embedded ComfyUI tab.' : 'Load the starter workflow and open it in the embedded ComfyUI tab.'}
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    {openCustomKeyframeWorkflowLabel}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleImportYoloMusicCustomKeyframeWorkflow}
-                    className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
-                    title="Import the API JSON you exported from ComfyUI."
-                  >
-                    <Clipboard className="h-3 w-3" />
-                    Import JSON
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleClearYoloMusicCustomKeyframeWorkflow}
-                    className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-muted transition-colors hover:border-red-500/60 hover:text-red-300"
-                    title="Clear the loaded custom workflow."
-                  >
-                    <X className="h-3 w-3" />
-                    Clear Custom
-                  </button>
-                </div>
-              </div>
-              <div className="mt-3 border-t border-sf-dark-700 pt-3">
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-sf-text-muted">ComfyStudio bridge</span>
-                      <span className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeBadge.className}`}>
-                        {bridgeBadge.label}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-                      Adds a Send to ComfyStudio button inside ComfyUI. Import JSON stays available as the fallback.
-                    </p>
-                    {bridgeMessage && (
-                      <div className={`mt-2 text-[10px] ${bridgeInstalled ? 'text-emerald-300' : bridgeState === 'unavailable' ? 'text-amber-200' : 'text-sf-text-secondary'}`}>
-                        {bridgeMessage}
-                      </div>
-                    )}
-                  </div>
-                  <div className="grid w-full shrink-0 gap-2 sm:w-auto sm:min-w-[160px]">
-                    <button
-                      type="button"
-                      onClick={handleInstallYoloMusicCustomKeyframeBridge}
-                      disabled={!canInstallBridge || customKeyframeBridgeBusy}
-                      className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-800 disabled:text-sf-text-muted"
-                      title={bridgeState === 'unavailable' ? 'Choose a ComfyUI folder or configure the launcher first.' : 'Install the bundled ComfyStudio Bridge into ComfyUI custom_nodes.'}
-                    >
-                      {customKeyframeBridgeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
-                      {bridgeInstalled ? 'Installed' : 'Install Bridge'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleCheckYoloMusicCustomKeyframeBridge?.({ silent: false })}
-                      disabled={customKeyframeBridgeBusy || typeof handleCheckYoloMusicCustomKeyframeBridge !== 'function'}
-                      className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                      title="Re-check whether the bridge is installed."
-                    >
-                      <RefreshCw className={`h-3 w-3 ${customKeyframeBridgeBusy ? 'animate-spin' : ''}`} />
-                      Re-check
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <CustomWorkflowSlotCard
+              kind="keyframe"
+              workflowName={customKeyframeWorkflowName}
+              workflowLoaded={customKeyframeWorkflowLoaded}
+              validation={customKeyframeValidation}
+              canOpenInComfyUi={canOpenCustomKeyframeWorkflow}
+              onOpenInComfyUi={handleOpenYoloMusicCustomKeyframeWorkflowInComfyUi}
+              onImportJson={handleImportYoloMusicCustomKeyframeWorkflow}
+              onClear={handleClearYoloMusicCustomKeyframeWorkflow}
+              onPickLibrary={(id) => handleUseYoloMusicLibraryWorkflow?.(id, 'keyframe')}
+              bridgeStatus={customKeyframeBridgeStatus}
+              bridgeBusy={customKeyframeBridgeBusy}
+              bridgeIntro="Adds a Send to Velorn button inside ComfyUI. Import JSON stays available as the fallback."
+              onInstallBridge={handleInstallYoloMusicCustomKeyframeBridge}
+              onCheckBridge={handleCheckYoloMusicCustomKeyframeBridge}
+            />
           )}
         </div>
         {yoloActivePlanIsStale && (
@@ -3306,7 +3201,7 @@ export default function MusicVideoEasyMode({
                   onClick={() => handleResolutionPresetChange(option.id)}
                   disabled={disabled}
                   title={customVideoWorkflowSelected
-                    ? 'Sent to your graph only when it uses COMFYSTUDIO_WIDTH and COMFYSTUDIO_HEIGHT.'
+                    ? 'Sent to your graph only when it uses VELORN_WIDTH and VELORN_HEIGHT.'
                     : disabled ? 'This video model is limited to 720p here.' : ''}
                   className={`rounded-lg border px-2.5 py-1.5 text-[10px] font-semibold transition-colors ${
                     disabled
@@ -3356,18 +3251,18 @@ export default function MusicVideoEasyMode({
       <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3 text-xs leading-5 text-sf-text-secondary">
         <span className="font-semibold text-sf-text-primary">{selectedVideoWorkflowLabel}</span>
         {customVideoWorkflowSelected
-          ? ': ComfyStudio sends the generated keyframe image, motion prompt, seed, and available video settings into your ComfyUI graph.'
+          ? ': Velorn sends the generated keyframe image, motion prompt, seed, and available video settings into your ComfyUI graph.'
           : selectedVideoWorkflow?.description
           ? `: ${selectedVideoWorkflow.description} New video jobs and rerenders use ${outputResolutionLabel} / ${videoFps} fps.`
           : ` is used for new or regenerated videos at ${outputResolutionLabel} / ${videoFps} fps.`}
         {customVideoWorkflowSelected && (
           <span className="mt-1 block">
-            Resolution and FPS are controlled by ComfyStudio only when your graph uses <span className="font-mono text-sf-text-primary">COMFYSTUDIO_WIDTH</span>, <span className="font-mono text-sf-text-primary">COMFYSTUDIO_HEIGHT</span>, and <span className="font-mono text-sf-text-primary">COMFYSTUDIO_FPS</span>; otherwise your graph controls the final output.
+            Resolution and FPS are controlled by Velorn only when your graph uses <span className="font-mono text-sf-text-primary">VELORN_WIDTH</span>, <span className="font-mono text-sf-text-primary">VELORN_HEIGHT</span>, and <span className="font-mono text-sf-text-primary">VELORN_FPS</span>; otherwise your graph controls the final output.
           </span>
         )}
         {customVideoWorkflowSelected ? (
           <span className="mt-1 block text-amber-200">
-            Lip-sync is not automatic. ComfyStudio can pass song audio through <span className="font-mono text-amber-100">COMFYSTUDIO_AUDIO</span>, but your graph must use that audio in a lip-sync or audio-conditioned video workflow.
+            Lip-sync is not automatic. Velorn can pass song audio through <span className="font-mono text-amber-100">VELORN_AUDIO</span>, but your graph must use that audio in a lip-sync or audio-conditioned video workflow.
           </span>
         ) : selectedVideoWorkflowSupports1080 ? (
           <span className="mt-1 block text-sf-text-muted">
@@ -3379,108 +3274,22 @@ export default function MusicVideoEasyMode({
           </span>
         )}
         {customVideoWorkflowSelected && (
-          <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-3">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-sf-text-muted">Custom workflow contract</span>
-                  <span className={`rounded-full border px-2 py-0.5 text-[10px] ${
-                    customVideoValidation.ok
-                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                      : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-                  }`}>
-                    {customVideoValidation.ok ? 'Ready' : 'Needs setup'}
-                  </span>
-                </div>
-                <div className="mt-1 text-xs text-sf-text-primary">
-                  {customVideoWorkflowName || 'No custom workflow loaded'}
-                </div>
-                <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-                  Keep these node titles in your ComfyUI graph: <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_INPUT_IMAGE</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_PROMPT</span>, and <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_OUTPUT_VIDEO</span>. Optional: <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_SEED</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_WIDTH</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_HEIGHT</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_FPS</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_DURATION</span>, <span className="font-mono text-sf-text-secondary">COMFYSTUDIO_AUDIO</span>.
-                </p>
-                <div className={`mt-2 text-[10px] ${customVideoValidation.ok ? 'text-emerald-300' : 'text-amber-200'}`}>
-                  {customVideoValidation.message}
-                </div>
-                {Array.isArray(customVideoValidation.warnings) && customVideoValidation.warnings.length > 0 && (
-                  <div className="mt-1 text-[10px] text-amber-200">
-                    {customVideoValidation.warnings.slice(0, 2).join(' ')}
-                  </div>
-                )}
-              </div>
-              <div className="grid w-full shrink-0 gap-2 sm:w-auto sm:min-w-[180px]">
-                <button
-                  type="button"
-                  onClick={handleOpenYoloMusicCustomVideoWorkflowInComfyUi}
-                  disabled={!canOpenCustomVideoWorkflow}
-                  className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-800 disabled:text-sf-text-muted"
-                  title={customVideoWorkflowLoaded ? 'Open the loaded custom workflow in the embedded ComfyUI tab.' : 'Load the starter workflow and open it in the embedded ComfyUI tab.'}
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  {openCustomVideoWorkflowLabel}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleImportYoloMusicCustomVideoWorkflow}
-                  className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
-                  title="Import the API JSON you exported from ComfyUI."
-                >
-                  <Clipboard className="h-3 w-3" />
-                  Import JSON
-                </button>
-                <button
-                  type="button"
-                  onClick={handleClearYoloMusicCustomVideoWorkflow}
-                  className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-muted transition-colors hover:border-red-500/60 hover:text-red-300"
-                  title="Clear the loaded custom workflow."
-                >
-                  <X className="h-3 w-3" />
-                  Clear Custom
-                </button>
-              </div>
-            </div>
-            <div className="mt-3 border-t border-sf-dark-700 pt-3">
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-sf-text-muted">ComfyStudio bridge</span>
-                    <span className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeBadge.className}`}>
-                      {bridgeBadge.label}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-                    Open the starter from this video panel before using Send to ComfyStudio so the graph returns to Step 5.
-                  </p>
-                  {bridgeMessage && (
-                    <div className={`mt-2 text-[10px] ${bridgeInstalled ? 'text-emerald-300' : bridgeState === 'unavailable' ? 'text-amber-200' : 'text-sf-text-secondary'}`}>
-                      {bridgeMessage}
-                    </div>
-                  )}
-                </div>
-                <div className="grid w-full shrink-0 gap-2 sm:w-auto sm:min-w-[160px]">
-                  <button
-                    type="button"
-                    onClick={handleInstallYoloMusicCustomKeyframeBridge}
-                    disabled={!canInstallBridge || customKeyframeBridgeBusy}
-                    className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-accent/50 bg-sf-accent/10 px-2 py-1.5 text-[10px] font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:border-sf-dark-600 disabled:bg-sf-dark-800 disabled:text-sf-text-muted"
-                    title={bridgeState === 'unavailable' ? 'Choose a ComfyUI folder or configure the launcher first.' : 'Install the bundled ComfyStudio Bridge into ComfyUI custom_nodes.'}
-                  >
-                    {customKeyframeBridgeBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
-                    {bridgeInstalled ? 'Installed' : 'Install Bridge'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCheckYoloMusicCustomKeyframeBridge?.({ silent: false })}
-                    disabled={customKeyframeBridgeBusy || typeof handleCheckYoloMusicCustomKeyframeBridge !== 'function'}
-                    className="inline-flex items-center justify-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1.5 text-[10px] font-medium text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                    title="Re-check whether the bridge is installed."
-                  >
-                    <RefreshCw className={`h-3 w-3 ${customKeyframeBridgeBusy ? 'animate-spin' : ''}`} />
-                    Re-check
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <CustomWorkflowSlotCard
+            kind="video"
+            workflowName={customVideoWorkflowName}
+            workflowLoaded={customVideoWorkflowLoaded}
+            validation={customVideoValidation}
+            canOpenInComfyUi={canOpenCustomVideoWorkflow}
+            onOpenInComfyUi={handleOpenYoloMusicCustomVideoWorkflowInComfyUi}
+            onImportJson={handleImportYoloMusicCustomVideoWorkflow}
+            onClear={handleClearYoloMusicCustomVideoWorkflow}
+            onPickLibrary={(id) => handleUseYoloMusicLibraryWorkflow?.(id, 'video')}
+            bridgeStatus={customKeyframeBridgeStatus}
+            bridgeBusy={customKeyframeBridgeBusy}
+            bridgeIntro="Open the starter from this video panel before using Send to Velorn so the graph returns to Step 5."
+            onInstallBridge={handleInstallYoloMusicCustomKeyframeBridge}
+            onCheckBridge={handleCheckYoloMusicCustomKeyframeBridge}
+          />
         )}
         {selectedVideoWorkflowId !== defaultVideoWorkflowId && !customVideoWorkflowSelected && (
           <div className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs leading-5 text-yellow-100">

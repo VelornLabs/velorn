@@ -1,4 +1,4 @@
-# ComfyStudio v0.1.14 Release Notes
+# Velorn v0.1.14 Release Notes
 
 ## Downloads
 
@@ -58,6 +58,6 @@
 
 ## Known Notes
 
-- ComfyStudio still depends on a separate local ComfyUI installation
+- Velorn still depends on a separate local ComfyUI installation
 - Some advanced local workflows still require large models and sufficient VRAM
 - macOS builds are produced by GitHub Actions and require repository signing/notarization secrets to be configured

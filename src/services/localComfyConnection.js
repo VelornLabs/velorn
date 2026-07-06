@@ -303,7 +303,7 @@ export async function checkLocalComfyConnection(options = {}) {
       httpBase: config.httpBase,
       port: config.port,
       error: response.status === 403
-        ? 'ComfyUI returned HTTP 403. If this is a standalone ComfyUI session, launch it with --enable-cors-header * or use ComfyStudio’s built-in launcher.'
+        ? 'ComfyUI returned HTTP 403. If this is a standalone ComfyUI session, launch it with --enable-cors-header * or use Velorn’s built-in launcher.'
         : `ComfyUI returned HTTP ${response.status}.`,
     }
   } catch (err) {

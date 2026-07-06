@@ -181,6 +181,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * @returns {Promise<{success: boolean, error?: string}>}
    */
   copyFile: (srcPath, destPath) => ipcRenderer.invoke('fs:copyFile', srcPath, destPath),
+
+  /**
+   * Copy a directory recursively
+   * @param {string} srcPath
+   * @param {string} destPath
+   * @returns {Promise<{success: boolean, copied?: number|null, error?: string}>}
+   */
+  copyDirectory: (srcPath, destPath) => ipcRenderer.invoke('fs:copyDirectory', srcPath, destPath),
   
   /**
    * Move/rename a file
@@ -345,6 +353,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteSetting: (key) => ipcRenderer.invoke('settings:delete', key),
 
   // ============================================
+  // MCP Server
+  // ============================================
+
+  mcp: {
+    getStatus: () => ipcRenderer.invoke('mcp:getStatus'),
+    updateSnapshot: (snapshot) => ipcRenderer.invoke('mcp:updateSnapshot', snapshot),
+    onAction: (callback) => {
+      const handler = (_event, request) => callback(request)
+      ipcRenderer.on('mcp:action', handler)
+      return () => ipcRenderer.removeListener('mcp:action', handler)
+    },
+    sendActionResult: (response) => ipcRenderer.send('mcp:actionResult', response),
+  },
+
+  // ============================================
   // Workflow Setup Manager
   // ============================================
 
@@ -353,6 +376,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getComfyCloudCreditBalance: () => ipcRenderer.invoke('comfyui:getCloudCreditBalance'),
   validateWorkflowSetupRoot: (rootPath) => ipcRenderer.invoke('workflowSetup:validateRoot', rootPath),
   checkWorkflowSetupFiles: (payload = {}) => ipcRenderer.invoke('workflowSetup:checkFiles', payload),
+  getWorkflowSetupDiskSpace: (payload = {}) => ipcRenderer.invoke('workflowSetup:diskSpace', payload),
+  probeWorkflowSetupUrlSizes: (payload = {}) => ipcRenderer.invoke('workflowSetup:probeUrlSizes', payload),
+  convertComfyWorkflowGraph: (payload = {}) => ipcRenderer.invoke('comfyui:convertWorkflowGraph', payload),
+  captureComfyWorkflowGraph: (payload = {}) => ipcRenderer.invoke('comfyui:captureWorkflowGraph', payload),
+  focusRendererWindow: () => ipcRenderer.invoke('window:focusRenderer'),
   openExternalUrl: (url) => ipcRenderer.invoke('shell:openExternal', url),
   installWorkflowSetup: (payload = {}) => ipcRenderer.invoke('workflowSetup:install', payload),
   onWorkflowSetupProgress: (cb) => {

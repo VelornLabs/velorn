@@ -3,7 +3,7 @@ import {
   X, Server, FolderOpen, Palette, Monitor, Save,
   HardDrive, Film, Keyboard, Wrench, Power,
   KeyRound, CheckCircle2, ExternalLink, Loader2, RefreshCcw,
-  Volume2, Play,
+  Volume2, Play, Bot, Copy,
 } from 'lucide-react'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useTimelineStore from '../stores/timelineStore'
@@ -55,7 +55,7 @@ import {
 const AUTO_IMPORT_KEY = 'comfystudio-auto-import-comfy-outputs'
 const OUTPUT_DIRECTORY_SETTING_KEY = 'outputDirectory'
 const WORKFLOWS_DIRECTORY_SETTING_KEY = 'workflowsDirectory'
-const OUTPUT_DIRECTORY_PLACEHOLDER = 'C:\\Users\\...\\ComfyStudio\\outputs'
+const OUTPUT_DIRECTORY_PLACEHOLDER = 'C:\\Users\\...\\Velorn\\outputs'
 const WORKFLOWS_DIRECTORY_PLACEHOLDER = 'C:\\Users\\...\\ComfyUI\\workflow_API'
 
 const SETTINGS_SECTIONS = [
@@ -78,10 +78,16 @@ const SETTINGS_SECTIONS = [
     description: 'Configure the local ComfyUI endpoint, partner API key, and advanced tab visibility.',
   },
   {
+    id: 'agents',
+    title: 'Agents (MCP)',
+    icon: Bot,
+    description: 'Connect Claude, Codex, Cursor, or other MCP clients to the open project.',
+  },
+  {
     id: 'launcher',
     title: 'ComfyUI Launcher',
     icon: Power,
-    description: 'Let ComfyStudio start, stop, and restart your local ComfyUI process.',
+    description: 'Let Velorn start, stop, and restart your local ComfyUI process.',
   },
   {
     id: 'paths',
@@ -183,6 +189,8 @@ function GeneralTab({ initialSection = null }) {
   const [playbackCacheBusy, setPlaybackCacheBusy] = useState(false)
   const [playbackCacheProgress, setPlaybackCacheProgress] = useState({ completed: 0, total: 0, currentName: '' })
   const [playbackCacheMessage, setPlaybackCacheMessage] = useState('')
+  const [mcpStatus, setMcpStatus] = useState(null)
+  const [mcpCopied, setMcpCopied] = useState('')
   const currentHotkeyPresetId = useMemo(
     () => getEditorHotkeyPresetMatch(editorHotkeys),
     [editorHotkeys]
@@ -316,6 +324,42 @@ function GeneralTab({ initialSection = null }) {
   }, [initialSection])
 
   useEffect(() => {
+    if (activeSection !== 'agents') return undefined
+    let cancelled = false
+    const refreshStatus = () => {
+      if (!window.electronAPI?.mcp?.getStatus) {
+        setMcpStatus({
+          running: false,
+          url: 'http://127.0.0.1:19790/mcp',
+          error: 'MCP server is only available in the desktop app.',
+          hasProject: false,
+        })
+        return
+      }
+      window.electronAPI.mcp.getStatus()
+        .then((status) => {
+          if (!cancelled) setMcpStatus(status)
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setMcpStatus({
+              running: false,
+              url: 'http://127.0.0.1:19790/mcp',
+              error: error?.message || 'Could not read MCP status.',
+              hasProject: false,
+            })
+          }
+        })
+    }
+    refreshStatus()
+    const timer = setInterval(refreshStatus, 2500)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [activeSection])
+
+  useEffect(() => {
     const handler = (event) => {
       setGenerationCompletionSoundSettingsState(event?.detail || getGenerationCompletionSoundSettings())
     }
@@ -347,6 +391,16 @@ function GeneralTab({ initialSection = null }) {
       ...updates,
     })
     setGenerationCompletionSoundSettingsState(next)
+  }
+
+  const handleCopyMcpText = async (id, text) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setMcpCopied(id)
+      setTimeout(() => setMcpCopied((current) => (current === id ? '' : current)), 1800)
+    } catch (error) {
+      console.warn('Could not copy MCP text:', error)
+    }
   }
 
   const handleSavePexelsKey = () => {
@@ -689,7 +743,7 @@ function GeneralTab({ initialSection = null }) {
           <div className="flex items-center justify-between rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
             <div>
               <label className="text-sm text-sf-text-primary">Reopen last project on startup</label>
-              <p className="text-[10px] text-sf-text-muted">When off, ComfyStudio opens to the project picker.</p>
+              <p className="text-[10px] text-sf-text-muted">When off, Velorn opens to the project picker.</p>
             </div>
             <button
               onClick={() => setReopenLastProjectOnStartup(!reopenLastProjectOnStartup)}
@@ -857,6 +911,99 @@ function GeneralTab({ initialSection = null }) {
         </div>
       )
       break
+    case 'agents': {
+      const mcpUrl = mcpStatus?.url || 'http://127.0.0.1:19790/mcp'
+      const codexCommand = `codex mcp add velorn --url ${mcpUrl}`
+      const claudeCommand = `claude mcp add --transport http velorn ${mcpUrl}`
+      activeSectionContent = (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-sf-text-primary">Velorn MCP server</div>
+                <p className="mt-1 text-[11px] text-sf-text-muted">
+                  Local project access for AI agents. Agents can inspect and review the open project, troubleshoot local ComfyUI setup, use limited undoable timeline/text/effect actions, and start delivery exports.
+                </p>
+              </div>
+              <span className={`inline-flex flex-shrink-0 items-center gap-1.5 rounded px-2 py-1 text-[10px] font-medium ${
+                mcpStatus?.running
+                  ? 'bg-green-900/30 text-green-300'
+                  : 'bg-red-900/30 text-red-300'
+              }`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${mcpStatus?.running ? 'bg-green-300' : 'bg-red-300'}`} />
+                {mcpStatus?.running ? 'Running' : 'Stopped'}
+              </span>
+            </div>
+
+            <div className="mt-3 rounded border border-sf-dark-700 bg-black/30 px-3 py-2">
+              <div className="mb-1 text-[10px] uppercase text-sf-text-muted">Local endpoint</div>
+              <div className="flex items-center gap-2">
+                <code className="min-w-0 flex-1 truncate text-xs text-sf-text-primary">{mcpUrl}</code>
+                <button
+                  type="button"
+                  onClick={() => { void handleCopyMcpText('url', mcpUrl) }}
+                  className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-sf-dark-700 px-2 py-1 text-[11px] text-sf-text-secondary hover:bg-sf-dark-600"
+                >
+                  <Copy className="h-3 w-3" />
+                  {mcpCopied === 'url' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+
+            {mcpStatus?.error && (
+              <p className="mt-2 text-[11px] text-red-300">{mcpStatus.error}</p>
+            )}
+            <p className="mt-2 text-[11px] text-sf-text-muted">
+              Snapshot: {mcpStatus?.lastSnapshotAt ? new Date(mcpStatus.lastSnapshotAt).toLocaleTimeString() : 'Waiting for app state'}
+              {' '}• Project: {mcpStatus?.hasProject ? 'Open' : 'None open'}
+              {' '}• Tools: {mcpStatus?.toolCount ?? 0}
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
+              <div className="mb-2 text-xs font-semibold text-sf-text-primary">Codex</div>
+              <div className="flex items-center gap-2">
+                <code className="min-w-0 flex-1 truncate rounded bg-black/30 px-2 py-1.5 text-[11px] text-sf-text-secondary">{codexCommand}</code>
+                <button
+                  type="button"
+                  onClick={() => { void handleCopyMcpText('codex', codexCommand) }}
+                  className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-sf-dark-700 px-2 py-1.5 text-[11px] text-sf-text-secondary hover:bg-sf-dark-600"
+                >
+                  <Copy className="h-3 w-3" />
+                  {mcpCopied === 'codex' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
+              <div className="mb-2 text-xs font-semibold text-sf-text-primary">Claude Code</div>
+              <div className="flex items-center gap-2">
+                <code className="min-w-0 flex-1 truncate rounded bg-black/30 px-2 py-1.5 text-[11px] text-sf-text-secondary">{claudeCommand}</code>
+                <button
+                  type="button"
+                  onClick={() => { void handleCopyMcpText('claude', claudeCommand) }}
+                  className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-sf-dark-700 px-2 py-1.5 text-[11px] text-sf-text-secondary hover:bg-sf-dark-600"
+                >
+                  <Copy className="h-3 w-3" />
+                  {mcpCopied === 'claude' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
+            <div className="text-xs font-semibold text-sf-text-primary">Available tools</div>
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-sf-text-secondary">
+              {['get_project', 'create_project', 'duplicate_project', 'get_timeline', 'get_assets', 'get_ai_review_passes', 'get_mcp_recipes', 'find_timeline_items', 'check_media_health', 'inspect_export_file', 'guide_comfyui_setup', 'diagnose_comfyui_connection', 'set_comfyui_connection', 'repair_comfyui_connection', 'control_comfyui_launcher', 'get_comfyui_launcher_logs', 'validate_comfyui_nodes', 'list_velorn_workflows', 'inspect_velorn_workflow', 'check_export_readiness', 'inspect_clip', 'inspect_timeline_frame', 'prepare_generation_from_timeline_context', 'queue_prepared_generation', 'queue_timeline_generation_batch', 'queue_prompt_generation_batch', 'inspect_timeline_range', 'inspect_visible_shots', 'get_generation_status', 'get_music_video_status', 'analyze_timeline', 'analyze_music_video_workflow', 'undo', 'redo', 'set_playhead', 'select_clips', 'select_assets', 'create_project_checkpoint', 'restore_project_checkpoint', 'set_in_out_range', 'run_mcp_action_plan', 'import_asset_from_path', 'relink_asset', 'set_clip_style', 'set_clip_label_color', 'set_clips_enabled', 'add_timeline_markers', 'remove_timeline_markers', 'set_timeline_marker_properties', 'create_timeline', 'switch_timeline', 'rename_timeline', 'duplicate_timeline', 'delete_timeline', 'create_asset_folder', 'move_assets_to_folder', 'move_unused_assets_to_folder', 'add_track', 'update_track', 'remove_track', 'add_transition', 'update_transition', 'remove_transitions', 'move_clips', 'trim_clips', 'delete_clips', 'add_asset_to_timeline', 'add_assets_to_timeline', 'replace_clip_with_asset', 'add_solid_color', 'add_adjustment_clip', 'add_text_clip', 'add_shape_clip', 'duplicate_clip', 'update_text_clip', 'update_shape_clip', 'list_glsl_effects', 'add_glsl_effect', 'update_glsl_effect', 'remove_glsl_effect', 'set_clip_keyframes', 'add_dip_to_black', 'export_timeline', 'export_delivery_batch', 'export_fcpxml'].map((tool) => (
+                <span key={tool} className="rounded bg-sf-dark-800 px-2 py-1">{tool}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )
+      break
+    }
     case 'paths':
       activeSectionContent = (
         <div className="space-y-5">

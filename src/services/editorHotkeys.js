@@ -141,7 +141,7 @@ export const DEFAULT_EDITOR_HOTKEYS = EDITOR_HOTKEY_DEFINITIONS.reduce((acc, def
 export const EDITOR_HOTKEY_PRESETS = [
   {
     id: 'comfystudio',
-    label: 'ComfyStudio',
+    label: 'Velorn',
     description: 'Current default editor bindings.',
     bindings: { ...DEFAULT_EDITOR_HOTKEYS },
   },

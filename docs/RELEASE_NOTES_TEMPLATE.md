@@ -4,7 +4,7 @@ Use this when publishing a GitHub Release so normal app users and advanced Comfy
 
 ## Choose The Right Download
 
-- **Desktop app:** for most users who just want to install ComfyStudio and use it.
+- **Desktop app:** for most users who just want to install Velorn and use it.
 - **Workflow Starter Pack (optional):** for advanced ComfyUI users who want to inspect workflows directly in ComfyUI and prepare nodes/models manually.
 
 ## Desktop App
@@ -14,7 +14,7 @@ Use this when publishing a GitHub Release so normal app users and advanced Comfy
 - macOS Apple Silicon DMG
 - macOS Intel DMG
 
-The desktop app includes ComfyStudio and its built-in workflow definitions. It does **not** include ComfyUI itself.
+The desktop app includes Velorn and its built-in workflow definitions. It does **not** include ComfyUI itself.
 
 ## Workflow Starter Pack (Optional)
 
@@ -33,11 +33,11 @@ Advanced ComfyUI users can usually treat it like this:
 2. Open the workflows in ComfyUI
 3. Install any missing custom nodes
 4. Download any missing models
-5. Return to ComfyStudio and use `Generate`
+5. Return to Velorn and use `Generate`
 
 ## Important Setup Note
 
-ComfyStudio generation still depends on a separate local ComfyUI installation.
+Velorn generation still depends on a separate local ComfyUI installation.
 
 - Local workflows may require custom nodes and local model files.
 - Cloud workflows still use local ComfyUI and may require partner nodes plus a Comfy account API key.
@@ -48,7 +48,7 @@ After launching the app:
 
 1. Choose a projects folder.
 2. Create or open a project.
-3. Open `ComfyStudio > Getting Started` from the bottom menu.
+3. Open `Velorn > Getting Started` from the bottom menu.
 
 ## Known Limitations
 

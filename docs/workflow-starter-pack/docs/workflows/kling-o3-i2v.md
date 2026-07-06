@@ -11,7 +11,7 @@ Premium image-to-video with Kling 3.0 Omni
 - **Setup Workflow Status:** `available`
 
 ## What This Setup Workflow Is
-- A ComfyUI-importable copy of the workflow graph bundled with ComfyStudio.
+- A ComfyUI-importable copy of the workflow graph bundled with Velorn.
 - Use it to inspect missing nodes, model loaders, and expected filenames directly inside ComfyUI.
 - This is still a cloud workflow: local model weights are usually not required, but the partner node and API key still are.
 
@@ -33,8 +33,8 @@ Premium image-to-video with Kling 3.0 Omni
 1. Import `workflows/cloud/kling-o3-i2v.comfyui.json` into ComfyUI.
 2. Let ComfyUI show any missing custom nodes, then install them in ComfyUI Manager.
 3. Re-open the workflow in ComfyUI and confirm the required partner/custom nodes load cleanly.
-4. Add your Comfy account API key in ComfyStudio Settings before queueing.
-5. Return to ComfyStudio Generate and click `Re-check` before queueing.
+4. Add your Comfy account API key in Velorn Settings before queueing.
+5. Return to Velorn Generate and click `Re-check` before queueing.
 
 ## Related Guides
 - `../WHERE_FILES_GO.md`

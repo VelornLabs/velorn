@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Settings, LogOut, Save, FolderOpen, Minus, Maximize2, BookOpen } from 'lucide-react'
+import { Settings, LogOut, Save, FolderOpen, Minus, Maximize2, BookOpen, ChevronDown } from 'lucide-react'
 import useTimelineStore from '../stores/timelineStore'
 import useProjectStore from '../stores/projectStore'
 
@@ -91,7 +91,15 @@ function BottomBar({ onOpenSettings, onOpenGettingStarted, projectName }) {
 
   return (
     <div className="h-8 flex-shrink-0 bg-black border-t border-sf-dark-700 flex items-center justify-end px-3 gap-0">
-      {/* Undo | Redo | Project name | Settings */}
+      {/* Save | Undo | Redo | Project name | Settings */}
+      <button
+        onClick={handleSave}
+        className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-bold text-white hover:bg-sf-dark-800 transition-colors"
+        title="Save Project"
+      >
+        Save
+      </button>
+      <Separator />
       <button
         onClick={handleUndo}
         disabled={!combinedCanUndo}
@@ -114,14 +122,50 @@ function BottomBar({ onOpenSettings, onOpenGettingStarted, projectName }) {
         {projectName || 'Untitled'}
       </div>
       <Separator />
-      {/* ComfyStudio - dropdown: Leave, Settings, Project Selection, Save Project (with dividers) */}
+      {/* Velorn - dropdown: Leave, Settings, Project Selection, Save Project (with dividers) */}
       <div className="relative" ref={menuRef}>
         <button
           onClick={() => setMenuOpen((o) => !o)}
           className="flex items-center gap-2 px-2 py-1 rounded text-sf-text-muted hover:text-sf-text-primary hover:bg-sf-dark-800 transition-colors"
-          title="ComfyStudio"
+          title="Velorn"
         >
-          <span className="text-[11px] font-semibold text-sf-text-primary">ComfyStudio</span>
+          <svg
+            className="block h-[14px] w-[45px]"
+            viewBox="0 0 52 16"
+            role="img"
+            aria-label="Velorn"
+          >
+            <defs>
+              <linearGradient id="velorn-bottombar-gradient" x1="0" y1="0" x2="52" y2="0" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stopColor="#8fcfff" />
+                <stop offset="48%" stopColor="#f8fbff" />
+                <stop offset="100%" stopColor="#f6d985" />
+              </linearGradient>
+              <filter id="velorn-bottombar-glow" x="-20%" y="-80%" width="140%" height="260%">
+                <feDropShadow dx="0" dy="0" stdDeviation="0.8" floodColor="#8fcfff" floodOpacity="0.28" />
+                <feDropShadow dx="0" dy="0" stdDeviation="0.9" floodColor="#f6d985" floodOpacity="0.24" />
+              </filter>
+            </defs>
+            <text
+              x="0"
+              y="12.2"
+              fill="url(#velorn-bottombar-gradient)"
+              stroke="rgba(255,255,255,0.24)"
+              strokeWidth="0.18"
+              paintOrder="stroke fill"
+              filter="url(#velorn-bottombar-glow)"
+              fontFamily="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+              fontSize="13"
+              fontWeight="800"
+              letterSpacing="0"
+            >
+              Velorn
+            </text>
+          </svg>
+          <ChevronDown
+            className={`h-3 w-3 flex-shrink-0 text-sf-text-muted transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+            aria-hidden="true"
+          />
         </button>
 
         {menuOpen && (

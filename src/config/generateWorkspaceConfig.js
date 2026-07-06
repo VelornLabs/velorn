@@ -141,7 +141,7 @@ export const YOLO_MUSIC_KEYFRAME_WORKFLOW_OPTIONS = Object.freeze([
     id: CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID,
     label: 'Custom Workflow',
     runtimeLabel: 'Advanced',
-    description: 'Use your own ComfyUI keyframe workflow as long as it keeps the ComfyStudio input/output endpoints.',
+    description: 'Use your own ComfyUI keyframe workflow as long as it keeps the Velorn input/output endpoints.',
   },
 ])
 
@@ -160,7 +160,7 @@ export const YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
     id: CUSTOM_MUSIC_VIDEO_WORKFLOW_ID,
     label: 'Custom Workflow',
     runtimeLabel: 'Advanced',
-    description: 'Use your own ComfyUI video workflow as long as it keeps the ComfyStudio input/output endpoints.',
+    description: 'Use your own ComfyUI video workflow as long as it keeps the Velorn input/output endpoints.',
   },
 ])
 

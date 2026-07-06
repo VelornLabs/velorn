@@ -577,6 +577,26 @@ export const useAssetsStore = create(
       nextState.folderCounter = projectFolderCounter
     }
     set(nextState)
+
+    // playbackCacheUrl/proxyUrl are session-only (stripped by getProjectData
+    // and reset above), and until now were only rehydrated when an Assets
+    // panel tile scrolled into view. That left cold sessions previewing the
+    // original long-GOP sources, which seek slowly (frozen scrub) and decode
+    // late at cuts (black flashes). Warm the URLs in the background.
+    if (projectHandle) {
+      get().hydratePlaybackMediaUrls(projectHandle).catch((err) => {
+        console.warn('Background playback media hydration failed:', err)
+      })
+      // Re-resolve per-clip render bake URLs (session-scoped) so clips
+      // rendered to cache keep playing their bakes after a restart.
+      // Dynamic import: clipRenderCache -> exporter -> assetsStore would
+      // otherwise be a static import cycle.
+      import('../services/clipRenderCache')
+        .then((mod) => mod.hydrateClipRenderCaches(projectHandle))
+        .catch((err) => {
+          console.warn('Background clip render cache hydration failed:', err)
+        })
+    }
   },
 
   /**
@@ -834,6 +854,70 @@ export const useAssetsStore = create(
   },
 
   /**
+   * Hydrate session-only playbackCacheUrl/proxyUrl for every video asset that
+   * has the corresponding file on disk. Same exists()-checked URL logic as
+   * hydrateAssetBrowserMedia, minus the poster work (no ffmpeg spawns) — this
+   * only resolves file URLs, so it's cheap enough to run for a whole project.
+   * @param {string} projectPath - Project directory path
+   * @param {object} options - { concurrency?: number }
+   */
+  hydratePlaybackMediaUrls: async (projectPath, options = {}) => {
+    if (!projectPath || typeof window === 'undefined' || !window.electronAPI?.isElectron) return
+    const candidates = get().assets.filter((asset) => (
+      asset?.type === 'video'
+      && (
+        (!asset.playbackCacheUrl && asset.playbackCachePath)
+        || (!asset.proxyUrl && asset.proxyPath)
+      )
+    ))
+    if (candidates.length === 0) return
+
+    const { getProjectFileUrl } = await import('../services/fileSystem')
+    const { isProxySourceStale } = await import('../services/proxyCache')
+    const concurrency = Math.max(1, Math.min(4, Number(options.concurrency) || 3))
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < candidates.length) {
+        const asset = candidates[cursor]
+        cursor += 1
+        const updates = {}
+        if (!asset.playbackCacheUrl && asset.playbackCachePath) {
+          try {
+            const absolutePath = await window.electronAPI.pathJoin(projectPath, asset.playbackCachePath)
+            if (await window.electronAPI.exists(absolutePath)) {
+              updates.playbackCacheUrl = await getProjectFileUrl(projectPath, asset.playbackCachePath)
+            }
+          } catch (err) {
+            console.warn(`Failed to hydrate playback cache URL for ${asset.name}:`, err)
+          }
+        }
+        if (!asset.proxyUrl && asset.proxyPath) {
+          try {
+            const absolutePath = await window.electronAPI.pathJoin(projectPath, asset.proxyPath)
+            if (await window.electronAPI.exists(absolutePath)) {
+              // Staleness: if the source was replaced in place since the
+              // proxy was encoded (file signature mismatch), don't
+              // resurrect the old proxy — downgrade it so "Generate
+              // missing" rebuilds it instead of previewing stale pixels.
+              if (await isProxySourceStale(projectPath, asset)) {
+                get().setProxyCacheStatus?.(asset.id, 'none')
+              } else {
+                updates.proxyUrl = await getProjectFileUrl(projectPath, asset.proxyPath)
+              }
+            }
+          } catch (err) {
+            console.warn(`Failed to hydrate proxy URL for ${asset.name}:`, err)
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          get().updateAsset(asset.id, updates)
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, () => worker()))
+  },
+
+  /**
    * Load saved thumbnail sprites for video assets without flooding the renderer.
    * Startup intentionally does not call this; use it for explicit/on-demand
    * warming where bounded background work is acceptable.
@@ -1064,13 +1148,13 @@ export const useAssetsStore = create(
    * (proxy = small low-res for multi-layer preview, playback = same-res fast
    * decode for single-layer smoothness).
    */
-  setProxyCache: (assetId, proxyPath, proxyUrl) => {
+  setProxyCache: (assetId, proxyPath, proxyUrl, proxySourceSignature = null) => {
     set((state) => ({
       assets: state.assets.map(a =>
-        a.id === assetId ? { ...a, proxyPath, proxyUrl } : a
+        a.id === assetId ? { ...a, proxyPath, proxyUrl, proxySourceSignature } : a
       ),
       currentPreview: state.currentPreview?.id === assetId
-        ? { ...state.currentPreview, proxyPath, proxyUrl }
+        ? { ...state.currentPreview, proxyPath, proxyUrl, proxySourceSignature }
         : state.currentPreview,
     }))
   },

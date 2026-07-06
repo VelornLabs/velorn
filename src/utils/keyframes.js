@@ -5,7 +5,7 @@
  * {
  *   time: number,      // Time in seconds (relative to clip start)
  *   value: number,     // The value at this keyframe
- *   easing: string,    // Easing function: 'linear', 'easeIn', 'easeOut', 'easeInOut', 'hold'
+ *   easing: string,    // Easing: 'linear', 'easeIn', 'easeOut', 'easeInOut', 'hold', or cubicBezier(x1,y1,x2,y2)
  * }
  */
 
@@ -18,6 +18,7 @@ import {
   normalizeAdjustmentSettings,
   setAdjustmentValue,
 } from './adjustments'
+import { normalizeShapeProperties } from './shapes'
 
 // Easing functions (t is normalized 0-1)
 export const easingFunctions = {
@@ -44,6 +45,75 @@ export const easingFunctions = {
   hold: () => 0,
 }
 
+function clampUnit(value) {
+  return Math.max(0, Math.min(1, value))
+}
+
+function parseCubicBezierEasing(easing) {
+  const match = String(easing || '').trim().match(/^cubic-?bezier\(\s*(-?(?:\d+\.?\d*|\.\d+))\s*,\s*(-?(?:\d+\.?\d*|\.\d+))\s*,\s*(-?(?:\d+\.?\d*|\.\d+))\s*,\s*(-?(?:\d+\.?\d*|\.\d+))\s*\)$/i)
+  if (!match) return null
+
+  const [, x1Raw, y1Raw, x2Raw, y2Raw] = match
+  const x1 = Number(x1Raw)
+  const y1 = Number(y1Raw)
+  const x2 = Number(x2Raw)
+  const y2 = Number(y2Raw)
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return null
+
+  // CSS cubic-bezier curves require x handles between 0 and 1 so time moves forward.
+  return {
+    x1: clampUnit(x1),
+    y1: Math.max(-10, Math.min(10, y1)),
+    x2: clampUnit(x2),
+    y2: Math.max(-10, Math.min(10, y2)),
+  }
+}
+
+function cubicBezierAt(t, p1, p2) {
+  const inverseT = 1 - t
+  return 3 * inverseT * inverseT * t * p1
+    + 3 * inverseT * t * t * p2
+    + t * t * t
+}
+
+function cubicBezierDerivativeAt(t, p1, p2) {
+  const inverseT = 1 - t
+  return 3 * inverseT * inverseT * p1
+    + 6 * inverseT * t * (p2 - p1)
+    + 3 * t * t * (1 - p2)
+}
+
+function createCubicBezierEasing({ x1, y1, x2, y2 }) {
+  return (time) => {
+    const x = clampUnit(time)
+    let curveT = x
+
+    for (let i = 0; i < 8; i++) {
+      const estimate = cubicBezierAt(curveT, x1, x2) - x
+      const derivative = cubicBezierDerivativeAt(curveT, x1, x2)
+      if (Math.abs(estimate) < 0.000001 || Math.abs(derivative) < 0.000001) break
+      curveT = clampUnit(curveT - estimate / derivative)
+    }
+
+    let low = 0
+    let high = 1
+    for (let i = 0; i < 12 && Math.abs(cubicBezierAt(curveT, x1, x2) - x) > 0.000001; i++) {
+      if (cubicBezierAt(curveT, x1, x2) < x) low = curveT
+      else high = curveT
+      curveT = (low + high) / 2
+    }
+
+    return cubicBezierAt(curveT, y1, y2)
+  }
+}
+
+export function getEasingFunction(easing) {
+  const key = String(easing || 'linear').trim()
+  if (easingFunctions[key]) return easingFunctions[key]
+  const cubicBezier = parseCubicBezierEasing(key)
+  return cubicBezier ? createCubicBezierEasing(cubicBezier) : easingFunctions.linear
+}
+
 /**
  * Available easing options for UI
  */
@@ -61,8 +131,12 @@ export const EASING_OPTIONS = [
 export const KEYFRAMEABLE_PROPERTIES = [
   { id: 'positionX', label: 'Position X', group: 'position', unit: 'px' },
   { id: 'positionY', label: 'Position Y', group: 'position', unit: 'px' },
+  { id: 'positionZ', label: 'Position Z', group: 'position', unit: 'px' },
   { id: 'scaleX', label: 'Scale X', group: 'scale', unit: '%' },
   { id: 'scaleY', label: 'Scale Y', group: 'scale', unit: '%' },
+  { id: 'rotationX', label: 'Rotate X', group: 'rotation', unit: 'deg' },
+  { id: 'rotationY', label: 'Rotate Y', group: 'rotation', unit: 'deg' },
+  { id: 'perspective', label: 'Perspective', group: 'perspective', unit: 'px' },
   { id: 'rotation', label: 'Rotation', group: 'rotation', unit: '°' },
   { id: 'opacity', label: 'Opacity', group: 'opacity', unit: '%' },
   { id: 'blur', label: 'Blur', group: 'effects', unit: 'px' },
@@ -91,6 +165,20 @@ export const KEYFRAMEABLE_PROPERTIES = [
 ]
 
 export const ADJUSTMENT_KEYFRAME_PROPERTIES = [...GLOBAL_ADJUSTMENT_KEYS, ...TONAL_ADJUSTMENT_PROPERTY_IDS]
+
+export const SHAPE_KEYFRAMEABLE_PROPERTIES = [
+  { id: 'width', label: 'Shape Width', group: 'shape', unit: 'px' },
+  { id: 'height', label: 'Shape Height', group: 'shape', unit: 'px' },
+  { id: 'fillOpacity', label: 'Fill Opacity', group: 'shape', unit: '%' },
+  { id: 'gradientAngle', label: 'Gradient Angle', group: 'shape', unit: 'deg' },
+  { id: 'gradientCenterX', label: 'Gradient Center X', group: 'shape', unit: '%' },
+  { id: 'gradientCenterY', label: 'Gradient Center Y', group: 'shape', unit: '%' },
+  { id: 'gradientRadius', label: 'Gradient Radius', group: 'shape', unit: '%' },
+  { id: 'strokeWidth', label: 'Stroke Width', group: 'shape', unit: 'px' },
+  { id: 'strokeOpacity', label: 'Stroke Opacity', group: 'shape', unit: '%' },
+  { id: 'cornerRadius', label: 'Corner Radius', group: 'shape', unit: 'px' },
+  { id: 'sides', label: 'Polygon Sides', group: 'shape', unit: '' },
+]
 
 /**
  * Get the value of a property at a specific time, interpolating between keyframes
@@ -143,7 +231,7 @@ export function getValueAtTime(keyframes, time, defaultValue = 0) {
   const t = (time - prevKeyframe.time) / duration
   
   // Apply easing function from the previous keyframe
-  const easingFn = easingFunctions[prevKeyframe.easing] || easingFunctions.linear
+  const easingFn = getEasingFunction(prevKeyframe.easing)
   
   // Handle 'hold' easing - no interpolation
   if (prevKeyframe.easing === 'hold') {
@@ -154,6 +242,119 @@ export function getValueAtTime(keyframes, time, defaultValue = 0) {
   
   // Linear interpolation with eased time
   return prevKeyframe.value + (nextKeyframe.value - prevKeyframe.value) * easedT
+}
+
+function parseHexColor(value) {
+  const raw = String(value || '').trim()
+  const shortMatch = raw.match(/^#([0-9a-fA-F]{3})$/)
+  if (shortMatch) {
+    const [r, g, b] = shortMatch[1].split('').map((part) => parseInt(`${part}${part}`, 16))
+    return { r, g, b }
+  }
+
+  const match = raw.match(/^#([0-9a-fA-F]{6})$/)
+  if (!match) return null
+  return {
+    r: parseInt(match[1].slice(0, 2), 16),
+    g: parseInt(match[1].slice(2, 4), 16),
+    b: parseInt(match[1].slice(4, 6), 16),
+  }
+}
+
+function colorChannelToHex(value) {
+  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0')
+}
+
+function rgbToHex({ r, g, b }) {
+  return `#${colorChannelToHex(r)}${colorChannelToHex(g)}${colorChannelToHex(b)}`
+}
+
+/**
+ * Get an interpolated hex color at a specific time.
+ *
+ * @param {Array} keyframes - Color keyframes with #RRGGBB values
+ * @param {number} time - Time in seconds (relative to clip start)
+ * @param {string} defaultValue - Default hex color
+ * @returns {string}
+ */
+export function getColorAtTime(keyframes, time, defaultValue = '#ffffff') {
+  const fallback = parseHexColor(defaultValue) ? String(defaultValue).trim() : '#ffffff'
+  const parsedTime = Number(time)
+  if (!Number.isFinite(parsedTime)) return fallback
+  if (!keyframes || keyframes.length === 0) return fallback
+
+  const sorted = [...keyframes]
+    .filter((keyframe) => Number.isFinite(Number(keyframe?.time)) && parseHexColor(keyframe?.value))
+    .sort((a, b) => a.time - b.time)
+
+  if (sorted.length === 0) return fallback
+  if (sorted.length === 1) return String(sorted[0].value).trim()
+  if (parsedTime <= sorted[0].time) return String(sorted[0].value).trim()
+  if (parsedTime >= sorted[sorted.length - 1].time) return String(sorted[sorted.length - 1].value).trim()
+
+  let prevKeyframe = sorted[0]
+  let nextKeyframe = sorted[1]
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (parsedTime >= sorted[i].time && parsedTime <= sorted[i + 1].time) {
+      prevKeyframe = sorted[i]
+      nextKeyframe = sorted[i + 1]
+      break
+    }
+  }
+
+  if (prevKeyframe.easing === 'hold') {
+    return String(prevKeyframe.value).trim()
+  }
+
+  const duration = nextKeyframe.time - prevKeyframe.time
+  if (duration === 0) return String(prevKeyframe.value).trim()
+
+  const t = (parsedTime - prevKeyframe.time) / duration
+  const easingFn = getEasingFunction(prevKeyframe.easing)
+  const easedT = easingFn(t)
+  const from = parseHexColor(prevKeyframe.value)
+  const to = parseHexColor(nextKeyframe.value)
+  if (!from || !to) return fallback
+
+  return rgbToHex({
+    r: from.r + (to.r - from.r) * easedT,
+    g: from.g + (to.g - from.g) * easedT,
+    b: from.b + (to.b - from.b) * easedT,
+  })
+}
+
+export function getAnimatedTextProperties(clip, clipTime) {
+  const textProperties = { ...(clip?.textProperties || {}) }
+  const textColorKeyframes = clip?.keyframes?.textColor
+  if (textColorKeyframes && textColorKeyframes.length > 0) {
+    textProperties.textColor = getColorAtTime(
+      textColorKeyframes,
+      clipTime,
+      textProperties.textColor || '#ffffff'
+    )
+  }
+  return textProperties
+}
+
+export function getAnimatedShapeProperties(clip, clipTime) {
+  if (!clip) return null
+
+  const baseShapeProperties = normalizeShapeProperties(clip.shapeProperties || {})
+  const keyframes = clip.keyframes || {}
+  const animatedShapeProperties = { ...baseShapeProperties }
+
+  for (const prop of SHAPE_KEYFRAMEABLE_PROPERTIES) {
+    const propKeyframes = keyframes[prop.id]
+    if (propKeyframes && propKeyframes.length > 0) {
+      animatedShapeProperties[prop.id] = getValueAtTime(
+        propKeyframes,
+        clipTime,
+        baseShapeProperties[prop.id]
+      )
+    }
+  }
+
+  return normalizeShapeProperties(animatedShapeProperties)
 }
 
 /**
@@ -344,12 +545,17 @@ export function quantizeTimeToFrame(time, fps) {
 
 export default {
   easingFunctions,
+  getEasingFunction,
   EASING_OPTIONS,
   KEYFRAMEABLE_PROPERTIES,
   ADJUSTMENT_KEYFRAME_PROPERTIES,
+  SHAPE_KEYFRAMEABLE_PROPERTIES,
   getValueAtTime,
+  getColorAtTime,
+  getAnimatedShapeProperties,
   getAnimatedTransform,
   getAnimatedAdjustmentSettings,
+  getAnimatedTextProperties,
   getKeyframeAtTime,
   hasKeyframes,
   setKeyframe,

@@ -1,8 +1,8 @@
-# ComfyStudio v0.1.8 Draft Release Notes
+# Velorn v0.1.8 Draft Release Notes
 
 ## Choose The Right Download
 
-- **Desktop app:** for most users who want to install ComfyStudio and use the editor, Generate workflows, the embedded ComfyUI tab, and export tools directly.
+- **Desktop app:** for most users who want to install Velorn and use the editor, Generate workflows, the embedded ComfyUI tab, and export tools directly.
 - **Workflow Starter Pack (optional):** for advanced ComfyUI users who want to inspect setup workflows manually in ComfyUI and prepare nodes/models outside the app.
 
 ## Highlights
@@ -20,13 +20,13 @@
 
 ## Captions
 
-- The current captioning workflow in ComfyStudio still uses the ComfyUI/Qwen ASR path
+- The current captioning workflow in Velorn still uses the ComfyUI/Qwen ASR path
 - Timeline caption transcription remains supported through the existing ComfyUI-based flow
 - This release is intended to preserve current caption behavior while eliminating a dead fallback implementation
 
 ## Important Setup Note
 
-ComfyStudio generation still depends on a separate local ComfyUI installation in this build.
+Velorn generation still depends on a separate local ComfyUI installation in this build.
 
 - Local workflows may require manual node/model setup.
 - Cloud workflows still use local ComfyUI and may require partner nodes plus a Comfy account API key.
@@ -42,4 +42,4 @@ ComfyStudio generation still depends on a separate local ComfyUI installation in
 
 ## Suggested GitHub Release Title
 
-`ComfyStudio v0.1.8 - Smaller app package with caption runtime cleanup`
+`Velorn v0.1.8 - Smaller app package with caption runtime cleanup`

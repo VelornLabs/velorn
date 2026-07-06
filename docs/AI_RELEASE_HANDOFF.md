@@ -1,6 +1,6 @@
 # AI Release Handoff
 
-Read this before helping with ComfyStudio commits, tags, or desktop releases.
+Read this before helping with Velorn commits, tags, or desktop releases.
 
 ## Important
 
@@ -58,7 +58,7 @@ Do not upload `.blockmap` or `latest*.yml` files unless auto-update support is a
 8. Create and push the version tag:
 
 ```bash
-git tag -a v0.1.12 -m "ComfyStudio v0.1.12"
+git tag -a v0.1.12 -m "Velorn v0.1.12"
 git push origin refs/tags/v0.1.12
 ```
 

@@ -1,6 +1,6 @@
 # Workflow Starter Pack v0.1.6
 
-Generated for ComfyStudio v0.1.6.
+Generated for Velorn v0.1.6.
 
 ## What Is Included
 
@@ -13,11 +13,11 @@ Generated for ComfyStudio v0.1.6.
 ## Who This Is For
 
 - Advanced ComfyUI users who want to inspect workflows directly in ComfyUI
-- Users who prefer to install nodes and models manually before queueing inside ComfyStudio
+- Users who prefer to install nodes and models manually before queueing inside Velorn
 
 ## Important Notes
 
-- This pack does not replace the ComfyStudio desktop app.
+- This pack does not replace the Velorn desktop app.
 - This pack does not include ComfyUI itself.
 - Cloud workflows still require local ComfyUI plus the relevant partner nodes and API key.
 

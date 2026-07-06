@@ -5,6 +5,7 @@ import {
   isFileSystemSupported,
   requestDirectoryAccess,
   createProjectFolder,
+  duplicateProjectFolder,
   saveProject as saveProjectToFile,
   loadProject as loadProjectFromFile,
   loadLatestProjectAutosave as loadLatestProjectAutosaveFromFile,
@@ -64,7 +65,9 @@ const createDefaultTimeline = (name = 'Timeline 1', id = null, settings = null) 
   width: settings?.width || null,
   height: settings?.height || null,
   fps: settings?.fps || null,
-  duration: 60,
+  duration: Number.isFinite(Number(settings?.duration)) && Number(settings.duration) > 0
+    ? Number(settings.duration)
+    : 60,
   zoom: 100,
   tracks: [
     { id: 'video-1', name: 'Video 1', type: 'video', muted: false, locked: false, visible: true },
@@ -494,6 +497,59 @@ export const useProjectStore = create(
       },
 
       /**
+       * Duplicate a recent project folder and open the copy.
+       * @param {object} project - Recent project object
+       * @returns {Promise<object|null>} Duplicated project data, or null on failure
+       */
+      duplicateProject: async (project) => {
+        const state = get()
+        if (!isElectron()) {
+          set({ error: 'Project duplication is only available in the desktop app.' })
+          return null
+        }
+
+        let sourcePath = project?.path || null
+        if (!sourcePath && state.defaultProjectsHandle && project?.name) {
+          sourcePath = await window.electronAPI.pathJoin(state.defaultProjectsHandle, project.name)
+        }
+        if (!sourcePath) {
+          set({ error: 'This project does not have a folder path available.' })
+          return null
+        }
+
+        set({ isLoading: true, error: null })
+
+        try {
+          const duplicate = await duplicateProjectFolder(sourcePath)
+          const duplicatedProject = duplicate.projectData
+          const recentProject = {
+            name: duplicatedProject.name,
+            path: duplicate.path,
+            modified: duplicatedProject.modified,
+            created: duplicatedProject.created,
+            settings: duplicatedProject.settings,
+            thumbnail: duplicatedProject.thumbnail,
+          }
+
+          set((state) => ({
+            recentProjects: [
+              recentProject,
+              ...state.recentProjects.filter((p) => (
+                p.name !== recentProject.name && (p.path || '') !== (recentProject.path || '')
+              )),
+            ].slice(0, 10),
+            isLoading: false,
+          }))
+
+          return await get().openProject(duplicate.path)
+        } catch (err) {
+          console.error('Error duplicating project:', err)
+          set({ isLoading: false, error: err?.message || 'Could not duplicate project.' })
+          return null
+        }
+      },
+
+      /**
        * Open the latest autosave snapshot for the last project that failed to open.
        */
       openLatestAutosaveForFailedProject: async () => {
@@ -827,6 +883,7 @@ export const useProjectStore = create(
        * @param {number} options.width - Optional timeline-specific width
        * @param {number} options.height - Optional timeline-specific height
        * @param {number} options.fps - Optional timeline-specific frame rate
+       * @param {number} options.durationSeconds - Optional starting timeline duration in seconds
        */
       createTimeline: (options = null) => {
         const state = get()
@@ -840,6 +897,7 @@ export const useProjectStore = create(
           width: options?.width || null,
           height: options?.height || null,
           fps: options?.fps || null,
+          duration: options?.durationSeconds || options?.duration || null,
           color: options?.color || null,
           folderId: options?.folderId || null,
         }

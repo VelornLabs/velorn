@@ -10,13 +10,21 @@
  *     through the decoder than 4 × 2160p (Kling-style 4K output). This is
  *     the standard NLE trick (Premiere/Resolve/FCP proxies).
  *
- * Fallback chain in VideoLayerRenderer's resolvePlaybackUrl is:
- *   1. clip.cacheUrl          (mask/clip pre-render — most specific)
- *   2. asset.proxyUrl         (this file — only when user setting is on)
+ * Consumed by CanvasPreviewRenderer's resolvePreviewUrl tier chain:
+ *   1. clip cacheUrl          (render bake / legacy mask pre-render)
+ *   2. asset.proxyUrl         (this file — only when the user toggle is on)
  *   3. asset.playbackCacheUrl (same-res transcode)
  *   4. asset.url              (source)
  *
- * Export NEVER consults proxyUrl. exporter.js uses asset.path directly.
+ * Export ignores proxies UNLESS explicitly requested via exportTimeline's
+ * useProxyMedia option (the "Proxy Review" preset / preview chunk cache);
+ * full-quality exports always read source media.
+ *
+ * Staleness: each proxy records a signature of its source file (size +
+ * mtime) at encode time. If the source is later replaced in place, the
+ * project-load hydration pass detects the mismatch and downgrades the
+ * proxy to missing so "Generate missing" rebuilds it, instead of silently
+ * previewing old pixels.
  */
 
 import { isElectron } from './fileSystem'
@@ -34,6 +42,44 @@ const DEFAULT_PROXY_HEIGHT = 540
 function safeFilename(assetId) {
   if (!assetId || typeof assetId !== 'string') return 'asset'
   return assetId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
+}
+
+/**
+ * Signature of a source file's identity (size + mtime) for staleness
+ * detection. Returns null when the info isn't obtainable (older preload,
+ * IPC failure) — callers treat null as "can't check", not "stale".
+ */
+export async function buildProxySourceSignature(sourcePath) {
+  if (!sourcePath || typeof window === 'undefined' || typeof window.electronAPI?.getFileInfo !== 'function') {
+    return null
+  }
+  try {
+    const result = await window.electronAPI.getFileInfo(sourcePath)
+    const info = result?.info || result
+    if (!info || (result && result.success === false)) return null
+    const size = Number(info.size)
+    const modified = info.modified || info.mtimeMs || null
+    if (!Number.isFinite(size) || !modified) return null
+    return `${size}|${modified}`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * True when an asset's recorded proxy source signature no longer matches
+ * the source file on disk (source replaced in place since the proxy was
+ * encoded). Assets without a recorded signature (proxies built before
+ * signatures existed) are never reported stale — they're grandfathered
+ * until their next rebuild records one.
+ */
+export async function isProxySourceStale(projectDir, asset) {
+  if (!asset?.proxySourceSignature) return false
+  const sourcePath = await resolveAssetSourcePath(projectDir, asset, { verifyExists: false })
+  if (!sourcePath) return false
+  const currentSignature = await buildProxySourceSignature(sourcePath)
+  if (!currentSignature) return false
+  return currentSignature !== asset.proxySourceSignature
 }
 
 /**
@@ -151,10 +197,20 @@ export async function enqueueProxyTranscode(projectDir, assetId, sourcePath, opt
 
   const { useAssetsStore } = await import('../stores/assetsStore')
   const store = useAssetsStore.getState()
-  // Guard: don't re-encode a proxy that's already ready unless forced.
+  // Signature of the source as it exists RIGHT NOW — recorded with the
+  // proxy on success so later loads can detect in-place source replacement.
+  const currentSignature = await buildProxySourceSignature(sourcePath)
+  // Guard: don't re-encode a proxy that's already ready unless forced —
+  // but a ready proxy whose recorded source signature no longer matches
+  // the file on disk is stale and DOES re-encode.
   if (!options.force) {
     const existing = store.assets.find((a) => a.id === assetId)
-    if (existing?.proxyStatus === 'ready' && existing?.proxyPath) return
+    const existingIsStale = Boolean(
+      existing?.proxySourceSignature
+      && currentSignature
+      && existing.proxySourceSignature !== currentSignature
+    )
+    if (existing?.proxyStatus === 'ready' && existing?.proxyPath && !existingIsStale) return
     if (existing?.proxyStatus === 'encoding') return
   }
 
@@ -169,7 +225,7 @@ export async function enqueueProxyTranscode(projectDir, assetId, sourcePath, opt
     }
 
     const url = await getProjectFileUrl(projectDir, result.relativePath)
-    useAssetsStore.getState().setProxyCache?.(assetId, result.relativePath, url)
+    useAssetsStore.getState().setProxyCache?.(assetId, result.relativePath, url, currentSignature)
     useAssetsStore.getState().setProxyCacheStatus?.(assetId, 'ready')
   } catch (err) {
     useAssetsStore.getState().setProxyCacheStatus?.(assetId, 'failed')

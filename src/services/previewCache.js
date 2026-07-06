@@ -13,8 +13,11 @@ import { normalizeAdjustmentSettings } from '../utils/adjustments'
 import { normalizeClipCompositeMode } from '../utils/layerCompositing'
 
 const CACHE_DIR = 'cache'
-const PREFIX = 'preview_'
-const CHUNK_PREFIX = 'preview_chunk_'
+// v2: frame-start sampling (sampleAtFrameCenter: false) — files rendered
+// with the old frame-center sampling must not be reused, so the prefixes
+// carry a version.
+const PREFIX = 'preview_v2_'
+const CHUNK_PREFIX = 'preview_chunk_v2_'
 const EXT = '.mp4'
 const PREVIEW_RENDER_VERSION = 2
 const DEFAULT_AUTO_THRESHOLD = {
@@ -121,6 +124,42 @@ function buildClipSignature(clip) {
         : [],
     }
     : null
+  const shapeProperties = clip.shapeProperties
+    ? {
+      shapeType: clip.shapeProperties.shapeType || null,
+      width: roundNumber(clip.shapeProperties.width),
+      height: roundNumber(clip.shapeProperties.height),
+      sizeLinked: clip.shapeProperties.sizeLinked !== false,
+      fillType: clip.shapeProperties.fillType || null,
+      fillColor: clip.shapeProperties.fillColor || null,
+      fillColorB: clip.shapeProperties.fillColorB || null,
+      fillOpacity: roundNumber(clip.shapeProperties.fillOpacity),
+      gradientAngle: roundNumber(clip.shapeProperties.gradientAngle),
+      gradientCenterX: roundNumber(clip.shapeProperties.gradientCenterX),
+      gradientCenterY: roundNumber(clip.shapeProperties.gradientCenterY),
+      gradientRadius: roundNumber(clip.shapeProperties.gradientRadius),
+      strokeColor: clip.shapeProperties.strokeColor || null,
+      strokeOpacity: roundNumber(clip.shapeProperties.strokeOpacity),
+      strokeWidth: roundNumber(clip.shapeProperties.strokeWidth),
+      cornerRadius: roundNumber(clip.shapeProperties.cornerRadius),
+    }
+    : null
+  const keyframes = clip.keyframes && typeof clip.keyframes === 'object'
+    ? Object.fromEntries(
+      Object.entries(clip.keyframes)
+        .filter(([, frames]) => Array.isArray(frames) && frames.length > 0)
+        .map(([property, frames]) => [
+          property,
+          frames.map((keyframe) => ({
+            time: roundNumber(keyframe.time),
+            value: typeof keyframe.value === 'number'
+              ? roundNumber(keyframe.value)
+              : sanitizeText(String(keyframe.value ?? ''), 120),
+            easing: keyframe.easing || null,
+          })),
+        ])
+    )
+    : null
 
   return {
     id: clip.id || null,
@@ -142,9 +181,13 @@ function buildClipSignature(clip) {
     transform: {
       positionX: roundNumber(transform.positionX),
       positionY: roundNumber(transform.positionY),
+      positionZ: roundNumber(transform.positionZ),
       scaleX: roundNumber(transform.scaleX),
       scaleY: roundNumber(transform.scaleY),
       rotation: roundNumber(transform.rotation),
+      rotationX: roundNumber(transform.rotationX),
+      rotationY: roundNumber(transform.rotationY),
+      perspective: roundNumber(transform.perspective),
       opacity: roundNumber(transform.opacity),
       anchorX: roundNumber(transform.anchorX),
       anchorY: roundNumber(transform.anchorY),
@@ -154,14 +197,20 @@ function buildClipSignature(clip) {
       cropBottom: roundNumber(transform.cropBottom),
       cropLeft: roundNumber(transform.cropLeft),
       cropRight: roundNumber(transform.cropRight),
+      motionBlurEnabled: Boolean(transform.motionBlurEnabled),
+      motionBlurMode: transform.motionBlurMode || 'auto',
+      motionBlurSamples: roundNumber(transform.motionBlurSamples),
+      motionBlurShutter: roundNumber(transform.motionBlurShutter),
       blendMode: transform.blendMode || 'normal',
       blur: roundNumber(transform.blur),
     },
-    adjustments: (clip.type === 'adjustment' || clip.type === 'video' || clip.type === 'image' || clip.type === 'text')
+    adjustments: (clip.type === 'adjustment' || clip.type === 'video' || clip.type === 'image' || clip.type === 'text' || clip.type === 'shape')
       ? normalizeAdjustmentSettings(clip.adjustments || {})
       : null,
     effects,
     textProperties,
+    shapeProperties,
+    keyframes,
   }
 }
 
@@ -325,12 +374,17 @@ async function cleanupOldTimelinePreviewProxies(projectHandle, timelineId, keepR
     const safeId = safeTimelineId(timelineId)
     const keepName = String((keepRelativePath || '').split(/[\\/]/).pop() || '')
     const prefix = `${PREFIX}${safeId}_`
+    // Sweep pre-v2 files too (frame-center sampling) — they must never be
+    // reused and nothing else deletes them.
+    const legacyPrefixes = [`preview_${safeId}_`, `preview_chunk_${safeId}_`]
 
     for (const entry of listed.items) {
       if (!entry?.isFile) continue
-      if (!entry.name.startsWith(prefix)) continue
       if (!entry.name.endsWith(EXT)) continue
       if (entry.name === keepName) continue
+      const isCurrent = entry.name.startsWith(prefix)
+      const isLegacy = legacyPrefixes.some((legacyPrefix) => entry.name.startsWith(legacyPrefix))
+      if (!isCurrent && !isLegacy) continue
       await window.electronAPI.deleteFile(entry.path)
     }
   } catch (err) {
@@ -515,6 +569,10 @@ export async function renderPreviewProxy(onProgress = () => {}, options = {}) {
         crf: 23,
         useCachedRenders: true,
         fastSeek: true,
+        // Playback substitute: sample at exact frame times so animated
+        // values match the live preview frame-for-frame (final exports
+        // sample at frame centers for the centered-shutter motion blur).
+        sampleAtFrameCenter: false,
       },
       onProgress
     )
@@ -614,6 +672,10 @@ export async function renderPreviewChunk(rangeStart, rangeEnd, onProgress = () =
         useProxyMedia: Boolean(options?.useProxyMedia),
         glslQualityScale: Math.max(0.05, Math.min(1, Number(options?.glslQualityScale) || 1)),
         fastSeek: true,
+        // Playback substitute: sample at exact frame times so animated
+        // values match the live preview frame-for-frame (final exports
+        // sample at frame centers for the centered-shutter motion blur).
+        sampleAtFrameCenter: false,
         signal: options?.signal || null,
       },
       onProgress
