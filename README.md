@@ -89,18 +89,10 @@ The editor includes:
 - Project asset browser.
 - Multi-track video/audio timeline.
 - Clip trimming, moving, snapping, overlap replacement behavior, and transitions.
-- Adjustment layers and visual effects.
+- Text, shape, title, solid-color, adjustment-layer, keyframe, and visual effect tools.
 - Inspector controls.
 - Proxy/cache tools for smoother playback.
 - Export panel for final renders.
-
-### MoGraph
-
-MoGraph is a beta motion-graphics workspace for designing titles, lower thirds, callouts, and reusable graphic presets without leaving the app.
-
-<p align="center">
-  <img src="docs/readme/mograph.png" alt="MoGraph preset gallery with lower-third preview and style controls" />
-</p>
 
 ### Captions
 
@@ -112,14 +104,6 @@ Captions can be generated from edited timeline audio and styled in-app.
 - Saved caption style presets for reuse.
 - Live preview with play/scrub controls and safe-zone overlays.
 - Export-ready caption renders.
-
-### Flow AI
-
-Flow AI is a node-based workspace for chaining generation steps and routing results back into the same project asset pipeline used by Generate.
-
-<p align="center">
-  <img src="docs/readme/flow-ai.png" alt="Flow AI node canvas with prompt, keyframe, animation, and asset output nodes" />
-</p>
 
 ### Export
 
@@ -148,6 +132,18 @@ Velorn talks to a local ComfyUI server and can also help launch it.
 
 Only localhost/loopback ComfyUI endpoints are supported in the desktop app.
 
+### AI Agents (MCP)
+
+Velorn includes a local MCP server for Codex, Claude Code, Cursor-compatible tools, and other MCP clients.
+
+- Endpoint: `http://127.0.0.1:19790/mcp`
+- In-app setup: `Settings > Agents (MCP)`
+- Guide: [docs/MCP.md](docs/MCP.md)
+
+Agents can inspect the open project, review timeline frames and visible shots, troubleshoot ComfyUI setup, preview safe timeline edits, queue approved generation work, and start delivery exports.
+
+MCP is the recommended automation path for agent-assisted review, timeline operations, graphics polish, and generation workflows.
+
 ## Custom Workflows
 
 Custom workflows are one of the main reasons Velorn exists.
@@ -160,18 +156,20 @@ Advanced users can:
 4. Send it back with the Velorn Bridge or import the API workflow JSON manually.
 5. Run that graph from Velorn as part of a creator flow or from Generate.
 
-Common legacy endpoint nodes include:
+Common Velorn endpoint node titles include:
 
-- `COMFYSTUDIO_INPUT_IMAGE`
-- `COMFYSTUDIO_PROMPT`
-- `COMFYSTUDIO_SEED`
-- `COMFYSTUDIO_WIDTH`
-- `COMFYSTUDIO_HEIGHT`
-- `COMFYSTUDIO_FPS`
-- `COMFYSTUDIO_DURATION`
-- `COMFYSTUDIO_AUDIO`
-- `COMFYSTUDIO_OUTPUT_IMAGE`
-- `COMFYSTUDIO_OUTPUT_VIDEO`
+- Velorn input image - `VELORN_INPUT_IMAGE`
+- Velorn prompt - `VELORN_PROMPT`
+- Velorn seed - `VELORN_SEED`
+- Velorn width - `VELORN_WIDTH`
+- Velorn height - `VELORN_HEIGHT`
+- Velorn FPS - `VELORN_FPS`
+- Velorn duration - `VELORN_DURATION`
+- Velorn audio - `VELORN_AUDIO`
+- Velorn output image - `VELORN_OUTPUT_IMAGE`
+- Velorn output video - `VELORN_OUTPUT_VIDEO`
+
+Exact `VELORN_*` titles are preferred, but Velorn also recognizes readable titles such as `Velorn input image`. Older graphs that still use `COMFYSTUDIO_*` marker titles are supported for backward compatibility.
 
 If an endpoint is present, Velorn can inject that value. If an endpoint is not present, the graph controls that setting itself.
 

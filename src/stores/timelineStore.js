@@ -6,6 +6,8 @@ import { getAdjustmentValue, mergeAdjustmentSettings, normalizeAdjustmentSetting
 import { clampAudioFadeDuration } from '../utils/audioClipFades'
 import { normalizeAudioClipGainDb } from '../utils/audioClipGain'
 import { CLIP_COMPOSITE_MODE, normalizeClipCompositeMode } from '../utils/layerCompositing'
+import { getKeyframeTimeTolerance } from '../utils/keyframes'
+import { normalizeTrackMatte } from '../utils/trackMatte'
 import { DEFAULT_LINE_THICKNESS, DEFAULT_SHAPE_PROPERTIES, getShapeDisplayName, normalizeShapeProperties } from '../utils/shapes'
 import {
   quantizeTimeToFrame as roundToFrame,
@@ -17,6 +19,8 @@ const MAX_HISTORY_SIZE = 50
 const MIN_TRANSITION_DURATION = 1 / FRAME_RATE
 const TRIM_DEBUG_KEY = 'comfystudio-debug-trim'
 const KEYFRAME_TIME_TOLERANCE = 0.05
+// Frame-aware match window (half a frame, capped at the legacy 0.05s).
+const keyframeToleranceForFps = (fps) => getKeyframeTimeTolerance(fps || FRAME_RATE)
 
 const isTrimDebugEnabled = () => {
   if (typeof localStorage === 'undefined') return false
@@ -610,6 +614,24 @@ const areHistorySnapshotsEqual = (a, b) => {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+// Keep selections alive across undo/redo when their targets still exist in
+// the restored snapshot. Blanket-clearing forced a re-select after every
+// undo (empty Inspector / Dope Sheet); only stale references should drop —
+// e.g. undoing past a clip's creation deselects that clip.
+const reconcileSelectionWithSnapshot = (state, snapshot) => ({
+  selectedClipIds: (state.selectedClipIds || []).filter((clipId) => (
+    (snapshot.clips || []).some((clip) => clip.id === clipId)
+  )),
+  selectedTransitionId: (snapshot.transitions || []).some((transition) => transition.id === state.selectedTransitionId)
+    ? state.selectedTransitionId
+    : null,
+  selectedMarkerId: (snapshot.markers || []).some((marker) => marker.id === state.selectedMarkerId)
+    ? state.selectedMarkerId
+    : null,
+  selectedGap: null,
+  textEditRequest: null,
+})
+
 /**
  * Store for managing timeline state
  * Persisted to localStorage for data survival across refreshes
@@ -788,15 +810,11 @@ export const useTimelineStore = create(
         history: historyWithCurrent,
         historyIndex: targetHistoryIndex,
         historyLastChangedAt: Date.now(),
-        selectedClipIds: [], // Clear selection on undo
-        selectedTransitionId: null,
-        selectedMarkerId: null,
-        selectedGap: null,
-        textEditRequest: null,
+        ...reconcileSelectionWithSnapshot(state, lastHistoryState),
       })
       return true
     }
-    
+
     // Normal undo - go back in history
     if (state.historyIndex > 0) {
       const prevState = state.history[state.historyIndex - 1]
@@ -810,15 +828,11 @@ export const useTimelineStore = create(
         markerCounter: prevState.markerCounter || 1,
         historyIndex: state.historyIndex - 1,
         historyLastChangedAt: Date.now(),
-        selectedClipIds: [], // Clear selection on undo
-        selectedTransitionId: null,
-        selectedMarkerId: null,
-        selectedGap: null,
-        textEditRequest: null,
+        ...reconcileSelectionWithSnapshot(state, prevState),
       })
       return true
     }
-    
+
     return false // Nothing to undo
   },
   
@@ -840,15 +854,11 @@ export const useTimelineStore = create(
         markerCounter: nextState.markerCounter || 1,
         historyIndex: state.historyIndex + 1,
         historyLastChangedAt: Date.now(),
-        selectedClipIds: [], // Clear selection on redo
-        selectedTransitionId: null,
-        selectedMarkerId: null,
-        selectedGap: null,
-        textEditRequest: null,
+        ...reconcileSelectionWithSnapshot(state, nextState),
       })
       return true
     }
-    
+
     return false // Nothing to redo
   },
   
@@ -2709,6 +2719,28 @@ export const useTimelineStore = create(
   },
 
   /**
+   * Set a clip's track matte mode ('none' | 'alpha' | 'alpha-inverted' |
+   * 'luma' | 'luma-inverted'). The visual layer directly above becomes the
+   * matte source and is hidden from normal output.
+   */
+  updateClipTrackMatte: (clipId, trackMatte, saveHistory = true) => {
+    const normalized = normalizeTrackMatte(trackMatte)
+    const currentClip = get().clips.find((clip) => clip.id === clipId)
+    if (!currentClip) return
+    if (normalizeTrackMatte(currentClip.trackMatte) === normalized) return
+
+    if (saveHistory) {
+      get().saveToHistory()
+    }
+
+    set((state) => ({
+      clips: state.clips.map((clip) => (
+        clip.id === clipId ? { ...clip, trackMatte: normalized } : clip
+      ))
+    }))
+  },
+
+  /**
    * Update adjustment layer properties (brightness/contrast/saturation/gain/gamma/offset/hue/blur)
    * @param {string} clipId - The adjustment clip to update
    * @param {object} adjustmentUpdates - Partial adjustment object
@@ -2815,17 +2847,18 @@ export const useTimelineStore = create(
     if (saveHistory) {
       get().saveToHistory()
     }
-    
+
     set((state) => ({
       clips: state.clips.map(clip => {
         if (clip.id !== clipId) return clip
-        
+
         const safeTime = clampKeyframeTime(time, clip.duration)
         const keyframes = clip.keyframes || {}
         const propKeyframes = [...(keyframes[property] || [])]
-        
+
         // Find existing keyframe at this time (with tolerance)
-        const existingIndex = propKeyframes.findIndex(kf => Math.abs(kf.time - safeTime) < KEYFRAME_TIME_TOLERANCE)
+        const tolerance = keyframeToleranceForFps(state.timelineFps)
+        const existingIndex = propKeyframes.findIndex(kf => Math.abs(kf.time - safeTime) < tolerance)
         
         if (existingIndex >= 0) {
           // Update existing keyframe
@@ -2869,9 +2902,10 @@ export const useTimelineStore = create(
         const keyframes = clip.keyframes || {}
         const propKeyframes = keyframes[property] || []
         const safeTime = clampKeyframeTime(time, clip.duration)
-        
+
         // Filter out keyframe at this time
-        const newPropKeyframes = propKeyframes.filter(kf => Math.abs(kf.time - safeTime) > KEYFRAME_TIME_TOLERANCE)
+        const tolerance = keyframeToleranceForFps(state.timelineFps)
+        const newPropKeyframes = propKeyframes.filter(kf => Math.abs(kf.time - safeTime) > tolerance)
         
         // If no keyframes left for this property, remove the property entry
         const newKeyframes = { ...keyframes }
@@ -2911,7 +2945,8 @@ export const useTimelineStore = create(
     const safeFromTime = clampKeyframeTime(fromTime, clip.duration)
     if (Math.abs(safeToTime - safeFromTime) < 0.0005) return false
 
-    const sourceExists = propKeyframes.some((keyframe) => Math.abs(keyframe.time - safeFromTime) < KEYFRAME_TIME_TOLERANCE)
+    const tolerance = keyframeToleranceForFps(state.timelineFps)
+    const sourceExists = propKeyframes.some((keyframe) => Math.abs(keyframe.time - safeFromTime) < tolerance)
     if (!sourceExists) return false
 
     if (saveHistory) {
@@ -2928,7 +2963,7 @@ export const useTimelineStore = create(
         const targetKeyframes = keyframes[property] || []
         if (targetKeyframes.length === 0) return clip
 
-        const result = movePropertyKeyframeArray(targetKeyframes, safeFromTime, safeToTime, KEYFRAME_TIME_TOLERANCE)
+        const result = movePropertyKeyframeArray(targetKeyframes, safeFromTime, safeToTime, tolerance)
         if (!result.moved) return clip
 
         didMove = true
@@ -2974,9 +3009,10 @@ export const useTimelineStore = create(
     const safeFromTime = clampKeyframeTime(fromTime, clip.duration)
     if (Math.abs(safeToTime - safeFromTime) < 0.0005) return false
 
+    const tolerance = keyframeToleranceForFps(state.timelineFps)
     const hasSource = propertyIds.some((propertyId) => {
       const propKeyframes = keyframes[propertyId] || []
-      return propKeyframes.some((keyframe) => Math.abs(keyframe.time - safeFromTime) < KEYFRAME_TIME_TOLERANCE)
+      return propKeyframes.some((keyframe) => Math.abs(keyframe.time - safeFromTime) < tolerance)
     })
     if (!hasSource) return false
 
@@ -2998,7 +3034,7 @@ export const useTimelineStore = create(
           const propKeyframes = nextKeyframes[propertyId] || []
           if (!propKeyframes.length) continue
 
-          const result = movePropertyKeyframeArray(propKeyframes, safeFromTime, safeToTime, KEYFRAME_TIME_TOLERANCE)
+          const result = movePropertyKeyframeArray(propKeyframes, safeFromTime, safeToTime, tolerance)
           if (!result.moved) continue
 
           nextKeyframes[propertyId] = result.keyframes
@@ -3019,6 +3055,53 @@ export const useTimelineStore = create(
   },
 
   /**
+   * Keyframe clipboard: entries are { propertyId, timeOffset, value, easing }
+   * with timeOffset relative to the earliest copied keyframe, so a paste
+   * anchors the group at the paste time.
+   */
+  keyframeClipboard: null,
+
+  copyKeyframesToClipboard: (targets = []) => {
+    const valid = targets.filter((target) => (
+      target
+      && typeof target.propertyId === 'string'
+      && Number.isFinite(Number(target.time))
+      && Number.isFinite(Number(target.value))
+    ))
+    if (valid.length === 0) return 0
+    const minTime = Math.min(...valid.map((target) => Number(target.time)))
+    set({
+      keyframeClipboard: valid.map((target) => ({
+        propertyId: target.propertyId,
+        timeOffset: Number(target.time) - minTime,
+        value: Number(target.value),
+        easing: target.easing || 'easeInOut',
+      })),
+    })
+    return valid.length
+  },
+
+  /**
+   * Paste the keyframe clipboard into a clip, anchored at atTime
+   * (clip-relative seconds). Returns the pasted entries' final times.
+   */
+  pasteKeyframesFromClipboard: (clipId, atTime) => {
+    const clipboard = get().keyframeClipboard
+    if (!Array.isArray(clipboard) || clipboard.length === 0) return []
+    const clip = get().clips.find((candidate) => candidate.id === clipId)
+    if (!clip) return []
+
+    get().saveToHistory()
+    const pasted = []
+    for (const entry of clipboard) {
+      const time = clampKeyframeTime(Number(atTime) + entry.timeOffset, clip.duration)
+      get().setKeyframe(clipId, entry.propertyId, time, entry.value, entry.easing, { saveHistory: false })
+      pasted.push({ propertyId: entry.propertyId, time })
+    }
+    return pasted
+  },
+
+  /**
    * Toggle keyframe at current playhead position
    * If keyframe exists, remove it; if not, add one with current value
    * @param {string} clipId - The clip ID
@@ -3034,7 +3117,7 @@ export const useTimelineStore = create(
     if (clipTime < 0 || clipTime > clip.duration) return
     
     const keyframes = clip.keyframes?.[property] || []
-    const existingKeyframe = keyframes.find(kf => Math.abs(kf.time - clipTime) < KEYFRAME_TIME_TOLERANCE)
+    const existingKeyframe = keyframes.find(kf => Math.abs(kf.time - clipTime) < keyframeToleranceForFps(state.timelineFps))
     
     // Determine if we need to handle linked scale
     const isScaleProperty = property === 'scaleX' || property === 'scaleY'
@@ -3054,11 +3137,13 @@ export const useTimelineStore = create(
       const hasAdjustmentValue = adjustmentValue !== undefined
       const shapeProperties = clip.type === 'shape' ? normalizeShapeProperties(clip.shapeProperties || {}) : null
       const hasShapeValue = shapeProperties && Object.prototype.hasOwnProperty.call(shapeProperties, property)
-      const currentValue = hasAdjustmentValue
-        ? adjustmentValue
-        : hasShapeValue
-          ? shapeProperties[property]
-          : (clip.transform?.[property] ?? adjustmentValue ?? 0)
+      const currentValue = property === 'speed'
+        ? (Number(clip.speed) > 0 ? Number(clip.speed) : 1)
+        : hasAdjustmentValue
+          ? adjustmentValue
+          : hasShapeValue
+            ? shapeProperties[property]
+            : (clip.transform?.[property] ?? adjustmentValue ?? 0)
       get().setKeyframe(clipId, property, clipTime, currentValue, 'easeInOut', { saveHistory: true })
       // If scale is linked, also add keyframe for the other scale property
       if (isLinked) {
@@ -3086,8 +3171,8 @@ export const useTimelineStore = create(
         const keyframes = clip.keyframes || {}
         const propKeyframes = keyframes[property] || []
         
-        const newPropKeyframes = propKeyframes.map(kf => 
-          Math.abs(kf.time - time) < KEYFRAME_TIME_TOLERANCE ? { ...kf, easing } : kf
+        const newPropKeyframes = propKeyframes.map(kf =>
+          Math.abs(kf.time - time) < keyframeToleranceForFps(state.timelineFps) ? { ...kf, easing } : kf
         )
         
         return {
@@ -3241,7 +3326,7 @@ export const useTimelineStore = create(
     if (!clip) return null
     
     const keyframes = clip.keyframes?.[property] || []
-    return keyframes.find(kf => Math.abs(kf.time - time) < KEYFRAME_TIME_TOLERANCE) || null
+    return keyframes.find(kf => Math.abs(kf.time - time) < keyframeToleranceForFps(state.timelineFps)) || null
   },
 
   /**
@@ -3267,13 +3352,14 @@ export const useTimelineStore = create(
     if (!clip) return
     
     const clipTime = state.playheadPosition - clip.startTime
+    const tolerance = keyframeToleranceForFps(state.timelineFps)
     let nextTime = Infinity
-    
+
     if (property === 'all') {
       // Find next keyframe across all properties
       for (const propKeyframes of Object.values(clip.keyframes || {})) {
         for (const kf of propKeyframes) {
-          if (kf.time > clipTime + KEYFRAME_TIME_TOLERANCE && kf.time < nextTime) {
+          if (kf.time > clipTime + tolerance && kf.time < nextTime) {
             nextTime = kf.time
           }
         }
@@ -3282,7 +3368,7 @@ export const useTimelineStore = create(
       // Find next keyframe for specific property
       const keyframes = clip.keyframes?.[property] || []
       for (const kf of keyframes) {
-        if (kf.time > clipTime + KEYFRAME_TIME_TOLERANCE && kf.time < nextTime) {
+        if (kf.time > clipTime + tolerance && kf.time < nextTime) {
           nextTime = kf.time
         }
       }
@@ -3304,13 +3390,14 @@ export const useTimelineStore = create(
     if (!clip) return
     
     const clipTime = state.playheadPosition - clip.startTime
+    const tolerance = keyframeToleranceForFps(state.timelineFps)
     let prevTime = -Infinity
-    
+
     if (property === 'all') {
       // Find previous keyframe across all properties
       for (const propKeyframes of Object.values(clip.keyframes || {})) {
         for (const kf of propKeyframes) {
-          if (kf.time < clipTime - KEYFRAME_TIME_TOLERANCE && kf.time > prevTime) {
+          if (kf.time < clipTime - tolerance && kf.time > prevTime) {
             prevTime = kf.time
           }
         }
@@ -3319,7 +3406,7 @@ export const useTimelineStore = create(
       // Find previous keyframe for specific property
       const keyframes = clip.keyframes?.[property] || []
       for (const kf of keyframes) {
-        if (kf.time < clipTime - KEYFRAME_TIME_TOLERANCE && kf.time > prevTime) {
+        if (kf.time < clipTime - tolerance && kf.time > prevTime) {
           prevTime = kf.time
         }
       }
@@ -5123,6 +5210,33 @@ export const useTimelineStore = create(
   /**
    * Add a timeline marker at a specific time (or current playhead).
    */
+  /**
+   * Add many markers in one history step (e.g. beat markers from audio
+   * analysis). Entries: { time, label?, color? }. Returns the created markers.
+   */
+  addMarkersBatch: (entries = []) => {
+    const state = get()
+    const fps = state.timelineFps || FRAME_RATE
+    const duration = Math.max(0, Number(state.duration) || 0)
+    const startCounter = Math.max(1, Number(state.markerCounter) || 1)
+    const markers = entries
+      .filter((entry) => Number.isFinite(Number(entry?.time)))
+      .map((entry, index) => ({
+        id: `marker-${startCounter + index}`,
+        time: roundToFrame(Math.max(0, Math.min(duration, Number(entry.time))), fps),
+        label: String(entry.label || '').slice(0, 160),
+        color: entry.color || '#f5c451',
+      }))
+    if (markers.length === 0) return []
+
+    get().saveToHistory()
+    set((s) => ({
+      markers: [...s.markers, ...markers].sort((a, b) => a.time - b.time),
+      markerCounter: startCounter + markers.length,
+    }))
+    return markers
+  },
+
   addMarker: (time = null, label = '') => {
     const state = get()
     const markerTime = roundToFrame(

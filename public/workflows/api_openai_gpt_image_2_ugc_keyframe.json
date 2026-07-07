@@ -35,7 +35,7 @@
   },
   "271": {
     "inputs": {
-      "image": "comfystudio_job_1781119590708_6k0nom_00001_.png"
+      "image": "velorn_job_1781119590708_6k0nom_00001_.png"
     },
     "class_type": "LoadImage",
     "_meta": {

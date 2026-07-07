@@ -7,7 +7,7 @@
  * launcher log ring via comfyLauncher:appendLog. The launcher log viewer
  * then shows generation activity — queued prompts, per-node execution,
  * sampler progress, errors, completion — regardless of whether ComfyUI
- * was spawned by ComfyStudio or adopted from an externally launched
+ * was spawned by Velorn or adopted from an externally launched
  * process (in which case we don't own its stdout and would otherwise see
  * almost nothing in the log viewer).
  *

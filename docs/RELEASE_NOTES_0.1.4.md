@@ -65,7 +65,7 @@
 - Updated bundled workflow files for newer image-edit and Seedream flows
 - Refreshed workflow starter pack manifests, release metadata, and checksums
 - Regenerated starter pack release notes for `v0.1.4`
-- Added a draft marketing/release site under `site/comfystudiopro`
+- Added a draft marketing/release site under `site/velorn`
 
 ## Important Setup Note
 

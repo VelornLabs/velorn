@@ -27,6 +27,9 @@ import {
 } from '../utils/effects'
 import { applyGlslEffectsToCanvas, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
+import { parseTrackMatte, resolveTrackMatteAssignments, applyTrackMatteToCanvas } from '../utils/trackMatte'
+import { hasSpeedRamp, getRampedSourceOffset } from '../utils/timeRemap'
+import { hasActiveCornerPin, applyCornerPinToQuad } from '../utils/cornerPin'
 import { drawShape, getShapeCanvasRect } from '../utils/shapes'
 import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
 import { applyVelocityMotionBlurToCanvas, buildVelocityBlurUniformValues, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
@@ -558,7 +561,7 @@ export const getClipQuadCorners = (rect, transform = {}, transitionStyle = null)
     [visible.left, visible.bottom],
     [visible.right, visible.bottom],
   ]
-  return localCorners.map(([localX, localY]) => {
+  const corners = localCorners.map(([localX, localY]) => {
     const projected = projectClipCorner(localX, localY, rect, transform, transitionStyle)
     return {
       x: projected.x,
@@ -568,6 +571,12 @@ export const getClipQuadCorners = (rect, transform = {}, transitionStyle = null)
       w: 1 / projected.projection,
     }
   })
+  // Corner pin: offset the projected corners and rebuild the projective
+  // weights for the pinned shape (GPU paths only — 2D fallbacks ignore it).
+  if (hasActiveCornerPin(transform)) {
+    return applyCornerPinToQuad(corners, transform)
+  }
+  return corners
 }
 
 /**
@@ -924,7 +933,9 @@ const getPreSeekSourceTime = (clip, timelineTime, usingCached) => {
   const trimStart = clip.trimStart || 0
   const rawTrimEnd = clip.trimEnd ?? clip.sourceDuration ?? trimStart
   const trimEnd = Number.isFinite(rawTrimEnd) ? rawTrimEnd : trimStart
-  const rawSourceTime = trimStart + clipTime * timeScale
+  const rawSourceTime = hasSpeedRamp(clip)
+    ? trimStart + getRampedSourceOffset(clip, clipTime) * baseScale
+    : trimStart + clipTime * timeScale
   const maxSourceTime = clip.sourceDuration || clip.trimEnd || trimEnd
   return Math.max(0, Math.min(rawSourceTime, Math.max(0, maxSourceTime - 0.001)))
 }
@@ -1006,6 +1017,15 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     // stay in the same visual location instead of moving off-frame.
     positionX: (Number(transform.positionX) || 0) * transformScaleX,
     positionY: (Number(transform.positionY) || 0) * transformScaleY,
+    // Corner pin offsets are timeline pixels too.
+    cornerPinTLX: (Number(transform.cornerPinTLX) || 0) * transformScaleX,
+    cornerPinTLY: (Number(transform.cornerPinTLY) || 0) * transformScaleY,
+    cornerPinTRX: (Number(transform.cornerPinTRX) || 0) * transformScaleX,
+    cornerPinTRY: (Number(transform.cornerPinTRY) || 0) * transformScaleY,
+    cornerPinBLX: (Number(transform.cornerPinBLX) || 0) * transformScaleX,
+    cornerPinBLY: (Number(transform.cornerPinBLY) || 0) * transformScaleY,
+    cornerPinBRX: (Number(transform.cornerPinBRX) || 0) * transformScaleX,
+    cornerPinBRY: (Number(transform.cornerPinBRY) || 0) * transformScaleY,
   })
   
   if (!projectState.currentProjectHandle || typeof projectState.currentProjectHandle !== 'string') {
@@ -1319,14 +1339,141 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     : null
   // Composite a 2D-rendered full-frame canvas (the legacy offscreen path)
   // onto the GPU stage.
-  const gpuDrawCanvasLayer = (sourceCanvas, sourceKey, sourceVersion, opacity, blendMode, colorSettings = null, blurPx = null, corners = null) => {
+  const gpuDrawCanvasLayer = (sourceCanvas, sourceKey, sourceVersion, opacity, blendMode, colorSettings = null, blurPx = null, corners = null, matte = null) => {
     gpu.drawLayer({
       samples: [{ source: sourceCanvas, sourceKey, sourceVersion, corners: corners || gpuFullFrameCorners, weight: 1 }],
       colorSettings,
       blurPx,
+      matte,
       opacity,
       blendMode: blendMode === 'normal' ? 'normal' : blendMode,
     })
+  }
+
+  // Track matte raster: draw the consumed layer above into a full-frame
+  // canvas with its own animated transform/crop/opacity. Base content only
+  // — the matte's own effects/masks are out of scope, matching the preview.
+  const rasterExportMatteClip = async (matteEntry, time) => {
+    const matteClip = matteEntry?.clip
+    if (!matteClip) return null
+    let buffers = maskRenderBuffers.get('__track-matte__')
+    if (!buffers) {
+      const offCanvas = document.createElement('canvas')
+      offCanvas.width = width
+      offCanvas.height = height
+      const offCtx = offCanvas.getContext('2d', { willReadFrequently: true })
+      buffers = { offCanvas, offCtx }
+      maskRenderBuffers.set('__track-matte__', buffers)
+    }
+    const matteCanvas = buffers.offCanvas
+    const matteCtx = buffers.offCtx
+    matteCtx.setTransform(1, 0, 0, 1, 0, 0)
+    matteCtx.clearRect(0, 0, width, height)
+
+    const matteClipTime = time - (matteClip.startTime || 0)
+    const matteTransform = scaleTransformToExport(
+      applyEffectsToTransform(getAnimatedTransform(matteClip, matteClipTime) || matteClip.transform || {}, matteClip.effects, matteClipTime)
+    )
+    const matteOpacity = typeof matteTransform.opacity === 'number' ? matteTransform.opacity / 100 : 1
+    if (matteOpacity <= 0.001) return matteCanvas
+
+    matteCtx.save()
+    matteCtx.globalAlpha = matteOpacity
+    matteCtx.globalCompositeOperation = 'source-over'
+    matteCtx.filter = 'none'
+
+    try {
+      if (matteClip.type === 'text' || matteClip.type === 'shape') {
+        const isShapeClip = matteClip.type === 'shape'
+        const animatedShapeProperties = isShapeClip ? getAnimatedShapeProperties(matteClip, matteClipTime) : null
+        const shapeClip = isShapeClip
+          ? { ...matteClip, shapeProperties: animatedShapeProperties || matteClip.shapeProperties }
+          : matteClip
+        const rect = isShapeClip
+          ? getShapeCanvasRect(shapeClip.shapeProperties, width, height)
+          : getBaseDrawRect(width, height, width, height)
+        applyClipTransform(matteCtx, rect, matteTransform, null)
+        applyClipCrop(matteCtx, rect, matteTransform)
+        if (isShapeClip) {
+          drawShape(matteCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, shapeClip)
+        } else {
+          drawText(matteCtx, rect, matteClip, textStyleScale, matteClipTime)
+        }
+        return matteCanvas
+      }
+
+      if (matteClip.type === 'video') {
+        const sourceUrl = cachedVideoSources.get(matteClip.id) || resolvedAssetUrls.get(matteClip.assetId)
+        const video = sourceUrl && !failedVideoSources.has(sourceUrl) ? videoElements.get(sourceUrl) : null
+        if (!video) return matteCanvas
+        const baseScale = matteClip.sourceTimeScale || (matteClip.timelineFps && matteClip.sourceFps
+          ? matteClip.timelineFps / matteClip.sourceFps
+          : 1)
+        const speed = Number(matteClip.speed)
+        const speedScale = Number.isFinite(speed) && speed > 0 ? speed : 1
+        const timeScale = baseScale * speedScale
+        const reverse = !!matteClip.reverse
+        const trimStart = matteClip.trimStart || 0
+        const rawTrimEnd = matteClip.trimEnd ?? matteClip.sourceDuration ?? trimStart
+        const trimEnd = Number.isFinite(rawTrimEnd) ? rawTrimEnd : trimStart
+        const usingCachedRender = !!cachedVideoSources.get(matteClip.id)
+        const rawSourceTime = usingCachedRender
+          ? matteClipTime
+          : hasSpeedRamp(matteClip)
+            ? trimStart + getRampedSourceOffset(matteClip, matteClipTime) * baseScale
+            : (reverse ? trimEnd - matteClipTime * timeScale : trimStart + matteClipTime * timeScale)
+        const maxSourceTime = usingCachedRender
+          ? matteClip.duration
+          : (matteClip.sourceDuration || matteClip.trimEnd || video.duration || trimEnd)
+        const sourceTime = Math.max(0, Math.min(rawSourceTime, maxSourceTime - 0.001))
+
+        let matteSource = null
+        let cursor = null
+        const cursorEntry = getClipCursorEntry(matteClip)
+        if (cursorEntry) {
+          cursor = cursorEntry.settled ? cursorEntry.cursor : await cursorEntry.promise
+          if (cursor?.dead || cursor?.closed) cursor = null
+        }
+        try {
+          if (cursor) {
+            await cursor.seek(sourceTime)
+            matteSource = cursor.drawSource
+          } else {
+            await seekVideo(video, sourceTime, fastSeek)
+            matteSource = video
+          }
+        } catch (err) {
+          console.warn('[Export] Track matte video sample failed; using empty matte:', getMediaErrorMessage(err))
+          return matteCanvas
+        }
+        const sourceWidth = matteSource === video
+          ? (video.videoWidth || width)
+          : (matteSource.width || video.videoWidth || width)
+        const sourceHeight = matteSource === video
+          ? (video.videoHeight || height)
+          : (matteSource.height || video.videoHeight || height)
+        const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height, normalizedDeliveryFraming)
+        applyClipTransform(matteCtx, rect, matteTransform, null)
+        applyClipCrop(matteCtx, rect, matteTransform)
+        matteCtx.drawImage(matteSource, 0, 0, rect.width, rect.height)
+        return matteCanvas
+      }
+
+      if (matteClip.type === 'image') {
+        const imageUrl = resolvedAssetUrls.get(matteClip.assetId) || assetsState.getAssetById(matteClip.assetId)?.url
+        const image = imageUrl ? imageElements.get(imageUrl) : null
+        if (!image) return matteCanvas
+        const rect = getBaseDrawRect(image.naturalWidth || width, image.naturalHeight || height, width, height, normalizedDeliveryFraming)
+        applyClipTransform(matteCtx, rect, matteTransform, null)
+        applyClipCrop(matteCtx, rect, matteTransform)
+        matteCtx.drawImage(image, 0, 0, rect.width, rect.height)
+        return matteCanvas
+      }
+
+      return matteCanvas
+    } finally {
+      matteCtx.restore()
+    }
   }
   onProgress({ status: EXPORT_STATUS.rendering, progress: 5 })
   
@@ -1378,7 +1525,14 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const indexB = timelineState.tracks.findIndex(t => t.id === b.track.id)
         return indexB - indexA
       })
-    const visualLayerClips = cullVisualLayerEntries(rawVisualLayerClips, {
+    // Track mattes: pair matted clips with the layer above and hide the
+    // consumed matte layers BEFORE culling, so a full-frame matte source
+    // can't cull the layers beneath it.
+    const { matteEntryByClipId, consumedClipIds } = resolveTrackMatteAssignments(rawVisualLayerClips)
+    const matteVisibleLayerClips = consumedClipIds.size > 0
+      ? rawVisualLayerClips.filter((layerEntry) => !consumedClipIds.has(layerEntry.clip?.id))
+      : rawVisualLayerClips
+    const visualLayerClips = cullVisualLayerEntries(matteVisibleLayerClips, {
       time,
       getAssetById: assetsState.getAssetById,
       transitionClipIds: getTransitionClipIds(transitionInfo),
@@ -1510,6 +1664,32 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       const transitionStyle = (isVideoA || isVideoB) ? getTransitionCanvasStyle(transitionInfo, isVideoA) : null
       
       const clipTime = time - clip.startTime
+
+      // Track matte: raster the consumed layer above once per frame. A
+      // missing/empty matte means invisible unless inverted.
+      const matteInfo = parseTrackMatte(clip.trackMatte)
+      let matteCanvas2d = null
+      let matteSpec = null
+      if (matteInfo) {
+        const matteEntry = matteEntryByClipId.get(clip.id) || null
+        if (!matteEntry) {
+          if (!matteInfo.invert) continue
+        } else {
+          matteCanvas2d = await rasterExportMatteClip(matteEntry, time)
+          if (matteCanvas2d && gpu) {
+            matteSpec = {
+              source: matteCanvas2d,
+              sourceKey: `${clip.id}:trackmatte`,
+              sourceVersion: frameIndex,
+              corners: gpuFullFrameCorners,
+              channel: matteInfo.channel,
+              invert: matteInfo.invert,
+            }
+          }
+          if (!matteCanvas2d && !matteInfo.invert) continue
+        }
+      }
+
       // Full render bakes (cacheKind 'full') carry transform, effects,
       // adjustments, masks, speed, and text animation inside the baked
       // file; only opacity + blend mode (and transitions) stay live.
@@ -1603,8 +1783,11 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           }
 
           if (gpu) {
-            gpuDrawCanvasLayer(processedCanvasForText, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+            gpuDrawCanvasLayer(processedCanvasForText, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode, null, null, null, matteSpec)
             continue
+          }
+          if (matteInfo && matteCanvas2d) {
+            applyTrackMatteToCanvas(processedCanvasForText.getContext('2d'), matteCanvas2d, matteInfo, width, height)
           }
           ctx.save()
           ctx.globalAlpha = clipOpacity
@@ -1641,8 +1824,11 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
 
           if (gpu) {
-            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode, null, null, null, matteSpec)
             continue
+          }
+          if (matteInfo && matteCanvas2d) {
+            applyTrackMatteToCanvas(offCtx, matteCanvas2d, matteInfo, width, height)
           }
           ctx.save()
           ctx.globalAlpha = clipOpacity
@@ -1657,7 +1843,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         if (clipAdjustmentFilterValue) filterParts.push(clipAdjustmentFilterValue)
         if (blurPx != null) filterParts.push(`blur(${blurPx}px)`)
         const sampleFilter = filterParts.length > 0 ? filterParts.join(' ') : 'none'
-        if (velocityMotionBlur) {
+        if (velocityMotionBlur || (matteInfo && matteCanvas2d && !gpu)) {
           let buffers = maskRenderBuffers.get(clip.id)
           if (!buffers) {
             const offCanvas = document.createElement('canvas')
@@ -1672,11 +1858,16 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           for (const sample of motionBlurSamples) {
             drawTextShapeSample(offCtx, sample, sampleFilter)
           }
-          applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+          if (velocityMotionBlur) {
+            applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+          }
 
           if (gpu) {
-            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode, null, null, null, matteSpec)
             continue
+          }
+          if (matteInfo && matteCanvas2d) {
+            applyTrackMatteToCanvas(offCtx, matteCanvas2d, matteInfo, width, height)
           }
           ctx.save()
           ctx.globalAlpha = clipOpacity
@@ -1703,7 +1894,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           for (const sample of motionBlurSamples) {
             drawTextShapeSample(offCtx, sample, sampleFilter)
           }
-          gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+          gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode, null, null, null, matteSpec)
           continue
         }
         for (const sample of motionBlurSamples) {
@@ -1747,10 +1938,13 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const trimEnd = Number.isFinite(rawTrimEnd) ? rawTrimEnd : trimStart
         const rawSourceTime = usingCachedRender
           ? clipTime
-          : (reverse
-            ? trimEnd - clipTime * timeScale
-            : trimStart + clipTime * timeScale)
-        
+          : hasSpeedRamp(clip)
+            // Speed ramp: source consumed = integral of the keyframed speed.
+            ? trimStart + getRampedSourceOffset(clip, clipTime) * baseScale
+            : (reverse
+              ? trimEnd - clipTime * timeScale
+              : trimStart + clipTime * timeScale)
+
         // Clamp to valid range (matching VideoLayerRenderer behavior)
         maxSourceTime = usingCachedRender 
           ? clip.duration 
@@ -1761,7 +1955,9 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const assetFps = Number(asset?.settings?.fps)
         sourceFps = Number.isFinite(assetFps) && assetFps > 0 ? assetFps : null
 
-        shouldBlend = !isFullBake && !!(sourceFps && sourceFps < fps - 0.5 && !maskEffect && !hasMotionBlurSamples && !velocityMotionBlur)
+        // Matted clips on the 2D path skip low-fps frame blending — the
+        // matte needs the buffered draw, which the blend path bypasses.
+        shouldBlend = !isFullBake && !!(sourceFps && sourceFps < fps - 0.5 && !maskEffect && !hasMotionBlurSamples && !velocityMotionBlur) && !(matteInfo && !gpu)
 
         // Prefer the WebCodecs sequential frame cursor; any doubt (or a
         // mid-clip cursor failure) falls back to the element seek path.
@@ -1950,8 +2146,11 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         }
 
         if (gpu) {
-          gpuDrawCanvasLayer(advancedOutputCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
+          gpuDrawCanvasLayer(advancedOutputCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode, null, null, null, matteSpec)
           continue
+        }
+        if (matteInfo && matteCanvas2d) {
+          applyTrackMatteToCanvas(advancedOutputCanvas.getContext('2d'), matteCanvas2d, matteInfo, width, height)
         }
         ctx.save()
         ctx.globalAlpha = clipOpacity
@@ -1961,8 +2160,8 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         ctx.restore()
         continue
       }
-      
-      if (usesManagedPixelEffects && !maskEffect && !gpu) {
+
+      if ((usesManagedPixelEffects || (matteInfo && matteCanvas2d)) && !maskEffect && !gpu) {
         let buffers = maskRenderBuffers.get(clip.id)
         if (!buffers) {
           const offCanvas = document.createElement('canvas')
@@ -2023,7 +2222,12 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
           applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
         }
 
-        applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
+        if (usesManagedPixelEffects) {
+          applyClipManagedEffectsToOffCanvas(offCanvas, offCtx, width, height, clip, clipTime, frameIndex, glslQualityScale)
+        }
+        if (matteInfo && matteCanvas2d) {
+          applyTrackMatteToCanvas(offCtx, matteCanvas2d, matteInfo, width, height)
+        }
 
         if (gpu) {
           gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode)
@@ -2130,7 +2334,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             }
             // Color + adjustment blur composite once here (the 2D path
             // applies them via ctx.filter at this identity-transform draw).
-            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode, gpuColorSettings, gpuAdjustmentBlur > 0 ? gpuAdjustmentBlur : null)
+            gpuDrawCanvasLayer(offCanvas, `${clip.id}:2d`, frameIndex, clipOpacity, blendMode, gpuColorSettings, gpuAdjustmentBlur > 0 ? gpuAdjustmentBlur : null, null, matteSpec)
             gpuMaskHandled = true
           }
           // No usable mask image: fall through to the plain draw, matching
@@ -2211,6 +2415,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             samples: gpuSamples,
             velocity: gpuVelocity,
             mask: gpuMaskSpec,
+            matte: matteSpec,
             managedPasses: gpuManagedPasses,
             ...routed,
             opacity: clipOpacity,
@@ -2230,7 +2435,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       // Blend mode (CSS mix-blend-mode → canvas globalCompositeOperation)
       ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : blendMode
 
-      if (hasMotionBlurSamples && !maskEffect && !shouldBlend) {
+      if (hasMotionBlurSamples && !maskEffect && !shouldBlend && !(matteInfo && matteCanvas2d)) {
         for (const sample of motionBlurSamples) {
           drawMediaTransformSample(ctx, sample, sampleFilter, clipOpacity, blendMode === 'normal' ? 'source-over' : blendMode)
         }
@@ -2238,7 +2443,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         continue
       }
 
-      if (velocityMotionBlur && !maskEffect && !shouldBlend) {
+      if ((velocityMotionBlur || (matteInfo && matteCanvas2d)) && !maskEffect && !shouldBlend) {
         let buffers = maskRenderBuffers.get(clip.id)
         if (!buffers) {
           const offCanvas = document.createElement('canvas')
@@ -2250,8 +2455,19 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         }
         const { offCanvas, offCtx } = buffers
         offCtx.clearRect(0, 0, width, height)
-        drawMediaTransformSample(offCtx, { clipTime, weight: 1 }, sampleFilter)
-        applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+        const bufferedSamples = velocityMotionBlur ? [{ clipTime, weight: 1 }] : motionBlurSamples
+        for (const sample of bufferedSamples) {
+          drawMediaTransformSample(offCtx, sample, sampleFilter)
+        }
+        if (velocityMotionBlur) {
+          applyVelocityMotionBlurToCanvas(offCanvas, offCtx, width, height, velocityMotionBlur)
+        }
+        if (matteInfo && matteCanvas2d) {
+          applyTrackMatteToCanvas(offCtx, matteCanvas2d, matteInfo, width, height)
+        }
+        // The samples were already drawn with sampleFilter inside offCtx —
+        // clear it here so the buffered composite doesn't filter twice.
+        ctx.filter = 'none'
         ctx.drawImage(offCanvas, 0, 0)
         ctx.restore()
         continue

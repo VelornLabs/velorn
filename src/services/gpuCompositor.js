@@ -131,11 +131,19 @@ void main() {
 // outside the clip opaque black — that is the 2D export's behavior (the
 // preview's destination-in/out semantics differ; parity here is with
 // export).
+// u_channel selects the matte value (0 = luminance, 1 = alpha) and
+// u_multiply selects replace-vs-multiply semantics: the legacy mask effect
+// REPLACES layer alpha with unpremultiplied luminance (u_multiply = false);
+// track mattes MULTIPLY layer alpha by the matte coverage, with luminance
+// read premultiplied so semi-transparent matte pixels contribute
+// proportionally (u_multiply = true).
 const MASK_FS = `#version 300 es
 precision highp float;
 uniform sampler2D u_layer;
 uniform sampler2D u_mask;
 uniform bool u_invert;
+uniform int u_channel;
+uniform bool u_multiply;
 in vec2 v_uv;
 out vec4 outColor;
 void main() {
@@ -143,7 +151,10 @@ void main() {
   vec4 mask = texture(u_mask, v_uv);
   vec3 maskRgb = mask.a > 0.0 ? mask.rgb / mask.a : vec3(0.0);
   float lum = (maskRgb.r + maskRgb.g + maskRgb.b) / 3.0;
-  float alpha = u_invert ? 1.0 - lum : lum;
+  float premultLum = (mask.r + mask.g + mask.b) / 3.0;
+  float matteValue = u_channel == 1 ? mask.a : (u_multiply ? premultLum : lum);
+  float coverage = u_invert ? 1.0 - matteValue : matteValue;
+  float alpha = u_multiply ? layer.a * coverage : coverage;
   vec3 layerRgb = layer.a > 0.0 ? layer.rgb / layer.a : vec3(0.0);
   outColor = vec4(layerRgb * alpha, alpha);
 }
@@ -640,7 +651,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     final: getUniforms(gl, programs.final, ['u_texture']),
     unpremult: getUniforms(gl, programs.unpremult, ['u_texture']),
     premult: getUniforms(gl, programs.premult, ['u_texture']),
-    mask: getUniforms(gl, programs.mask, ['u_layer', 'u_mask', 'u_invert']),
+    mask: getUniforms(gl, programs.mask, ['u_layer', 'u_mask', 'u_invert', 'u_channel', 'u_multiply']),
     chromab: getUniforms(gl, programs.chromab, ['u_texture', 'u_size', 'u_shift']),
     sharpen: getUniforms(gl, programs.sharpen, ['u_texture', 'u_size', 'u_strength']),
     grain: getUniforms(gl, programs.grain, ['u_texture', 'u_size', 'u_seed', 'u_stride', 'u_strength', 'u_mono']),
@@ -1185,6 +1196,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     preBlurPx = null,
     velocity = null,
     mask = null,
+    matte = null,
     tonalSettings = null,
     blurPx = null,
     managedPasses = null,
@@ -1226,6 +1238,31 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
       gl.bindTexture(gl.TEXTURE_2D, maskTarget.texture)
       gl.uniform1i(uniforms.mask.u_mask, 1)
       gl.uniform1i(uniforms.mask.u_invert, mask.invert ? 1 : 0)
+      gl.uniform1i(uniforms.mask.u_channel, 0)
+      gl.uniform1i(uniforms.mask.u_multiply, 0)
+      drawFullscreen()
+      swap()
+    }
+
+    if (matte) {
+      // Track matte: the consumed layer above, rastered by the caller,
+      // multiplies this layer's alpha (alpha or luma channel, invertible).
+      // Reuses the mask scratch target — the mask stage above has already
+      // consumed it by this point.
+      const matteTarget = getMaskScratch()
+      accumulateSamples([{ texture: matte.texture, corners: matte.corners, weight: 1 }], null, false, matteTarget)
+      bindTarget(other)
+      gl.disable(gl.BLEND)
+      gl.useProgram(programs.mask)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, cur.texture)
+      gl.uniform1i(uniforms.mask.u_layer, 0)
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_2D, matteTarget.texture)
+      gl.uniform1i(uniforms.mask.u_mask, 1)
+      gl.uniform1i(uniforms.mask.u_invert, matte.invert ? 1 : 0)
+      gl.uniform1i(uniforms.mask.u_channel, matte.channel === 'alpha' ? 1 : 0)
+      gl.uniform1i(uniforms.mask.u_multiply, 1)
       drawFullscreen()
       swap()
     }
@@ -1306,6 +1343,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
       preBlurPx = null,
       velocity = null,
       mask = null,
+      matte = null,
       tonalSettings = null,
       blurPx = null,
       managedPasses = null,
@@ -1334,11 +1372,23 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
           blurPx: mask.blurPx ?? null,
         }
       }
+      // matte: { source, sourceKey, sourceVersion, corners, channel, invert }
+      // — track matte from the consumed layer above (see MASK_FS u_multiply).
+      let preparedMatte = null
+      if (matte?.source && matte?.corners) {
+        preparedMatte = {
+          texture: uploadSource(matte.source, matte.sourceKey, matte.sourceVersion),
+          corners: matte.corners,
+          invert: !!matte.invert,
+          channel: matte.channel === 'alpha' ? 'alpha' : 'luma',
+        }
+      }
       renderLayerSamples(prepared, {
         colorSettings,
         preBlurPx,
         velocity,
         mask: preparedMask,
+        matte: preparedMatte,
         tonalSettings,
         blurPx,
         managedPasses,

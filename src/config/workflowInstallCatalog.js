@@ -645,6 +645,26 @@ export const MODEL_INSTALL_RECIPES = Object.freeze({
     sizeBytes: 337431732,
     notes: 'Required by the built-in music generation workflow.',
   }),
+  [modelKey('text_encoders', 'qwen_0.6b_ace15.safetensors')]: createModelRecipe({
+    filename: 'qwen_0.6b_ace15.safetensors',
+    targetSubdir: 'text_encoders',
+    displayName: 'ACE-Step 1.5 Qwen 0.6B text encoder',
+    downloadUrl: hfResolve('Comfy-Org/ace_step_1.5_ComfyUI_files', 'split_files/text_encoders/qwen_0.6b_ace15.safetensors'),
+    sourceUrl: hfBlob('Comfy-Org/ace_step_1.5_ComfyUI_files', 'split_files/text_encoders/qwen_0.6b_ace15.safetensors'),
+    licenseUrl: 'https://huggingface.co/ACE-Step/Ace-Step1.5',
+    // Size/checksum not curated yet — the download still works; it just skips
+    // hash verification and shows "Unknown size" until confirmed on HF.
+    notes: 'Text encoder for the built-in ACE-Step 1.5 music workflow (DualCLIPLoader).',
+  }),
+  [modelKey('text_encoders', 'qwen_1.7b_ace15.safetensors')]: createModelRecipe({
+    filename: 'qwen_1.7b_ace15.safetensors',
+    targetSubdir: 'text_encoders',
+    displayName: 'ACE-Step 1.5 Qwen 1.7B text encoder',
+    downloadUrl: hfResolve('Comfy-Org/ace_step_1.5_ComfyUI_files', 'split_files/text_encoders/qwen_1.7b_ace15.safetensors'),
+    sourceUrl: hfBlob('Comfy-Org/ace_step_1.5_ComfyUI_files', 'split_files/text_encoders/qwen_1.7b_ace15.safetensors'),
+    licenseUrl: 'https://huggingface.co/ACE-Step/Ace-Step1.5',
+    notes: 'Text encoder for the built-in ACE-Step 1.5 music workflow (DualCLIPLoader).',
+  }),
   [modelKey('diffusion_models', 'acestep_v1.5_turbo.safetensors')]: createModelRecipe({
     filename: 'acestep_v1.5_turbo.safetensors',
     targetSubdir: 'diffusion_models',

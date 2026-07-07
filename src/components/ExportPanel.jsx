@@ -5,6 +5,8 @@ import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import exportTimeline from '../services/exporter'
 import buildFcpXml from '../services/fcpxmlExporter'
+import { mixTimelineAudioToWav } from '../services/timelineAudioMix'
+import { analyzeAudioBuffer } from '../services/audioAnalysis'
 
 const EXPORT_SETTINGS_STORAGE_PREFIX = 'comfystudio-export-settings-v1'
 
@@ -322,6 +324,7 @@ function ExportPanel() {
   
   const [settings, setSettings] = useState(() => loadSavedExportSettings(settingsStorageKey, defaultSettings))
   const [queue, setQueue] = useState([])
+  const [loudnessCheck, setLoudnessCheck] = useState({ status: 'idle', result: null, error: '' })
   const [isExporting, setIsExporting] = useState(false)
   const [exportStatus, setExportStatus] = useState('')
   const [exportProgress, setExportProgress] = useState(0)
@@ -329,6 +332,32 @@ function ExportPanel() {
   const [exportResult, setExportResult] = useState(null)
   const [etaSeconds, setEtaSeconds] = useState(null)
   const [renderFps, setRenderFps] = useState(null)
+
+  // Pre-flight loudness check: render the timeline's program audio (the same
+  // mixer captions use) and measure it with the shared analysis engine.
+  // Approximate — the mix is 16 kHz and pre-normalization — but plenty to
+  // know whether the edit is 6 LU hot before exporting.
+  const handleMeasureLoudness = async () => {
+    setLoudnessCheck({ status: 'measuring', result: null, error: '' })
+    try {
+      const mix = await mixTimelineAudioToWav({})
+      const arrayBuffer = await mix.blob.arrayBuffer()
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext
+      if (!AudioContextCtor) throw new Error('Web Audio API is not available.')
+      const audioContext = new AudioContextCtor()
+      let audioBuffer
+      try {
+        audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+      } finally {
+        try { audioContext.close() } catch (_) { /* ignore */ }
+      }
+      const analysis = analyzeAudioBuffer(audioBuffer, { includeLoudnessCurve: false })
+      if (analysis?.error) throw new Error(analysis.error)
+      setLoudnessCheck({ status: 'done', result: analysis.loudness, error: '' })
+    } catch (err) {
+      setLoudnessCheck({ status: 'error', result: null, error: err?.message || 'Loudness measurement failed.' })
+    }
+  }
   const [isXmlExporting, setIsXmlExporting] = useState(false)
   const exportStartRef = useRef(null)
   const renderStartRef = useRef(null)
@@ -1566,6 +1595,35 @@ function ExportPanel() {
                         <div className="mt-1 text-[10px] text-sf-text-muted">EBU R128 loudness, true peak -1.5 dB.</div>
                       </div>
                     ) : null}
+
+                    <div className="col-span-2">
+                      <button
+                        onClick={handleMeasureLoudness}
+                        disabled={loudnessCheck.status === 'measuring'}
+                        className="px-2 py-1 text-xs rounded border bg-sf-dark-800 text-sf-text-muted border-sf-dark-600 hover:border-sf-accent hover:text-sf-text-primary transition-colors disabled:opacity-50 disabled:cursor-default"
+                      >
+                        {loudnessCheck.status === 'measuring' ? 'Measuring…' : 'Measure Timeline Loudness'}
+                      </button>
+                      {loudnessCheck.status === 'done' && loudnessCheck.result && (
+                        <div className="mt-1 text-[10px] text-sf-text-secondary">
+                          ~{loudnessCheck.result.integratedLufsApprox ?? '—'} LUFS integrated, peak {loudnessCheck.result.peakDb} dBFS
+                          {Number.isFinite(loudnessCheck.result.integratedLufsApprox) && Number.isFinite(Number(settings.loudnessTarget)) && (
+                            <span className={
+                              Math.abs(loudnessCheck.result.integratedLufsApprox - Number(settings.loudnessTarget)) <= 1
+                                ? ' text-sf-success'
+                                : ' text-amber-400'
+                            }>
+                              {' '}({(loudnessCheck.result.integratedLufsApprox - Number(settings.loudnessTarget)) >= 0 ? '+' : ''}
+                              {(loudnessCheck.result.integratedLufsApprox - Number(settings.loudnessTarget)).toFixed(1)} LU vs {settings.loudnessTarget} target)
+                            </span>
+                          )}
+                          <span className="text-sf-text-muted"> — approximate pre-export mix.</span>
+                        </div>
+                      )}
+                      {loudnessCheck.status === 'error' && (
+                        <div className="mt-1 text-[10px] text-sf-error">{loudnessCheck.error}</div>
+                      )}
+                    </div>
                   </>
                 ) : (
                   <div className="col-span-2 text-[10px] text-sf-text-muted">

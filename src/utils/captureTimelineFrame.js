@@ -10,6 +10,7 @@ import {
   getBaseDrawRect,
   hasPerspectiveClipTransform,
 } from '../services/exporter'
+import { getLivePreviewCapture } from '../services/previewFrameBridge'
 
 /**
  * Get the topmost video or image clip at the given time (for capture).
@@ -165,8 +166,42 @@ async function renderTimelineCompositeStill(time, canvas, width, height) {
 }
 
 /**
+ * Try the live preview pipeline first: TRUE render parity with playback
+ * (track mattes, corner pin, speed ramps, GLSL, motion blur). Moves the
+ * playhead to seek, so it restores it afterwards unless the caller batches
+ * captures and restores once itself (restorePlayhead: false). Returns null
+ * when unavailable (preview unmounted, playing, empty region, timeout) —
+ * the caller falls back to the legacy offscreen still renderer.
+ */
+async function captureLiveComposite(time, captureOptions = {}) {
+  if (captureOptions.renderer === 'legacy') return null
+  const liveCapture = getLivePreviewCapture()
+  if (!liveCapture) return null
+
+  const timelineState = useTimelineStore.getState()
+  if (timelineState.isPlaying) return null
+
+  // Preserve the legacy "nothing visible here" null signal for empty
+  // regions instead of returning a black frame.
+  const activeClips = timelineState.getActiveClipsAtTime?.(time) || []
+  const hasVisualClip = activeClips.some(({ track }) => track?.type === 'video')
+  if (!hasVisualClip) return null
+
+  const previousPlayhead = timelineState.playheadPosition
+  try {
+    return await liveCapture(time, { timeoutMs: captureOptions.timeoutMs })
+  } catch (_) {
+    return null
+  } finally {
+    if (captureOptions.restorePlayhead !== false) {
+      useTimelineStore.getState().setPlayheadPosition(previousPlayhead, { snap: false })
+    }
+  }
+}
+
+/**
  * Capture the composed timeline frame at the given timeline time.
- * Returns Promise<{ blobUrl, file, width, height, mimeType, time }> or Promise<null> if no visual clip or error.
+ * Returns Promise<{ blobUrl, file, width, height, mimeType, time, renderer }> or Promise<null> if no visual clip or error.
  */
 export async function captureTimelineFrameAt(time, options = {}) {
   try {
@@ -193,18 +228,23 @@ export async function captureTimelineFrameAt(time, options = {}) {
       ? Math.max(0.1, Math.min(1, requestedQuality))
       : undefined
 
-    // Composite at full project resolution so pixel-space transform values
-    // (positionX/Y, blur) land where preview and export put them, then
-    // downscale the finished frame to the requested capture size.
-    const canvas = document.createElement('canvas')
-    canvas.width = sourceWidth
-    canvas.height = sourceHeight
-
-    const rendered = await renderTimelineCompositeStill(time, canvas, sourceWidth, sourceHeight)
-    if (!rendered) return null
+    // Prefer the live preview pipeline (true render parity); fall back to
+    // the simplified offscreen compositor when the preview isn't available.
+    let canvas = await captureLiveComposite(time, captureOptions)
+    const renderer = canvas ? 'live' : 'legacy'
+    if (!canvas) {
+      // Composite at full project resolution so pixel-space transform values
+      // (positionX/Y, blur) land where preview and export put them, then
+      // downscale the finished frame to the requested capture size.
+      canvas = document.createElement('canvas')
+      canvas.width = sourceWidth
+      canvas.height = sourceHeight
+      const rendered = await renderTimelineCompositeStill(time, canvas, sourceWidth, sourceHeight)
+      if (!rendered) return null
+    }
 
     let outputCanvas = canvas
-    if (width !== sourceWidth || height !== sourceHeight) {
+    if (canvas.width !== width || canvas.height !== height) {
       outputCanvas = document.createElement('canvas')
       outputCanvas.width = width
       outputCanvas.height = height
@@ -228,6 +268,7 @@ export async function captureTimelineFrameAt(time, options = {}) {
       height,
       mimeType,
       time: Number(time) || 0,
+      renderer,
     }
   } catch (err) {
     console.warn('[captureTimelineFrame] failed to capture timeline composite:', err?.message || err)

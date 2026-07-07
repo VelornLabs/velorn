@@ -49,7 +49,23 @@ function clampUnit(value) {
   return Math.max(0, Math.min(1, value))
 }
 
-function parseCubicBezierEasing(easing) {
+export const DEFAULT_KEYFRAME_TIME_TOLERANCE = 0.05
+
+/**
+ * Frame-rate-aware keyframe matching tolerance: half a frame at the given
+ * fps, capped at the legacy 0.05s window. A fixed 0.05s is wider than one
+ * frame at 24/30fps, which made adjacent-frame keyframes overwrite each other.
+ *
+ * @param {number} fps - Timeline frames per second
+ * @returns {number} - Tolerance in seconds
+ */
+export function getKeyframeTimeTolerance(fps) {
+  const parsedFps = Number(fps)
+  if (!Number.isFinite(parsedFps) || parsedFps <= 0) return DEFAULT_KEYFRAME_TIME_TOLERANCE
+  return Math.min(DEFAULT_KEYFRAME_TIME_TOLERANCE, 0.5 / parsedFps)
+}
+
+export function parseCubicBezierEasing(easing) {
   const match = String(easing || '').trim().match(/^cubic-?bezier\(\s*(-?(?:\d+\.?\d*|\.\d+))\s*,\s*(-?(?:\d+\.?\d*|\.\d+))\s*,\s*(-?(?:\d+\.?\d*|\.\d+))\s*,\s*(-?(?:\d+\.?\d*|\.\d+))\s*\)$/i)
   if (!match) return null
 
@@ -107,6 +123,20 @@ function createCubicBezierEasing({ x1, y1, x2, y2 }) {
   }
 }
 
+/**
+ * Serialize bezier control points to the easing-string form the engine parses.
+ *
+ * @param {{ x1: number, y1: number, x2: number, y2: number }} points
+ * @returns {string}
+ */
+export function formatCubicBezierEasing({ x1, y1, x2, y2 }) {
+  const fmt = (value) => {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? Number(parsed.toFixed(3)) : 0
+  }
+  return `cubic-bezier(${fmt(x1)}, ${fmt(y1)}, ${fmt(x2)}, ${fmt(y2)})`
+}
+
 export function getEasingFunction(easing) {
   const key = String(easing || 'linear').trim()
   if (easingFunctions[key]) return easingFunctions[key]
@@ -129,6 +159,9 @@ export const EASING_OPTIONS = [
  * Properties that can be keyframed
  */
 export const KEYFRAMEABLE_PROPERTIES = [
+  // 'speed' drives time remapping (see utils/timeRemap.js), not the visual
+  // transform — getAnimatedTransform skips it.
+  { id: 'speed', label: 'Speed', group: 'time', unit: 'x' },
   { id: 'positionX', label: 'Position X', group: 'position', unit: 'px' },
   { id: 'positionY', label: 'Position Y', group: 'position', unit: 'px' },
   { id: 'positionZ', label: 'Position Z', group: 'position', unit: 'px' },
@@ -146,6 +179,14 @@ export const KEYFRAMEABLE_PROPERTIES = [
   { id: 'cropBottom', label: 'Crop Bottom', group: 'crop', unit: '%' },
   { id: 'cropLeft', label: 'Crop Left', group: 'crop', unit: '%' },
   { id: 'cropRight', label: 'Crop Right', group: 'crop', unit: '%' },
+  { id: 'cornerPinTLX', label: 'Pin TL X', group: 'cornerPin', unit: 'px' },
+  { id: 'cornerPinTLY', label: 'Pin TL Y', group: 'cornerPin', unit: 'px' },
+  { id: 'cornerPinTRX', label: 'Pin TR X', group: 'cornerPin', unit: 'px' },
+  { id: 'cornerPinTRY', label: 'Pin TR Y', group: 'cornerPin', unit: 'px' },
+  { id: 'cornerPinBLX', label: 'Pin BL X', group: 'cornerPin', unit: 'px' },
+  { id: 'cornerPinBLY', label: 'Pin BL Y', group: 'cornerPin', unit: 'px' },
+  { id: 'cornerPinBRX', label: 'Pin BR X', group: 'cornerPin', unit: 'px' },
+  { id: 'cornerPinBRY', label: 'Pin BR Y', group: 'cornerPin', unit: 'px' },
   { id: 'brightness', label: 'Exposure', group: 'adjustments', unit: '' },
   { id: 'contrast', label: 'Contrast', group: 'adjustments', unit: '' },
   { id: 'saturation', label: 'Saturation', group: 'adjustments', unit: '' },
@@ -357,9 +398,102 @@ export function getAnimatedShapeProperties(clip, clipTime) {
   return normalizeShapeProperties(animatedShapeProperties)
 }
 
+// ==================== MOTION PATHS ====================
+// Spatial position interpolation: when positionX and positionY keyframes
+// share the same times and the clip opts in (transform.motionPathMode =
+// 'smooth'), position interpolates along a Catmull-Rom spline through the
+// keyframe points (curved arcs) instead of independent per-axis scalars
+// (straight lines). Timing along each segment still follows the X
+// keyframe's easing.
+
+const MOTION_PATH_TIME_EPSILON = 0.0005
+
+/**
+ * Paired position keyframes as spatial points, or null when positionX/Y
+ * keyframes don't line up (different counts or times).
+ *
+ * @returns {Array<{ time, x, y, easing }>|null}
+ */
+export function getPositionKeyframePoints(clip) {
+  const xKeyframes = clip?.keyframes?.positionX
+  const yKeyframes = clip?.keyframes?.positionY
+  if (!Array.isArray(xKeyframes) || !Array.isArray(yKeyframes)) return null
+  if (xKeyframes.length < 2 || xKeyframes.length !== yKeyframes.length) return null
+
+  const sortedX = [...xKeyframes].sort((a, b) => a.time - b.time)
+  const sortedY = [...yKeyframes].sort((a, b) => a.time - b.time)
+  const points = []
+  for (let index = 0; index < sortedX.length; index += 1) {
+    if (Math.abs(sortedX[index].time - sortedY[index].time) > MOTION_PATH_TIME_EPSILON) return null
+    points.push({
+      time: sortedX[index].time,
+      x: Number(sortedX[index].value) || 0,
+      y: Number(sortedY[index].value) || 0,
+      easing: sortedX[index].easing || 'linear',
+    })
+  }
+  return points
+}
+
+export function isMotionPathSmooth(clip) {
+  return (clip?.transform?.motionPathMode || 'linear') === 'smooth'
+}
+
+function evalSmoothMotionPath(points, time) {
+  const count = points.length
+  if (time <= points[0].time) return { x: points[0].x, y: points[0].y }
+  if (time >= points[count - 1].time) return { x: points[count - 1].x, y: points[count - 1].y }
+
+  let segment = 0
+  for (let index = 0; index < count - 1; index += 1) {
+    if (time >= points[index].time && time <= points[index + 1].time) {
+      segment = index
+      break
+    }
+  }
+
+  const from = points[segment]
+  const to = points[segment + 1]
+  if (from.easing === 'hold') return { x: from.x, y: from.y }
+
+  const duration = to.time - from.time
+  if (duration <= 0) return { x: from.x, y: from.y }
+  const s = getEasingFunction(from.easing)((time - from.time) / duration)
+
+  // Catmull-Rom neighbors -> cubic bezier control points (After Effects'
+  // "auto bezier" shape). End segments clamp to their own endpoint.
+  const prev = points[Math.max(0, segment - 1)]
+  const next = points[Math.min(count - 1, segment + 2)]
+  const c1x = from.x + (to.x - prev.x) / 6
+  const c1y = from.y + (to.y - prev.y) / 6
+  const c2x = to.x - (next.x - from.x) / 6
+  const c2y = to.y - (next.y - from.y) / 6
+
+  const inv = 1 - s
+  const b0 = inv * inv * inv
+  const b1 = 3 * inv * inv * s
+  const b2 = 3 * inv * s * s
+  const b3 = s * s * s
+  return {
+    x: b0 * from.x + b1 * c1x + b2 * c2x + b3 * to.x,
+    y: b0 * from.y + b1 * c1y + b2 * c2y + b3 * to.y,
+  }
+}
+
+/**
+ * Spatial position at a clip time, or null when the clip doesn't qualify
+ * (mode not 'smooth', or unpaired position keyframes).
+ */
+export function getMotionPathPositionAtTime(clip, clipTime) {
+  if (!isMotionPathSmooth(clip)) return null
+  const points = getPositionKeyframePoints(clip)
+  if (!points) return null
+  return evalSmoothMotionPath(points, clipTime)
+}
+
 /**
  * Get all animated transform values at a specific time
- * 
+ *
  * @param {Object} clip - The clip object with transform and keyframes
  * @param {number} clipTime - Time relative to clip start (in seconds)
  * @returns {Object} - Transform object with interpolated values
@@ -375,16 +509,25 @@ export function getAnimatedTransform(clip, clipTime) {
   
   // Override with keyframed values
   for (const prop of KEYFRAMEABLE_PROPERTIES) {
+    if (prop.group === 'time') continue // speed remaps time, not the transform
     const propKeyframes = keyframes[prop.id]
     if (propKeyframes && propKeyframes.length > 0) {
       animatedTransform[prop.id] = getValueAtTime(
-        propKeyframes, 
-        clipTime, 
+        propKeyframes,
+        clipTime,
         baseTransform[prop.id]
       )
     }
   }
-  
+
+  // Smooth motion path: curved spatial interpolation replaces the per-axis
+  // straight-line position when the clip opts in.
+  const spatialPosition = getMotionPathPositionAtTime(clip, clipTime)
+  if (spatialPosition) {
+    animatedTransform.positionX = spatialPosition.x
+    animatedTransform.positionY = spatialPosition.y
+  }
+
   return animatedTransform
 }
 
@@ -424,10 +567,10 @@ export function getAnimatedAdjustmentSettings(clip, clipTime) {
  * 
  * @param {Array} keyframes - Keyframes for the property
  * @param {number} time - Time to check
- * @param {number} tolerance - Time tolerance for matching (default 0.05s)
+ * @param {number} tolerance - Time tolerance for matching; pass getKeyframeTimeTolerance(fps) for frame-accurate matching
  * @returns {Object|null} - The keyframe if found, null otherwise
  */
-export function getKeyframeAtTime(keyframes, time, tolerance = 0.05) {
+export function getKeyframeAtTime(keyframes, time, tolerance = DEFAULT_KEYFRAME_TIME_TOLERANCE) {
   if (!keyframes || keyframes.length === 0) return null
   
   return keyframes.find(kf => Math.abs(kf.time - time) <= tolerance) || null
@@ -451,13 +594,14 @@ export function hasKeyframes(keyframes, propertyId) {
  * @param {number} time - Time for the keyframe
  * @param {number} value - Value at this keyframe
  * @param {string} easing - Easing function (default: 'easeInOut')
+ * @param {number} tolerance - Match tolerance; pass getKeyframeTimeTolerance(fps) for frame-accurate placement
  * @returns {Array} - New keyframes array
  */
-export function setKeyframe(keyframes, time, value, easing = 'easeInOut') {
+export function setKeyframe(keyframes, time, value, easing = 'easeInOut', tolerance = DEFAULT_KEYFRAME_TIME_TOLERANCE) {
   const newKeyframes = [...(keyframes || [])]
-  
+
   // Find existing keyframe at this time
-  const existingIndex = newKeyframes.findIndex(kf => Math.abs(kf.time - time) < 0.05)
+  const existingIndex = newKeyframes.findIndex(kf => Math.abs(kf.time - time) < tolerance)
   
   if (existingIndex >= 0) {
     // Update existing keyframe
@@ -481,7 +625,7 @@ export function setKeyframe(keyframes, time, value, easing = 'easeInOut') {
  * @param {number} tolerance - Time tolerance for matching
  * @returns {Array} - New keyframes array without the removed keyframe
  */
-export function removeKeyframe(keyframes, time, tolerance = 0.05) {
+export function removeKeyframe(keyframes, time, tolerance = DEFAULT_KEYFRAME_TIME_TOLERANCE) {
   if (!keyframes) return []
   return keyframes.filter(kf => Math.abs(kf.time - time) > tolerance)
 }
@@ -546,12 +690,19 @@ export function quantizeTimeToFrame(time, fps) {
 export default {
   easingFunctions,
   getEasingFunction,
+  parseCubicBezierEasing,
+  formatCubicBezierEasing,
+  DEFAULT_KEYFRAME_TIME_TOLERANCE,
+  getKeyframeTimeTolerance,
   EASING_OPTIONS,
   KEYFRAMEABLE_PROPERTIES,
   ADJUSTMENT_KEYFRAME_PROPERTIES,
   SHAPE_KEYFRAMEABLE_PROPERTIES,
   getValueAtTime,
   getColorAtTime,
+  getPositionKeyframePoints,
+  getMotionPathPositionAtTime,
+  isMotionPathSmooth,
   getAnimatedShapeProperties,
   getAnimatedTransform,
   getAnimatedAdjustmentSettings,

@@ -21,6 +21,7 @@ import { generateMissingProxiesForAllVideos, hasUsableProxy, isProxyableVideoAss
 import { importAsset } from '../services/fileSystem'
 import { getGlslPreviewQualityScale } from '../utils/glslEffects'
 import { getShapeCanvasRect } from '../utils/shapes'
+import { getClipQuadCorners } from '../services/exporter'
 
 const SPACE_MODIFIER_USED_EVENT = 'comfystudio-space-modifier-used'
 
@@ -1141,6 +1142,32 @@ function PreviewPanel() {
     applyPreviewTransformUpdate(updates, true)
   }, [applyPreviewTransformUpdate])
 
+  // Motion path keyframe dots: dragging a dot rewrites that time's
+  // positionX/Y keyframes, preserving each keyframe's existing easing.
+  const previewKeyframeDragHistoryRef = useRef(false)
+
+  const handlePreviewKeyframePointChange = useCallback((time, point) => {
+    if (!selectedPreviewClipId || !point) return
+    const store = useTimelineStore.getState()
+    if (!previewKeyframeDragHistoryRef.current) {
+      store.saveToHistory()
+      previewKeyframeDragHistoryRef.current = true
+    }
+    const clip = store.clips.find((candidate) => candidate.id === selectedPreviewClipId)
+    const easingAt = (property) => {
+      const propKeyframes = clip?.keyframes?.[property] || []
+      const match = propKeyframes.find((keyframe) => Math.abs(keyframe.time - time) < 0.01)
+      return match?.easing || 'easeInOut'
+    }
+    store.setKeyframe(selectedPreviewClipId, 'positionX', time, point.x, easingAt('positionX'), { saveHistory: false })
+    store.setKeyframe(selectedPreviewClipId, 'positionY', time, point.y, easingAt('positionY'), { saveHistory: false })
+  }, [selectedPreviewClipId])
+
+  const handlePreviewKeyframePointCommit = useCallback((time, point) => {
+    handlePreviewKeyframePointChange(time, point)
+    previewKeyframeDragHistoryRef.current = false
+  }, [handlePreviewKeyframePointChange])
+
   const handlePreviewTransformInteractionStart = useCallback(() => {
     previewTransformHistoryClipRef.current = null
     if (timelineIsPlaying) {
@@ -1864,6 +1891,32 @@ function PreviewPanel() {
       uniform: Math.min(x, y),
     }
   }, [timelineWidth, timelineHeight, videoDimensions?.width, videoDimensions?.height])
+
+  // Corner-pin handles: the pinned quad's corners (projected via the shared
+  // export geometry) mapped into preview display px for the gizmo overlay.
+  const selectedPreviewCornerPinHandles = useMemo(() => {
+    if (!selectedPreviewClip || !selectedPreviewTransform?.cornerPinEnabled) return null
+    if (!['video', 'image'].includes(selectedPreviewClip.type)) return null
+    const { width: sourceWidth, height: sourceHeight } = getMediaSourceDimensions(selectedPreviewAsset, selectedPreviewClip)
+    if (!sourceWidth || !sourceHeight) return null
+    const rect = getPreviewBaseDrawRect(sourceWidth, sourceHeight, timelineWidth, timelineHeight)
+    const corners = getClipQuadCorners(rect, selectedPreviewTransform, null)
+    if (!corners) return null
+    const labels = ['TL', 'TR', 'BL', 'BR']
+    return corners.map((corner, index) => ({
+      key: labels[index],
+      x: corner.x * previewScale.x,
+      y: corner.y * previewScale.y,
+    }))
+  }, [
+    previewScale.x,
+    previewScale.y,
+    selectedPreviewAsset,
+    selectedPreviewClip,
+    selectedPreviewTransform,
+    timelineHeight,
+    timelineWidth,
+  ])
 
   const selectedPreviewFrameRect = useMemo(() => {
     if (!selectedPreviewClip || !['image', 'video', 'shape'].includes(selectedPreviewClip.type)) return null
@@ -2774,6 +2827,9 @@ function PreviewPanel() {
                 onInteractionStart={handlePreviewTransformInteractionStart}
                 onTransformChange={handlePreviewTransformChange}
                 onTransformCommit={handlePreviewTransformCommit}
+                onKeyframePointChange={handlePreviewKeyframePointChange}
+                onKeyframePointCommit={handlePreviewKeyframePointCommit}
+                cornerPinHandles={selectedPreviewCornerPinHandles}
               />
             </div>
           )}

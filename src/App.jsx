@@ -15,7 +15,6 @@ import DopeSheet from './components/DopeSheet'
 import TransportControls from './components/TransportControls'
 import InspectorPanel from './components/InspectorPanel'
 import ResizeHandle from './components/ResizeHandle'
-import AudioGenerateModal from './components/AudioGenerateModal'
 import SettingsModal from './components/SettingsModal'
 import GettingStartedModal from './components/GettingStartedModal'
 import WelcomeScreen from './components/WelcomeScreen'
@@ -50,8 +49,6 @@ function formatDownloadBytes(bytes) {
 }
 
 function App() {
-  const [audioModalOpen, setAudioModalOpen] = useState(false)
-  const [audioModalType, setAudioModalType] = useState('music')
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [settingsInitialSection, setSettingsInitialSection] = useState(null)
   const [gettingStartedOpen, setGettingStartedOpen] = useState(false)
@@ -443,11 +440,6 @@ function App() {
       return next
     })
   }, [persistLayout])
-
-  const openAudioModal = (type = 'music') => {
-    setAudioModalType(type)
-    setAudioModalOpen(true)
-  }
 
   const handleActiveTimelineToolChange = useCallback((label) => {
     setActiveTimelineToolLabel(label || 'Move tool')
@@ -851,7 +843,6 @@ function App() {
                 <div className="flex-1 min-h-0">
                   {bottomEditorView === 'timeline' ? (
                     <Timeline
-                      onOpenAudioGenerate={openAudioModal}
                       onActiveToolChange={handleActiveTimelineToolChange}
                     />
                   ) : (
@@ -870,13 +861,6 @@ function App() {
         projectName={currentProject?.name}
         onOpenSettings={handleOpenSettingsFromBottomBar}
         onOpenGettingStarted={handleOpenGettingStarted}
-      />
-
-      {/* Audio Generate Modal */}
-      <AudioGenerateModal 
-        isOpen={audioModalOpen}
-        onClose={() => setAudioModalOpen(false)}
-        initialType={audioModalType}
       />
 
       {/* Settings Modal */}

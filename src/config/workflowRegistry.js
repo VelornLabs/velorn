@@ -29,7 +29,7 @@ export function getBundledWorkflowPath(filename) {
   return `${WORKFLOW_BASE_URL}workflows/${safeFilename}`
 }
 
-// Built-in workflows shipped with ComfyStudio - always installed, cannot be deleted
+// Built-in workflows shipped with Velorn - always installed, cannot be deleted
 export const BUILTIN_WORKFLOWS = [
   { id: 'wan22-i2v', label: 'Image to Video (WAN 2.2)', category: 'video', needsImage: true, description: 'Animate an image into video', file: 'video_wan2_2_14B_i2v.json' },
   { id: 'ltx23-i2v', label: 'Image to Video (LTX 2.3)', category: 'video', needsImage: true, description: 'Animate an image with local LTX 2.3', file: 'video_ltx2_3_i2v.json' },

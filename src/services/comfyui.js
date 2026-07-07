@@ -64,7 +64,11 @@ function parseNumericLike(value) {
 }
 
 function normalizeEndpointTitle(value = '') {
-  return String(value || '').trim().toUpperCase()
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
 }
 
 function endpointTitleAliases(endpointName) {
@@ -72,7 +76,9 @@ function endpointTitleAliases(endpointName) {
 }
 
 function titleMatchesEndpoint(title, endpointName) {
-  return Boolean(title) && endpointTitleAliases(endpointName).some((name) => title.includes(name))
+  const normalizedTitle = normalizeEndpointTitle(title)
+  return Boolean(normalizedTitle) && endpointTitleAliases(endpointName)
+    .some((name) => normalizedTitle.includes(normalizeEndpointTitle(name)))
 }
 
 function nodeHasEndpointTitle(node, endpointName) {
@@ -105,7 +111,7 @@ const REQUIRED_CUSTOM_VIDEO_ENDPOINT_KEYS = ['inputImage', 'prompt', 'outputVide
 
 /**
  * Pre-check a UI-format graph (as saved in the personal workflow library)
- * against a custom slot's COMFYSTUDIO node-title contract. Mirrors the
+ * against a custom slot's VELORN node-title contract. Mirrors the
  * required markers of validateCustomKeyframeWorkflow /
  * validateCustomVideoWorkflow but reads LiteGraph `node.title`, so it can run
  * without converting the graph to API format first.
@@ -2092,10 +2098,10 @@ export function modifyLocalApiWorkflow(workflow, options = {}) {
     }
 
     if (cls === 'SaveImage' && 'filename_prefix' in node.inputs) {
-      node.inputs.filename_prefix = filenamePrefix || node.inputs.filename_prefix || 'image/comfystudio_local'
+      node.inputs.filename_prefix = filenamePrefix || node.inputs.filename_prefix || 'image/velorn_local'
     }
     if (cls === 'SaveVideo' && 'filename_prefix' in node.inputs) {
-      node.inputs.filename_prefix = filenamePrefix || node.inputs.filename_prefix || 'video/comfystudio_local'
+      node.inputs.filename_prefix = filenamePrefix || node.inputs.filename_prefix || 'video/velorn_local'
     }
 
     if (cls === 'CLIPTextEncode' && typeof node.inputs.text === 'string') {

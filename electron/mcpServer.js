@@ -72,6 +72,7 @@ const MCP_ACTION_PLAN_WRITABLE_TOOLS = new Set([
   'remove_glsl_effect',
   'set_clip_keyframes',
   'add_dip_to_black',
+  'generate_music',
   'queue_timeline_template_generation',
   'export_timeline',
   'export_delivery_batch',
@@ -243,6 +244,17 @@ const MCP_CLIP_KEYFRAME_NUMBER_FIELDS = {
   cropBottom: [0, 0, 100],
   cropLeft: [0, 0, 100],
   cropRight: [0, 0, 100],
+  // Speed ramp (time remapping) — video clips only.
+  speed: [1, 0.05, 16],
+  // Corner pin offsets (timeline px) — applied when transform.cornerPinEnabled.
+  cornerPinTLX: [0, -20000, 20000],
+  cornerPinTLY: [0, -20000, 20000],
+  cornerPinTRX: [0, -20000, 20000],
+  cornerPinTRY: [0, -20000, 20000],
+  cornerPinBLX: [0, -20000, 20000],
+  cornerPinBLY: [0, -20000, 20000],
+  cornerPinBRX: [0, -20000, 20000],
+  cornerPinBRY: [0, -20000, 20000],
   width: [640, 1, 20000],
   height: [640, 1, 20000],
   fillOpacity: [100, 0, 100],
@@ -6305,7 +6317,7 @@ function createToolDefinitions() {
     },
     {
       name: 'inspect_timeline_frame',
-      description: 'Capture the composed timeline preview frame at the playhead, a time in seconds, or a frame number. Returns visible clip context plus MCP image content when available.',
+      description: 'Capture the composed timeline preview frame at the playhead, a time in seconds, or a frame number. Returns visible clip context plus MCP image content when available. The result includes renderer: "live" means the frame came from the real playback pipeline (track mattes, corner pin, speed ramps, GLSL effects, motion blur all rendered); "legacy" means the simplified fallback compositor (basic transforms/opacity only — do not judge advanced effects from it). Live capture needs the timeline preview open and playback paused; it briefly moves the playhead and restores it.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -6733,6 +6745,54 @@ function createToolDefinitions() {
       },
     },
     {
+      name: 'generate_music',
+      description: 'Preview or queue ACE-Step 1.5 turbo text-to-music generation on the connected ComfyUI (local model, no credits): style tags plus optional [verse]/[chorus] lyrics, exact duration 5-240s, BPM, musical key, time signature, up to 4 seed variations. Returns promptIds immediately (turbo model: seconds to a couple minutes depending on GPU) — poll get_music_generation_status, then place a finished take with add_asset_to_timeline. Requires the ACE-Step 1.5 models installed in ComfyUI; the timeline Music popover offers a one-click download if they are missing. Defaults to previewOnly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tags: { type: 'string', description: 'Style tags: genre, mood, instruments, tempo — e.g. "warm lo-fi hip hop, mellow keys".' },
+          lyrics: { type: 'string', description: 'Optional lyrics with [verse]/[chorus]/[bridge] structure tags. Omit (or leave empty) for instrumental.' },
+          instrumental: { type: 'boolean', description: 'Force instrumental output. Defaults to true when no lyrics are provided.' },
+          durationSeconds: { type: 'number', description: 'Exact track length in seconds (5-240). Match the timeline range being scored.' },
+          bpm: { type: 'number', description: 'Tempo in beats per minute (40-220). Defaults to 120.' },
+          keyScale: { type: 'string', description: 'Musical key/scale, e.g. "C major", "A minor". Defaults to "C major".' },
+          timeSignature: { type: 'string', enum: ['2', '3', '4', '6'], description: 'Beats per bar (x/4). Defaults to "4".' },
+          variations: { type: 'integer', description: 'Seed variations to queue, 1-4. Defaults to 1.' },
+          seed: { type: 'integer', description: 'Base seed; variations increment from it. Random when omitted.' },
+          previewOnly: { type: 'boolean', description: 'When true, returns the generation plan without queueing. Defaults to true.' },
+        },
+        required: ['tags'],
+      },
+    },
+    {
+      name: 'get_music_generation_status',
+      description: 'Check ACE-Step music generation jobs queued by generate_music. Returns per-job status (queued/running/completed/failed) and, for completed jobs, the imported "Generated Music" asset ids/summaries ready for add_asset_to_timeline.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          promptIds: { type: 'array', items: { type: 'string' }, description: 'Prompt ids from generate_music. Omit to list all music jobs from this app session.' },
+        },
+      },
+    },
+    {
+      name: 'get_audio_analysis',
+      description: 'Analyze the audio of a project asset (audio or video) or a timeline clip: beat grid + BPM estimate with confidence, raw onset times, loudness (peak dBFS, RMS, approximate integrated LUFS, downsampled loudness curve), and silence spans. Use it to cut to the beat of a song (pair with generate_music, then add_timeline_markers at the beats), place clips at silences, or judge levels before delivery. When clipId is given, analysis covers the clip\'s trimmed range and (for forward constant-speed clips) beatsTimeline/silencesTimeline are absolute timeline seconds. Read-only; decoding happens in-app and takes a few seconds for long files.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          assetId: { type: 'string', description: 'Project asset ID (audio or video) to analyze.' },
+          assetName: { type: 'string', description: 'Exact or partial asset name to analyze.' },
+          clipId: { type: 'string', description: 'Timeline clip ID — analyzes the clip\'s trimmed source range and maps beat/silence times onto the timeline when possible.' },
+          latestGenerated: { type: 'boolean', description: 'When true, analyze the most recent matching asset (combine with type: "audio" for the latest generated music).' },
+          type: { type: 'string', enum: ['audio', 'video'], description: 'Asset type filter when resolving by name/latest.' },
+          silenceThresholdDb: { type: 'number', description: 'Silence detection threshold in dBFS. Defaults to -45.' },
+          minSilenceSeconds: { type: 'number', description: 'Minimum silence span length in seconds. Defaults to 0.35.' },
+          includeLoudnessCurve: { type: 'boolean', description: 'Include the downsampled loudness curve. Defaults to true; disable to shrink the response.' },
+          maxCurvePoints: { type: 'number', description: 'Max loudness-curve points (20-1000). Defaults to 400.' },
+        },
+      },
+    },
+    {
       name: 'queue_prompt_generation_batch',
       description: 'Preview or queue text-to-image/text-to-video generation jobs directly from written prompts. Use this for brief-to-assets workflows before assembling a sequence. Defaults to previewOnly; applying can start local/credit-backed generation, so require explicit user approval first.',
       inputSchema: {
@@ -6913,7 +6973,7 @@ function createToolDefinitions() {
     },
     {
       name: 'inspect_timeline_range',
-      description: 'Sample a timeline range and return a labeled visual contact sheet/storyboard plus clip context for each sampled frame.',
+      description: 'Sample a timeline range and return a labeled visual contact sheet/storyboard plus clip context for each sampled frame. Each sample reports renderer: "live" (true playback pipeline — mattes, corner pin, speed ramps, effects) or "legacy" (simplified fallback — basic transforms only). Live sampling needs the timeline preview open and playback paused; the playhead moves per sample and is restored afterwards.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -7606,7 +7666,7 @@ function createToolDefinitions() {
     },
     {
       name: 'set_clip_style',
-      description: 'Preview or batch-update simple clip styling: label color, enabled state, transform fields, crop, blur, blend mode, and motion blur settings. Use for broad AI timeline polish passes. Defaults to previewOnly.',
+      description: 'Preview or batch-update simple clip styling: label color, enabled state, transform fields, crop, blur, blend mode, motion blur settings, track matte, motion path mode, and corner pin. Use for broad AI timeline polish passes. Defaults to previewOnly.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -7618,7 +7678,7 @@ function createToolDefinitions() {
           nameIncludes: { type: 'string', description: 'Only update clips whose name/asset/id contains this text.' },
           labelColor: { type: 'string', description: 'Set/clear timeline clip label color as #RRGGBB. Empty string clears.' },
           enabled: { type: 'boolean', description: 'Enable or disable matched clips.' },
-          transform: { type: 'object', description: 'Transform updates such as positionX, positionY, scaleX, scaleY, rotation, rotationX, rotationY, opacity, blur, blendMode, crop fields, or motion blur fields.' },
+          transform: { type: 'object', description: 'Transform updates such as positionX, positionY, scaleX, scaleY, rotation, rotationX, rotationY, opacity, blur, blendMode, crop fields, motion blur fields, motionPathMode, cornerPinEnabled, or corner pin offsets (cornerPinTLX/TLY/TRX/TRY/BLX/BLY/BRX/BRY in timeline px).' },
           transformDelta: { type: 'object', description: 'Relative transform changes such as positionX/positionY deltas.' },
           positionX: { type: 'number' },
           positionY: { type: 'number' },
@@ -7632,6 +7692,9 @@ function createToolDefinitions() {
           motionBlurMode: { type: 'string', enum: ['auto', 'velocity', 'sampled'] },
           motionBlurSamples: { type: 'number' },
           motionBlurShutter: { type: 'number' },
+          motionPathMode: { type: 'string', enum: ['linear', 'smooth'], description: 'Position keyframe interpolation: linear = straight lines, smooth = curved path through the keyframes (auto bezier).' },
+          cornerPinEnabled: { type: 'boolean', description: 'Enable corner pin distortion (video/image clips, GPU compositing). Set the per-corner offsets via the transform object or keyframe them with set_clip_keyframes.' },
+          trackMatte: { type: 'string', enum: ['none', 'alpha', 'alpha-inverted', 'luma', 'luma-inverted'], description: 'Track matte: the visual layer directly above the clip becomes the matte and is hidden from output. Alpha uses the matte layer\'s alpha, luma its brightness.' },
           limit: { type: 'integer', description: 'Safety limit for matched clips. Defaults to 100.' },
           previewOnly: { type: 'boolean', description: 'When true, returns the style plan without changing clips. Defaults to true.' },
         },
@@ -9235,7 +9298,7 @@ function createToolDefinitions() {
     },
     {
       name: 'set_clip_keyframes',
-      description: 'Preview or set explicit keyframes on an existing visual timeline clip. Use this for video/image/text/shape fades, dips to black, moves, scale/rotation, 2.5D rotation, blur, crop reveals, color-adjustment animation, and shape size/style animation. Defaults to previewOnly; applying is undoable in Velorn.',
+      description: 'Preview or set explicit keyframes on an existing visual timeline clip. Use this for video/image/text/shape fades, dips to black, moves, scale/rotation, 2.5D rotation, blur, crop reveals, color-adjustment animation, shape size/style animation, speed ramps ("speed" property, video clips only), and animated corner pin (cornerPinTLX..cornerPinBRY, needs transform.cornerPinEnabled via set_clip_style). Position keyframes travel in straight lines unless the clip transform sets motionPathMode "smooth" (curved path through the keyframes). Defaults to previewOnly; applying is undoable in Velorn.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -9829,6 +9892,12 @@ class ComfyStudioMcpServer {
         return this.queueTimelineTemplateGeneration(snapshot, args)
       case 'queue_prompt_generation_batch':
         return this.queuePromptGenerationBatch(snapshot, args)
+      case 'generate_music':
+        return this.runRendererActionTool('generate_music', args, { bridgeName: 'MCP music generation bridge', suggestedTool: 'generate_music', defaultPreviewOnly: true })
+      case 'get_music_generation_status':
+        return this.runRendererActionTool('get_music_generation_status', args, { bridgeName: 'MCP music status bridge', suggestedTool: 'get_music_generation_status' })
+      case 'get_audio_analysis':
+        return this.runRendererActionTool('get_audio_analysis', args, { bridgeName: 'MCP audio analysis bridge', suggestedTool: 'get_audio_analysis' })
       case 'inspect_timeline_range':
         return this.inspectTimelineRange(snapshot, args)
       case 'inspect_visible_shots':

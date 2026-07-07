@@ -25,7 +25,8 @@ import {
   normalizeEffectSettings,
   getAnimatedEffectSettings,
 } from '../../utils/effects'
-import { getKeyframeAtTime } from '../../utils/keyframes'
+import { getKeyframeAtTime, getKeyframeTimeTolerance } from '../../utils/keyframes'
+import useTimelineStore from '../../stores/timelineStore'
 
 const EFFECT_ICONS = {
   cameraShake: Waves,
@@ -201,6 +202,7 @@ function EffectCard({
   onGoToKeyframe,
 }) {
   const [expanded, setExpanded] = useState(true)
+  const timelineFps = useTimelineStore((state) => state.timelineFps)
   const definition = getEffectTypeDefinition(effect.type)
   const Icon = EFFECT_ICONS[effect.type] || Sparkles
   const clipTime = playheadPosition - (clip?.startTime || 0)
@@ -313,7 +315,7 @@ function EffectCard({
           {definition.params.map((param) => {
             const propertyId = getEffectPropertyId(effect.id, param.key)
             const paramKeyframes = clip?.keyframes?.[propertyId] || []
-            const keyframeAtTime = getKeyframeAtTime(paramKeyframes, clipTime, 0.05)
+            const keyframeAtTime = getKeyframeAtTime(paramKeyframes, clipTime, getKeyframeTimeTolerance(timelineFps))
             const hasKeyframeHere = !!keyframeAtTime
             const hasAnyKeyframes = paramKeyframes.length > 0
             const baseValue = normalizedEffect.settings[param.key]

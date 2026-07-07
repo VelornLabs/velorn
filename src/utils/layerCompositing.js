@@ -1,4 +1,6 @@
 import { getAnimatedTransform } from './keyframes'
+import { parseTrackMatte } from './trackMatte'
+import { hasActiveCornerPin } from './cornerPin'
 
 export const CLIP_COMPOSITE_MODE = {
   AUTO: 'auto',
@@ -85,6 +87,8 @@ function hasTransparentEffect(clip) {
 export function isClipFullyObscuringLowerLayers(clip, options = {}) {
   if (!clip) return false
   if (clip.type !== 'video') return false
+  // A track matte cuts this clip's alpha, so lower layers can show through.
+  if (parseTrackMatte(clip.trackMatte)) return false
 
   const {
     time = 0,
@@ -105,6 +109,8 @@ export function isClipFullyObscuringLowerLayers(clip, options = {}) {
   if (hasTransparentEffect(clip)) return false
 
   const transform = transformOverride || getAnimatedTransform(clip, clipTime) || clip.transform || {}
+  // A pinned quad can expose any part of the frame beneath it.
+  if (hasActiveCornerPin(transform)) return false
   const opacity = getTransformValue(transform, 'opacity', 100)
   const blendMode = transform?.blendMode || 'normal'
   const positionX = getTransformValue(transform, 'positionX', 0)

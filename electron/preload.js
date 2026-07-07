@@ -273,7 +273,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ============================================
   
   /**
-   * Get a URL for a local file (using comfystudio:// protocol)
+   * Get a URL for a local file (using the legacy comfystudio:// protocol)
    * @param {string} filePath 
    * @returns {Promise<string>}
    */
@@ -288,7 +288,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /**
    * Extract audio waveform peaks via ffmpeg (Electron only)
-   * @param {string} mediaInput - file:// URL, comfystudio:// URL, or absolute path
+   * @param {string} mediaInput - file:// URL, legacy comfystudio:// URL, or absolute path
    * @param {object} options - { sampleCount?: number, sampleRate?: number }
    * @returns {Promise<{success: boolean, peaks?: number[], duration?: number, error?: string}>}
    */
@@ -395,7 +395,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // ============================================
-  // ComfyStudio Bridge
+  // Velorn Bridge
   // ============================================
 
   comfyBridge: {

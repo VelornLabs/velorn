@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getAnimatedTransform, getPositionKeyframePoints } from '../utils/keyframes'
+
+const MOTION_PATH_SAMPLES = 48
 
 const SCALE_MIN = 1
 const SCALE_MAX = 1000
@@ -35,6 +38,14 @@ function getDragStartTransform(transform) {
     scaleX: getSafeNumber(transform?.scaleX, 100),
     scaleY: getSafeNumber(transform?.scaleY, 100),
     rotation: getSafeNumber(transform?.rotation, 0),
+    cornerPinTLX: getSafeNumber(transform?.cornerPinTLX, 0),
+    cornerPinTLY: getSafeNumber(transform?.cornerPinTLY, 0),
+    cornerPinTRX: getSafeNumber(transform?.cornerPinTRX, 0),
+    cornerPinTRY: getSafeNumber(transform?.cornerPinTRY, 0),
+    cornerPinBLX: getSafeNumber(transform?.cornerPinBLX, 0),
+    cornerPinBLY: getSafeNumber(transform?.cornerPinBLY, 0),
+    cornerPinBRX: getSafeNumber(transform?.cornerPinBRX, 0),
+    cornerPinBRY: getSafeNumber(transform?.cornerPinBRY, 0),
   }
 }
 
@@ -72,11 +83,32 @@ export default function PreviewTransformGizmo({
   onInteractionStart,
   onTransformChange,
   onTransformCommit,
+  onKeyframePointChange,
+  onKeyframePointCommit,
+  cornerPinHandles = null,
 }) {
+  const rootRef = useRef(null)
   const frameRef = useRef(null)
   const dragStateRef = useRef(null)
   const pendingCommitRef = useRef(null)
+  const keyframeDragRef = useRef(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [rootSize, setRootSize] = useState({ width: 0, height: 0 })
+
+  useEffect(() => {
+    const rootEl = rootRef.current
+    if (!rootEl || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      const { width, height } = entry.contentRect
+      setRootSize((current) => (
+        current.width === width && current.height === height ? current : { width, height }
+      ))
+    })
+    observer.observe(rootEl)
+    return () => observer.disconnect()
+  }, [])
 
   const effectiveZoom = Number.isFinite(Number(zoomScale)) && Number(zoomScale) > 0
     ? Number(zoomScale)
@@ -213,6 +245,20 @@ export default function PreviewTransformGizmo({
         updates = {
           rotation: roundTo(rotation, 2),
         }
+      } else if (drag.mode.startsWith('corner-pin-')) {
+        const cornerKey = drag.mode.slice('corner-pin-'.length)
+        const xKey = `cornerPin${cornerKey}X`
+        const yKey = `cornerPin${cornerKey}Y`
+        let pinX = drag.startTransform[xKey] + (e.clientX - drag.startClientX) / pxPerTimelineX
+        let pinY = drag.startTransform[yKey] + (e.clientY - drag.startClientY) / pxPerTimelineY
+        if (snap) {
+          pinX = snapToStep(pinX, POSITION_SNAP_STEP)
+          pinY = snapToStep(pinY, POSITION_SNAP_STEP)
+        }
+        updates = {
+          [xKey]: roundTo(pinX),
+          [yKey]: roundTo(pinY),
+        }
       }
 
       if (updates && typeof onTransformChange === 'function') {
@@ -241,10 +287,156 @@ export default function PreviewTransformGizmo({
     }
   }, [isDragging, pxPerTimelineX, pxPerTimelineY, onTransformChange, onTransformCommit])
 
+  // Motion path overlay: paired positionX/Y keyframes drawn as the true
+  // animated trajectory (linear or smooth) with draggable keyframe dots.
+  const keyframePoints = useMemo(() => (clip ? getPositionKeyframePoints(clip) : null), [clip])
+
+  const pathSamples = useMemo(() => {
+    if (!keyframePoints) return null
+    const startTime = keyframePoints[0].time
+    const endTime = keyframePoints[keyframePoints.length - 1].time
+    if (endTime - startTime <= 0) return null
+    const samples = []
+    for (let index = 0; index <= MOTION_PATH_SAMPLES; index += 1) {
+      const t = startTime + ((endTime - startTime) * index) / MOTION_PATH_SAMPLES
+      const sampled = getAnimatedTransform(clip, t) || {}
+      samples.push({
+        x: getSafeNumber(sampled.positionX, 0),
+        y: getSafeNumber(sampled.positionY, 0),
+      })
+    }
+    return samples
+  }, [clip, keyframePoints])
+
+  const pathBase = useMemo(() => {
+    const rect = frameRect
+      && Number.isFinite(Number(frameRect.x))
+      && Number(frameRect.width) > 0
+      ? frameRect
+      : (rootSize.width > 0 ? { x: 0, y: 0, width: rootSize.width, height: rootSize.height } : null)
+    if (!rect) return null
+    const anchorX = getSafeNumber(transform?.anchorX, 50)
+    const anchorY = getSafeNumber(transform?.anchorY, 50)
+    return {
+      x: Number(rect.x) + Number(rect.width) * (anchorX / 100),
+      y: Number(rect.y) + Number(rect.height) * (anchorY / 100),
+    }
+  }, [frameRect, rootSize, transform?.anchorX, transform?.anchorY])
+
+  const beginKeyframeDrag = useCallback((point, e) => {
+    if (disabled || e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (typeof onInteractionStart === 'function') onInteractionStart()
+    keyframeDragRef.current = {
+      time: point.time,
+      startX: point.x,
+      startY: point.y,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      moved: false,
+    }
+
+    const handlePointerMove = (moveEvent) => {
+      const drag = keyframeDragRef.current
+      if (!drag) return
+      const nextX = drag.startX + (moveEvent.clientX - drag.startClientX) / pxPerTimelineX
+      const nextY = drag.startY + (moveEvent.clientY - drag.startClientY) / pxPerTimelineY
+      drag.moved = true
+      if (typeof onKeyframePointChange === 'function') {
+        onKeyframePointChange(drag.time, { x: roundTo(nextX), y: roundTo(nextY) })
+      }
+    }
+    const finishDrag = (upEvent) => {
+      const drag = keyframeDragRef.current
+      keyframeDragRef.current = null
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', finishDrag)
+      window.removeEventListener('pointercancel', finishDrag)
+      if (drag?.moved && typeof onKeyframePointCommit === 'function') {
+        const nextX = drag.startX + (upEvent.clientX - drag.startClientX) / pxPerTimelineX
+        const nextY = drag.startY + (upEvent.clientY - drag.startClientY) / pxPerTimelineY
+        onKeyframePointCommit(drag.time, { x: roundTo(nextX), y: roundTo(nextY) })
+      }
+    }
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', finishDrag)
+    window.addEventListener('pointercancel', finishDrag)
+  }, [disabled, onInteractionStart, onKeyframePointChange, onKeyframePointCommit, pxPerTimelineX, pxPerTimelineY])
+
   if (!clip || !transform) return null
 
+  const showMotionPath = !!(keyframePoints && pathSamples && pathBase)
+  const toOverlayPoint = (point) => ({
+    x: pathBase.x + point.x * pxPerTimelineX,
+    y: pathBase.y + point.y * pxPerTimelineY,
+  })
+
   return (
-    <div className="absolute inset-0 overflow-visible pointer-events-none z-40">
+    <div ref={rootRef} className="absolute inset-0 overflow-visible pointer-events-none z-40">
+      {/* z-10 lifts the pin handles above the transform frame and its
+          scale/rotate buttons — otherwise the frame's move surface eats
+          every pointer-down aimed at a pin. */}
+      {Array.isArray(cornerPinHandles) && cornerPinHandles.length === 4 && (
+        <svg className="absolute inset-0 z-10 h-full w-full overflow-visible pointer-events-none">
+          {/* Handles arrive TL, TR, BL, BR; outline draws the perimeter TL -> TR -> BR -> BL. */}
+          <polygon
+            points={[cornerPinHandles[0], cornerPinHandles[1], cornerPinHandles[3], cornerPinHandles[2]]
+              .map((handle) => `${handle.x},${handle.y}`).join(' ')}
+            fill="rgba(56,189,248,0.05)"
+            stroke="rgba(56,189,248,0.85)"
+            strokeWidth="1.5"
+            strokeDasharray="5 3"
+          />
+          {cornerPinHandles.map((handle) => (
+            <circle
+              key={`pin-${handle.key}`}
+              cx={handle.x}
+              cy={handle.y}
+              r="7"
+              fill="rgb(56,189,248)"
+              stroke="rgba(255,255,255,0.9)"
+              strokeWidth="1.5"
+              className={disabled ? '' : 'pointer-events-auto cursor-grab'}
+              onPointerDown={(e) => beginDrag(`corner-pin-${handle.key}`, e)}
+            >
+              <title>{`Corner pin ${handle.key} — drag to distort (Shift snaps)`}</title>
+            </circle>
+          ))}
+        </svg>
+      )}
+      {showMotionPath && (
+        <svg className="absolute inset-0 z-10 h-full w-full overflow-visible pointer-events-none">
+          <polyline
+            points={pathSamples.map((sample) => {
+              const overlay = toOverlayPoint(sample)
+              return `${overlay.x},${overlay.y}`
+            }).join(' ')}
+            fill="none"
+            stroke="rgba(255,255,255,0.75)"
+            strokeWidth="1.5"
+            strokeDasharray="4 3"
+          />
+          {keyframePoints.map((point) => {
+            const overlay = toOverlayPoint(point)
+            return (
+              <circle
+                key={`${point.time}`}
+                cx={overlay.x}
+                cy={overlay.y}
+                r="5"
+                fill="rgb(253,224,71)"
+                stroke="rgba(0,0,0,0.7)"
+                strokeWidth="1.5"
+                className={disabled ? '' : 'pointer-events-auto cursor-grab'}
+                onPointerDown={(e) => beginKeyframeDrag(point, e)}
+              >
+                <title>{`Position keyframe @ ${point.time.toFixed(2)}s — drag to move`}</title>
+              </circle>
+            )
+          })}
+        </svg>
+      )}
       <div
         ref={frameRef}
         className={`absolute overflow-visible pointer-events-auto ${disabled ? 'cursor-default' : 'cursor-move'}`}

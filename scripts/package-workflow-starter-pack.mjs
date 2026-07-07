@@ -13,7 +13,7 @@ const releaseDir = path.join(repoRoot, 'release')
 
 async function main() {
   const packageJson = JSON.parse(await fsPromises.readFile(path.join(repoRoot, 'package.json'), 'utf8'))
-  const artifactName = `comfystudio-workflow-starter-pack-v${packageJson.version}.zip`
+  const artifactName = `velorn-workflow-starter-pack-v${packageJson.version}.zip`
   const artifactPath = path.join(releaseDir, artifactName)
 
   await fsPromises.mkdir(releaseDir, { recursive: true })

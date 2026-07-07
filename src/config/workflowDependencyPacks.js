@@ -1035,6 +1035,18 @@ export const WORKFLOW_DEPENDENCY_PACKS = Object.freeze({
         filename: 'ace_1.5_vae.safetensors',
         targetSubdir: 'vae',
       },
+      {
+        classType: 'DualCLIPLoader',
+        inputKey: 'clip_name1',
+        filename: 'qwen_0.6b_ace15.safetensors',
+        targetSubdir: 'text_encoders',
+      },
+      {
+        classType: 'DualCLIPLoader',
+        inputKey: 'clip_name2',
+        filename: 'qwen_1.7b_ace15.safetensors',
+        targetSubdir: 'text_encoders',
+      },
     ]),
     docsUrl: COMFY_REGISTRY_URL,
   }),

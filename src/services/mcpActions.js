@@ -7,6 +7,18 @@ import { generateColorMatteBlob } from '../utils/overlayGenerators'
 import { DEFAULT_SHAPE_PROPERTIES, getShapeDisplayName, normalizeShapeProperties } from '../utils/shapes'
 import { EFFECT_TYPES, getEffectPropertyId, getEffectTypeDefinition } from '../utils/effects'
 import { normalizeAdjustmentSettings } from '../utils/adjustments'
+import { normalizeTrackMatte } from '../utils/trackMatte'
+import {
+  MUSIC_KEY_SCALES,
+  MUSIC_TIME_SIGNATURES,
+  MUSIC_VARIATIONS_MAX,
+  getMusicJobs,
+  normalizeMusicBpm,
+  normalizeMusicDuration,
+  queueMusicGeneration,
+  refreshMusicJobs,
+} from './musicGeneration'
+import { analyzeAudioSource } from './audioAnalysis'
 import { saveLocalComfyConnectionPort } from './localComfyConnection'
 import { getAbsoluteFileUrl, importAsset, writeGeneratedOverlayToProject } from './fileSystem'
 import buildFcpXml from './fcpxmlExporter'
@@ -48,6 +60,7 @@ function summarizeClip(clip) {
     startTime: Number(clip.startTime) || 0,
     duration: Number(clip.duration) || 0,
     labelColor: clip.labelColor || '',
+    trackMatte: normalizeTrackMatte(clip.trackMatte),
   }
 }
 
@@ -574,6 +587,16 @@ const TEXT_TRANSFORM_KEYS = [
   'motionBlurSamples',
   'motionBlurShutter',
   'blendMode',
+  'motionPathMode',
+  'cornerPinEnabled',
+  'cornerPinTLX',
+  'cornerPinTLY',
+  'cornerPinTRX',
+  'cornerPinTRY',
+  'cornerPinBLX',
+  'cornerPinBLY',
+  'cornerPinBRX',
+  'cornerPinBRY',
 ]
 
 const TEXT_KEYFRAME_PROPERTIES = new Set([
@@ -615,6 +638,15 @@ const TEXT_TRANSFORM_NUMBER_FIELDS = {
   cropRight: [0, 0, 100],
   motionBlurSamples: [8, 2, 48],
   motionBlurShutter: [180, 1, 360],
+  // Corner pin offsets (timeline px), applied when transform.cornerPinEnabled.
+  cornerPinTLX: [0, -20000, 20000],
+  cornerPinTLY: [0, -20000, 20000],
+  cornerPinTRX: [0, -20000, 20000],
+  cornerPinTRY: [0, -20000, 20000],
+  cornerPinBLX: [0, -20000, 20000],
+  cornerPinBLY: [0, -20000, 20000],
+  cornerPinBRX: [0, -20000, 20000],
+  cornerPinBRY: [0, -20000, 20000],
 }
 
 const TRANSFORM_BLEND_MODES = new Set([
@@ -680,6 +712,8 @@ const SHAPE_KEYFRAME_PROPERTIES = new Set(Object.keys(SHAPE_KEYFRAME_NUMBER_FIEL
 const CLIP_KEYFRAME_NUMBER_FIELDS = {
   ...TEXT_TRANSFORM_NUMBER_FIELDS,
   ...SHAPE_KEYFRAME_NUMBER_FIELDS,
+  // Speed ramp (time remapping): video clips only, drives utils/timeRemap.js.
+  speed: [1, 0.05, 16],
   brightness: [0, -100, 100],
   contrast: [0, -100, 100],
   saturation: [0, -100, 100],
@@ -884,12 +918,16 @@ function normalizeTransformUpdates(payload = {}) {
     if (hasOwn(source, key)) updates[key] = clampNumber(source[key], fallback, min, max)
     if (hasOwn(deltaSource, key)) deltas[key] = clampNumber(deltaSource[key], 0, -20000, 20000)
   }
-  for (const key of ['scaleLinked', 'flipH', 'flipV', 'motionBlurEnabled']) {
+  for (const key of ['scaleLinked', 'flipH', 'flipV', 'motionBlurEnabled', 'cornerPinEnabled']) {
     if (hasOwn(source, key)) updates[key] = source[key] === true
   }
   if (hasOwn(source, 'motionBlurMode')) {
     const mode = String(source.motionBlurMode || '').trim().toLowerCase()
     updates.motionBlurMode = ['auto', 'velocity', 'sampled'].includes(mode) ? mode : 'auto'
+  }
+  if (hasOwn(source, 'motionPathMode')) {
+    const mode = String(source.motionPathMode || '').trim().toLowerCase()
+    updates.motionPathMode = mode === 'smooth' ? 'smooth' : 'linear'
   }
   if (hasOwn(source, 'blendMode')) {
     const mode = String(source.blendMode || '').trim().toLowerCase()
@@ -1323,6 +1361,9 @@ function normalizeClipKeyframes(payload = {}, clip = null) {
     }
     if (SHAPE_KEYFRAME_PROPERTIES.has(property) && clip?.type !== 'shape') {
       throw new Error(`Shape keyframe property "${property}" can only be used on shape clips.`)
+    }
+    if (property === 'speed' && clip && clip.type !== 'video') {
+      throw new Error('Speed ramp keyframes ("speed") can only be used on video clips.')
     }
     const timeSeconds = Number(entry?.timeSeconds ?? entry?.time)
     if (!Number.isFinite(timeSeconds) || timeSeconds < 0) {
@@ -1941,6 +1982,164 @@ async function handleQueueTimelineTemplateGeneration(payload = {}) {
       },
     }))
   })
+}
+
+async function handleGetAudioAnalysis(payload = {}) {
+  const clipId = String(payload.clipId || '').trim()
+  let asset = null
+  let range = {}
+  let clipContext = null
+
+  if (clipId) {
+    const state = useTimelineStore.getState()
+    const clip = (state.clips || []).find((candidate) => candidate.id === clipId)
+    if (!clip) throw new Error(`Clip ${clipId} was not found.`)
+    if (!clip.assetId) throw new Error(`Clip ${clipId} has no source asset to analyze (text/shape/adjustment clips have no audio).`)
+    asset = (useAssetsStore.getState().assets || []).find((candidate) => candidate.id === clip.assetId)
+    if (!asset) throw new Error(`The source asset for clip ${clipId} was not found.`)
+
+    const baseScale = clip.sourceTimeScale || (clip.timelineFps && clip.sourceFps ? clip.timelineFps / clip.sourceFps : 1)
+    const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1
+    const timeScale = baseScale * speed
+    const trimStart = Number(clip.trimStart) || 0
+    const trimEnd = Number.isFinite(Number(clip.trimEnd))
+      ? Number(clip.trimEnd)
+      : trimStart + (Number(clip.duration) || 0) * timeScale
+    range = { startSeconds: trimStart, endSeconds: trimEnd }
+    clipContext = {
+      clipId,
+      startTime: Number(clip.startTime) || 0,
+      timeScale,
+      reverse: !!clip.reverse,
+      hasSpeedRamp: (clip.keyframes?.speed?.length || 0) > 0,
+    }
+  } else {
+    asset = resolveMcpTimelineAsset(payload)
+  }
+
+  const assetType = String(asset.type || '').toLowerCase()
+  if (assetType !== 'audio' && assetType !== 'video') {
+    throw new Error(`Asset "${asset.name}" is a ${asset.type || 'non-media'} asset — audio analysis needs an audio or video source.`)
+  }
+
+  const analysis = await analyzeAudioSource(
+    { url: asset.url || '', absolutePath: asset.absolutePath || asset.path || '' },
+    {
+      ...range,
+      silenceThresholdDb: payload.silenceThresholdDb,
+      minSilenceSeconds: payload.minSilenceSeconds,
+      includeLoudnessCurve: payload.includeLoudnessCurve !== false,
+      maxCurvePoints: payload.maxCurvePoints,
+    }
+  )
+  if (analysis?.error) {
+    return { success: false, asset: summarizeAsset(asset), warning: analysis.error, duration: analysis.duration }
+  }
+
+  const result = { success: true, asset: summarizeAsset(asset), analysis }
+  if (clipContext) {
+    // Analysis times are relative to the clip's trim-in point in source time.
+    const canMap = !clipContext.reverse && !clipContext.hasSpeedRamp
+    const toTimeline = (sourceOffset) => Math.round((clipContext.startTime + sourceOffset / clipContext.timeScale) * 1000) / 1000
+    result.clip = {
+      clipId: clipContext.clipId,
+      timelineMapping: canMap ? 'constant-speed' : 'unavailable',
+      note: clipContext.reverse
+        ? 'Clip plays reversed — timeline mapping is not provided. Times are seconds within the trimmed source.'
+        : clipContext.hasSpeedRamp
+          ? 'Clip has a speed ramp — timeline mapping is not provided (the ramp remaps time nonlinearly). Times are seconds within the trimmed source.'
+          : 'beatsTimeline/silencesTimeline are absolute timeline seconds, ready for add_timeline_markers or cut points.',
+    }
+    if (canMap) {
+      result.clip.beatsTimeline = (analysis.beats || []).map(toTimeline)
+      result.clip.silencesTimeline = (analysis.silences || []).map((span) => ({
+        start: toTimeline(span.start),
+        end: toTimeline(span.end),
+      }))
+    }
+  }
+  return result
+}
+
+async function handleGenerateMusic(payload = {}) {
+  const tags = String(payload.tags || payload.prompt || '').trim()
+  if (!tags) {
+    throw new Error('Provide style tags for the music, e.g. "warm lo-fi hip hop, mellow keys, 85 bpm".')
+  }
+  const instrumental = payload.instrumental !== false && !String(payload.lyrics || '').trim()
+  const lyrics = String(payload.lyrics || '').trim()
+  const durationSeconds = normalizeMusicDuration(payload.durationSeconds ?? payload.duration ?? 30)
+  const variations = Math.max(1, Math.min(MUSIC_VARIATIONS_MAX, Math.round(Number(payload.variations) || 1)))
+  const seed = Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : null
+  const bpm = normalizeMusicBpm(payload.bpm ?? 120)
+  const keyScale = MUSIC_KEY_SCALES.includes(String(payload.keyScale)) ? String(payload.keyScale) : 'C major'
+  const timeSignature = MUSIC_TIME_SIGNATURES.includes(String(payload.timeSignature)) ? String(payload.timeSignature) : '4'
+
+  const plan = {
+    action: 'generate_music',
+    tags,
+    lyrics: instrumental ? '(instrumental)' : lyrics,
+    instrumental,
+    durationSeconds,
+    variations,
+    seed,
+    bpm,
+    keyScale,
+    timeSignature,
+    model: 'ACE-Step 1.5 turbo',
+    outputFolder: 'Generated Music',
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      message: `Music generation plan only (${variations} take${variations > 1 ? 's' : ''}, ${durationSeconds}s, ${bpm} BPM, ${keyScale}). Nothing was queued. Requires the ACE-Step 1.5 models installed in ComfyUI (the timeline Music popover has a one-click download).`,
+      plan,
+      suggestedApplyPayload: { ...payload, previewOnly: false },
+    }
+  }
+
+  const jobs = await queueMusicGeneration({
+    tags,
+    lyrics,
+    instrumental,
+    durationSeconds,
+    variations,
+    seed,
+    bpm,
+    keyScale,
+    timeSignature,
+  })
+
+  return {
+    success: true,
+    action: 'generate_music',
+    message: `Queued ${jobs.length} ACE-Step music job${jobs.length > 1 ? 's' : ''}. Poll get_music_generation_status with these promptIds; completed takes import into the "Generated Music" asset folder, then place one with add_asset_to_timeline.`,
+    jobs,
+    promptIds: jobs.map((job) => job.promptId),
+  }
+}
+
+async function handleGetMusicGenerationStatus(payload = {}) {
+  const promptIds = Array.isArray(payload.promptIds)
+    ? payload.promptIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : []
+  await refreshMusicJobs()
+  const jobs = getMusicJobs(promptIds.length > 0 ? promptIds : null)
+  const assetsState = useAssetsStore.getState()
+  return {
+    success: true,
+    jobCount: jobs.length,
+    jobs: jobs.map((job) => ({
+      ...job,
+      assets: (job.assetIds || [])
+        .map((assetId) => {
+          const asset = assetsState.getAssetById?.(assetId)
+          return asset ? summarizeAsset(asset) : null
+        })
+        .filter(Boolean),
+    })),
+  }
 }
 
 async function handleQueuePromptGenerationBatch(payload = {}) {
@@ -6154,6 +6353,7 @@ async function handleInspectTimelineFrame(payload = {}) {
       height: captured.height,
       mimeType: captured.mimeType || captured.file.type || mimeType,
       size: captured.file.size,
+      renderer: captured.renderer || null,
       image: null,
     }
   }
@@ -6166,6 +6366,7 @@ async function handleInspectTimelineFrame(payload = {}) {
       height: captured.height,
       mimeType: captured.mimeType || captured.file.type || mimeType,
       size: captured.file.size,
+      renderer: captured.renderer || null,
       warning: `Captured frame is ${captured.file.size} bytes, above the ${maxImageBytes} byte MCP embed limit.`,
     }
   }
@@ -6177,6 +6378,7 @@ async function handleInspectTimelineFrame(payload = {}) {
     height: captured.height,
     mimeType: captured.mimeType || captured.file.type || mimeType,
     size: captured.file.size,
+    renderer: captured.renderer || null,
     image: {
       type: 'image',
       data: await blobToBase64(captured.file),
@@ -6307,30 +6509,39 @@ async function handleInspectTimelineRange(payload = {}) {
   }
 
   const captures = []
-  for (const [index, sample] of samples.entries()) {
-    const timeSeconds = Number(sample?.timeSeconds)
-    const safeTimeSeconds = Number.isFinite(timeSeconds) ? timeSeconds : 0
-    const captured = await captureTimelineFrameAt(safeTimeSeconds, {
-      maxWidth,
-      maxHeight,
-      mimeType,
-      quality,
-      createBlobUrl: false,
-    })
+  // Live captures seek the playhead per sample; restore it once at the end
+  // instead of ping-ponging between every sample.
+  const playheadBeforeCaptures = useTimelineStore.getState().playheadPosition
+  try {
+    for (const [index, sample] of samples.entries()) {
+      const timeSeconds = Number(sample?.timeSeconds)
+      const safeTimeSeconds = Number.isFinite(timeSeconds) ? timeSeconds : 0
+      const captured = await captureTimelineFrameAt(safeTimeSeconds, {
+        maxWidth,
+        maxHeight,
+        mimeType,
+        quality,
+        createBlobUrl: false,
+        restorePlayhead: false,
+      })
 
-    captures.push({
-      index,
-      timeSeconds: safeTimeSeconds,
-      timecode: sample?.timecode || '',
-      label: sample?.label || `${index + 1}. ${sample?.timecode || `${safeTimeSeconds.toFixed(2)}s`}`,
-      success: Boolean(captured?.file),
-      file: captured?.file || null,
-      width: captured?.width || null,
-      height: captured?.height || null,
-      mimeType: captured?.mimeType || mimeType,
-      size: captured?.file?.size || 0,
-      warning: captured?.file ? '' : 'No visual timeline frame could be captured at this time.',
-    })
+      captures.push({
+        index,
+        timeSeconds: safeTimeSeconds,
+        timecode: sample?.timecode || '',
+        label: sample?.label || `${index + 1}. ${sample?.timecode || `${safeTimeSeconds.toFixed(2)}s`}`,
+        success: Boolean(captured?.file),
+        file: captured?.file || null,
+        width: captured?.width || null,
+        height: captured?.height || null,
+        mimeType: captured?.mimeType || mimeType,
+        size: captured?.file?.size || 0,
+        renderer: captured?.renderer || null,
+        warning: captured?.file ? '' : 'No visual timeline frame could be captured at this time.',
+      })
+    }
+  } finally {
+    useTimelineStore.getState().setPlayheadPosition(playheadBeforeCaptures, { snap: false })
   }
 
   const resultSamples = captures.map((capture) => ({
@@ -6343,6 +6554,7 @@ async function handleInspectTimelineRange(payload = {}) {
     height: capture.height,
     mimeType: capture.mimeType,
     size: capture.size,
+    renderer: capture.renderer,
     warning: capture.warning,
   }))
 
@@ -7134,8 +7346,13 @@ function handleSetClipStyle(payload = {}) {
     throw new Error('Invalid label color. Use a hex color like #f97316, or an empty string to clear labels.')
   }
   const enabledWasProvided = hasOwn(payload, 'enabled')
-  if (!hasTransformUpdates && !labelWasProvided && !enabledWasProvided) {
-    throw new Error('Provide transform updates, labelColor, or enabled for set_clip_style.')
+  const trackMatteWasProvided = hasOwn(payload, 'trackMatte')
+  const trackMatte = trackMatteWasProvided ? normalizeTrackMatte(payload.trackMatte) : null
+  if (trackMatteWasProvided && payload.trackMatte && trackMatte !== String(payload.trackMatte).trim().toLowerCase()) {
+    throw new Error('Invalid trackMatte. Use one of: none, alpha, alpha-inverted, luma, luma-inverted. The visual layer directly above becomes the matte and is hidden from output.')
+  }
+  if (!hasTransformUpdates && !labelWasProvided && !enabledWasProvided && !trackMatteWasProvided) {
+    throw new Error('Provide transform updates, trackMatte, labelColor, or enabled for set_clip_style.')
   }
 
   const plan = {
@@ -7147,6 +7364,7 @@ function handleSetClipStyle(payload = {}) {
       transform: hasTransformUpdates ? { updates: transformUpdates, deltas: transformDeltas } : null,
       labelColor: labelWasProvided ? labelColor : undefined,
       enabled: enabledWasProvided ? Boolean(payload.enabled) : undefined,
+      trackMatte: trackMatteWasProvided ? trackMatte : undefined,
     },
     clips: clips.map((clip) => ({
       ...summarizeClip(clip),
@@ -7178,6 +7396,7 @@ function handleSetClipStyle(payload = {}) {
       }
       if (labelWasProvided) nextClip.labelColor = labelColor
       if (enabledWasProvided) nextClip.enabled = Boolean(payload.enabled)
+      if (trackMatteWasProvided) nextClip.trackMatte = trackMatte
       return nextClip
     }),
   }))
@@ -7316,6 +7535,12 @@ async function handleMcpAction(request = {}) {
       return handleQueueTimelineTemplateGeneration(request.payload || {})
     case 'queue_prompt_generation_batch':
       return handleQueuePromptGenerationBatch(request.payload || {})
+    case 'generate_music':
+      return handleGenerateMusic(request.payload || {})
+    case 'get_music_generation_status':
+      return handleGetMusicGenerationStatus(request.payload || {})
+    case 'get_audio_analysis':
+      return handleGetAudioAnalysis(request.payload || {})
     case 'inspect_timeline_frame':
       return handleInspectTimelineFrame(request.payload || {})
     case 'inspect_timeline_range':

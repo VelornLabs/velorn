@@ -187,7 +187,7 @@ function renderWorkflowMarkdown(entry) {
   lines.push('')
 
   lines.push('## What This Setup Workflow Is')
-  lines.push('- A ComfyUI-importable copy of the workflow graph bundled with ComfyStudio.')
+  lines.push('- A ComfyUI-importable copy of the workflow graph bundled with Velorn.')
   lines.push('- Use it to inspect missing nodes, model loaders, and expected filenames directly inside ComfyUI.')
   if (entry.runtime === 'cloud') {
     lines.push('- This is still a cloud workflow: local model weights are usually not required, but the partner node and API key still are.')
@@ -245,14 +245,14 @@ function renderWorkflowMarkdown(entry) {
   if (entry.requiredModels.length > 0) {
     lines.push('3. Place the required model files into the folders listed above.')
     lines.push('4. Re-open the workflow in ComfyUI and confirm all loaders resolve.')
-    lines.push('5. Return to ComfyStudio Generate and click `Re-check` before queueing.')
+    lines.push('5. Return to Velorn Generate and click `Re-check` before queueing.')
   } else {
     lines.push('3. Re-open the workflow in ComfyUI and confirm the required partner/custom nodes load cleanly.')
     if (entry.requiresComfyOrgApiKey) {
-      lines.push('4. Add your Comfy account API key in ComfyStudio Settings before queueing.')
-      lines.push('5. Return to ComfyStudio Generate and click `Re-check` before queueing.')
+      lines.push('4. Add your Comfy account API key in Velorn Settings before queueing.')
+      lines.push('5. Return to Velorn Generate and click `Re-check` before queueing.')
     } else {
-      lines.push('4. Return to ComfyStudio Generate and click `Re-check` before queueing.')
+      lines.push('4. Return to Velorn Generate and click `Re-check` before queueing.')
     }
   }
   lines.push('')
@@ -292,7 +292,7 @@ function renderReleaseNotes(releaseMetadata) {
   const lines = []
   lines.push(`# Workflow Starter Pack v${releaseMetadata.starterPackVersion}`)
   lines.push('')
-  lines.push(`Generated for ComfyStudio v${releaseMetadata.compatibleAppVersion}.`)
+  lines.push(`Generated for Velorn v${releaseMetadata.compatibleAppVersion}.`)
   lines.push('')
   lines.push('## What Is Included')
   lines.push('')
@@ -305,11 +305,11 @@ function renderReleaseNotes(releaseMetadata) {
   lines.push('## Who This Is For')
   lines.push('')
   lines.push('- Advanced ComfyUI users who want to inspect workflows directly in ComfyUI')
-  lines.push('- Users who prefer to install nodes and models manually before queueing inside ComfyStudio')
+  lines.push('- Users who prefer to install nodes and models manually before queueing inside Velorn')
   lines.push('')
   lines.push('## Important Notes')
   lines.push('')
-  lines.push('- This pack does not replace the ComfyStudio desktop app.')
+  lines.push('- This pack does not replace the Velorn desktop app.')
   lines.push('- This pack does not include ComfyUI itself.')
   lines.push('- Cloud workflows still require local ComfyUI plus the relevant partner nodes and API key.')
   lines.push('')

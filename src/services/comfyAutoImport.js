@@ -2,7 +2,7 @@
  * ComfyUI-tab auto-import bridge.
  *
  * Listens for ComfyUI websocket activity and, for eligible prompts that
- * weren't queued by ComfyStudio's own managed workflow pipeline, pulls the
+ * weren't queued by Velorn's own managed workflow pipeline, pulls the
  * resulting output files into the current project's `Imported from ComfyUI/`
  * folder. Eligibility is provided by the app shell, currently meaning prompts
  * observed while the embedded ComfyUI tab is active.
@@ -67,7 +67,7 @@ function appendLauncherLog(stream, text) {
 // avoid unbounded growth in long sessions.
 const MAX_SIGNATURES = 2000
 const importedSignatures = new Set()
-const COMFYSTUDIO_MANAGED_OUTPUT_RE = /^(director_job_|comfystudio_job_|flow_ai_|topaz_video_upscale_|ComfyStudioMask_|VelornMask_)/i
+const VELORN_MANAGED_OUTPUT_RE = /^(director_job_|velorn_|velorn_job_|comfystudio_|comfystudio_job_|flow_ai_|topaz_video_upscale_|comfystudiomask_|VelornMask_)/i
 const MAX_ELIGIBLE_PROMPT_IDS = 300
 const eligibleUnmanagedPromptIds = new Set()
 let runtimeOptions = {}
@@ -129,9 +129,9 @@ function sameSourceText(left, right) {
   return normalizeSourceText(left).toLowerCase() === normalizeSourceText(right).toLowerCase()
 }
 
-function isComfyStudioManagedOutput(fileDesc) {
+function isVelornManagedOutput(fileDesc) {
   const filename = normalizeSourceText(fileDesc?.filename)
-  return COMFYSTUDIO_MANAGED_OUTPUT_RE.test(filename)
+  return VELORN_MANAGED_OUTPUT_RE.test(filename)
 }
 
 function getAutoImportSourceFields(fileDesc, promptId) {
@@ -507,7 +507,7 @@ async function runImportPipeline(promptId, preFetchedEntry, projectDir) {
   const fresh = allOutputFiles.filter((f) => {
     const sig = sigFor(f)
     if (!sig) return false
-    if (isComfyStudioManagedOutput(f)) {
+    if (isVelornManagedOutput(f)) {
       importedSignatures.add(sig)
       return false
     }
@@ -593,7 +593,7 @@ async function runImportPipeline(promptId, preFetchedEntry, projectDir) {
 
 async function importSingleFile({ file, kind, apiWorkflow, promptId, projectDir }) {
   const sig = sigFor(file)
-  if (isComfyStudioManagedOutput(file)) {
+  if (isVelornManagedOutput(file)) {
     if (sig) importedSignatures.add(sig)
     return
   }
@@ -814,7 +814,7 @@ async function importStitchedSequence({ classification, apiWorkflow, promptId, p
 // {node:null}`, `execution_error`) with `broadcast=False` — only to the
 // websocket client that originally queued the prompt. When the user
 // queues from the embedded ComfyUI tab (its own client_id), an external
-// browser, or CLI, ComfyStudio's websocket never sees these events.
+// browser, or CLI, Velorn's websocket never sees these events.
 //
 // What *is* broadcast to every connected client:
 //   - `executing` for each node (broadcast=True)

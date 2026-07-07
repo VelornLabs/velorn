@@ -129,7 +129,7 @@ function createBridgeButton() {
 }
 
 app.registerExtension({
-  name: "ComfyStudio.Bridge",
+  name: "Velorn.Bridge",
   setup() {
     createBridgeButton();
   },

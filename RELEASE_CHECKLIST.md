@@ -79,7 +79,7 @@ npm run starter-pack:build
   - `docs/workflow-starter-pack/workflows/*.md`
 - [ ] Review generated files for accuracy (IDs, tier labels, model paths, node names).
 - [ ] Add/update ComfyUI-importable setup workflow JSON files (replace `setupWorkflowFile: pending` entries when available).
-- [ ] Package starter pack as a versioned zip for release assets (example: `comfystudio-workflow-starter-pack-vX.Y.Z.zip`).
+- [ ] Package starter pack as a versioned zip for release assets (example: `velorn-workflow-starter-pack-vX.Y.Z.zip`).
 - [ ] Upload starter pack zip to GitHub Release assets.
 - [ ] Ensure release notes point users to starter pack download.
 

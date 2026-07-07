@@ -41,6 +41,6 @@ When adding or changing workflows:
 
 ## Publishing recommendation
 
-- Publish a versioned zip such as `comfystudio-workflow-starter-pack-vX.Y.Z.zip`.
+- Publish a versioned zip such as `velorn-workflow-starter-pack-vX.Y.Z.zip`.
 - Upload it beside the desktop app binaries on GitHub Releases.
 - In release notes, describe it as optional and intended for advanced ComfyUI users only.

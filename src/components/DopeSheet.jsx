@@ -1,16 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Clock3, Diamond, Magnet, Trash2 } from 'lucide-react'
+import { ClipboardPaste, Clock3, Copy, Diamond, Magnet, Spline, Trash2 } from 'lucide-react'
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
-import { KEYFRAMEABLE_PROPERTIES, EASING_OPTIONS, getAnimatedTransform, getAnimatedAdjustmentSettings, quantizeTimeToFrame, getAllKeyframeTimes } from '../utils/keyframes'
+import { KEYFRAMEABLE_PROPERTIES, EASING_OPTIONS, getAnimatedTransform, getAnimatedAdjustmentSettings, quantizeTimeToFrame, getAllKeyframeTimes, getKeyframeTimeTolerance, parseCubicBezierEasing, getValueAtTime } from '../utils/keyframes'
+import BezierEasingEditor from './BezierEasingEditor'
 import { getSpriteFramePosition } from '../services/thumbnailSprites'
 
 const LEFT_COLUMN_WIDTH = 148
-const KEYFRAME_MATCH_TOLERANCE = 0.05
 const RULER_HEIGHT = 32
+const DEFAULT_CUSTOM_EASING = 'cubic-bezier(0.25, 0.1, 0.25, 1)'
+const GRAPH_HEIGHT = 200
+const GRAPH_PADDING_Y = 18
+const GRAPH_SAMPLE_COUNT = 160
 const REFERENCE_STRIP_HEIGHT = 48
 const PROPERTY_ROW_HEIGHT = 36
 const KEYFRAME_MULTI_DRAG_THRESHOLD_PX = 0.5
+
+const formatRowValue = (value) => {
+  if (!Number.isFinite(value)) return ''
+  const abs = Math.abs(value)
+  const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2
+  return `${Number(value.toFixed(digits))}`
+}
 
 const getMajorRulerStep = (pixelsPerSecond) => {
   const candidates = [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120]
@@ -29,12 +40,17 @@ function DopeSheet() {
     moveKeyframesAtTime,
     setKeyframe,
     removeKeyframe,
+    keyframeClipboard,
+    copyKeyframesToClipboard,
+    pasteKeyframesFromClipboard,
     timelineFps,
     zoom,
     undo,
     redo,
   } = useTimelineStore()
   const [frameSnapEnabled, setFrameSnapEnabled] = useState(true)
+  const [isEasingEditorOpen, setIsEasingEditorOpen] = useState(false)
+  const [graphPropertyId, setGraphPropertyId] = useState(null)
   const [selectedKeyframe, setSelectedKeyframe] = useState(null) // { propertyId, time }
   const [selectedKeyframes, setSelectedKeyframes] = useState([]) // [{ propertyId, time }]
   const [dragState, setDragState] = useState(null)
@@ -106,9 +122,10 @@ function DopeSheet() {
     [clipDuration]
   )
 
+  const keyframeMatchTolerance = getKeyframeTimeTolerance(safeFps)
   const isSameKeyframeTime = useCallback((a, b) => (
-    Math.abs(Number(a || 0) - Number(b || 0)) < KEYFRAME_MATCH_TOLERANCE
-  ), [])
+    Math.abs(Number(a || 0) - Number(b || 0)) < keyframeMatchTolerance
+  ), [keyframeMatchTolerance])
 
   const normalizeKeyframeSelection = useCallback((entries = []) => {
     const normalized = []
@@ -303,6 +320,149 @@ function DopeSheet() {
     setSelectedKeyframes([])
     setSelectedKeyframe(null)
   }, [normalizeKeyframeSelection, removeKeyframe, saveToHistory, selectedClip, selectedKeyframe, selectedKeyframes])
+
+  // ==================== VALUE GRAPH ====================
+  // Graph mode shows one property's value-over-time curve, sampled through
+  // getValueAtTime so easing (including cubic-bezier) renders true.
+  const [graphDragScale, setGraphDragScale] = useState(null)
+
+  useEffect(() => {
+    // Leave graph mode when the clip changes or the property loses its row.
+    if (!graphPropertyId) return
+    if (!selectedClip || !propertyRows.some((property) => property.id === graphPropertyId)) {
+      setGraphPropertyId(null)
+      setGraphDragScale(null)
+    }
+  }, [graphPropertyId, propertyRows, selectedClip])
+
+  const graphData = useMemo(() => {
+    if (!selectedClip || !graphPropertyId) return null
+    const keyframes = [...(selectedClip.keyframes?.[graphPropertyId] || [])].sort((a, b) => a.time - b.time)
+    if (keyframes.length === 0) return null
+
+    let vMin = Infinity
+    let vMax = -Infinity
+    const samples = []
+    for (let index = 0; index <= GRAPH_SAMPLE_COUNT; index += 1) {
+      const t = (clipDuration * index) / GRAPH_SAMPLE_COUNT
+      const v = getValueAtTime(keyframes, t, keyframes[0].value)
+      samples.push({ t, v })
+      if (v < vMin) vMin = v
+      if (v > vMax) vMax = v
+    }
+    for (const keyframe of keyframes) {
+      if (keyframe.value < vMin) vMin = keyframe.value
+      if (keyframe.value > vMax) vMax = keyframe.value
+    }
+    if (!Number.isFinite(vMin) || !Number.isFinite(vMax)) return null
+    if (vMax - vMin < 1e-6) {
+      vMax += 1
+      vMin -= 1
+    }
+    const padding = (vMax - vMin) * 0.12
+    return { keyframes, samples, vMin: vMin - padding, vMax: vMax + padding }
+  }, [clipDuration, graphPropertyId, selectedClip])
+
+  const graphScale = graphDragScale || (graphData ? { vMin: graphData.vMin, vMax: graphData.vMax } : null)
+  const graphInnerHeight = GRAPH_HEIGHT - 2 * GRAPH_PADDING_Y
+  const graphValueToY = useCallback((value) => {
+    if (!graphScale) return GRAPH_PADDING_Y
+    const normalized = (value - graphScale.vMin) / (graphScale.vMax - graphScale.vMin)
+    return GRAPH_PADDING_Y + (1 - normalized) * graphInnerHeight
+  }, [graphInnerHeight, graphScale])
+
+  const handleGraphLaneMouseDown = useCallback((event) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    setPlayheadFromMouseEvent(event)
+    setIsScrubbing(true)
+  }, [setPlayheadFromMouseEvent])
+
+  const handleGraphDoubleClick = useCallback((event) => {
+    if (!selectedClip || !graphData) return
+    event.preventDefault()
+    event.stopPropagation()
+    const time = getClipTimeFromClientX(event.clientX)
+    const value = getValueAtTime(graphData.keyframes, time, graphData.keyframes[0].value)
+    setKeyframe(selectedClip.id, graphPropertyId, time, value, 'easeInOut', { saveHistory: true })
+    setSelectedKeyframe({ propertyId: graphPropertyId, time })
+    setSelectedKeyframes([{ propertyId: graphPropertyId, time }])
+  }, [getClipTimeFromClientX, graphData, graphPropertyId, selectedClip, setKeyframe])
+
+  const startGraphDotDrag = useCallback((event, keyframe) => {
+    if (event.button !== 0 || !selectedClip || !graphData || !graphScale) return
+    event.preventDefault()
+    event.stopPropagation()
+
+    setSelectedKeyframe({ propertyId: graphPropertyId, time: keyframe.time })
+    setSelectedKeyframes([{ propertyId: graphPropertyId, time: keyframe.time }])
+    // Freeze the value scale for the whole drag so the curve doesn't rescale
+    // under the cursor while the value changes.
+    const frozenScale = { vMin: graphScale.vMin, vMax: graphScale.vMax }
+    setGraphDragScale(frozenScale)
+
+    const startClientX = event.clientX
+    const startClientY = event.clientY
+    const startTime = keyframe.time
+    const startValue = keyframe.value
+    const easing = keyframe.easing || 'linear'
+    const valueRange = frozenScale.vMax - frozenScale.vMin
+    let currentTime = startTime
+    let historySaved = false
+
+    const handlePointerMove = (moveEvent) => {
+      const deltaTime = (moveEvent.clientX - startClientX) / pixelsPerSecond
+      const deltaValue = -((moveEvent.clientY - startClientY) / graphInnerHeight) * valueRange
+      const targetTime = normalizeEditableTime(startTime + deltaTime)
+      const targetValue = startValue + deltaValue
+      if (!historySaved) {
+        saveToHistory()
+        historySaved = true
+      }
+      if (!isSameKeyframeTime(targetTime, currentTime)) {
+        const moved = moveKeyframeTime(selectedClip.id, graphPropertyId, currentTime, targetTime, { saveHistory: false })
+        if (moved) currentTime = targetTime
+      }
+      setKeyframe(selectedClip.id, graphPropertyId, currentTime, targetValue, easing, { saveHistory: false })
+      setSelectedKeyframe({ propertyId: graphPropertyId, time: currentTime })
+      setSelectedKeyframes([{ propertyId: graphPropertyId, time: currentTime }])
+    }
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+      setGraphDragScale(null)
+    }
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+  }, [graphData, graphInnerHeight, graphPropertyId, graphScale, isSameKeyframeTime, moveKeyframeTime, normalizeEditableTime, pixelsPerSecond, saveToHistory, selectedClip, setKeyframe])
+
+  const copySelectedKeyframes = useCallback(() => {
+    if (!selectedClip) return
+    const selection = normalizeKeyframeSelection(
+      selectedKeyframes.length > 0
+        ? selectedKeyframes
+        : (selectedKeyframe ? [selectedKeyframe] : [])
+    )
+    const targets = selection.map((entry) => {
+      const keyframes = selectedClip.keyframes?.[entry.propertyId] || []
+      const match = keyframes.find((keyframe) => isSameKeyframeTime(keyframe.time, entry.time))
+      if (!match) return null
+      return { propertyId: entry.propertyId, time: match.time, value: match.value, easing: match.easing }
+    }).filter(Boolean)
+    copyKeyframesToClipboard(targets)
+  }, [copyKeyframesToClipboard, isSameKeyframeTime, normalizeKeyframeSelection, selectedClip, selectedKeyframe, selectedKeyframes])
+
+  const pasteKeyframesAtPlayhead = useCallback(() => {
+    if (!selectedClip) return
+    const atTime = normalizeEditableTime(clipLocalPlayheadTime)
+    const pasted = pasteKeyframesFromClipboard(selectedClip.id, atTime)
+    if (pasted.length > 0) {
+      setSelectedKeyframes(pasted)
+      setSelectedKeyframe(pasted[0])
+    }
+  }, [clipLocalPlayheadTime, normalizeEditableTime, pasteKeyframesFromClipboard, selectedClip])
 
   const startKeyframeDrag = (event, propertyId, keyframeTime) => {
     if (event.altKey) {
@@ -653,11 +813,13 @@ function DopeSheet() {
       const isTypingField = target instanceof HTMLElement
         && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
 
-      if (isTypingField) return
-
       const key = String(event.key || '').toLowerCase()
       const isModifierHeld = event.ctrlKey || event.metaKey
 
+      // Undo/redo stay responsive even when focus rests on an Inspector
+      // input or checkbox (same rationale as the Timeline's handler —
+      // controlled inputs have no useful native undo). With the Dope Sheet
+      // tab open the Timeline handler is unmounted, so this is the only one.
       if (isModifierHeld && !event.shiftKey && key === 'z') {
         event.preventDefault()
         undo()
@@ -670,6 +832,20 @@ function DopeSheet() {
         return
       }
 
+      if (isTypingField) return
+
+      if (isModifierHeld && key === 'c') {
+        event.preventDefault()
+        copySelectedKeyframes()
+        return
+      }
+
+      if (isModifierHeld && key === 'v') {
+        event.preventDefault()
+        pasteKeyframesAtPlayhead()
+        return
+      }
+
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault()
         deleteSelectedKeyframes()
@@ -678,7 +854,7 @@ function DopeSheet() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [deleteSelectedKeyframes, dragState, marqueeState, redo, selectedClip, undo])
+  }, [copySelectedKeyframes, deleteSelectedKeyframes, dragState, marqueeState, pasteKeyframesAtPlayhead, redo, selectedClip, undo])
 
   const marqueeBox = useMemo(() => {
     if (!marqueeState) return null
@@ -732,9 +908,19 @@ function DopeSheet() {
     return allSame ? first : 'mixed'
   }, [selectedKeyframeTargets])
 
+  const easingSelectValue = useMemo(() => {
+    if (!selectedEasingValue || selectedEasingValue === 'mixed') return selectedEasingValue
+    return parseCubicBezierEasing(selectedEasingValue) ? 'custom' : selectedEasingValue
+  }, [selectedEasingValue])
+
+  useEffect(() => {
+    if (selectedKeyframeCount === 0) setIsEasingEditorOpen(false)
+  }, [selectedKeyframeCount])
+
   const applyEasingToSelection = useCallback((nextEasing) => {
     if (!selectedClip || !nextEasing || nextEasing === 'mixed') return
-    if (!EASING_OPTIONS.some((option) => option.id === nextEasing)) return
+    const isNamedEasing = EASING_OPTIONS.some((option) => option.id === nextEasing)
+    if (!isNamedEasing && !parseCubicBezierEasing(nextEasing)) return
     if (selectedKeyframeTargets.length === 0) return
 
     saveToHistory()
@@ -883,15 +1069,26 @@ function DopeSheet() {
             </span>
           )}
           {selectedKeyframeCount > 0 && (
-            <div className="flex items-center gap-1">
+            <div className="relative flex items-center gap-1">
               <span className="text-[10px] text-sf-text-muted">Easing</span>
               <select
-                value={selectedEasingValue}
-                onChange={(event) => applyEasingToSelection(event.target.value)}
+                value={easingSelectValue}
+                onChange={(event) => {
+                  const next = event.target.value
+                  if (next === 'custom') {
+                    if (!parseCubicBezierEasing(selectedEasingValue)) {
+                      applyEasingToSelection(DEFAULT_CUSTOM_EASING)
+                    }
+                    setIsEasingEditorOpen(true)
+                    return
+                  }
+                  setIsEasingEditorOpen(false)
+                  applyEasingToSelection(next)
+                }}
                 className="px-1.5 py-0.5 rounded text-[10px] border border-sf-dark-600 bg-sf-dark-700 text-sf-text-secondary focus:outline-none focus:ring-1 focus:ring-sf-accent/60"
                 title="Set easing for selected keyframe(s)"
               >
-                {selectedEasingValue === 'mixed' && (
+                {easingSelectValue === 'mixed' && (
                   <option value="mixed" disabled>Mixed</option>
                 )}
                 {EASING_OPTIONS.map((option) => (
@@ -899,8 +1096,57 @@ function DopeSheet() {
                     {option.label}
                   </option>
                 ))}
+                <option value="custom">Custom (Bezier)</option>
               </select>
+              <button
+                onClick={() => setIsEasingEditorOpen((open) => !open)}
+                className={`p-0.5 rounded border transition-colors ${
+                  isEasingEditorOpen || easingSelectValue === 'custom'
+                    ? 'bg-sf-accent/20 text-sf-accent border-sf-accent/40'
+                    : 'bg-sf-dark-700 text-sf-text-muted border-sf-dark-600 hover:bg-sf-dark-600'
+                }`}
+                title="Edit bezier easing curve"
+              >
+                <Spline className="w-3.5 h-3.5" />
+              </button>
+              {isEasingEditorOpen && (
+                <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-sf-dark-600 bg-sf-dark-800 p-2 shadow-xl">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[10px] text-sf-text-muted">Bezier Easing</span>
+                    <button
+                      onClick={() => setIsEasingEditorOpen(false)}
+                      className="px-1.5 py-0.5 rounded text-[10px] text-sf-text-muted hover:bg-sf-dark-600 hover:text-sf-text-primary"
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <BezierEasingEditor
+                    value={parseCubicBezierEasing(selectedEasingValue) ? selectedEasingValue : DEFAULT_CUSTOM_EASING}
+                    onChange={applyEasingToSelection}
+                  />
+                </div>
+              )}
             </div>
+          )}
+          {selectedKeyframeCount > 0 && (
+            <button
+              onClick={copySelectedKeyframes}
+              className="px-1.5 py-0.5 rounded text-[10px] border border-sf-dark-600 text-sf-text-secondary bg-sf-dark-700 hover:bg-sf-dark-600 transition-colors flex items-center gap-1"
+              title="Copy selected keyframe(s) (Ctrl/Cmd+C)"
+            >
+              <Copy className="w-3 h-3" />
+              Copy
+            </button>
+          )}
+          {(keyframeClipboard?.length || 0) > 0 && (
+            <button
+              onClick={pasteKeyframesAtPlayhead}
+              className="px-1.5 py-0.5 rounded text-[10px] border border-sf-dark-600 text-sf-text-secondary bg-sf-dark-700 hover:bg-sf-dark-600 transition-colors flex items-center gap-1"
+              title={`Paste ${keyframeClipboard.length} keyframe(s) at playhead (Ctrl/Cmd+V)`}
+            >
+              <ClipboardPaste className="w-3 h-3" />
+              Paste ({keyframeClipboard.length})
+            </button>
           )}
           {selectedKeyframeCount > 0 && (
             <button
@@ -1008,8 +1254,101 @@ function DopeSheet() {
             </div>
           )}
 
-          {propertyRows.map((property) => {
+          {graphPropertyId && graphData && (() => {
+            const graphProperty = propertyRows.find((property) => property.id === graphPropertyId)
+            const gridValues = [graphScale.vMax, (graphScale.vMax + graphScale.vMin) / 2, graphScale.vMin]
+            return (
+              <div className="flex border-b border-sf-dark-800" style={{ height: `${GRAPH_HEIGHT}px` }}>
+                <div
+                  className="sticky left-0 z-10 flex flex-col justify-between px-3 py-2 text-[11px] border-r border-sf-dark-700 bg-sf-dark-900"
+                  style={{ width: `${LEFT_COLUMN_WIDTH}px` }}
+                >
+                  <div>
+                    <div className="text-sf-text-secondary">{graphProperty?.label || graphPropertyId}</div>
+                    <div className="text-[9px] text-sf-text-muted">Value graph {graphProperty?.unit ? `(${graphProperty.unit})` : ''}</div>
+                  </div>
+                  <div className="text-[9px] text-sf-text-muted space-y-0.5">
+                    <div>Drag dots: retime + revalue</div>
+                    <div>Double-click curve: add key</div>
+                  </div>
+                  <button
+                    onClick={() => setGraphPropertyId(null)}
+                    className="px-1.5 py-0.5 rounded text-[10px] border border-sf-dark-600 bg-sf-dark-700 text-sf-text-secondary hover:bg-sf-dark-600 transition-colors"
+                  >
+                    Back to rows
+                  </button>
+                </div>
+                <div
+                  className="relative border-r border-sf-dark-700 cursor-pointer bg-sf-dark-950/40"
+                  style={{ width: `${laneWidth}px`, height: `${GRAPH_HEIGHT}px` }}
+                  onMouseDown={handleGraphLaneMouseDown}
+                  onDoubleClick={handleGraphDoubleClick}
+                >
+                  <svg className="absolute inset-0 h-full w-full overflow-visible pointer-events-none">
+                    {gridValues.map((value, index) => (
+                      <g key={`grid-${index}`}>
+                        <line
+                          x1={0}
+                          x2={laneWidth}
+                          y1={graphValueToY(value)}
+                          y2={graphValueToY(value)}
+                          stroke="rgba(255,255,255,0.08)"
+                          strokeDasharray={index === 1 ? '2 3' : undefined}
+                        />
+                        <text
+                          x={4}
+                          y={graphValueToY(value) - 3}
+                          fill="rgba(255,255,255,0.35)"
+                          fontSize="9"
+                        >
+                          {Number(value.toFixed(Math.abs(value) >= 100 ? 0 : 2))}
+                        </text>
+                      </g>
+                    ))}
+                    <polyline
+                      points={graphData.samples.map((sample) => (
+                        `${clampToClipRange(sample.t) * pixelsPerSecond},${graphValueToY(sample.v)}`
+                      )).join(' ')}
+                      fill="none"
+                      stroke="rgba(56,189,248,0.9)"
+                      strokeWidth="1.5"
+                    />
+                    {graphData.keyframes.map((keyframe, index) => {
+                      const selected = isKeyframeSelected(graphPropertyId, keyframe.time)
+                        || isPrimaryKeyframeSelected(graphPropertyId, keyframe.time)
+                      return (
+                        <circle
+                          key={`graph-key-${index}-${keyframe.time}`}
+                          cx={clampToClipRange(keyframe.time) * pixelsPerSecond}
+                          cy={graphValueToY(keyframe.value)}
+                          r={selected ? 6 : 4.5}
+                          fill={selected ? 'rgb(253,224,71)' : 'rgb(251,191,36)'}
+                          stroke="rgba(0,0,0,0.7)"
+                          strokeWidth="1.5"
+                          className="pointer-events-auto cursor-grab"
+                          onPointerDown={(event) => startGraphDotDrag(event, keyframe)}
+                        >
+                          <title>{`${Number(keyframe.value).toFixed(2)}${graphProperty?.unit || ''} at ${formatSeconds(keyframe.time)} (${keyframe.easing || 'linear'})`}</title>
+                        </circle>
+                      )
+                    })}
+                  </svg>
+                  <div
+                    className="absolute top-0 bottom-0 w-px bg-yellow-500/80 pointer-events-none"
+                    style={{
+                      left: `${clampToClipRange(clipLocalPlayheadTime) * pixelsPerSecond}px`,
+                    }}
+                  />
+                </div>
+              </div>
+            )
+          })()}
+
+          {!graphPropertyId && propertyRows.map((property) => {
             const keyframes = selectedClip.keyframes?.[property.id] || []
+            const rowValue = keyframes.length > 0
+              ? getValueAtTime(keyframes, clampToClipRange(clipLocalPlayheadTime), keyframes[0]?.value)
+              : null
 
             return (
               <div key={property.id} className="flex h-9 border-b border-sf-dark-800">
@@ -1018,7 +1357,30 @@ function DopeSheet() {
                   style={{ width: `${LEFT_COLUMN_WIDTH}px` }}
                 >
                   <span className="text-sf-text-secondary">{property.label}</span>
-                  <span className="text-[9px] text-sf-text-muted">{property.unit}</span>
+                  <span className="flex items-center gap-1">
+                    {rowValue !== null ? (
+                      <span
+                        className="text-[9px] font-mono text-amber-200/90"
+                        title={`Value at playhead: ${rowValue}`}
+                      >
+                        {formatRowValue(rowValue)}{property.unit}
+                      </span>
+                    ) : (
+                      <span className="text-[9px] text-sf-text-muted">{property.unit}</span>
+                    )}
+                    {keyframes.length > 0 && (
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setGraphPropertyId(property.id)
+                        }}
+                        className="p-0.5 rounded text-sf-text-muted hover:bg-sf-dark-600 hover:text-sf-accent transition-colors"
+                        title={`Open value graph for ${property.label}`}
+                      >
+                        <Spline className="w-3 h-3" />
+                      </button>
+                    )}
+                  </span>
                 </div>
                 <div
                   className="relative border-r border-sf-dark-700 cursor-pointer"

@@ -502,10 +502,10 @@ Generate-from-timeline preparation tools after the launcher/log support pass.
 - Added `get_comfyui_launcher_logs` for read-only recent launcher logs with a
   lightweight issue summary for port conflicts, Python import errors, custom
   node load errors, missing files/models, and CUDA memory errors.
-- Added `list_comfystudio_workflows` so MCP clients can discover bundled
+- Added `list_velorn_workflows` so MCP clients can discover bundled
   workflow ids, categories, local/cloud runtime, image requirements, and source
   files without opening the Generate tab.
-- Added `inspect_comfystudio_workflow` so MCP clients can inspect a bundled or
+- Added `inspect_velorn_workflow` so MCP clients can inspect a bundled or
   explicit workflow JSON, extract required `class_type` node names, validate
   them against the configured local ComfyUI `/object_info`, and return mapped
   install/update hints for missing nodes.

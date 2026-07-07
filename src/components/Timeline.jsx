@@ -4,7 +4,7 @@ import {
   Plus, Video, Type, Image as ImageIcon,
   Sparkles, GripVertical, Magnet, ArrowRightLeft, Square, X, Check, Pencil,
   Diamond, Zap, AlertTriangle, Loader2, ChevronLeft, ChevronRight, Maximize2, Flag, Scissors, Clock,
-  Copy, ClipboardPaste, Trash2,
+  Copy, ClipboardPaste, Trash2, Music as MusicIcon,
 } from 'lucide-react'
 import useTimelineStore, { buildClipSyncLock, isMusicVideoSyncCapableClip, isSyncLockedClip } from '../stores/timelineStore'
 import useProjectStore from '../stores/projectStore'
@@ -40,6 +40,8 @@ import {
   matchEditorHotkey,
 } from '../services/editorHotkeys'
 import MasterAudioMeter from './AudioMeter'
+import GenerateMusicPopover from './GenerateMusicPopover'
+import { analyzeAudioSource } from '../services/audioAnalysis'
 
 const TRANSITION_DEFAULT_DURATION_KEY = 'comfystudio-transition-default-duration-frames'
 const DEFAULT_WAVEFORM_SAMPLES = 8192
@@ -493,7 +495,7 @@ function AudioWaveformBars({ clip, clipWidth, clipUrl, waveformInput = null, ste
   )
 }
 
-function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
+function Timeline({ onActiveToolChange }) {
   const timelineRef = useRef(null)
   const trackHeadersRef = useRef(null)
   const trackContentRef = useRef(null)
@@ -677,6 +679,56 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
   const [trackDragState, setTrackDragState] = useState(null) // { trackId, trackType, startY, originalIndex }
   const [trackDropTarget, setTrackDropTarget] = useState(null) // index within type group
   const [trackResizeState, setTrackResizeState] = useState(null) // { trackId, startY, startHeight }
+  const [isMusicPopoverOpen, setIsMusicPopoverOpen] = useState(false)
+  const [musicPopoverAnchor, setMusicPopoverAnchor] = useState(null)
+  const [beatAnalysisClipId, setBeatAnalysisClipId] = useState(null)
+  const [beatAnalysisError, setBeatAnalysisError] = useState('')
+
+  // "Detect Beats → Markers": run the audio-analysis engine on the clip's
+  // trimmed source range and drop a marker on every beat, in one undo step.
+  // The context menu stays open while analyzing (and on error) so the user
+  // sees the status; it closes itself on success.
+  const handleDetectBeatsForClip = useCallback(async (clipId) => {
+    const state = useTimelineStore.getState()
+    const clip = (state.clips || []).find((candidate) => candidate.id === clipId)
+    const asset = clip?.assetId ? useAssetsStore.getState().getAssetById(clip.assetId) : null
+    if (!clip || !asset) return
+
+    setBeatAnalysisError('')
+    setBeatAnalysisClipId(clipId)
+    try {
+      if (clip.reverse) throw new Error('Beat markers are not supported on reversed clips.')
+      if ((clip.keyframes?.speed?.length || 0) > 0) throw new Error('Beat markers are not supported on speed-ramped clips yet.')
+
+      const baseScale = clip.sourceTimeScale || (clip.timelineFps && clip.sourceFps ? clip.timelineFps / clip.sourceFps : 1)
+      const speed = Number(clip.speed) > 0 ? Number(clip.speed) : 1
+      const timeScale = baseScale * speed
+      const trimStart = Number(clip.trimStart) || 0
+      const trimEnd = Number.isFinite(Number(clip.trimEnd))
+        ? Number(clip.trimEnd)
+        : trimStart + (Number(clip.duration) || 0) * timeScale
+
+      const analysis = await analyzeAudioSource(
+        { url: asset.url || '', absolutePath: asset.absolutePath || asset.path || '' },
+        { startSeconds: trimStart, endSeconds: trimEnd, includeLoudnessCurve: false }
+      )
+      if (analysis?.error) throw new Error(analysis.error)
+      if (!analysis?.beats?.length) throw new Error('No steady beat detected in this clip.')
+
+      const clipStart = Number(clip.startTime) || 0
+      const markers = analysis.beats.slice(0, 600).map((beat, index) => ({
+        time: clipStart + beat / timeScale,
+        label: index === 0 ? `Beats ${analysis.bpm ? `${analysis.bpm} BPM` : ''}`.trim() : '',
+        color: '#38bdf8',
+      }))
+      useTimelineStore.getState().addMarkersBatch(markers)
+      setClipContextMenu(null)
+    } catch (err) {
+      setBeatAnalysisError(err?.message || 'Beat detection failed.')
+    } finally {
+      setBeatAnalysisClipId(null)
+    }
+  }, [])
   const [moveOffsetDialogOpen, setMoveOffsetDialogOpen] = useState(false)
   const [moveOffsetMode, setMoveOffsetMode] = useState('timecode')
   const [moveOffsetInput, setMoveOffsetInput] = useState('+00:00:00:00')
@@ -4577,6 +4629,12 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
 
   return (
     <div className="h-full bg-sf-dark-900 border-t border-sf-dark-700 flex flex-col">
+      {isMusicPopoverOpen && (
+        <GenerateMusicPopover
+          anchorRect={musicPopoverAnchor}
+          onClose={() => setIsMusicPopoverOpen(false)}
+        />
+      )}
       {/* Timeline Header - compact editor toolbar and zoom controls */}
       <div className="h-8 bg-sf-dark-800 border-b border-sf-dark-700 flex items-center px-2 gap-2 overflow-hidden">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none]">
@@ -4784,6 +4842,21 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
             >
               <ArrowRightLeft className="w-3 h-3" />
               Ripple
+            </button>
+            <button
+              onClick={(event) => {
+                if (isMusicPopoverOpen) {
+                  setIsMusicPopoverOpen(false)
+                } else {
+                  setMusicPopoverAnchor(event.currentTarget.getBoundingClientRect())
+                  setIsMusicPopoverOpen(true)
+                }
+              }}
+              className={toolbarToggleClass(isMusicPopoverOpen)}
+              title="Generate music with ACE-Step — duration prefills from the in/out range"
+            >
+              <MusicIcon className="w-3 h-3" />
+              Music
             </button>
           </div>
 
@@ -5065,12 +5138,19 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
           {/* Audio Section Divider */}
           <div className="h-5 bg-sf-dark-800 border-b border-sf-dark-700 flex items-center px-2">
             <span className="text-[9px] text-sf-text-muted uppercase tracking-wider">Audio</span>
-            <button 
-              onClick={() => onOpenAudioGenerate && onOpenAudioGenerate('music')}
-              className="ml-auto p-0.5 hover:bg-sf-dark-700 rounded" 
-              title="Generate AI Audio"
+            <button
+              onClick={(event) => {
+                if (isMusicPopoverOpen) {
+                  setIsMusicPopoverOpen(false)
+                } else {
+                  setMusicPopoverAnchor(event.currentTarget.getBoundingClientRect())
+                  setIsMusicPopoverOpen(true)
+                }
+              }}
+              className="ml-auto p-0.5 hover:bg-sf-dark-700 rounded"
+              title="Generate music with ACE-Step"
             >
-              <Sparkles className="w-3 h-3 text-sf-accent" />
+              <MusicIcon className="w-3 h-3 text-sf-accent" />
             </button>
           </div>
           
@@ -6793,6 +6873,32 @@ function Timeline({ onOpenAudioGenerate, onActiveToolChange }) {
                   <Zap className="w-3 h-3 text-sf-text-muted" />
                   <span>{renderLabel}</span>
                 </button>
+                <div className="h-px bg-sf-dark-600 my-1" />
+              </>
+            )
+          })()}
+          {(() => {
+            const contextClip = clips.find(c => c.id === clipContextMenu.clipId)
+            const canDetectBeats = contextClip
+              && (contextClip.type === 'audio' || contextClip.type === 'video')
+              && contextClip.assetId
+            if (!canDetectBeats) return null
+            const isAnalyzing = beatAnalysisClipId === contextClip.id
+            return (
+              <>
+                <button
+                  onClick={() => handleDetectBeatsForClip(contextClip.id)}
+                  disabled={isAnalyzing}
+                  className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-default"
+                >
+                  {isAnalyzing
+                    ? <Loader2 className="w-3 h-3 animate-spin text-sf-text-muted" />
+                    : <MusicIcon className="w-3 h-3 text-sf-text-muted" />}
+                  <span>{isAnalyzing ? 'Detecting beats…' : 'Detect Beats → Markers'}</span>
+                </button>
+                {beatAnalysisError && (
+                  <div className="px-3 pb-1 text-[10px] text-sf-error">{beatAnalysisError}</div>
+                )}
                 <div className="h-px bg-sf-dark-600 my-1" />
               </>
             )

@@ -16,7 +16,7 @@
   },
   "345": {
     "inputs": {
-      "image": "comfystudio_job_1778282970034_srggor_00001_.png"
+      "image": "velorn_job_1778282970034_srggor_00001_.png"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -25,8 +25,8 @@
   },
   "346": {
     "inputs": {
-      "audio": "comfystudio_job_1778281499142_lyp476_00001_.mp3",
-      "audioUI": "/api/view?filename=comfystudio_job_1778281499142_lyp476_00001_.mp3&type=input&subfolder=&rand=0.5786713853625473"
+      "audio": "velorn_job_1778281499142_lyp476_00001_.mp3",
+      "audioUI": "/api/view?filename=velorn_job_1778281499142_lyp476_00001_.mp3&type=input&subfolder=&rand=0.5786713853625473"
     },
     "class_type": "LoadAudio",
     "_meta": {

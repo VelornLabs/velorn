@@ -72,14 +72,14 @@ let settingsWriteQueue = Promise.resolve()
 
 function performMcpRendererAction(request = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    return Promise.reject(new Error('No ComfyStudio window is available.'))
+    return Promise.reject(new Error('No Velorn window is available.'))
   }
 
   const id = `mcp-action-${crypto.randomUUID()}`
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingMcpActionRequests.delete(id)
-      reject(new Error('Timed out waiting for ComfyStudio to apply MCP action.'))
+      reject(new Error('Timed out waiting for Velorn to apply MCP action.'))
     }, 60000)
 
     pendingMcpActionRequests.set(id, { resolve, reject, timeout })
@@ -2157,31 +2157,31 @@ function buildComfyConnectionRecommendations(diagnosis) {
   if (systemOk && objectInfoOk) {
     recommendations.push('ComfyUI is reachable and its node registry is available. If generation fails, check the specific workflow/custom node error next.')
   } else if (systemOk) {
-    recommendations.push('Something is answering on the configured ComfyUI port, but ComfyStudio could not read /object_info. Confirm this URL is actually ComfyUI and not another local web app or proxy.')
+    recommendations.push('Something is answering on the configured ComfyUI port, but Velorn could not read /object_info. Confirm this URL is actually ComfyUI and not another local web app or proxy.')
   } else {
-    recommendations.push(`Start ComfyUI and confirm its browser URL is http://127.0.0.1:${connection.port || DEFAULT_LOCAL_COMFY_PORT}. If it uses another port, set that port in ComfyStudio Settings > ComfyUI Connection.`)
+    recommendations.push(`Start ComfyUI and confirm its browser URL is http://127.0.0.1:${connection.port || DEFAULT_LOCAL_COMFY_PORT}. If it uses another port, set that port in Velorn Settings > ComfyUI Connection.`)
   }
 
   if (!systemOk && mode === 'docker') {
-    recommendations.push('For Docker, publish the ComfyUI container port to the host, for example -p 8188:8188, and make sure ComfyUI listens inside the container. ComfyStudio connects to localhost on the Windows/macOS host.')
+    recommendations.push('For Docker, publish the ComfyUI container port to the host, for example -p 8188:8188, and make sure ComfyUI listens inside the container. Velorn connects to localhost on the Windows/macOS host.')
   } else if (!systemOk && mode === 'portable') {
     recommendations.push('For Windows portable ComfyUI, pick run_nvidia_gpu.bat or run_cpu.bat in Settings > ComfyUI Launcher, then use the same port ComfyUI prints in its terminal.')
   } else if (!systemOk && mode === 'desktop') {
-    recommendations.push('For ComfyUI Desktop, open the desktop app first and confirm its local server URL/port. Then set that same local port in ComfyStudio.')
+    recommendations.push('For ComfyUI Desktop, open the desktop app first and confirm its local server URL/port. Then set that same local port in Velorn.')
   } else if (!systemOk && !launcher.hasLauncherTarget) {
-    recommendations.push('No launcher target is configured. Either start ComfyUI yourself before using ComfyStudio, or configure ComfyStudio Launcher so it can start ComfyUI for you.')
+    recommendations.push('No launcher target is configured. Either start ComfyUI yourself before using Velorn, or configure Velorn Launcher so it can start ComfyUI for you.')
   }
 
   if (launcher.configuredPortHint && launcher.configuredPortHint !== connection.port) {
-    recommendations.push(`The launcher extra args mention port ${launcher.configuredPortHint}, but ComfyStudio is configured for port ${connection.port}. Make those match.`)
+    recommendations.push(`The launcher extra args mention port ${launcher.configuredPortHint}, but Velorn is configured for port ${connection.port}. Make those match.`)
   }
 
   if (diagnosis?.api?.systemStats?.status === 403 || diagnosis?.api?.objectInfo?.status === 403) {
-    recommendations.push('ComfyUI returned HTTP 403. If you started ComfyUI manually, relaunch with --enable-cors-header * or use ComfyStudio’s built-in launcher.')
+    recommendations.push('ComfyUI returned HTTP 403. If you started ComfyUI manually, relaunch with --enable-cors-header * or use Velorn’s built-in launcher.')
   }
 
   if (diagnosis?.portOwner?.pid && !systemOk) {
-    recommendations.push(`Port ${connection.port} is held by ${diagnosis.portOwner.name || `pid ${diagnosis.portOwner.pid}`}. If that is not ComfyUI, stop it or change the ComfyStudio port.`)
+    recommendations.push(`Port ${connection.port} is held by ${diagnosis.portOwner.name || `pid ${diagnosis.portOwner.pid}`}. If that is not ComfyUI, stop it or change the Velorn port.`)
   }
 
   return recommendations
@@ -2310,8 +2310,8 @@ async function setComfyUIConnectionInternal(options = {}) {
     before,
     after,
     recommendations: [
-      `Set ComfyStudio's local ComfyUI connection to ${after.httpBase}.`,
-      'This changes ComfyStudio settings only; it does not restart ComfyUI or edit launcher scripts.',
+      `Set Velorn's local ComfyUI connection to ${after.httpBase}.`,
+      'This changes Velorn settings only; it does not restart ComfyUI or edit launcher scripts.',
     ],
   }
 
@@ -2913,7 +2913,7 @@ function getComfyLauncherControlPlan(action, before, launcherConfig) {
       blocked: false,
       needed: true,
       risk: 'medium',
-      summary: 'ComfyStudio will start ComfyUI using the configured launcher.',
+      summary: 'Velorn will start ComfyUI using the configured launcher.',
     }
   }
 
@@ -2931,7 +2931,7 @@ function getComfyLauncherControlPlan(action, before, launcherConfig) {
         blocked: true,
         needed: true,
         risk: 'high',
-        summary: 'ComfyStudio cannot safely stop this ComfyUI process because it was started outside ComfyStudio.',
+        summary: 'Velorn cannot safely stop this ComfyUI process because it was started outside Velorn.',
         recommendations: ['Stop ComfyUI from the terminal, Docker, or desktop app that launched it.'],
       }
     }
@@ -2939,7 +2939,7 @@ function getComfyLauncherControlPlan(action, before, launcherConfig) {
       blocked: false,
       needed: true,
       risk: 'high',
-      summary: 'ComfyStudio will stop the ComfyUI process it owns. This can interrupt queued or running generations.',
+      summary: 'Velorn will stop the ComfyUI process it owns. This can interrupt queued or running generations.',
     }
   }
 
@@ -2949,7 +2949,7 @@ function getComfyLauncherControlPlan(action, before, launcherConfig) {
         blocked: true,
         needed: true,
         risk: 'high',
-        summary: 'ComfyStudio cannot safely restart an external ComfyUI process.',
+        summary: 'Velorn cannot safely restart an external ComfyUI process.',
         recommendations: ['Restart ComfyUI from the terminal, Docker, or desktop app that launched it.'],
       }
     }
@@ -2967,7 +2967,7 @@ function getComfyLauncherControlPlan(action, before, launcherConfig) {
       needed: true,
       risk: alreadyActive ? 'high' : 'medium',
       summary: alreadyActive
-        ? 'ComfyStudio will stop and start the ComfyUI process it owns. This can interrupt queued or running generations.'
+        ? 'Velorn will stop and start the ComfyUI process it owns. This can interrupt queued or running generations.'
         : 'ComfyUI is not running, so restart will behave like start.',
     }
   }
@@ -3597,9 +3597,9 @@ async function createWindow(restoredWindowState = null) {
         buttons: ['Stop ComfyUI & quit', 'Leave ComfyUI running', 'Cancel'],
         defaultId: 0,
         cancelId: 2,
-        title: 'Quit ComfyStudio?',
+        title: 'Quit Velorn?',
         message: 'ComfyUI is still running.',
-        detail: 'ComfyStudio started ComfyUI. Choose what happens to it when you quit.\n\n• Stop ComfyUI & quit — shuts down ComfyUI and cancels any in-flight generation jobs.\n• Leave ComfyUI running — ComfyStudio will quit but ComfyUI stays up. Handy when you\'re just relaunching ComfyStudio and don\'t want to wait for ComfyUI to boot again.',
+        detail: 'Velorn started ComfyUI. Choose what happens to it when you quit.\n\n• Stop ComfyUI & quit — shuts down ComfyUI and cancels any in-flight generation jobs.\n• Leave ComfyUI running — Velorn will quit but ComfyUI stays up. Handy when you\'re just relaunching Velorn and don\'t want to wait for ComfyUI to boot again.',
       })
       if (choice.response === 2) return
       launcherQuitConfirmed = true
@@ -6230,7 +6230,7 @@ app.whenReady().then(async () => {
   })
   mcpServer.start()
     .then((status) => {
-      console.log(`[MCP] ComfyStudio MCP server running at ${status.url}`)
+      console.log(`[MCP] Velorn MCP server running at ${status.url}`)
     })
     .catch((error) => {
       console.warn('[MCP] server failed to start:', error?.message || error)
@@ -6292,9 +6292,9 @@ app.on('before-quit', async (event) => {
       buttons: ['Stop ComfyUI & quit', 'Leave ComfyUI running', 'Cancel'],
       defaultId: 0,
       cancelId: 2,
-      title: 'Quit ComfyStudio?',
+      title: 'Quit Velorn?',
       message: 'ComfyUI is still running.',
-      detail: 'ComfyStudio started ComfyUI. Choose what happens to it when you quit.\n\n• Stop ComfyUI & quit — shuts down ComfyUI and cancels any in-flight generation jobs.\n• Leave ComfyUI running — ComfyStudio will quit but ComfyUI stays up. Handy when you\'re just relaunching ComfyStudio and don\'t want to wait for ComfyUI to boot again.',
+      detail: 'Velorn started ComfyUI. Choose what happens to it when you quit.\n\n• Stop ComfyUI & quit — shuts down ComfyUI and cancels any in-flight generation jobs.\n• Leave ComfyUI running — Velorn will quit but ComfyUI stays up. Handy when you\'re just relaunching Velorn and don\'t want to wait for ComfyUI to boot again.',
     })
     if (choice.response === 2) {
       return

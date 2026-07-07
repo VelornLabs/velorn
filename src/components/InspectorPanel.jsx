@@ -17,7 +17,9 @@ import useProjectStore from '../stores/projectStore'
 import renderCacheService from '../services/renderCache'
 import { commitAdjustmentRender } from '../services/commitRender'
 import { saveRenderCache, deleteRenderCache, writeGeneratedOverlayToProject, isElectron } from '../services/fileSystem'
-import { getKeyframeAtTime, getAnimatedTransform, getAnimatedAdjustmentSettings, getAnimatedShapeProperties, EASING_OPTIONS } from '../utils/keyframes'
+import { getKeyframeAtTime, getKeyframeTimeTolerance, getAnimatedTransform, getAnimatedAdjustmentSettings, getAnimatedShapeProperties, EASING_OPTIONS } from '../utils/keyframes'
+import { TRACK_MATTE_OPTIONS, normalizeTrackMatte } from '../utils/trackMatte'
+import { CORNER_PIN_CORNERS } from '../utils/cornerPin'
 import { TEXT_ANIMATION_PRESETS, TEXT_ANIMATION_MODE_OPTIONS } from '../utils/textAnimationPresets'
 import {
   COLOR_ADJUSTMENT_KEYS,
@@ -87,7 +89,7 @@ const INSPECTOR_SETTINGS_SCOPE_LABELS = {
   [INSPECTOR_SETTINGS_SCOPE.ADJUSTMENTS]: 'color settings',
   [INSPECTOR_SETTINGS_SCOPE.TIMING]: 'timing settings',
 }
-const TRANSFORM_SETTINGS_KEYS = ['positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'scaleLinked', 'rotation', 'rotationX', 'rotationY', 'perspective', 'anchorX', 'anchorY', 'opacity', 'flipH', 'flipV', 'motionBlurEnabled', 'motionBlurMode', 'motionBlurPosition', 'motionBlurSamples', 'motionBlurShutter', 'motionBlurSharpness', 'blendMode']
+const TRANSFORM_SETTINGS_KEYS = ['positionX', 'positionY', 'positionZ', 'scaleX', 'scaleY', 'scaleLinked', 'rotation', 'rotationX', 'rotationY', 'perspective', 'anchorX', 'anchorY', 'opacity', 'flipH', 'flipV', 'motionBlurEnabled', 'motionBlurMode', 'motionBlurPosition', 'motionBlurSamples', 'motionBlurShutter', 'motionBlurSharpness', 'blendMode', 'motionPathMode', 'cornerPinEnabled', 'cornerPinTLX', 'cornerPinTLY', 'cornerPinTRX', 'cornerPinTRY', 'cornerPinBLX', 'cornerPinBLY', 'cornerPinBRX', 'cornerPinBRY']
 const CROP_SETTINGS_KEYS = ['cropTop', 'cropBottom', 'cropLeft', 'cropRight']
 const TONAL_ADJUSTMENT_GROUP_LABELS = {
   shadows: 'Shadows',
@@ -409,18 +411,19 @@ const FONT_OPTIONS = [
  * Yellow = keyframe at current time, Gray = no keyframe, Blue outline = property has keyframes
  */
 function KeyframeButton({ clipId, property, clip, playheadPosition }) {
-  const { 
-    toggleKeyframe, 
-    goToNextKeyframe, 
+  const {
+    toggleKeyframe,
+    goToNextKeyframe,
     goToPrevKeyframe,
+    timelineFps,
   } = useTimelineStore()
-  
+
   // Calculate clip-relative time
   const clipTime = playheadPosition - (clip?.startTime || 0)
-  
+
   // Check if keyframe exists at current time
   const keyframes = clip?.keyframes?.[property] || []
-  const keyframeAtTime = getKeyframeAtTime(keyframes, clipTime, 0.05)
+  const keyframeAtTime = getKeyframeAtTime(keyframes, clipTime, getKeyframeTimeTolerance(timelineFps))
   const hasKeyframesForProperty = keyframes.length > 0
   
   // Handle click - toggle keyframe at current position
@@ -546,8 +549,9 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
     tracks,
     transitions,
     playheadPosition,
-    updateClipTransform, 
+    updateClipTransform,
     updateClipCompositeMode,
+    updateClipTrackMatte,
     updateClipAdjustments,
     resetClipTransform,
     updateTextProperties,
@@ -2655,6 +2659,38 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
                   </div>
                 </div>
               </div>
+              {(selectedClip?.keyframes?.positionX?.length || 0) >= 2 && (selectedClip?.keyframes?.positionY?.length || 0) >= 2 && (
+                <div className="mt-2">
+                  <label className="text-[9px] text-sf-text-muted block mb-0.5">Motion Path</label>
+                  <div className="flex items-center gap-1">
+                    {[
+                      { value: 'linear', label: 'Linear' },
+                      { value: 'smooth', label: 'Smooth' },
+                    ].map(({ value, label }) => {
+                      const active = (transform.motionPathMode || 'linear') === value
+                      return (
+                        <button
+                          key={value}
+                          onClick={() => {
+                            handleTransformChange('motionPathMode', value)
+                            handleTransformCommit('motionPathMode', value)
+                          }}
+                          className={`px-2 py-0.5 rounded text-[9px] border transition-colors ${
+                            active
+                              ? 'bg-sf-accent/20 border-sf-accent text-sf-accent'
+                              : 'bg-sf-dark-700 border-sf-dark-600 text-sf-text-muted hover:text-sf-text-primary hover:border-sf-dark-500'
+                          }`}
+                          title={value === 'smooth'
+                            ? 'Curve the position path through keyframes (auto bezier)'
+                            : 'Straight lines between position keyframes'}
+                        >
+                          {label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               <div className="mt-2">
                 <div className="flex items-center justify-between mb-0.5">
                   <label
@@ -2988,6 +3024,104 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
               </div>
             )}
 
+            {/* Track Matte (visual clips only) */}
+            {(selectedClip?.type === 'video' || selectedClip?.type === 'image' || selectedClip?.type === 'text' || selectedClip?.type === 'shape') && (
+              <div>
+                <label className="text-[10px] text-sf-text-muted block mb-1">
+                  Track Matte
+                </label>
+                <select
+                  value={normalizeTrackMatte(selectedClip?.trackMatte)}
+                  onChange={(e) => updateClipTrackMatte(selectedClip.id, e.target.value)}
+                  className="w-full bg-sf-dark-800 border border-sf-dark-600 rounded px-2 py-1.5 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
+                >
+                  {TRACK_MATTE_OPTIONS.map(({ value, label }) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+                {normalizeTrackMatte(selectedClip?.trackMatte) !== 'none' && (
+                  <p className="text-[9px] text-sf-text-muted mt-1">
+                    Uses the clip on the layer directly above as the matte. That layer is hidden from output.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Corner Pin (video/image clips, GPU compositing) */}
+            {(selectedClip?.type === 'video' || selectedClip?.type === 'image') && (
+              <div>
+                <label className="text-[10px] text-sf-text-muted mb-1 flex items-center justify-between">
+                  <span>Corner Pin</span>
+                  <input
+                    type="checkbox"
+                    checked={transform.cornerPinEnabled === true}
+                    onChange={(e) => {
+                      handleTransformChange('cornerPinEnabled', e.target.checked)
+                      handleTransformCommit('cornerPinEnabled', e.target.checked)
+                    }}
+                  />
+                </label>
+                {transform.cornerPinEnabled === true && (
+                  <div className="space-y-1.5">
+                    {CORNER_PIN_CORNERS.map((corner) => (
+                      <div key={corner.key} className="grid grid-cols-[28px_1fr_1fr] items-center gap-1">
+                        <span className="text-[9px] text-sf-text-muted">{corner.key}</span>
+                        <div className="flex items-center gap-0.5">
+                          <DraggableNumberInput
+                            value={animatedTransform?.[corner.xKey] ?? transform[corner.xKey] ?? 0}
+                            onChange={(val) => handleTransformChange(corner.xKey, val)}
+                            onCommit={(val) => handleTransformCommit(corner.xKey, val)}
+                            resetValue={0}
+                            onReset={(val) => handleSliderReset(corner.xKey, val)}
+                            step={1}
+                            sensitivity={1}
+                          />
+                          <KeyframeButton
+                            clipId={selectedClip?.id}
+                            property={corner.xKey}
+                            clip={selectedClip}
+                            playheadPosition={playheadPosition}
+                          />
+                        </div>
+                        <div className="flex items-center gap-0.5">
+                          <DraggableNumberInput
+                            value={animatedTransform?.[corner.yKey] ?? transform[corner.yKey] ?? 0}
+                            onChange={(val) => handleTransformChange(corner.yKey, val)}
+                            onCommit={(val) => handleTransformCommit(corner.yKey, val)}
+                            resetValue={0}
+                            onReset={(val) => handleSliderReset(corner.yKey, val)}
+                            step={1}
+                            sensitivity={1}
+                          />
+                          <KeyframeButton
+                            clipId={selectedClip?.id}
+                            property={corner.yKey}
+                            clip={selectedClip}
+                            playheadPosition={playheadPosition}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => {
+                        CORNER_PIN_CORNERS.forEach((corner) => {
+                          handleTransformChange(corner.xKey, 0)
+                          handleTransformChange(corner.yKey, 0)
+                        })
+                        handleTransformCommit('cornerPinEnabled', true)
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[9px] border border-sf-dark-600 bg-sf-dark-700 text-sf-text-muted hover:text-sf-text-primary hover:border-sf-dark-500 transition-colors"
+                    >
+                      Reset Corners
+                    </button>
+                    <p className="text-[9px] text-sf-text-muted">
+                      Drag the round corner handles in the preview to pin. Offsets are keyframeable.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Anchor Point */}
             <div>
               <label className="text-[10px] text-sf-text-muted block mb-1.5 flex items-center gap-1">
@@ -3208,7 +3342,20 @@ function InspectorPanel({ isExpanded, onToggleExpanded }) {
             {(selectedClip.type === 'video' || selectedClip.type === 'audio') && (
               <div className="space-y-2">
                 <div>
-                  <label className="text-[9px] text-sf-text-muted block mb-1">Speed</label>
+                  <label className="text-[9px] text-sf-text-muted mb-1 flex items-center gap-1">
+                    Speed
+                    {selectedClip.type === 'video' && !selectedClip.reverse && (
+                      <KeyframeButton
+                        clipId={selectedClip.id}
+                        property="speed"
+                        clip={selectedClip}
+                        playheadPosition={playheadPosition}
+                      />
+                    )}
+                    {(selectedClip.keyframes?.speed?.length || 0) > 0 && (
+                      <span className="text-[8px] text-sf-accent">ramped</span>
+                    )}
+                  </label>
                   <div className="flex items-center gap-2">
                     <input
                       type="range"

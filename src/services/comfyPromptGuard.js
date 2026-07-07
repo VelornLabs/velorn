@@ -1,5 +1,5 @@
 /**
- * Shared registry of ComfyUI prompt IDs that ComfyStudio has already
+ * Shared registry of ComfyUI prompt IDs that Velorn has already
  * claimed responsibility for.
  *
  * The GenerateWorkspace owns the "managed workflow" path: it queues a
@@ -29,7 +29,7 @@ function normalizeId(promptId) {
 }
 
 /**
- * Mark a prompt as already being handled by ComfyStudio's managed
+ * Mark a prompt as already being handled by Velorn's managed
  * workflow pipeline (GenerateWorkspace). Call this right after
  * `comfyui.queuePrompt` succeeds for an in-app job.
  */
@@ -45,7 +45,7 @@ export function markPromptHandledByApp(promptId) {
 }
 
 /**
- * Returns true if the prompt was queued by ComfyStudio's managed
+ * Returns true if the prompt was queued by Velorn's managed
  * pipeline (and therefore the auto-import bridge should NOT double
  * import it).
  */

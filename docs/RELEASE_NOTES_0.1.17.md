@@ -23,7 +23,7 @@
 ## Custom ComfyUI Workflows
 
 - Adds starter graphs for custom image, keyframe, and video workflows.
-- Adds endpoint nodes such as `COMFYSTUDIO_INPUT_IMAGE`, `COMFYSTUDIO_PROMPT`, `COMFYSTUDIO_OUTPUT_IMAGE`, `COMFYSTUDIO_OUTPUT_VIDEO`, `COMFYSTUDIO_WIDTH`, `COMFYSTUDIO_HEIGHT`, `COMFYSTUDIO_FPS`, `COMFYSTUDIO_DURATION`, and `COMFYSTUDIO_AUDIO`.
+- Adds endpoint nodes such as `VELORN_INPUT_IMAGE`, `VELORN_PROMPT`, `VELORN_OUTPUT_IMAGE`, `VELORN_OUTPUT_VIDEO`, `VELORN_WIDTH`, `VELORN_HEIGHT`, `VELORN_FPS`, `VELORN_DURATION`, and `VELORN_AUDIO`.
 - Adds API JSON import support for custom workflows.
 - Adds support for opening imported custom workflows back in ComfyUI.
 - Adds custom image and custom video entries in Generate under a beta Custom tab.
@@ -33,7 +33,7 @@
 
 - Adds custom keyframe workflow support in Step 4.
 - Adds custom video workflow support in Step 5.
-- Trims custom music-video audio per shot before sending it to `COMFYSTUDIO_AUDIO`.
+- Trims custom music-video audio per shot before sending it to `VELORN_AUDIO`.
 - Makes Step 5 model controls more consistent with Step 4.
 - Adds thumbnail-level rerun controls for keyframes and videos.
 - Shows real generated image dimensions in previews instead of always showing the project target size.

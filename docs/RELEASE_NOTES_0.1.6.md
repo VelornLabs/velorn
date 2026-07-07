@@ -48,7 +48,7 @@
 - Starter pack metadata has been refreshed for `v0.1.6`
 - The generated starter pack now covers 14 workflow guides, including 8 local workflow entries and 6 cloud/partner entries
 - The packaged starter pack artifact is ready as:
-  - `release/comfystudio-workflow-starter-pack-v0.1.6.zip`
+  - `release/velorn-workflow-starter-pack-v0.1.6.zip`
 
 ## Important Setup Note
 

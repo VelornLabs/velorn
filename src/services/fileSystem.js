@@ -481,7 +481,7 @@ export const loadLatestProjectAutosave = async (projectDir) => {
 }
 
 /**
- * Check if a directory is a valid ComfyStudio project
+ * Check if a directory is a valid Velorn project
  * @param {string|FileSystemDirectoryHandle} dir - Directory to check
  * @returns {Promise<boolean>}
  */

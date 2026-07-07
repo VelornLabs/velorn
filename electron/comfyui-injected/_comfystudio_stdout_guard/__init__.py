@@ -1,4 +1,4 @@
-# ComfyStudio runtime guard — exports no nodes.
+# Velorn runtime guard — exports no nodes.
 #
 # This package exists solely so ComfyUI's custom-node loader picks up our
 # sibling `prestartup_script.py`. All the real work happens there.

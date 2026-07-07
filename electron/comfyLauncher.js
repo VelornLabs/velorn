@@ -10,7 +10,7 @@
  *   idle     - no external ComfyUI detected, nothing launched by us
  *   starting - we spawned the process, waiting for HTTP readiness
  *   running  - HTTP ready, child process is ours
- *   external - HTTP ready but the process was started outside ComfyStudio
+ *   external - HTTP ready but the process was started outside Velorn
  *   stopping - user requested stop, we issued kill
  *   stopped  - cleanly stopped by user
  *   crashed  - unexpected exit without explicit stop
@@ -132,7 +132,7 @@ function probeHttp(httpBase, timeoutMs = 1500) {
         path: '/system_stats',
         method: 'GET',
         timeout: timeoutMs,
-        headers: { 'User-Agent': 'ComfyStudio-Launcher/1.0' },
+        headers: { 'User-Agent': 'Velorn-Launcher/1.0' },
       },
       (res) => {
         let chunks = ''
@@ -343,7 +343,7 @@ function killProcessTree(child) {
 
 /**
  * Terminate a process tree by pid only (no child-process handle). Used
- * when we've reclaimed a ComfyUI from a previous ComfyStudio session.
+ * when we've reclaimed a ComfyUI from a previous Velorn session.
  */
 function killByPid(pid) {
   return new Promise((resolve, reject) => {
@@ -578,7 +578,7 @@ class ComfyLauncher extends EventEmitter {
     await this._ensureLogDir()
     const config = safeCloneConfig(this._getConfig?.())
     // Layer 2 — try to reclaim a previously spawned ComfyUI before falling
-    // back to plain external detection. This handles the "ComfyStudio
+    // back to plain external detection. This handles the "Velorn
     // crashed but ComfyUI is still running" case where we want full Stop/
     // Restart control again, not just read-only external status.
     const reclaimed = config.launcherMode === 'mac-app' ? false : await this._tryReclaimFromStateFile()
@@ -814,7 +814,7 @@ class ComfyLauncher extends EventEmitter {
     // Port is answering ComfyUI. Before settling for a read-only "external"
     // state, try to find its PID via netstat/lsof. If we can identify it,
     // we can offer Stop/Restart just like a process we spawned ourselves.
-    // This covers the "ComfyStudio crashed, ComfyUI kept running, no state
+    // This covers the "Velorn crashed, ComfyUI kept running, no state
     // file" case, as well as users who launched ComfyUI manually.
     const pid = await this._findOwningPidFor(httpBase)
     if (pid) {
@@ -835,7 +835,7 @@ class ComfyLauncher extends EventEmitter {
       })
       this._appendLog('system', `Adopted running ComfyUI (pid ${pid}) from external process. Stop/Restart enabled.`)
       this._setState('running', {
-        statusMessage: `Connected to running ComfyUI (pid ${pid}). ComfyStudio didn't start it, but can stop or restart it.`,
+        statusMessage: `Connected to running ComfyUI (pid ${pid}). Velorn didn't start it, but can stop or restart it.`,
       })
       return
     }
@@ -1081,7 +1081,7 @@ class ComfyLauncher extends EventEmitter {
   }
 
   /**
-   * Called once during init(). If a previous ComfyStudio session wrote a
+   * Called once during init(). If a previous Velorn session wrote a
    * state file and the recorded PID is still alive and the HTTP endpoint
    * still answers as ComfyUI, we "reclaim" the process: treat it as our
    * own, so Stop / Restart work normally. Otherwise clear the stale file.
@@ -1142,7 +1142,7 @@ class ComfyLauncher extends EventEmitter {
 
     // Layer 1 — probe before spawn. If ComfyUI is already answering on the
     // configured port (e.g. the user launched it manually, or our previous
-    // ComfyStudio session crashed and left ComfyUI alive), adopting it is
+    // Velorn session crashed and left ComfyUI alive), adopting it is
     // always the right answer. Spawning a second process would fail with
     // EADDRINUSE and only confuse the user.
     if (httpBase) {
@@ -1213,7 +1213,7 @@ class ComfyLauncher extends EventEmitter {
     this._probingSince = nowMs()
     this._setState('starting', { statusMessage: `Starting ComfyUI (pid ${this._pid}). First boot can take 30-60s.` })
 
-    // Persist pid/port so a future ComfyStudio boot can reclaim this child
+    // Persist pid/port so a future Velorn boot can reclaim this child
     // if we crash before it exits. Fire-and-forget: we never block startup
     // on disk I/O.
     if (this._pid) {
@@ -1420,7 +1420,7 @@ class ComfyLauncher extends EventEmitter {
       if (config.disableAutoLaunch !== false) {
         baseArgs = ensureArgFlag(baseArgs, '--disable-auto-launch')
       }
-      // --enable-cors-header "*" is required for ComfyStudio's renderer to
+      // --enable-cors-header "*" is required for Velorn's renderer to
       // talk to ComfyUI in dev mode (Vite at 127.0.0.1:5173 vs. ComfyUI at
       // 127.0.0.1:8188) and to read mask / render-cache PNGs back into a
       // canvas without being blocked by ComfyUI's origin-only middleware.
@@ -1446,7 +1446,7 @@ class ComfyLauncher extends EventEmitter {
         // detached:true puts the child in its own process group so it can
         // survive the parent if the user chooses "Leave ComfyUI running" at
         // quit time. We still keep stdio pipes for live log capture while
-        // ComfyStudio is running; on detach we release them explicitly.
+        // Velorn is running; on detach we release them explicitly.
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: pythonEnv,
@@ -1606,10 +1606,10 @@ class ComfyLauncher extends EventEmitter {
       return this._stopMacApp()
     }
     if (this._state === 'external') {
-      return { success: false, error: 'ComfyUI was started outside of ComfyStudio. Stop it from the window where you started it.' }
+      return { success: false, error: 'ComfyUI was started outside of Velorn. Stop it from the window where you started it.' }
     }
     if (!this._child && !this._pid) {
-      return { success: false, error: 'No ComfyUI process is currently owned by ComfyStudio.' }
+      return { success: false, error: 'No ComfyUI process is currently owned by Velorn.' }
     }
     this._setState('stopping', { statusMessage: 'Stopping ComfyUI…' })
     this._appendLog('system', 'Stop requested by user.')
@@ -1628,7 +1628,7 @@ class ComfyLauncher extends EventEmitter {
       }
     }
 
-    // Reclaimed case: we only have the PID (previous ComfyStudio session
+    // Reclaimed case: we only have the PID (previous Velorn session
     // spawned it). Kill by PID directly.
     const pid = this._pid
     try {
@@ -1701,7 +1701,7 @@ class ComfyLauncher extends EventEmitter {
   }
 
   /**
-   * Release the child process so it keeps running after ComfyStudio quits.
+   * Release the child process so it keeps running after Velorn quits.
    *
    * This is a best-effort operation: we unref the subprocess, detach our
    * stdio pipes, and strip listeners so its future exit doesn't touch us.
@@ -1716,7 +1716,7 @@ class ComfyLauncher extends EventEmitter {
   async detach() {
     if (!this._child) return { detached: false }
     const pid = this._pid
-    this._appendLog('system', 'Detach requested — leaving ComfyUI running after ComfyStudio quits.')
+    this._appendLog('system', 'Detach requested — leaving ComfyUI running after Velorn quits.')
 
     this._stopProbing()
 
@@ -1737,14 +1737,14 @@ class ComfyLauncher extends EventEmitter {
 
     try { child.unref() } catch (_) { /* ignore */ }
 
-    // Flip ownership to "external" so if ComfyStudio is relaunched while
+    // Flip ownership to "external" so if Velorn is relaunched while
     // ComfyUI is still up, the normal detectExternal path adopts it.
     this._ownership = 'external'
     this._child = null
     this._setState('external', {
       statusMessage: pid
-        ? `ComfyUI left running (pid ${pid}). It will continue after ComfyStudio quits.`
-        : 'ComfyUI left running. It will continue after ComfyStudio quits.',
+        ? `ComfyUI left running (pid ${pid}). It will continue after Velorn quits.`
+        : 'ComfyUI left running. It will continue after Velorn quits.',
     })
 
     this._closeLogFile()

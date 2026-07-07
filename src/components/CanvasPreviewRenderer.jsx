@@ -29,9 +29,12 @@ import {
 } from '../utils/effects'
 import { applyGlslEffectsToCanvas, canUseGlslEffects, getGlslPreviewQualityScale, hasGlslEffect } from '../utils/glslEffects'
 import { cullVisualLayerEntries, getTransitionClipIds } from '../utils/layerCompositing'
+import { parseTrackMatte, resolveTrackMatteAssignments, applyTrackMatteToCanvas } from '../utils/trackMatte'
 import { applyTransitionClip, getFadeOverlayInfo, getTransitionStyleForClip } from '../utils/transitionStyles'
 import { isFullBakeFresh } from '../utils/clipBakeSignature'
 import { getMotionBlurSamples, getVelocityMotionBlurOptions } from '../utils/motionBlur'
+import { hasSpeedRamp, getRampedSourceOffset, getRampedSpeedAtTime } from '../utils/timeRemap'
+import { registerLivePreviewCapture, unregisterLivePreviewCapture } from '../services/previewFrameBridge'
 import { applyVelocityMotionBlurToCanvas, buildVelocityBlurUniformValues, canUseVelocityMotionBlur } from '../utils/velocityMotionBlur'
 import {
   applyClipCrop,
@@ -95,9 +98,13 @@ function getClipPlaybackTimingAtTimeline(clip, timelineTime, endOffset = 0.01, o
   const allowHandles = !!options.allowHandles && Number.isFinite(sourceDuration) && sourceDuration > 0
   const minTime = allowHandles ? 0 : Math.min(trimStart, trimEnd)
   const maxTime = allowHandles ? sourceDuration : Math.max(trimStart, trimEnd)
-  const sourceTime = reverse
-    ? trimEnd - (timelineTime - (clip.startTime || 0)) * timeScale
-    : trimStart + (timelineTime - (clip.startTime || 0)) * timeScale
+  const clipLocalTime = timelineTime - (clip.startTime || 0)
+  const sourceTime = hasSpeedRamp(clip)
+    // Speed ramp: source consumed = integral of the keyframed speed curve.
+    ? trimStart + getRampedSourceOffset(clip, clipLocalTime) * baseScale
+    : (reverse
+      ? trimEnd - clipLocalTime * timeScale
+      : trimStart + clipLocalTime * timeScale)
   const safeMaxTime = Math.max(minTime, maxTime - endOffset)
   const clampedTime = Math.max(minTime, Math.min(sourceTime, safeMaxTime))
   return {
@@ -363,6 +370,8 @@ function CanvasPreviewRenderer({
   const maskCacheRef = useRef(new Map())
   const buffersRef = useRef({})
   const lastFrameCanvasRef = useRef(null)
+  const lastCommittedFrameTimeRef = useRef(null)
+  const frameCommitSerialRef = useRef(0)
   const latestRef = useRef({})
   const drawFrameRef = useRef(null)
   const deferredDrawTimerRef = useRef(0)
@@ -606,7 +615,129 @@ function CanvasPreviewRenderer({
     return gradedCanvas
   }, [])
 
-  const drawVisualClip = useCallback((ctx, entry, time, transitionInfo, state, frameIndex) => {
+  // Raster a track-matte source clip (the consumed layer above) into a
+  // full-frame canvas with its own animated transform/crop/opacity. Base
+  // content only — the matte's own effects/masks stay out of scope.
+  // Returns null while a matte video is not yet drawable.
+  const rasterMatteClip = useCallback((matteEntry, time, state) => {
+    const matteClip = matteEntry?.clip
+    if (!matteClip) return null
+    const width = state.width
+    const height = state.height
+    const getAssetById = useAssetsStore.getState().getAssetById
+    const buffers = buffersRef.current
+    if (!buffers.trackMatteCanvas) {
+      buffers.trackMatteCanvas = document.createElement('canvas')
+    }
+    ensureCanvasSize(buffers.trackMatteCanvas, width, height)
+    const matteCtx = buffers.trackMatteCanvas.getContext('2d', { willReadFrequently: true })
+    if (!matteCtx) return null
+    matteCtx.setTransform(1, 0, 0, 1, 0, 0)
+    matteCtx.clearRect(0, 0, width, height)
+
+    const clipTime = time - (matteClip.startTime || 0)
+    const matteTransform = applyEffectsToTransform(
+      getAnimatedTransform(matteClip, clipTime) || matteClip.transform || {},
+      matteClip.effects,
+      clipTime
+    )
+    const matteOpacity = typeof matteTransform.opacity === 'number' ? matteTransform.opacity / 100 : 1
+    if (matteOpacity <= 0.001) return buffers.trackMatteCanvas
+
+    matteCtx.save()
+    matteCtx.globalAlpha = matteOpacity
+    matteCtx.globalCompositeOperation = 'source-over'
+    matteCtx.filter = 'none'
+
+    if (matteClip.type === 'text' || matteClip.type === 'shape') {
+      const isShapeClip = matteClip.type === 'shape'
+      const animatedShapeProperties = isShapeClip ? getAnimatedShapeProperties(matteClip, clipTime) : null
+      const shapeClip = isShapeClip
+        ? { ...matteClip, shapeProperties: animatedShapeProperties || matteClip.shapeProperties }
+        : matteClip
+      const rect = isShapeClip
+        ? getShapeCanvasRect(shapeClip.shapeProperties, width, height)
+        : getBaseDrawRect(width, height, width, height)
+      applyClipTransform(matteCtx, rect, matteTransform, null)
+      applyClipCrop(matteCtx, rect, matteTransform)
+      if (isShapeClip) {
+        drawShape(matteCtx, { x: 0, y: 0, width: rect.width, height: rect.height }, shapeClip)
+      } else {
+        drawText(matteCtx, rect, matteClip, 1, clipTime)
+      }
+      matteCtx.restore()
+      return buffers.trackMatteCanvas
+    }
+
+    if (matteClip.type === 'video' || matteClip.type === 'image') {
+      const clipUrl = resolvePreviewUrl(matteClip, getAssetById, state.useProxyPlaybackForAssets)
+      if (!clipUrl) {
+        matteCtx.restore()
+        return buffers.trackMatteCanvas
+      }
+      let source = null
+      let sourceWidth = width
+      let sourceHeight = height
+      if (matteClip.type === 'video') {
+        const video = videoCache.getVideoElement({ ...matteClip, url: clipUrl })
+        if (!video) {
+          matteCtx.restore()
+          scheduleDeferredDraw('track-matte-video-missing')
+          return null
+        }
+        const targetTime = getClipPlaybackTimingAtTimeline(matteClip, time, 0.01).time
+        const timeDiff = Math.abs((video.currentTime || 0) - targetTime)
+        const seekThreshold = state.isPlaying ? 0.16 : 0.025
+        if (!state.isScrubbingPreview && video.readyState >= 1 && timeDiff > seekThreshold) {
+          video.currentTime = targetTime
+        }
+        if (state.isPlaying && video.readyState >= 2) {
+          const baseScale = matteClip.sourceTimeScale || (matteClip.timelineFps && matteClip.sourceFps
+            ? matteClip.timelineFps / matteClip.sourceFps
+            : 1)
+          const speed = Number(matteClip.speed)
+          const speedScale = Number.isFinite(speed) && speed > 0 ? speed : 1
+          const playbackSpeed = Math.max(0.01, Math.abs(baseScale * speedScale))
+          if (Math.abs((video.playbackRate || 1) - playbackSpeed) > 0.001) {
+            video.playbackRate = playbackSpeed
+          }
+          if (video.paused) video.play().catch(() => {})
+        } else if (!state.isPlaying && !video.paused) {
+          video.pause()
+        }
+        if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+          matteCtx.restore()
+          scheduleDeferredDraw('track-matte-video-frame')
+          return null
+        }
+        source = video
+        sourceWidth = video.videoWidth
+        sourceHeight = video.videoHeight
+      } else {
+        const image = getImageForUrl(clipUrl)
+        if (!image) {
+          matteCtx.restore()
+          return imageCacheRef.current.get(clipUrl)?.failed ? buffers.trackMatteCanvas : null
+        }
+        source = image
+        sourceWidth = image.naturalWidth || width
+        sourceHeight = image.naturalHeight || height
+      }
+      const rect = getBaseDrawRect(sourceWidth, sourceHeight, width, height)
+      applyClipTransform(matteCtx, rect, matteTransform, null)
+      applyClipCrop(matteCtx, rect, matteTransform)
+      matteCtx.drawImage(source, 0, 0, rect.width, rect.height)
+      matteCtx.restore()
+      return buffers.trackMatteCanvas
+    }
+
+    matteCtx.restore()
+    return buffers.trackMatteCanvas
+  }, [getImageForUrl, scheduleDeferredDraw])
+
+  const matteRasterSerialRef = useRef(0)
+
+  const drawVisualClip = useCallback((ctx, entry, time, transitionInfo, state, frameIndex, matteEntry = null) => {
     const { clip } = entry
     const width = state.width
     const height = state.height
@@ -628,6 +759,35 @@ function CanvasPreviewRenderer({
     const baseOpacity = typeof clipTransform.opacity === 'number' ? clipTransform.opacity / 100 : 1
     const clipOpacity = (transitionStyle?.opacity ?? 1) * baseOpacity
     if (clipOpacity <= 0.001 || transitionStyle?.display === false) return
+
+    // Track matte: raster the consumed layer above; missing matte layer
+    // means an empty matte (invisible unless inverted).
+    const matteInfo = parseTrackMatte(clip.trackMatte)
+    let matteSpec = null
+    let matteCanvasForLayer = null
+    if (matteInfo) {
+      if (!matteEntry) {
+        if (!matteInfo.invert) return
+      } else {
+        const matteCanvas = rasterMatteClip(matteEntry, time, state)
+        if (!matteCanvas) return 'unready'
+        matteCanvasForLayer = matteCanvas
+        matteRasterSerialRef.current += 1
+        matteSpec = {
+          source: matteCanvas,
+          sourceKey: `${clip.id}:trackmatte`,
+          sourceVersion: matteRasterSerialRef.current,
+          corners: [
+            { x: 0, y: 0, u: 0, v: 0, w: 1 },
+            { x: width, y: 0, u: 1, v: 0, w: 1 },
+            { x: 0, y: height, u: 0, v: 1, w: 1 },
+            { x: width, y: height, u: 1, v: 1, w: 1 },
+          ],
+          channel: matteInfo.channel,
+          invert: matteInfo.invert,
+        }
+      }
+    }
 
     const blendMode = clipTransform?.blendMode || 'normal'
     const blurPx = transitionStyle?.blur ?? (clipTransform?.blur > 0 ? clipTransform.blur : null)
@@ -772,8 +932,12 @@ function CanvasPreviewRenderer({
           const baseScale = clip.sourceTimeScale || (clip.timelineFps && clip.sourceFps
             ? clip.timelineFps / clip.sourceFps
             : 1)
+          // Speed ramps: drive the element at the instantaneous keyframed
+          // speed; the seek-threshold correction above absorbs drift.
           const speed = Number(clip.speed)
-          const speedScale = Number.isFinite(speed) && speed > 0 ? speed : 1
+          const speedScale = hasSpeedRamp(clip)
+            ? getRampedSpeedAtTime(clip, clipTime)
+            : (Number.isFinite(speed) && speed > 0 ? speed : 1)
           const timelineRate = Number(state.playbackRate)
           const timelineRateScale = Number.isFinite(timelineRate) && timelineRate !== 0
             ? Math.abs(timelineRate)
@@ -871,6 +1035,7 @@ function CanvasPreviewRenderer({
           samples: gpuSamples,
           velocity: velocityMotionBlur ? buildVelocityBlurUniformValues(velocityMotionBlur) : null,
           mask: gpuMaskSpec,
+          matte: matteSpec,
           managedPasses: usesManagedEffects
             ? buildManagedEffectGpuPasses(clip.effects, clipTime, frameIndex, width, height)
             : null,
@@ -949,6 +1114,7 @@ function CanvasPreviewRenderer({
           ],
           weight: 1,
         }],
+        matte: matteSpec,
         tonalSettings: usesTonalAdjustments ? adjustmentSettings : null,
         blurPx: usesTonalAdjustments && totalTonalBlur > 0 ? totalTonalBlur : null,
         managedPasses: usesManagedEffects
@@ -958,6 +1124,10 @@ function CanvasPreviewRenderer({
         blendMode,
       })
       return
+    }
+
+    if (matteInfo && matteCanvasForLayer) {
+      applyTrackMatteToCanvas(offCtx, matteCanvasForLayer, matteInfo, width, height)
     }
 
     let outputCanvas = buffers.offCanvas
@@ -975,7 +1145,7 @@ function CanvasPreviewRenderer({
     ctx.filter = 'none'
     ctx.drawImage(outputCanvas, 0, 0)
     ctx.restore()
-  }, [applyAdvancedAdjustmentsToCanvas, getImageForUrl, getProcessedMaskForUrl])
+  }, [applyAdvancedAdjustmentsToCanvas, getImageForUrl, getProcessedMaskForUrl, rasterMatteClip])
 
   const applyAdjustmentLayer = useCallback((ctx, clip, time, frameIndex, state) => {
     const width = state.width
@@ -1137,7 +1307,15 @@ function CanvasPreviewRenderer({
     const transitionClipIds = getTransitionClipIds(transitionInfo)
     const frameIndex = Math.floor(time * fps)
     const getAssetById = useAssetsStore.getState().getAssetById
-    const visualClips = cullVisualLayerEntries(getVisualLayerClips(state, time), {
+    // Track mattes: pair matted clips with the layer above and hide the
+    // consumed matte layers from normal output BEFORE culling, so a
+    // full-frame matte source can't obscure the layers beneath it.
+    const layeredEntries = getVisualLayerClips(state, time)
+    const { matteEntryByClipId, consumedClipIds } = resolveTrackMatteAssignments(layeredEntries)
+    const visibleEntries = consumedClipIds.size > 0
+      ? layeredEntries.filter((layerEntry) => !consumedClipIds.has(layerEntry.clip?.id))
+      : layeredEntries
+    const visualClips = cullVisualLayerEntries(visibleEntries, {
       time,
       getAssetById,
       transitionClipIds,
@@ -1252,7 +1430,7 @@ function CanvasPreviewRenderer({
         continue
       }
       if (clip.type === 'video' || clip.type === 'image' || clip.type === 'text' || clip.type === 'shape') {
-        const status = drawVisualClip(stageCtx, entry, time, transitionInfo, clipState, frameIndex)
+        const status = drawVisualClip(stageCtx, entry, time, transitionInfo, clipState, frameIndex, matteEntryByClipId.get(clip.id) || null)
         if (status === 'unready') sawUnreadyVisual = true
       }
     }
@@ -1303,12 +1481,66 @@ function CanvasPreviewRenderer({
       lastCtx.drawImage(stageCanvas, 0, 0)
     }
     hasPaintedFrameRef.current = true
+    // Commit bookkeeping for the live-capture bridge: which timeline time
+    // this frame represents, and a serial so captures can insist on a FRESH
+    // commit (post-edit) rather than a stale frame at the same time.
+    lastCommittedFrameTimeRef.current = time
+    frameCommitSerialRef.current += 1
     if (loopSeekHoldActive) {
       loopSeekHoldUntilRef.current = 0
     }
   }, [applyAdjustmentLayer, drawVisualClip, issueScrubSeek, preloadVideosAroundTime, safeFps, safeHeight, safeWidth, scheduleDeferredDraw])
 
   drawFrameRef.current = drawFrame
+
+  // Live-capture bridge: seek the playhead to a target time, drive draws
+  // until a frame for exactly that time commits (videos seeked/decoded, GPU
+  // composite done), then hand back a copy. This is what gives MCP frame
+  // inspection true render parity with the preview. Callers restore the
+  // playhead; playback must be paused (seek-and-settle can't chase a moving
+  // playhead).
+  const captureLiveFrameAt = useCallback(async (targetTime, { timeoutMs = 5000 } = {}) => {
+    const timelineState = useTimelineStore.getState()
+    if (timelineState.isPlaying) return null
+    const parsedTime = Number(targetTime)
+    if (!Number.isFinite(parsedTime)) return null
+
+    timelineState.setPlayheadPosition(parsedTime, { snap: true })
+    const startSerial = frameCommitSerialRef.current
+    const deadline = getNowMs() + Math.max(500, Number(timeoutMs) || 5000)
+
+    while (getNowMs() < deadline) {
+      if (useTimelineStore.getState().isPlaying) return null
+      // Force strict seek tolerances — scrub mode would accept video frames
+      // up to 0.18s away from the target.
+      scrubPreviewStateRef.current.activeUntil = 0
+      drawFrameRef.current?.()
+      const currentPlayhead = useTimelineStore.getState().playheadPosition
+      const committedTime = lastCommittedFrameTimeRef.current
+      if (
+        frameCommitSerialRef.current > startSerial
+        && Number.isFinite(committedTime)
+        && Math.abs(committedTime - currentPlayhead) < 0.0005
+        && lastFrameCanvasRef.current
+      ) {
+        const source = lastFrameCanvasRef.current
+        const copy = document.createElement('canvas')
+        copy.width = source.width
+        copy.height = source.height
+        const copyCtx = copy.getContext('2d')
+        if (!copyCtx) return null
+        copyCtx.drawImage(source, 0, 0)
+        return copy
+      }
+      await new Promise((resolve) => { window.setTimeout(resolve, 60) })
+    }
+    return null
+  }, [])
+
+  useEffect(() => {
+    registerLivePreviewCapture(captureLiveFrameAt)
+    return () => unregisterLivePreviewCapture(captureLiveFrameAt)
+  }, [captureLiveFrameAt])
 
   useEffect(() => {
     const currentPlayhead = Number(playheadPosition) || 0
@@ -1423,13 +1655,22 @@ function CanvasPreviewRenderer({
     const transitionInfo = state.getTransitionAtTime(time)
     const transitionClipIds = getTransitionClipIds(transitionInfo)
     const getAssetById = useAssetsStore.getState().getAssetById
-    const visualClips = cullVisualLayerEntries(getVisualLayerClips(state, time), {
-      time,
-      getAssetById,
-      transitionClipIds,
-      timelineWidth: width,
-      timelineHeight: height,
-    })
+    // Matte-consumed layers are invisible, so exclude them from hit-testing
+    // the same way the draw loop does.
+    const layeredEntries = getVisualLayerClips(state, time)
+    const { consumedClipIds } = resolveTrackMatteAssignments(layeredEntries)
+    const visualClips = cullVisualLayerEntries(
+      consumedClipIds.size > 0
+        ? layeredEntries.filter((layerEntry) => !consumedClipIds.has(layerEntry.clip?.id))
+        : layeredEntries,
+      {
+        time,
+        getAssetById,
+        transitionClipIds,
+        timelineWidth: width,
+        timelineHeight: height,
+      }
+    )
 
     for (let index = visualClips.length - 1; index >= 0; index -= 1) {
       const clip = visualClips[index]?.clip

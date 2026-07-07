@@ -128,6 +128,7 @@ function sanitizeClip(clip = {}) {
     speed: safeNumber(clip.speed, 1),
     enabled: clip.enabled !== false,
     labelColor: clip.labelColor || '',
+    trackMatte: clip.trackMatte || 'none',
     lockMode: clip.lockMode || null,
     syncLock: safeClone(clip.syncLock),
     transform: safeClone(clip.transform),
