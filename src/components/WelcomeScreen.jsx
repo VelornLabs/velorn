@@ -412,19 +412,19 @@ function WelcomeScreen() {
   // Matches the TitleBar used once a project is open so users always have
   // access to minimize / maximize / close, even on first run.
   const titleStrip = (
-    <div className="h-8 flex-shrink-0 bg-black flex items-stretch justify-end drag-region select-none">
+    <div className="relative z-50 h-10 flex-shrink-0 bg-black flex items-stretch justify-end drag-region select-none">
       <div className="no-drag flex items-stretch">
         <button
           onClick={handleMinimize}
-          className="w-11 h-8 flex items-center justify-center hover:bg-sf-dark-700 transition-colors"
+          className="w-10 h-10 flex items-center justify-center hover:bg-sf-dark-700 transition-colors"
           title="Minimize"
           aria-label="Minimize"
         >
-          <Minus className="w-3.5 h-3.5 text-sf-text-secondary" />
+          <Minus className="w-4 h-4 text-sf-text-secondary" />
         </button>
         <button
           onClick={handleToggleMaximize}
-          className="w-11 h-8 flex items-center justify-center hover:bg-sf-dark-700 transition-colors"
+          className="w-10 h-10 flex items-center justify-center hover:bg-sf-dark-700 transition-colors"
           title={isRestoreDown ? 'Restore Down' : 'Maximize'}
           aria-label={isRestoreDown ? 'Restore Down' : 'Maximize'}
         >
@@ -436,11 +436,11 @@ function WelcomeScreen() {
         </button>
         <button
           onClick={handleCloseWindow}
-          className="w-11 h-8 flex items-center justify-center hover:bg-red-600 transition-colors"
+          className="w-10 h-10 flex items-center justify-center hover:bg-red-600 transition-colors"
           title="Close"
           aria-label="Close"
         >
-          <X className="w-3.5 h-3.5 text-sf-text-secondary" />
+          <X className="w-4 h-4 text-sf-text-secondary" />
         </button>
       </div>
     </div>
@@ -633,36 +633,42 @@ function WelcomeScreen() {
         /* Hero band: full-bleed dark outer, centered cinematic inner. */
         <div className="welcome-hero relative z-0 flex-shrink-0 h-[62vh] min-h-[420px] max-h-[720px] overflow-visible select-none bg-sf-dark-950">
           <div className="relative mx-auto h-full w-full max-w-[2400px] overflow-visible">
-            {/* Animated branded hero plate. */}
-            <HeroVideoLoop
-              src={welcomeHeroVideoSrc}
-              poster={welcomeHeroPosterSrc}
-              fadeSeconds={2}
-              className="absolute inset-x-0 top-0 w-full h-screen object-cover"
+            {/* Keep the overlay text locked to the same 16:9 plate as the logo media. */}
+            <div
+              className="absolute left-1/2 top-0 aspect-video"
               style={{
-                objectPosition: 'center 10%',
-                transform: 'translateY(-8%) scale(1.08)',
+                width: 'max(100%, calc(100vh * 16 / 9))',
+                transform: 'translateX(-50%) translateY(-8%) scale(1.08)',
                 transformOrigin: 'center top',
               }}
-            />
-            <div
-              className="pointer-events-none absolute inset-x-0 top-0 h-screen"
-              style={{
-                background: [
-                  'linear-gradient(90deg, rgba(3, 6, 16, 0.74) 0%, rgba(3, 6, 16, 0.22) 20%, rgba(3, 6, 16, 0) 42%, rgba(3, 6, 16, 0) 58%, rgba(3, 6, 16, 0.24) 80%, rgba(3, 6, 16, 0.76) 100%)',
-                  'linear-gradient(180deg, rgba(3, 6, 16, 0.22) 0%, rgba(3, 6, 16, 0) 28%, rgba(3, 6, 16, 0.18) 64%, rgba(3, 6, 16, 0.68) 100%)',
-                  'radial-gradient(ellipse at center, rgba(3, 6, 16, 0) 0%, rgba(3, 6, 16, 0) 42%, rgba(3, 6, 16, 0.22) 72%, rgba(3, 6, 16, 0.48) 100%)',
-                ].join(', '),
-              }}
-            />
-            <div
-              className="absolute right-[34.1%] whitespace-nowrap text-right text-[7.5px] font-semibold uppercase tracking-[0.22em] text-[#f2d590]/90 pointer-events-none"
-              style={{
-                top: 'clamp(228px, 26.6vh, 296px)',
-                textShadow: '0 0 14px rgba(247, 210, 132, 0.5), 0 0 5px rgba(255, 231, 176, 0.22), 0 1px 8px rgba(0, 0, 0, 0.72)',
-              }}
             >
-              Generate shots. Shape edits. Deliver stories.
+              <HeroVideoLoop
+                src={welcomeHeroVideoSrc}
+                poster={welcomeHeroPosterSrc}
+                fadeSeconds={2}
+                className="absolute inset-0 h-full w-full object-cover"
+              />
+              <div
+                className="pointer-events-none absolute inset-0"
+                style={{
+                  background: [
+                    'linear-gradient(90deg, rgba(3, 6, 16, 0.74) 0%, rgba(3, 6, 16, 0.22) 20%, rgba(3, 6, 16, 0) 42%, rgba(3, 6, 16, 0) 58%, rgba(3, 6, 16, 0.24) 80%, rgba(3, 6, 16, 0.76) 100%)',
+                    'linear-gradient(180deg, rgba(3, 6, 16, 0.22) 0%, rgba(3, 6, 16, 0) 28%, rgba(3, 6, 16, 0.18) 64%, rgba(3, 6, 16, 0.68) 100%)',
+                    'radial-gradient(ellipse at center, rgba(3, 6, 16, 0) 0%, rgba(3, 6, 16, 0) 42%, rgba(3, 6, 16, 0.22) 72%, rgba(3, 6, 16, 0.48) 100%)',
+                  ].join(', '),
+                }}
+              />
+              <div
+                className="absolute whitespace-nowrap text-right font-semibold uppercase tracking-[0.22em] text-[#f2d590]/90 pointer-events-none"
+                style={{
+                  top: '31.6%',
+                  right: '35%',
+                  fontSize: 'clamp(7px, 0.39vw, 9.4px)',
+                  textShadow: '0 0 14px rgba(247, 210, 132, 0.5), 0 0 5px rgba(255, 231, 176, 0.22), 0 1px 8px rgba(0, 0, 0, 0.72)',
+                }}
+              >
+                Generate shots. Shape edits. Deliver stories.
+              </div>
             </div>
           </div>
           {/* Subtle attribution */}

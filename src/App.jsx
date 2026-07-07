@@ -350,7 +350,7 @@ function App() {
   }, [])
 
   const isFullScreenTab = mainTab === 'export' || mainTab === 'generate' || mainTab === 'agent' || mainTab === 'flow-ai' || mainTab === 'mog' || mainTab === 'llm-assistant' || mainTab === 'stock' || mainTab === 'comfyui'
-  // Editor layout insets (used for content when on Editor, and always for tab bar so it doesn't shift)
+  // Editor layout insets used by the editor content shell.
   const editorLeftInset = leftPanelExpanded ? ICON_BAR_WIDTH + leftPanelWidth : ICON_BAR_WIDTH
   const editorRightInset = inspectorExpanded ? ICON_BAR_WIDTH + inspectorWidth : ICON_BAR_WIDTH
   const leftSidebarWidth = isFullScreenTab ? 0 : editorLeftInset
@@ -493,8 +493,6 @@ function App() {
         projectName={currentProject?.name || 'Untitled'} 
         activeTab={mainTab}
         onTabChange={setMainTab}
-        centerInsetLeft={editorLeftInset}
-        centerInsetRight={editorRightInset}
       />
 
       {showMediaPreparation && (

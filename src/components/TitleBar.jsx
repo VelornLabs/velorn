@@ -25,8 +25,6 @@ function TitleBar({
   projectName,
   activeTab = 'editor',
   onTabChange,
-  centerInsetLeft = 0,
-  centerInsetRight = 0,
 }) {
   const tabs = TOP_TABS.filter((tab) => !HIDDEN_TOP_TAB_IDS.has(tab.id))
   const [windowState, setWindowState] = useState({
@@ -89,10 +87,8 @@ function TitleBar({
       
       {/* Center - App mode tabs; extend 1px into content so grey touches with no black line */}
       <div
-        className="absolute top-0 flex items-center justify-center"
+        className="absolute left-1/2 top-0 flex -translate-x-1/2 items-center justify-center"
         style={{
-          left: `${centerInsetLeft}px`,
-          right: `${centerInsetRight}px`,
           bottom: -1,
           height: 'calc(100% + 1px)'
         }}
