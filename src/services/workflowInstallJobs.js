@@ -205,8 +205,17 @@ export function startWorkflowInstall({ workflowId, plan, comfyRootPath }) {
       return
     }
     if (!result?.success) {
+      // The installer continues past failed tasks and reports success:false
+      // with per-task detail in errors[] — surface that, and keep the partial
+      // results so the agent can see which tasks DID land.
       record.status = 'failed'
-      record.errors = [result?.error || 'Workflow setup install failed.'].filter(Boolean)
+      const detail = Array.isArray(result?.errors) ? result.errors.filter(Boolean) : []
+      record.errors = detail.length > 0 ? detail : [result?.error || 'Workflow setup install failed.']
+      record.result = {
+        restartRecommended: Boolean(result?.restartRecommended),
+        nodePacks: result?.nodePackResults || result?.nodePacks || [],
+        models: result?.modelResults || result?.models || [],
+      }
       return
     }
     const installErrors = Array.isArray(result.errors) ? result.errors.filter(Boolean) : []

@@ -1337,6 +1337,7 @@ async function downloadFileWithProgress(task, targetPath, progressMeta = {}) {
   const digest = crypto.createHash('sha256')
   let bytesDownloaded = 0
   let lastProgressAt = 0
+  let activeFileStream = null
 
   try {
     if (!response.body) {
@@ -1348,6 +1349,7 @@ async function downloadFileWithProgress(task, targetPath, progressMeta = {}) {
     } else {
       await new Promise((resolve, reject) => {
         const fileStream = fsSync.createWriteStream(tempPath)
+        activeFileStream = fileStream
         const sourceStream = Readable.fromWeb(response.body)
 
         sourceStream.on('data', (chunk) => {
@@ -1418,6 +1420,16 @@ async function downloadFileWithProgress(task, targetPath, progressMeta = {}) {
       bytesDownloaded,
     }
   } catch (error) {
+    // Close the write stream before unlinking — on Windows an open handle
+    // makes the unlink fail silently and the partial .download file leaks
+    // (locked) until the app exits.
+    if (activeFileStream && !activeFileStream.closed) {
+      await new Promise((resolve) => {
+        activeFileStream.on('close', resolve)
+        activeFileStream.destroy()
+        setTimeout(resolve, 1000)
+      })
+    }
     try {
       await fs.unlink(tempPath)
     } catch (_) {

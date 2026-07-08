@@ -22,6 +22,7 @@ import {
   IMPORTED_WORKFLOW_ID_PREFIX,
   getImportedManifestById,
   getImportedManifestByWorkflowId,
+  getImportedManifests,
   getImportedWorkflowEntry,
   isImportedWorkflowId,
   loadImportedWorkflowsFromDisk,
@@ -4253,10 +4254,11 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
     }
   }, [currentWorkflow, formError, formErrorTroubleshootingHints, generationMode])
   const activeWorkflowBrowserMode = generationMode === 'yolo' ? 'create' : 'generate'
-  const visibleWorkflowManifests = useMemo(() => (
-    // Curated manifests only: the ComfyUI templates route is a launcher into
-    // the embedded ComfyUI tab, not an import source for Local/Cloud.
-    GENERATE_WORKFLOW_CATALOG.filter((workflow) => (
+  const visibleWorkflowManifests = useMemo(() => {
+    // Curated manifests plus registered imports (catalog templates and
+    // MCP/community workflows, badge "Imported"). The ComfyUI templates route
+    // stays a launcher into the embedded ComfyUI tab.
+    const curated = GENERATE_WORKFLOW_CATALOG.filter((workflow) => (
       !workflow.hidden
         && workflow.mode === activeWorkflowBrowserMode
         && (activeWorkflowBrowserMode === 'create'
@@ -4265,7 +4267,17 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             ? (workflow.route === 'local' || workflow.route === 'cloud')
             : workflow.route === workflowRoute)
     ))
-  ), [activeWorkflowBrowserMode, workflowRoute])
+    if (activeWorkflowBrowserMode !== 'generate') return curated
+    const imported = getImportedManifests().filter((manifest) => (
+      !manifest.hidden
+        && manifest.mode === 'generate'
+        && (workflowRoute === 'featured'
+          ? (manifest.route === 'local' || manifest.route === 'cloud')
+          : manifest.route === workflowRoute)
+    ))
+    return [...curated, ...imported]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- importedWorkflowsVersion invalidates the registry lookup
+  }, [activeWorkflowBrowserMode, workflowRoute, importedWorkflowsVersion])
   const selectedWorkflowManifest = useMemo(() => (
     GENERATE_WORKFLOW_CATALOG.find((workflow) => !workflow.hidden && workflow.id === selectedWorkflowManifestId)
       || getImportedManifestById(selectedWorkflowManifestId)
