@@ -28,7 +28,7 @@ import {
 } from '../config/importedWorkflowRegistry'
 import { applyImportedWorkflowBindings } from '../services/importedWorkflowBindings'
 import { fetchComfyTemplateCatalog } from '../services/comfyTemplateCatalog'
-import { importComfyTemplate } from '../services/templateImporter'
+import { importComfyTemplate, reimportImportedWorkflow } from '../services/templateImporter'
 import { COMFY_PARTNER_KEY_CHANGED_EVENT } from '../services/comfyPartnerAuth'
 import useComfyUI from '../hooks/useComfyUI'
 import useAssetsStore from '../stores/assetsStore'
@@ -12215,7 +12215,20 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           activeCount: queueRef.current.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status)).length,
         }
 
-        if (!templateQuery && !templateInput?.workflowUrl) {
+        // Imported workflows (import_comfyui_workflow) skip the catalog: the
+        // registry entry is the source of truth.
+        const importedWorkflowIdArg = String(detail.importedWorkflowId || '').trim()
+        const requestedImportedEntry = importedWorkflowIdArg ? getImportedWorkflowEntry(importedWorkflowIdArg) : null
+        if (importedWorkflowIdArg && !requestedImportedEntry) {
+          respond({
+            success: false,
+            error: `Imported workflow "${importedWorkflowIdArg}" was not found — import it first with import_comfyui_workflow.`,
+            status,
+          })
+          return
+        }
+
+        if (!importedWorkflowIdArg && !templateQuery && !templateInput?.workflowUrl) {
           respond({ success: false, error: 'A ComfyUI template name or query is required.', status })
           return
         }
@@ -12228,30 +12241,38 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           return
         }
 
-        let catalog = null
-        let catalogError = ''
-        try {
-          catalog = await fetchComfyTemplateCatalog({ forceRefresh: detail.forceRefreshTemplates === true })
-        } catch (error) {
-          catalogError = error instanceof Error ? error.message : String(error || 'Could not fetch template catalog.')
-        }
-        const catalogTemplate = catalog ? resolveComfyTemplateFromCatalog(catalog.templates || [], templateQuery) : null
-        const template = catalogTemplate || (templateInput?.workflowUrl ? templateInput : null)
-        if (!template) {
-          respond({
-            success: false,
-            error: catalogError
-              ? `No ComfyUI template matched "${templateQuery}" and the catalog could not be refreshed: ${catalogError}`
-              : `No ComfyUI template matched "${templateQuery}".`,
-            status: {
-              ...status,
-              catalogTemplateCount: (catalog?.templates || []).length,
-            },
-          })
-          return
+        let template = null
+        if (requestedImportedEntry) {
+          template = requestedImportedEntry.template || {
+            name: requestedImportedEntry.templateName,
+            title: requestedImportedEntry.manifest?.title || requestedImportedEntry.templateName,
+          }
+        } else {
+          let catalog = null
+          let catalogError = ''
+          try {
+            catalog = await fetchComfyTemplateCatalog({ forceRefresh: detail.forceRefreshTemplates === true })
+          } catch (error) {
+            catalogError = error instanceof Error ? error.message : String(error || 'Could not fetch template catalog.')
+          }
+          const catalogTemplate = catalog ? resolveComfyTemplateFromCatalog(catalog.templates || [], templateQuery) : null
+          template = catalogTemplate || (templateInput?.workflowUrl ? templateInput : null)
+          if (!template) {
+            respond({
+              success: false,
+              error: catalogError
+                ? `No ComfyUI template matched "${templateQuery}" and the catalog could not be refreshed: ${catalogError}`
+                : `No ComfyUI template matched "${templateQuery}".`,
+              status: {
+                ...status,
+                catalogTemplateCount: (catalog?.templates || []).length,
+              },
+            })
+            return
+          }
         }
 
-        const importedWorkflowId = `${IMPORTED_WORKFLOW_ID_PREFIX}${template.name}`
+        const importedWorkflowId = requestedImportedEntry?.workflowId || `${IMPORTED_WORKFLOW_ID_PREFIX}${template.name}`
         let importedEntry = getImportedWorkflowEntry(importedWorkflowId)
         let manifest = importedEntry?.manifest || null
         const settings = detail.generationSettings || {}
@@ -12305,6 +12326,16 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
           resolution: requestedResolution,
           templateParameters: requestedTemplateParameters,
           willRefreshParameterBindings: Boolean(needsParameterBindings),
+          manifest: importedEntry ? {
+            runnable: importedEntry.manifest?.runnable !== false && !importedEntry.conversionIncomplete,
+            outputType: importedEntry.manifest?.outputType || null,
+            inputAssetType: importedEntry.manifest?.inputAssetType || null,
+            needsImage: Boolean(importedEntry.manifest?.needsImage),
+            requiredAssetFields: (importedEntry.manifest?.fields || [])
+              .filter((field) => field?.type === 'assetSelect' && field.required)
+              .map((field) => ({ id: field.id, label: field.label, assetType: field.assetType || null })),
+            parameters: (importedEntry.bindings?.parameters || []).map((param) => param.fieldId || param.label || param.inputKey),
+          } : null,
         }
 
         if (detail.previewOnly !== false) {
@@ -12332,11 +12363,15 @@ function GenerateWorkspace({ onOpenWorkflowSetup = null }) {
             })
             return
           }
-          const importResult = await importComfyTemplate(template, {
-            onProgress: (_step, message) => {
-              if (message) addComfyLog('status', `MCP template import: ${message}`)
-            },
-          })
+          // Existing entries re-import from their persisted ui-workflow.json
+          // (works for MCP/tab imports with no refetchable workflowUrl); only
+          // a never-imported catalog template goes through the URL path.
+          const importProgress = (_step, message) => {
+            if (message) addComfyLog('status', `MCP template import: ${message}`)
+          }
+          const importResult = importedEntry
+            ? await reimportImportedWorkflow(importedEntry.workflowId, { onProgress: importProgress })
+            : await importComfyTemplate(template, { onProgress: importProgress })
           importedEntry = importResult?.entry || null
           manifest = importedEntry?.manifest || null
         }

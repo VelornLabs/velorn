@@ -5,6 +5,7 @@ import { buildComfyGraphFromApiWorkflow } from './comfyWorkflowGraph'
 import { comfyui } from './comfyui'
 import { getLocalComfyConnectionSync } from './localComfyConnection'
 import { buildMissingDependencyClipboardText, checkWorkflowDependenciesBatch } from './workflowDependencies'
+import { getImportedWorkflowEntry } from '../config/importedWorkflowRegistry'
 
 export const WORKFLOW_SETUP_SECTION_ID = 'workflow-setup'
 const WORKFLOW_SETUP_EXTRA_IDS = new Set(['mask-gen'])
@@ -175,6 +176,51 @@ export async function scanWorkflowSetupDependencies() {
     }
     return enrichWorkflowDependencyResult(result)
   })
+}
+
+/**
+ * Single-workflow install plan with imported-pack promotion. Imported
+ * templates carry registry-resolved node-pack recipes; curated install info
+ * can't map their custom classes, so uncurated missing nodes land in
+ * manualNodes — promote them to auto pack installs instead. The installer
+ * treats already-present packs as cheap git updates, so listing every
+ * resolved pack is safe.
+ */
+export function buildWorkflowInstallPlanWithImportedPromotion(enriched) {
+  if (!enriched) return null
+  const basePlan = buildWorkflowInstallPlan([enriched], [enriched.workflowId])
+
+  const importedEntry = getImportedWorkflowEntry(enriched.workflowId)
+  const packRecipes = importedEntry?.nodePackRecipes || []
+  if (packRecipes.length === 0 || (basePlan.manualNodes || []).length === 0) return basePlan
+
+  const coveredClassTypes = basePlan.manualNodes.map((node) => node.classType)
+  const existingPackIds = new Set((basePlan.nodePacks || []).map((pack) => pack.id))
+  const addedPacks = packRecipes
+    .filter((recipe) => !existingPackIds.has(recipe.id))
+    .map((recipe) => ({
+      ...recipe,
+      workflowIds: [enriched.workflowId],
+      workflowLabels: [enriched.workflowLabel],
+      classTypes: coveredClassTypes,
+    }))
+  if (addedPacks.length === 0) return basePlan
+
+  // Keep the manual entries when coverage is uncertain: class-level
+  // resolution left some classes uncovered, or (for older imports without
+  // that data) a declared pack failed to resolve.
+  const keepManual = Array.isArray(importedEntry?.uncoveredNodeTypes)
+    ? importedEntry.uncoveredNodeTypes.length > 0
+    : (importedEntry?.unresolvedNodePacks || []).length > 0
+
+  return {
+    ...basePlan,
+    nodePacks: [...(basePlan.nodePacks || []), ...addedPacks],
+    manualNodes: keepManual ? basePlan.manualNodes : [],
+    actionableTaskCount: basePlan.actionableTaskCount + addedPacks.length,
+    hasActionableTasks: true,
+    restartRecommended: true,
+  }
 }
 
 export function buildWorkflowInstallPlan(results = [], selectedWorkflowIds = []) {

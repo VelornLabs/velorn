@@ -19,6 +19,14 @@ import {
   refreshMusicJobs,
 } from './musicGeneration'
 import { analyzeAudioSource } from './audioAnalysis'
+import { comfyui } from './comfyui'
+import { analyzeWorkflowForImport, buildMcpImportTemplate, importComfyTemplate } from './templateImporter'
+import { IMPORTED_WORKFLOW_ID_PREFIX, getImportedWorkflowEntry } from '../config/importedWorkflowRegistry'
+import {
+  buildInstallPlanForWorkflow,
+  getWorkflowInstallJobs,
+  startWorkflowInstall,
+} from './workflowInstallJobs'
 import { saveLocalComfyConnectionPort } from './localComfyConnection'
 import { getAbsoluteFileUrl, importAsset, writeGeneratedOverlayToProject } from './fileSystem'
 import buildFcpXml from './fcpxmlExporter'
@@ -1982,6 +1990,216 @@ async function handleQueueTimelineTemplateGeneration(payload = {}) {
       },
     }))
   })
+}
+
+async function handleImportComfyUiWorkflow(payload = {}) {
+  const uiWorkflow = payload.uiWorkflow
+  if (!Array.isArray(uiWorkflow?.nodes)) {
+    throw new Error('No UI-format workflow was provided to import.')
+  }
+
+  const template = buildMcpImportTemplate({
+    name: payload.name,
+    title: payload.title || payload.name,
+    sourceUrl: payload.sourceUrl,
+  })
+  const workflowId = `${IMPORTED_WORKFLOW_ID_PREFIX}${template.name}`
+  const existing = getImportedWorkflowEntry(workflowId)
+  const modelUrlHints = Array.isArray(payload.modelUrls) ? payload.modelUrls : []
+  const previewOnly = payload.previewOnly !== false
+
+  let objectInfo = null
+  try {
+    objectInfo = await comfyui.getObjectInfo()
+  } catch {
+    objectInfo = null
+  }
+  const comfyUiConnected = Boolean(objectInfo)
+
+  if (previewOnly) {
+    const analysis = await analyzeWorkflowForImport(uiWorkflow, template, { modelUrlHints, objectInfo })
+    const notes = []
+    if (!comfyUiConnected) {
+      notes.push('ComfyUI is not reachable — node coverage is unknown and applying the import will fail until it is running (control_comfyui_launcher can start it).')
+    } else if (analysis.unknownNodeTypes?.length > 0) {
+      notes.push(`${analysis.unknownNodeTypes.length} node type(s) are missing from this ComfyUI — the import will register but stay runnable:false until the packs are installed (install_workflow_setup) and ComfyUI restarts.`)
+    }
+    if (analysis.modelsMissingUrl.length > 0) {
+      notes.push(`${analysis.modelsMissingUrl.length} referenced model file(s) have no download URL — supply modelUrls hints or install them manually.`)
+    }
+    if (analysis.unmatchedModelUrlHints.length > 0) {
+      notes.push(`Unmatched modelUrls hints (no matching filename in the workflow): ${analysis.unmatchedModelUrlHints.join(', ')}`)
+    }
+    return {
+      previewOnly: true,
+      alreadyImported: Boolean(existing),
+      existingWorkflowId: existing?.workflowId || undefined,
+      message: existing
+        ? `Already imported as ${existing.workflowId} — applying again needs overwrite:true.`
+        : undefined,
+      plan: {
+        workflowId,
+        template: { name: template.name, title: template.title, sourceUrl: template.sourceUrl },
+        ...analysis,
+        notes,
+      },
+    }
+  }
+
+  if (existing && payload.overwrite !== true) {
+    throw new Error(`This workflow is already imported as "${existing.workflowId}". Re-use that id, pass overwrite:true to replace it, or pick a different name.`)
+  }
+
+  const { entry } = await importComfyTemplate(template, { uiWorkflow, modelUrlHints })
+  const manifest = entry.manifest || {}
+  const nodePackRecipes = (entry.nodePackRecipes || []).map((recipe) => ({
+    id: recipe.id,
+    displayName: recipe.displayName,
+    repoUrl: recipe.repoUrl,
+  }))
+  const modelRecipes = (entry.recipes || []).map((recipe) => ({
+    filename: recipe.filename,
+    targetSubdir: recipe.targetSubdir,
+    downloadUrl: recipe.downloadUrl,
+    sizeBytes: recipe.sizeBytes ?? null,
+  }))
+  const recipeFilenames = new Set(modelRecipes.map((recipe) => String(recipe.filename || '').toLowerCase()))
+  const modelsMissingUrl = (entry.pack?.requiredModels || [])
+    .map((model) => model.filename)
+    .filter((filename) => !recipeFilenames.has(String(filename || '').toLowerCase()))
+
+  const nextSteps = []
+  if (nodePackRecipes.length > 0 || modelRecipes.length > 0) {
+    nextSteps.push(`Preview the dependency install with install_workflow_setup { "workflowId": "${entry.workflowId}" } and get user approval before applying.`)
+  }
+  if (modelsMissingUrl.length > 0) {
+    nextSteps.push('Some referenced models have no download URL — find URLs and re-import with modelUrls hints (overwrite:true), or ask the user to install them manually.')
+  }
+  nextSteps.push(`Queue it on a timeline source with queue_timeline_template_generation { "importedWorkflowId": "${entry.workflowId}" } (previewOnly first).`)
+
+  return {
+    success: true,
+    workflowId: entry.workflowId,
+    runnable: manifest.runnable !== false,
+    conversionIncomplete: Boolean(entry.conversionIncomplete),
+    manifest: {
+      title: manifest.title,
+      category: manifest.category,
+      outputType: manifest.outputType,
+      inputAssetType: manifest.inputAssetType || null,
+      needsImage: Boolean(manifest.needsImage),
+      fields: (manifest.fields || []).map((field) => ({
+        id: field.id,
+        type: field.type,
+        label: field.label,
+        required: Boolean(field.required),
+        assetType: field.assetType || undefined,
+      })),
+    },
+    dependencies: {
+      unknownNodeTypes: manifest.unknownNodeTypes || [],
+      nodePackRecipes,
+      unresolvedNodePacks: entry.unresolvedNodePacks || [],
+      uncoveredNodeTypes: entry.uncoveredNodeTypes || [],
+      requiredModels: entry.pack?.requiredModels || [],
+      modelRecipes,
+      modelsMissingUrl,
+    },
+    nextSteps,
+  }
+}
+
+async function handleInstallWorkflowSetup(payload = {}) {
+  const workflowId = String(payload.workflowId || '').trim()
+  if (!workflowId) throw new Error('workflowId is required.')
+
+  const { plan, rootValidation } = await buildInstallPlanForWorkflow(workflowId)
+  if (!plan) throw new Error('Could not build an install plan for this workflow.')
+
+  // "only" semantics: when present, install ONLY the listed items — an
+  // omitted sub-list means none of that kind. Omit "only" entirely to
+  // install everything actionable.
+  const only = payload.only && typeof payload.only === 'object' ? payload.only : null
+  const nodePackIdFilter = normalizeStringArray(only?.nodePackIds)
+  const modelFilenameFilter = new Set(normalizeStringArray(only?.modelFilenames).map((value) => value.toLowerCase()))
+  let nodePacks = Array.isArray(plan.nodePacks) ? plan.nodePacks : []
+  let models = Array.isArray(plan.models) ? plan.models : []
+  if (only) {
+    nodePacks = nodePackIdFilter.length > 0 ? nodePacks.filter((pack) => nodePackIdFilter.includes(pack.id)) : []
+    models = modelFilenameFilter.size > 0
+      ? models.filter((model) => modelFilenameFilter.has(String(model.filename || '').toLowerCase()))
+      : []
+  }
+
+  const totalDownloadBytes = models.reduce(
+    (sum, model) => (Number.isFinite(model.sizeBytes) ? sum + Number(model.sizeBytes) : sum),
+    0
+  )
+  const planSummary = {
+    workflowId,
+    comfyRoot: rootValidation.normalizedPath || '',
+    rootValid: rootValidation.isValid,
+    rootError: rootValidation.error || undefined,
+    nodePacks: nodePacks.map((pack) => ({ id: pack.id, displayName: pack.displayName, repoUrl: pack.repoUrl })),
+    models: models.map((model) => ({
+      filename: model.filename,
+      targetSubdir: model.targetSubdir,
+      downloadUrl: model.downloadUrl,
+      sizeBytes: Number.isFinite(model.sizeBytes) ? Number(model.sizeBytes) : null,
+    })),
+    manualNodes: (plan.manualNodes || []).map((node) => node.classType),
+    coreNodes: (plan.coreNodes || []).map((node) => node.classType),
+    manualModels: (plan.manualModels || []).map((model) => model.filename),
+    totalDownloadBytes,
+    unknownSizeCount: models.filter((model) => !Number.isFinite(model.sizeBytes)).length,
+    restartRecommended: nodePacks.length > 0,
+    hasActionableTasks: nodePacks.length > 0 || models.length > 0,
+  }
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      plan: planSummary,
+      message: planSummary.hasActionableTasks
+        ? `Nothing installed yet. Applying git-clones ${nodePacks.length} node pack(s) and downloads ${models.length} model file(s) into the ComfyUI folder — show this plan (including total size) to the user and get explicit approval first. Use only:{nodePackIds,modelFilenames} to install a subset.`
+        : 'Nothing to install for this workflow — dependencies are satisfied, or the remaining items are manual-only (see manualNodes/manualModels).',
+    }
+  }
+
+  if (!planSummary.hasActionableTasks) {
+    return { success: true, message: 'Nothing to install — dependencies are satisfied or manual-only.', plan: planSummary }
+  }
+  if (!rootValidation.isValid) {
+    throw new Error(rootValidation.error || 'The ComfyUI folder is not configured or failed validation — set it in Velorn first.')
+  }
+
+  const job = startWorkflowInstall({
+    workflowId,
+    plan: { nodePacks, models, restartRecommended: planSummary.restartRecommended },
+    comfyRootPath: rootValidation.normalizedPath,
+  })
+  return {
+    success: true,
+    jobId: job.jobId,
+    message: 'Install started — poll get_workflow_install_status for progress. Existing files are skipped, never overwritten.',
+    plan: job.plan,
+  }
+}
+
+async function handleGetWorkflowInstallStatus(payload = {}) {
+  const jobsList = getWorkflowInstallJobs(payload.jobId)
+  if (payload.jobId && jobsList.length === 0) {
+    throw new Error(`No install job found with id "${String(payload.jobId).trim()}".`)
+  }
+  const needsRestart = jobsList.some((job) => (
+    (job.status === 'completed' || job.status === 'completed-with-errors') && job.result?.restartRecommended
+  ))
+  return {
+    jobs: jobsList,
+    guidance: needsRestart
+      ? 'New node packs need a ComfyUI restart to load: restart via control_comfyui_launcher {"command":"restart"}, wait for the connection to come back, then re-preview install_workflow_setup to confirm the nodes resolved (or queue directly — queueing re-validates).'
+      : undefined,
+  }
 }
 
 async function handleGetAudioAnalysis(payload = {}) {
@@ -7533,6 +7751,12 @@ async function handleMcpAction(request = {}) {
       return handleQueueTimelineGenerationBatch(request.payload || {})
     case 'queue_timeline_template_generation':
       return handleQueueTimelineTemplateGeneration(request.payload || {})
+    case 'import_comfyui_workflow':
+      return handleImportComfyUiWorkflow(request.payload || {})
+    case 'install_workflow_setup':
+      return handleInstallWorkflowSetup(request.payload || {})
+    case 'get_workflow_install_status':
+      return handleGetWorkflowInstallStatus(request.payload || {})
     case 'queue_prompt_generation_batch':
       return handleQueuePromptGenerationBatch(request.payload || {})
     case 'generate_music':

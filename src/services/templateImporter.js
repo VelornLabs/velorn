@@ -145,6 +145,148 @@ function collectEmbeddedModelMetadata(uiWorkflow) {
   return models
 }
 
+// --- Model-reference scanning for community workflows ----------------------
+// Official templates embed properties.models metadata; community workflows
+// almost never do. The scanner recovers model references from filename-shaped
+// strings in the converted graph (or widget values before conversion) so the
+// dependency checker has something to chew on. Report-only by design: a
+// scanned model is never downloaded unless a URL arrives via embedded
+// metadata, a widget value that is itself a URL, or an explicit hint.
+const MODEL_FILE_EXT_RE = /\.(safetensors|sft|ckpt|pt|pth|gguf)$/i
+
+// inputKey → models/ subdir, only where the destination is unambiguous.
+const INPUT_KEY_TARGET_SUBDIRS = new Map([
+  ['ckpt_name', 'checkpoints'],
+  ['lora_name', 'loras'],
+  ['vae_name', 'vae'],
+  ['clip_name', 'text_encoders'],
+  ['unet_name', 'diffusion_models'],
+  ['control_net_name', 'controlnet'],
+  ['style_model_name', 'style_models'],
+])
+
+// Loader-class fallbacks for widget-value scans (no inputKey available yet).
+// Ordered: more specific needles first.
+const CLASS_HINT_TARGET_SUBDIRS = [
+  ['upscale', 'upscale_models'],
+  ['controlnet', 'controlnet'],
+  ['lora', 'loras'],
+  ['checkpoint', 'checkpoints'],
+  ['unet', 'diffusion_models'],
+  ['clip', 'text_encoders'],
+  ['vae', 'vae'],
+]
+
+function guessModelTargetSubdir(classType = '', inputKey = '') {
+  const lowerClass = String(classType || '').toLowerCase()
+  // CLIPVisionLoader also uses clip_name but stores under clip_vision.
+  if (lowerClass.includes('clipvision') || lowerClass.includes('clip_vision')) return 'clip_vision'
+  const byKey = INPUT_KEY_TARGET_SUBDIRS.get(String(inputKey || '').trim())
+  if (byKey) return byKey
+  if (String(inputKey || '').trim() === 'model_name' && lowerClass.includes('upscale')) return 'upscale_models'
+  for (const [needle, subdir] of CLASS_HINT_TARGET_SUBDIRS) {
+    if (lowerClass.includes(needle)) return subdir
+  }
+  return ''
+}
+
+// Loader filenames may carry relative subpaths ("flux/lora/x.safetensors") —
+// keep those, but never anything that could escape the models folder.
+function normalizeScannedModelPath(value) {
+  const normalized = String(value || '').trim().replace(/\\/g, '/')
+  if (!normalized || !MODEL_FILE_EXT_RE.test(normalized)) return null
+  if (normalized.startsWith('/') || /^[a-z]:/i.test(normalized)) return null
+  const segments = normalized.split('/')
+  if (segments.some((segment) => !segment || segment === '..')) return null
+  return normalized
+}
+
+function sanitizeRelativeSubdir(value) {
+  const normalized = String(value || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!normalized || /^[a-z]:/i.test(normalized)) return ''
+  if (normalized.split('/').some((segment) => !segment || segment === '..')) return ''
+  return normalized
+}
+
+function modelBasename(value) {
+  return String(value || '').trim().replace(/\\/g, '/').split('/').pop().toLowerCase()
+}
+
+export function scanWorkflowModelReferences(uiWorkflow, apiWorkflow = null) {
+  const references = []
+  const seen = new Set()
+
+  const push = (rawValue, classType, inputKey, source) => {
+    const raw = String(rawValue || '').trim()
+    if (!raw || !MODEL_FILE_EXT_RE.test(raw)) return
+    let downloadUrl = ''
+    let candidate = raw
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+      // Widget values are occasionally full download URLs (seen in the wild
+      // on comfy.org workflows) — keep the URL, reference the basename.
+      if (!/^https:\/\//i.test(raw)) return
+      try {
+        candidate = decodeURIComponent(new URL(raw).pathname.split('/').pop() || '')
+      } catch {
+        return
+      }
+      downloadUrl = raw
+    }
+    const filename = normalizeScannedModelPath(candidate)
+    if (!filename) return
+    const key = `${String(classType || '').toLowerCase()}::${String(inputKey || '').toLowerCase()}::${filename.toLowerCase()}`
+    if (seen.has(key)) return
+    seen.add(key)
+    references.push({
+      filename,
+      targetSubdir: guessModelTargetSubdir(classType, inputKey),
+      classType: String(classType || '').trim(),
+      inputKey: String(inputKey || '').trim(),
+      source,
+      downloadUrl,
+    })
+  }
+
+  // Preferred: the converted prompt gives exact class_type/inputKey pairs.
+  const apiNodes = Object.values(apiWorkflow || {})
+  if (apiNodes.length > 0) {
+    for (const node of apiNodes) {
+      const classType = String(node?.class_type || '').trim()
+      if (!classType) continue
+      for (const [inputKey, value] of Object.entries(node?.inputs || {})) {
+        if (typeof value === 'string') push(value, classType, inputKey, 'api')
+      }
+    }
+    return references
+  }
+
+  // Fallback (preview, or conversion unavailable): scan widget values.
+  for (const node of collectUiWorkflowNodes(uiWorkflow)) {
+    const classType = String(node?.type || '').trim()
+    if (!classType || SUBGRAPH_INSTANCE_TYPE_RE.test(classType)) continue
+    const widgetValues = Array.isArray(node?.widgets_values)
+      ? node.widgets_values
+      : (node?.widgets_values && typeof node.widgets_values === 'object' ? Object.values(node.widgets_values) : [])
+    for (const value of widgetValues) {
+      if (typeof value === 'string') push(value, classType, '', 'widget')
+    }
+  }
+  return references
+}
+
+function buildModelUrlHintMap(modelUrlHints) {
+  const hints = new Map()
+  for (const hint of Array.isArray(modelUrlHints) ? modelUrlHints : []) {
+    const filename = modelBasename(hint?.filename)
+    const url = String(hint?.url || '').trim()
+    if (!filename || !/^https:\/\//i.test(url)) continue
+    if (!hints.has(filename)) {
+      hints.set(filename, { url, targetSubdir: sanitizeRelativeSubdir(hint?.targetSubdir) })
+    }
+  }
+  return hints
+}
+
 function resolveModelInputKey(apiWorkflow, model) {
   const apiNodes = Object.values(apiWorkflow || {})
 
@@ -250,25 +392,113 @@ async function probeModelSizes(models) {
 }
 
 /**
+ * Preview engine for arbitrary workflow imports: everything worth knowing
+ * before committing — node coverage, resolvable packs, model references and
+ * which of them can actually be downloaded. No writes, no conversion, no
+ * registration.
+ */
+export async function analyzeWorkflowForImport(uiWorkflow, template, { modelUrlHints = [], objectInfo = null } = {}) {
+  const uiNodeTypes = collectUiNodeTypes(uiWorkflow)
+  const comfyUiConnected = Boolean(objectInfo)
+  const unknownNodeTypes = objectInfo ? uiNodeTypes.filter((type) => !objectInfo?.[type]) : null
+
+  const { recipes: declaredPackRecipes, unresolved: unresolvedNodePacks } = await resolveNodePackRecipes(template)
+  const { recipes: classPackRecipes, uncovered: uncoveredNodeTypes } = (unknownNodeTypes && unknownNodeTypes.length > 0)
+    ? await resolveNodeClassPacks(unknownNodeTypes, template)
+    : { recipes: [], uncovered: [] }
+  const resolvedPacks = []
+  const seenPackIds = new Set()
+  for (const recipe of [...classPackRecipes, ...declaredPackRecipes]) {
+    if (seenPackIds.has(recipe.id)) continue
+    seenPackIds.add(recipe.id)
+    resolvedPacks.push(recipe)
+  }
+
+  const hintByBasename = buildModelUrlHintMap(modelUrlHints)
+  const matchedHintFilenames = new Set()
+  const models = []
+  const seenModelBasenames = new Set()
+
+  for (const model of collectEmbeddedModelMetadata(uiWorkflow)) {
+    seenModelBasenames.add(modelBasename(model.name))
+    const hint = hintByBasename.get(modelBasename(model.name))
+    const downloadUrl = model.url || hint?.url || ''
+    if (!model.url && hint?.url) matchedHintFilenames.add(modelBasename(model.name))
+    models.push({
+      filename: model.name,
+      targetSubdir: model.directory,
+      classType: model.nodeType || '',
+      inputKey: '',
+      source: 'embedded',
+      downloadUrl,
+      urlSource: model.url ? 'embedded' : (hint?.url ? 'hint' : null),
+    })
+  }
+
+  for (const ref of scanWorkflowModelReferences(uiWorkflow, null)) {
+    const base = modelBasename(ref.filename)
+    if (seenModelBasenames.has(base)) continue
+    seenModelBasenames.add(base)
+    const hint = hintByBasename.get(base)
+    const downloadUrl = ref.downloadUrl || hint?.url || ''
+    if (!ref.downloadUrl && hint?.url) matchedHintFilenames.add(base)
+    models.push({
+      filename: ref.filename,
+      targetSubdir: ref.targetSubdir || hint?.targetSubdir || '',
+      classType: ref.classType,
+      inputKey: ref.inputKey,
+      source: ref.source,
+      downloadUrl,
+      urlSource: ref.downloadUrl ? 'embedded' : (hint?.url ? 'hint' : null),
+    })
+  }
+
+  const unmatchedModelUrlHints = Array.from(hintByBasename.keys())
+    .filter((filename) => !matchedHintFilenames.has(filename) && !models.some((model) => modelBasename(model.filename) === filename))
+
+  const sizeByUrl = await probeModelSizes(models.filter((model) => model.downloadUrl).map((model) => ({ url: model.downloadUrl })))
+  let totalKnownDownloadBytes = 0
+  for (const model of models) {
+    model.sizeBytes = model.downloadUrl ? (sizeByUrl.get(model.downloadUrl) ?? null) : null
+    if (Number.isFinite(model.sizeBytes) && model.sizeBytes > 0) totalKnownDownloadBytes += model.sizeBytes
+  }
+
+  return {
+    nodeTypes: uiNodeTypes,
+    unknownNodeTypes,
+    comfyUiConnected,
+    conversionPossibleNow: comfyUiConnected && Array.isArray(unknownNodeTypes) && unknownNodeTypes.length === 0,
+    nodePacks: { resolved: resolvedPacks, unresolved: unresolvedNodePacks, uncoveredNodeTypes },
+    models,
+    modelsMissingUrl: models.filter((model) => !model.downloadUrl).map((model) => model.filename),
+    unmatchedModelUrlHints,
+    totalKnownDownloadBytes,
+  }
+}
+
+/**
  * Import one upstream ComfyUI template: fetch its UI-format workflow, convert
  * it to API format through the embedded ComfyUI frontend, derive a dependency
  * pack + install recipes from the embedded model metadata, persist everything
  * under userData/generate-templates/{name}/, and register it in the runtime
  * registry so it shows up alongside builtin workflows.
  */
-export async function importComfyTemplate(template, { onProgress } = {}) {
+export async function importComfyTemplate(template, { onProgress, uiWorkflow: providedUiWorkflow = null, modelUrlHints = [] } = {}) {
   const progress = (step, message) => { try { onProgress?.(step, message) } catch { /* UI only */ } }
   const api = typeof window !== 'undefined' ? window.electronAPI : null
   if (!api?.convertComfyWorkflowGraph || !api?.writeFile) {
     throw new Error('Template import is only available in the desktop build.')
   }
 
-  progress('fetch', 'Downloading the template workflow...')
-  const response = await fetch(template.workflowUrl, { cache: 'no-store' })
-  if (!response.ok) {
-    throw new Error(`Could not download the template workflow (${response.status}).`)
+  let uiWorkflow = providedUiWorkflow
+  if (!uiWorkflow) {
+    progress('fetch', 'Downloading the template workflow...')
+    const response = await fetch(template.workflowUrl, { cache: 'no-store' })
+    if (!response.ok) {
+      throw new Error(`Could not download the template workflow (${response.status}).`)
+    }
+    uiWorkflow = await response.json()
   }
-  const uiWorkflow = await response.json()
 
   // Compare the template's node types against the live ComfyUI BEFORE
   // converting: the frontend silently loads unknown types as placeholders and
@@ -320,7 +550,26 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
 
   progress('analyze', 'Reading models and download sizes...')
   const embeddedModels = collectEmbeddedModelMetadata(uiWorkflow)
-  const sizeByUrl = await probeModelSizes(embeddedModels)
+  const hintByBasename = buildModelUrlHintMap(modelUrlHints)
+  const embeddedBasenames = new Set(embeddedModels.map((model) => modelBasename(model.name)))
+  // Community workflows rarely embed properties.models — recover references
+  // from the converted graph (or widgets) so the dependency check still sees
+  // them; agent-supplied URL hints turn them into downloadable recipes.
+  const scannedModels = scanWorkflowModelReferences(uiWorkflow, apiWorkflow)
+    .filter((ref) => !embeddedBasenames.has(modelBasename(ref.filename)))
+  const seenScannedBasenames = new Set()
+  const uniqueScannedModels = scannedModels.filter((ref) => {
+    const base = modelBasename(ref.filename)
+    if (seenScannedBasenames.has(base)) return false
+    seenScannedBasenames.add(base)
+    return true
+  })
+
+  const hintUrlFor = (filename) => hintByBasename.get(modelBasename(filename))?.url || ''
+  const sizeByUrl = await probeModelSizes([
+    ...embeddedModels.map((model) => ({ url: model.url || hintUrlFor(model.name) })),
+    ...uniqueScannedModels.map((ref) => ({ url: ref.downloadUrl || hintUrlFor(ref.filename) })),
+  ].filter((entry) => entry.url))
 
   const requiredModels = []
   const recipes = []
@@ -334,17 +583,46 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
         targetSubdir: model.directory,
       })
     }
-    if (model.url) {
+    const downloadUrl = model.url || hintUrlFor(model.name)
+    if (downloadUrl) {
       recipes.push({
         filename: model.name,
         targetSubdir: model.directory,
         displayName: model.name,
-        downloadUrl: model.url,
-        sourceUrl: model.url,
+        downloadUrl,
+        sourceUrl: downloadUrl,
         licenseUrl: '',
-        sizeBytes: sizeByUrl.get(model.url) ?? null,
+        sizeBytes: sizeByUrl.get(downloadUrl) ?? null,
         sha256: '',
         notes: `From the ComfyUI template "${template.name}".`,
+      })
+    }
+  }
+
+  for (const ref of uniqueScannedModels) {
+    const hint = hintByBasename.get(modelBasename(ref.filename))
+    const targetSubdir = ref.targetSubdir || hint?.targetSubdir || ''
+    // Without a destination folder the reference stays report-only: it can't
+    // be checked on disk or downloaded, only surfaced to the agent/user.
+    if (!targetSubdir) continue
+    requiredModels.push({
+      classType: ref.classType,
+      inputKey: ref.inputKey || LOADER_INPUT_KEY_GUESSES[0],
+      filename: ref.filename,
+      targetSubdir,
+    })
+    const downloadUrl = ref.downloadUrl || hint?.url || ''
+    if (downloadUrl) {
+      recipes.push({
+        filename: ref.filename,
+        targetSubdir,
+        displayName: ref.filename,
+        downloadUrl,
+        sourceUrl: downloadUrl,
+        licenseUrl: '',
+        sizeBytes: sizeByUrl.get(downloadUrl) ?? null,
+        sha256: '',
+        notes: `Referenced by the "${template.title}" workflow.`,
       })
     }
   }
@@ -410,6 +688,13 @@ export async function importComfyTemplate(template, { onProgress } = {}) {
   const wroteEntry = await api.writeFile(paths.entryFile, JSON.stringify(entry, null, 2), { encoding: 'utf8' })
   if (!wroteEntry?.success) throw new Error(wroteEntry?.error || 'Could not save the imported workflow entry.')
 
+  // Persist the raw UI graph so re-imports (e.g. after node installs) never
+  // depend on refetching workflowUrl — MCP/inline imports don't have one.
+  if (paths.uiWorkflowFile) {
+    const wroteUiWorkflow = await api.writeFile(paths.uiWorkflowFile, JSON.stringify(uiWorkflow), { encoding: 'utf8' })
+    if (!wroteUiWorkflow?.success) throw new Error(wroteUiWorkflow?.error || 'Could not save the raw workflow graph.')
+  }
+
   const registered = registerImportedWorkflow({ ...entry, workflowPath: paths.workflowFile })
 
   return { success: true, entry: registered }
@@ -425,6 +710,25 @@ export async function reimportImportedWorkflow(workflowId, options = {}) {
   if (!entry.template) {
     throw new Error('This import predates re-import support — use Re-import on the template in the ComfyUI tab.')
   }
+
+  // Prefer the raw graph persisted at import time — works for MCP/tab imports
+  // with no refetchable workflowUrl and keeps catalog reimports offline-safe.
+  const api = typeof window !== 'undefined' ? window.electronAPI : null
+  if (api?.readFile) {
+    try {
+      const paths = await getImportedWorkflowStoragePaths(entry.templateName)
+      const read = paths?.uiWorkflowFile ? await api.readFile(paths.uiWorkflowFile, { encoding: 'utf8' }) : null
+      if (read?.success && read.data) {
+        const parsed = JSON.parse(read.data)
+        if (Array.isArray(parsed?.nodes)) {
+          return importComfyTemplate(entry.template, { ...options, uiWorkflow: parsed })
+        }
+      }
+    } catch {
+      // Corrupt or missing ui-workflow.json — fall back to the URL path below.
+    }
+  }
+
   if (!entry.template.workflowUrl) {
     throw new Error('This workflow was captured from the ComfyUI tab — open it there and import it again to update it.')
   }
@@ -462,6 +766,36 @@ function buildCapturedTemplate(workflowName) {
     thumbnailUrl: '',
     workflowUrl: '',
     sourceUrl: '',
+  }
+}
+
+/**
+ * Synthetic template for MCP-sourced imports (comfy.org URL, local file,
+ * inline JSON). Deterministic name — no timestamp — so agents can re-run the
+ * same call idempotently; collisions are the caller's overwrite decision.
+ */
+export function buildMcpImportTemplate({ name = '', title = '', sourceUrl = '' } = {}) {
+  const slugify = (value) => String(value || '').trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48)
+  const slug = slugify(name) || slugify(title) || 'workflow'
+  return {
+    name: `mcp-${slug}`,
+    title: String(title || '').trim() || String(name || '').trim() || 'Community workflow',
+    description: sourceUrl ? `Imported via MCP from ${sourceUrl}` : 'Imported via MCP.',
+    tags: ['mcp-import'],
+    models: [],
+    date: '',
+    openSource: true,
+    sizeBytes: 0,
+    vramBytes: 0,
+    usage: 0,
+    requiresCustomNodes: [],
+    io: null,
+    mediaType: '',
+    mediaSubtype: '',
+    thumbnailUrl: '',
+    workflowUrl: '',
+    sourceUrl: String(sourceUrl || '').trim(),
   }
 }
 
@@ -576,6 +910,13 @@ export async function importWorkflowFromComfyTab({ onProgress } = {}) {
   if (!wroteWorkflow?.success) throw new Error(wroteWorkflow?.error || 'Could not save the captured workflow.')
   const wroteEntry = await api.writeFile(paths.entryFile, JSON.stringify(entry, null, 2), { encoding: 'utf8' })
   if (!wroteEntry?.success) throw new Error(wroteEntry?.error || 'Could not save the imported workflow entry.')
+
+  // Persist the raw UI graph when the capture provided one — makes tab
+  // imports re-importable later (they have no workflowUrl to refetch).
+  if (uiWorkflow && paths.uiWorkflowFile) {
+    const wroteUiWorkflow = await api.writeFile(paths.uiWorkflowFile, JSON.stringify(uiWorkflow), { encoding: 'utf8' })
+    if (!wroteUiWorkflow?.success) throw new Error(wroteUiWorkflow?.error || 'Could not save the raw workflow graph.')
+  }
 
   const registered = registerImportedWorkflow({ ...entry, workflowPath: paths.workflowFile })
   return { success: true, entry: registered }

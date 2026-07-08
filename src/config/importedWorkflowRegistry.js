@@ -11,6 +11,9 @@ export const IMPORTED_WORKFLOWS_CHANGED_EVENT = 'comfystudio:imported-workflows-
 
 const ENTRY_FILE_NAME = 'entry.json'
 export const IMPORTED_WORKFLOW_FILE_NAME = 'workflow.json'
+// Raw UI-format graph persisted at import time so re-imports never depend on
+// refetching workflowUrl (MCP/tab imports have none; catalog reimports go offline-safe).
+export const IMPORTED_UI_WORKFLOW_FILE_NAME = 'ui-workflow.json'
 
 const entriesById = new Map()
 const recipesByModelKey = new Map()
@@ -106,6 +109,7 @@ export async function getImportedWorkflowStoragePaths(templateName) {
     dir,
     entryFile: await api.pathJoin(dir, ENTRY_FILE_NAME),
     workflowFile: await api.pathJoin(dir, IMPORTED_WORKFLOW_FILE_NAME),
+    uiWorkflowFile: await api.pathJoin(dir, IMPORTED_UI_WORKFLOW_FILE_NAME),
   }
 }
 

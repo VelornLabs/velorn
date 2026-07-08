@@ -2630,6 +2630,21 @@ function buildAiReviewPasses(snapshot) {
         },
       },
       {
+        id: 'community_workflow_import',
+        title: 'Community Workflow Import',
+        goal: 'Import an arbitrary ComfyUI workflow (comfy.org share URL, local .json, or pasted JSON), install its missing node packs and models after approval, then run it on timeline/library assets.',
+        prompt: 'Preview import_comfyui_workflow first and show me the dependency report (unknown nodes, resolvable packs, models with and without download URLs). After I approve, apply the import, preview install_workflow_setup and show me exactly what would download (with total size) before applying it. Poll get_workflow_install_status; if a restart is recommended, restart ComfyUI via control_comfyui_launcher. Then preview queue_timeline_template_generation with the importedWorkflowId — map any required assetSelect fields via assetFieldIds — and queue only after my approval.',
+        tools: ['import_comfyui_workflow', 'install_workflow_setup', 'get_workflow_install_status', 'control_comfyui_launcher', 'queue_timeline_template_generation', 'get_generation_status', 'select_assets', 'add_asset_to_timeline'],
+        safeDefaults: {
+          previewOnlyFirst: true,
+          installsOnlyAfterExplicitApproval: true,
+          httpsDownloadsOnly: true,
+          neverOverwritesExistingFiles: true,
+          modelUrlHintsForMissingUrls: true,
+          queuesGenerationOnlyAfterApproval: true,
+        },
+      },
+      {
         id: 'shot_replacement_pass',
         title: 'Shot Replacement Pass',
         goal: 'Replace an existing timeline clip with an approved imported or generated asset while preserving the edit timing and clip treatment.',
@@ -2717,6 +2732,7 @@ function buildAiReviewPasses(snapshot) {
       'Use queue_prepared_generation with previewOnly and explicit approval before starting any prepared Generate job.',
       'Use queue_timeline_generation_batch with previewOnly and explicit approval before queueing multiple timeline-frame variations across WAN 2.2/LTX 2.3.',
       'Use list_comfyui_templates and queue_timeline_template_generation with previewOnly before running an official ComfyUI template such as LTX 2.3 LoRA video outpainting on a selected timeline clip.',
+      'Use import_comfyui_workflow with previewOnly to analyze a community ComfyUI workflow (comfy.org URL, local .json, or pasted JSON), install_workflow_setup with previewOnly and explicit approval for its missing node packs/models (poll get_workflow_install_status, restart ComfyUI via control_comfyui_launcher when recommended), then queue_timeline_template_generation with importedWorkflowId to run it.',
       'Use add_asset_to_timeline with previewOnly before placing generated assets or imported media back into the edit.',
       'Use add_assets_to_timeline with previewOnly to place multiple generated results as stacked review lanes or a sequential strip.',
       'Use replace_clip_with_asset with previewOnly when an approved generated/imported asset should replace a timeline clip while preserving edit timing and treatment.',
@@ -4122,6 +4138,88 @@ async function fetchMcpComfyTemplateCatalog({ forceRefresh = false } = {}) {
   }
 }
 
+const MCP_WORKFLOW_IMPORT_MAX_BYTES = 20 * 1024 * 1024
+const MCP_WORKFLOW_IMPORT_FETCH_TIMEOUT_MS = 30_000
+
+function looksLikeApiFormatWorkflow(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  if (Array.isArray(parsed.nodes)) return false
+  const values = Object.values(parsed)
+  if (values.length === 0) return false
+  return values.every((value) => value && typeof value === 'object' && ('class_type' in value || 'inputs' in value))
+}
+
+// Source acquisition runs in the main process on purpose: renderer fetch of
+// comfy.org would be subject to CORS, and the parsed JSON crosses the
+// performAction bridge inline (typical community workflows are 50-300KB).
+async function acquireComfyWorkflowSource(args = {}) {
+  const url = String(args.url || '').trim()
+  const filePath = String(args.filePath || '').trim()
+  const hasInline = args.workflowJson !== undefined && args.workflowJson !== null && args.workflowJson !== ''
+  const providedCount = [Boolean(url), Boolean(filePath), hasInline].filter(Boolean).length
+  if (providedCount !== 1) {
+    throw new Error('Provide exactly one of url, filePath, or workflowJson.')
+  }
+
+  let uiWorkflow = null
+  let sourceUrl = ''
+  let sourceKind = 'inline'
+  let defaultName = ''
+
+  if (url) {
+    if (!/^https:\/\//i.test(url)) throw new Error('Only https workflow URLs are supported.')
+    if (typeof fetch !== 'function') throw new Error('This Electron runtime does not expose fetch for workflow downloads.')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), MCP_WORKFLOW_IMPORT_FETCH_TIMEOUT_MS)
+    try {
+      const response = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+      if (!response.ok) throw new Error(`Workflow download failed (${response.status}).`)
+      const contentLength = Number(response.headers?.get?.('content-length'))
+      if (Number.isFinite(contentLength) && contentLength > MCP_WORKFLOW_IMPORT_MAX_BYTES) {
+        throw new Error('Workflow JSON is larger than the 20MB import limit.')
+      }
+      const text = await response.text()
+      if (text.length > MCP_WORKFLOW_IMPORT_MAX_BYTES) {
+        throw new Error('Workflow JSON is larger than the 20MB import limit.')
+      }
+      uiWorkflow = JSON.parse(text)
+    } finally {
+      clearTimeout(timer)
+    }
+    sourceUrl = url
+    sourceKind = 'url'
+    try {
+      defaultName = decodeURIComponent(path.basename(new URL(url).pathname, '.json'))
+    } catch { /* keep empty */ }
+  } else if (filePath) {
+    if (!/\.json$/i.test(filePath)) throw new Error('filePath must point to a .json workflow export.')
+    const stats = await fs.stat(filePath)
+    if (!stats.isFile()) throw new Error('filePath is not a file.')
+    if (stats.size > MCP_WORKFLOW_IMPORT_MAX_BYTES) throw new Error('Workflow JSON is larger than the 20MB import limit.')
+    uiWorkflow = JSON.parse(await fs.readFile(filePath, 'utf8'))
+    sourceKind = 'file'
+    defaultName = path.basename(filePath, path.extname(filePath))
+  } else {
+    const raw = args.workflowJson
+    if (typeof raw === 'string') {
+      if (raw.length > MCP_WORKFLOW_IMPORT_MAX_BYTES) throw new Error('Workflow JSON is larger than the 20MB import limit.')
+      uiWorkflow = JSON.parse(raw)
+    } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      uiWorkflow = raw
+    } else {
+      throw new Error('workflowJson must be a JSON object or string.')
+    }
+  }
+
+  if (looksLikeApiFormatWorkflow(uiWorkflow)) {
+    throw new Error('This looks like API-format (prompt) JSON — only UI/graph export format is supported. In ComfyUI use Workflow > Export, not Export (API).')
+  }
+  if (!Array.isArray(uiWorkflow?.nodes)) {
+    throw new Error('This JSON does not look like a ComfyUI UI-format workflow (missing nodes array).')
+  }
+  return { uiWorkflow, sourceUrl, sourceKind, defaultName }
+}
+
 function scoreMcpTemplateMatch(template, query) {
   const normalizedQuery = normalizeMcpTemplateSearchText(query)
   const compactQuery = compactMcpTemplateSearchText(query)
@@ -4562,7 +4660,10 @@ function buildTimelineTemplateApplyArguments(args = {}, plan = {}) {
     ...args,
     previewOnly: false,
     template: undefined,
-    templateName: plan.template?.name || args.templateName || args.templateId || args.templateTitle || args.templateQuery,
+    importedWorkflowId: plan.importedWorkflowId || String(args.importedWorkflowId || '').trim() || undefined,
+    templateName: plan.importedWorkflowId
+      ? undefined
+      : (plan.template?.name || args.templateName || args.templateId || args.templateTitle || args.templateQuery),
     inputAssetId: plan.source?.sourceClip?.asset?.id || args.inputAssetId || args.assetId,
     sourceClip: plan.source?.sourceClip || args.sourceClip,
     durationSeconds: plan.generationSettings?.durationSeconds ?? args.durationSeconds ?? args.duration,
@@ -4574,16 +4675,28 @@ function buildTimelineTemplateApplyArguments(args = {}, plan = {}) {
 }
 
 async function resolveTimelineTemplateGenerationPlan(snapshot, args = {}) {
-  const catalog = await fetchMcpComfyTemplateCatalog({ forceRefresh: args.forceRefreshTemplates === true })
-  const template = resolveMcpTemplateFromQuery(catalog.templates, args)
-  if (!template) {
-    return {
-      error: `No ComfyUI template matched "${String(args.templateName || args.templateId || args.templateTitle || args.templateQuery || args.query || args.template || '').trim() || '(empty query)'}".`,
-      catalog: {
-        templateCount: catalog.templates.length,
-        categories: catalog.categories,
-      },
+  // Imported workflows (import_comfyui_workflow) bypass the official catalog:
+  // the renderer registry owns the entry; main only shapes the source plan.
+  const importedWorkflowId = String(args.importedWorkflowId || '').trim()
+    || (/^tpl-/.test(String(args.templateName || '').trim()) ? String(args.templateName).trim() : '')
+
+  let template = null
+  let catalogInfo = null
+  if (importedWorkflowId) {
+    template = { importedWorkflowId, name: importedWorkflowId.replace(/^tpl-/, '') }
+  } else {
+    const catalog = await fetchMcpComfyTemplateCatalog({ forceRefresh: args.forceRefreshTemplates === true })
+    template = resolveMcpTemplateFromQuery(catalog.templates, args)
+    if (!template) {
+      return {
+        error: `No ComfyUI template matched "${String(args.templateName || args.templateId || args.templateTitle || args.templateQuery || args.query || args.template || '').trim() || '(empty query)'}".`,
+        catalog: {
+          templateCount: catalog.templates.length,
+          categories: catalog.categories,
+        },
+      }
     }
+    catalogInfo = { fetchedAt: catalog.fetchedAt, fromCache: catalog.fromCache }
   }
 
   const sourcePlan = resolveGenerateFromTimelinePlan(snapshot, {
@@ -4622,7 +4735,11 @@ async function resolveTimelineTemplateGenerationPlan(snapshot, args = {}) {
   return {
     action: 'queue_timeline_template_generation',
     previewOnly: args.previewOnly !== false,
-    template: {
+    importedWorkflowId: importedWorkflowId || undefined,
+    template: importedWorkflowId ? {
+      importedWorkflowId,
+      name: template.name,
+    } : {
       name: template.name,
       title: template.title,
       description: template.description,
@@ -4660,10 +4777,7 @@ async function resolveTimelineTemplateGenerationPlan(snapshot, args = {}) {
       resolutionReference: resolutionPlan.reference,
       templateParameters,
     },
-    catalog: {
-      fetchedAt: catalog.fetchedAt,
-      fromCache: catalog.fromCache,
-    },
+    catalog: catalogInfo || undefined,
   }
 }
 
@@ -6620,13 +6734,17 @@ function createToolDefinitions() {
     },
     {
       name: 'queue_timeline_template_generation',
-      description: 'Preview or queue an official ComfyUI template using the selected/playhead timeline source clip as the primary input asset. Designed for imported templates such as LTX 2.3 LoRA video outpainting. Defaults to previewOnly; applying may import the template and start local GPU generation, so require explicit user approval first.',
+      description: 'Preview or queue an official ComfyUI template — or a community workflow imported with import_comfyui_workflow (pass importedWorkflowId) — using the selected/playhead timeline source clip as the primary input asset. Extra media inputs (e.g. a reference face image) go in assetFieldIds keyed by the manifest\'s required assetSelect field ids shown in the preview. Defaults to previewOnly; applying may import the template and start local GPU generation, so require explicit user approval first.',
       inputSchema: {
         type: 'object',
         properties: {
           templateName: {
             type: 'string',
             description: 'Exact official template name, for example "template_ltx2_3_lora_video_outpainting".',
+          },
+          importedWorkflowId: {
+            type: 'string',
+            description: 'Imported workflow id (tpl-...) returned by import_comfyui_workflow. When set, the official catalog is skipped and the imported workflow is queued directly; the preview includes its required asset fields (assetFieldIds) and parameters.',
           },
           templateId: {
             type: 'string',
@@ -6740,6 +6858,103 @@ function createToolDefinitions() {
           timeoutMs: {
             type: 'integer',
             description: 'Renderer response timeout in milliseconds. Defaults to 60000.',
+          },
+        },
+      },
+    },
+    {
+      name: 'import_comfyui_workflow',
+      description: 'Import a community ComfyUI workflow (UI/graph export format — a comfy.org share download URL, a local .json file, or inline JSON) into Velorn as a runnable imported template. previewOnly (default) returns the dependency analysis — unknown node types, registry-resolvable node packs, model references and which of them lack download URLs — WITHOUT importing anything. Applying converts the graph through the connected ComfyUI, registers it, and returns a tpl- workflowId usable with install_workflow_setup and queue_timeline_template_generation (importedWorkflowId). Requires ComfyUI running to apply. Provide exactly one of url, filePath, or workflowJson.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'HTTPS URL of a UI-format workflow JSON, for example "https://comfy.org/workflows/download/<id>.json".',
+          },
+          filePath: {
+            type: 'string',
+            description: 'Absolute local path to a UI-format workflow .json export.',
+          },
+          workflowJson: {
+            description: 'Inline UI-format workflow JSON (object or JSON string).',
+          },
+          name: {
+            type: 'string',
+            description: 'Stable slug for the imported workflow id (becomes tpl-mcp-<slug>). Defaults to the URL/file basename or a slug of title.',
+          },
+          title: {
+            type: 'string',
+            description: 'Human title shown in Velorn.',
+          },
+          modelUrls: {
+            type: 'array',
+            maxItems: 20,
+            items: {
+              type: 'object',
+              properties: {
+                filename: { type: 'string', description: 'Model filename referenced by the workflow (basename match, case-insensitive).' },
+                url: { type: 'string', description: 'HTTPS download URL for this model file.' },
+                targetSubdir: { type: 'string', description: 'ComfyUI models/ subfolder (for example "loras"). Needed when Velorn cannot infer it.' },
+              },
+              required: ['filename', 'url'],
+            },
+            description: 'Optional download-URL hints for model files the workflow references without embedded URLs (community workflows almost never embed them). https only.',
+          },
+          overwrite: {
+            type: 'boolean',
+            description: 'Replace an existing imported workflow with the same name. Defaults to false (the call errors and reports the existing workflowId).',
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the dependency analysis without importing. Defaults to true.',
+          },
+          timeoutMs: {
+            type: 'integer',
+            description: 'Renderer response timeout in milliseconds. Defaults to 60000.',
+          },
+        },
+      },
+    },
+    {
+      name: 'install_workflow_setup',
+      description: 'Preview or run the missing-dependency install for a workflow: git-clones custom node packs into ComfyUI custom_nodes and downloads model files (possibly many GB) into the local ComfyUI models folder. Defaults to previewOnly — ALWAYS show the user the plan (node packs, model files, total download size) and get explicit approval before applying. Apply returns a jobId immediately; poll get_workflow_install_status for progress. https downloads only; existing files are never overwritten. If the finished job reports restartRecommended, restart ComfyUI via control_comfyui_launcher before queueing generation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          workflowId: {
+            type: 'string',
+            description: 'Workflow whose dependencies should be installed — a tpl- id from import_comfyui_workflow or a built-in workflow id such as "music-gen".',
+          },
+          only: {
+            type: 'object',
+            description: 'Optional filters to install a subset of the previewed plan (for example skip a 30GB model).',
+            properties: {
+              nodePackIds: { type: 'array', items: { type: 'string' }, description: 'Install only these node pack ids from the preview plan.' },
+              modelFilenames: { type: 'array', items: { type: 'string' }, description: 'Download only these model filenames from the preview plan.' },
+            },
+          },
+          previewOnly: {
+            type: 'boolean',
+            description: 'When true, returns the install plan without installing anything. Defaults to true.',
+          },
+          timeoutMs: {
+            type: 'integer',
+            description: 'Renderer response timeout in milliseconds. Defaults to 60000.',
+          },
+        },
+        required: ['workflowId'],
+      },
+    },
+    {
+      name: 'get_workflow_install_status',
+      description: 'Poll a workflow dependency install started by install_workflow_setup: stage, current task, overall percent, completed/failed results, and whether a ComfyUI restart is recommended (new node packs need a restart to load).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobId: {
+            type: 'string',
+            description: 'Job id returned by install_workflow_setup. Omit to list recent install jobs from this app session.',
           },
         },
       },
@@ -9728,7 +9943,7 @@ class ComfyStudioMcpServer {
               name: 'velorn',
               version: this.version,
             },
-            instructions: 'You are connected to Velorn. Use guide_comfyui_setup first for beginner local ComfyUI setup questions like "How do I connect Velorn to ComfyUI?"; it diagnoses, probes likely ports, gives Portable/Desktop/Docker/manual steps, and previews safe port fixes. Use diagnose_comfyui_connection, repair_comfyui_connection, set_comfyui_connection, control_comfyui_launcher, get_comfyui_launcher_logs, validate_comfyui_nodes, list_velorn_workflows, and inspect_velorn_workflow for deeper local ComfyUI setup/support questions. Use get_mcp_recipes or get_ai_review_passes to choose safe review workflows. Use find_timeline_items before targeting timeline clips, tracks, markers, transitions, or project assets from a natural-language request. Use check_media_health before delivery/relinking work, relink_asset with previewOnly before changing asset paths, and inspect_export_file after rendering when the user asks whether a file exists or has the expected codec, duration, FPS, or dimensions. Use run_mcp_action_plan with previewOnly before applying an approved multi-step edit in one checkpointed pass. Use the tools to inspect the open project, timeline, assets, generation status, music-video workflow state, the composed timeline frame at the playhead, sampled visual timeline ranges, and top-visible shot pages for fast-cut edit review. Use create_project with previewOnly first when the user wants a fresh Velorn project, and use duplicate_project with previewOnly first before risky AI experiments on an existing project. Use create_timeline with previewOnly first when the user wants a new sequence/timeline for an alternate edit, review selects, generated variations, or a fresh AI-built layout; use switch_timeline, rename_timeline, duplicate_timeline, and delete_timeline with previewOnly first for sequence management. Use update_track and remove_track with previewOnly first for track cleanup, locking/muting/showing tracks, renaming, and layer order. Use add_transition, update_transition, and remove_transitions with previewOnly first for native dissolves, fades, wipes, slides, zooms, blur transitions, and dip-to-black style edits. Use move_clips, trim_clips, and delete_clips with previewOnly first for timeline edit operations such as cleanup passes, staggered layouts, trims, and ripple deletes. Use create_asset_folder with previewOnly first when a generation batch or AI-built layout should keep its source assets organized in a named/nested project folder. Use move_assets_to_folder with previewOnly first when assets should be cleaned up or moved into a folder, for example rootOnly + constantsOnly into a Constants folder. Use queue_prompt_generation_batch with previewOnly first when the user wants new images or videos generated from a written brief; show prompts, workflows, counts, seeds, resolution, duration, FPS, and output folder, then apply only after approval. Use prepare_generation_from_timeline_context with previewOnly first when the user wants to turn a timeline frame into a Generate-tab image-to-video or keyframe request; applying it only captures the frame and prefills Generate. Use queue_prepared_generation with previewOnly first and explicit user approval before queueing a staged Generate request. Use queue_timeline_generation_batch with previewOnly first when the user asks for multiple variations or multiple workflows from the same timeline frame; show workflow counts and seeds, then apply only after approval. Use list_comfyui_templates and queue_timeline_template_generation with previewOnly first when the user asks to run an official ComfyUI template such as LTX 2.3 LoRA video outpainting on a selected timeline clip; applying may import the template and queue local GPU work. Use add_asset_to_timeline with previewOnly first when the user wants one generated/imported asset placed back into the edit, or add_assets_to_timeline with previewOnly first when placing multiple results as review lanes or a sequential strip. Use add_solid_color with previewOnly first when the user needs black/color constants or background plates; it can create a bottom video track so solids sit behind the edit. Use add_adjustment_clip with previewOnly first when the user wants a color look, blur, GLSL effect, camera shake, vignette, grain, or keyframed treatment applied to multiple clips below a single adjustment layer. Use add_text_clip, add_shape_clip, update_text_clip, and update_shape_clip with previewOnly first for titles, lower thirds, lines, boxes, circles, frames, graphic accents, and simple motion graphics; use motionBlurEnabled/motionBlurSamples/motionBlurShutter on fast animated layers when requested. Use list_glsl_effects, add_glsl_effect, update_glsl_effect, and remove_glsl_effect with previewOnly first for GPU effects such as camera shake, directional blur, lens blur, fisheye, chroma warp, digital glitch, film grain, film look, flicker, VHS, and vignette; effect parameters can also be keyframed, including when the target clip is an adjustment clip. Use set_clip_keyframes with previewOnly first for visual clip fades, dips to black, moves, blur, crop reveals, and color/transform/shape style automation. Use export_fcpxml with previewOnly first when the user wants an interchange XML for Resolve, Final Cut, or Premiere. Queue tools use the same path as the Velorn Queue button and may spend credits or start local GPU work depending on the selected workflow. The write actions currently exposed are ComfyUI setup guidance/settings, ComfyUI launcher start/stop/restart, project creation/duplication, asset folder creation, asset folder cleanup/move/relink operations, sequence/timeline creation and management, track management, native transitions, clip move/trim/delete operations, clip label coloring, clip enable/disable, timeline marker creation/removal/property updates, text/title/shape/adjustment clip creation and updates, GLSL effect add/update/remove operations, visual clip keyframes, solid color asset/clip creation, media asset placement, prompt-based generation queueing, preparing/queueing Generate from a timeline frame, official ComfyUI template generation from timeline media, checkpointed multi-step action plans, starting timeline delivery exports through Velorn export worker, export-file QC, and FCPXML interchange export. Project creation/duplication writes project folders on disk; timeline/sequence, clip/marker/text/shape/adjustment/effect/media/keyframe actions are undoable in Velorn; exports write new files to disk.',
+            instructions: 'You are connected to Velorn. Use guide_comfyui_setup first for beginner local ComfyUI setup questions like "How do I connect Velorn to ComfyUI?"; it diagnoses, probes likely ports, gives Portable/Desktop/Docker/manual steps, and previews safe port fixes. Use diagnose_comfyui_connection, repair_comfyui_connection, set_comfyui_connection, control_comfyui_launcher, get_comfyui_launcher_logs, validate_comfyui_nodes, list_velorn_workflows, and inspect_velorn_workflow for deeper local ComfyUI setup/support questions. Use get_mcp_recipes or get_ai_review_passes to choose safe review workflows. Use find_timeline_items before targeting timeline clips, tracks, markers, transitions, or project assets from a natural-language request. Use check_media_health before delivery/relinking work, relink_asset with previewOnly before changing asset paths, and inspect_export_file after rendering when the user asks whether a file exists or has the expected codec, duration, FPS, or dimensions. Use run_mcp_action_plan with previewOnly before applying an approved multi-step edit in one checkpointed pass. Use the tools to inspect the open project, timeline, assets, generation status, music-video workflow state, the composed timeline frame at the playhead, sampled visual timeline ranges, and top-visible shot pages for fast-cut edit review. Use create_project with previewOnly first when the user wants a fresh Velorn project, and use duplicate_project with previewOnly first before risky AI experiments on an existing project. Use create_timeline with previewOnly first when the user wants a new sequence/timeline for an alternate edit, review selects, generated variations, or a fresh AI-built layout; use switch_timeline, rename_timeline, duplicate_timeline, and delete_timeline with previewOnly first for sequence management. Use update_track and remove_track with previewOnly first for track cleanup, locking/muting/showing tracks, renaming, and layer order. Use add_transition, update_transition, and remove_transitions with previewOnly first for native dissolves, fades, wipes, slides, zooms, blur transitions, and dip-to-black style edits. Use move_clips, trim_clips, and delete_clips with previewOnly first for timeline edit operations such as cleanup passes, staggered layouts, trims, and ripple deletes. Use create_asset_folder with previewOnly first when a generation batch or AI-built layout should keep its source assets organized in a named/nested project folder. Use move_assets_to_folder with previewOnly first when assets should be cleaned up or moved into a folder, for example rootOnly + constantsOnly into a Constants folder. Use queue_prompt_generation_batch with previewOnly first when the user wants new images or videos generated from a written brief; show prompts, workflows, counts, seeds, resolution, duration, FPS, and output folder, then apply only after approval. Use prepare_generation_from_timeline_context with previewOnly first when the user wants to turn a timeline frame into a Generate-tab image-to-video or keyframe request; applying it only captures the frame and prefills Generate. Use queue_prepared_generation with previewOnly first and explicit user approval before queueing a staged Generate request. Use queue_timeline_generation_batch with previewOnly first when the user asks for multiple variations or multiple workflows from the same timeline frame; show workflow counts and seeds, then apply only after approval. Use list_comfyui_templates and queue_timeline_template_generation with previewOnly first when the user asks to run an official ComfyUI template such as LTX 2.3 LoRA video outpainting on a selected timeline clip; applying may import the template and queue local GPU work. Use import_comfyui_workflow with previewOnly first when the user brings a community ComfyUI workflow (comfy.org share URL, local .json, or pasted JSON); then install_workflow_setup with previewOnly and explicit approval for missing node packs/models (poll get_workflow_install_status, restart ComfyUI via control_comfyui_launcher when recommended), and run it with queue_timeline_template_generation using importedWorkflowId. Use add_asset_to_timeline with previewOnly first when the user wants one generated/imported asset placed back into the edit, or add_assets_to_timeline with previewOnly first when placing multiple results as review lanes or a sequential strip. Use add_solid_color with previewOnly first when the user needs black/color constants or background plates; it can create a bottom video track so solids sit behind the edit. Use add_adjustment_clip with previewOnly first when the user wants a color look, blur, GLSL effect, camera shake, vignette, grain, or keyframed treatment applied to multiple clips below a single adjustment layer. Use add_text_clip, add_shape_clip, update_text_clip, and update_shape_clip with previewOnly first for titles, lower thirds, lines, boxes, circles, frames, graphic accents, and simple motion graphics; use motionBlurEnabled/motionBlurSamples/motionBlurShutter on fast animated layers when requested. Use list_glsl_effects, add_glsl_effect, update_glsl_effect, and remove_glsl_effect with previewOnly first for GPU effects such as camera shake, directional blur, lens blur, fisheye, chroma warp, digital glitch, film grain, film look, flicker, VHS, and vignette; effect parameters can also be keyframed, including when the target clip is an adjustment clip. Use set_clip_keyframes with previewOnly first for visual clip fades, dips to black, moves, blur, crop reveals, and color/transform/shape style automation. Use export_fcpxml with previewOnly first when the user wants an interchange XML for Resolve, Final Cut, or Premiere. Queue tools use the same path as the Velorn Queue button and may spend credits or start local GPU work depending on the selected workflow. The write actions currently exposed are ComfyUI setup guidance/settings, ComfyUI launcher start/stop/restart, project creation/duplication, asset folder creation, asset folder cleanup/move/relink operations, sequence/timeline creation and management, track management, native transitions, clip move/trim/delete operations, clip label coloring, clip enable/disable, timeline marker creation/removal/property updates, text/title/shape/adjustment clip creation and updates, GLSL effect add/update/remove operations, visual clip keyframes, solid color asset/clip creation, media asset placement, prompt-based generation queueing, preparing/queueing Generate from a timeline frame, official ComfyUI template generation from timeline media, checkpointed multi-step action plans, starting timeline delivery exports through Velorn export worker, export-file QC, and FCPXML interchange export. Project creation/duplication writes project folders on disk; timeline/sequence, clip/marker/text/shape/adjustment/effect/media/keyframe actions are undoable in Velorn; exports write new files to disk.',
           }
           break
         case 'ping':
@@ -9782,6 +9997,9 @@ class ComfyStudioMcpServer {
       'list_comfystudio_workflows',
       'inspect_comfystudio_workflow',
       'list_glsl_effects',
+      'import_comfyui_workflow',
+      'install_workflow_setup',
+      'get_workflow_install_status',
     ])
     if (!hasSnapshot(snapshot) && !toolsAllowedWithoutProject.has(name)) {
       return errorResult('No Velorn project is open yet.')
@@ -9890,6 +10108,12 @@ class ComfyStudioMcpServer {
         return this.listComfyUiTemplates(snapshot, args)
       case 'queue_timeline_template_generation':
         return this.queueTimelineTemplateGeneration(snapshot, args)
+      case 'import_comfyui_workflow':
+        return this.importComfyUiWorkflowTool(args)
+      case 'install_workflow_setup':
+        return this.runRendererActionTool('install_workflow_setup', args, { bridgeName: 'MCP workflow install bridge', suggestedTool: 'install_workflow_setup', defaultPreviewOnly: true })
+      case 'get_workflow_install_status':
+        return this.runRendererActionTool('get_workflow_install_status', args, { bridgeName: 'MCP workflow install bridge', suggestedTool: 'get_workflow_install_status' })
       case 'queue_prompt_generation_batch':
         return this.queuePromptGenerationBatch(snapshot, args)
       case 'generate_music':
@@ -10540,6 +10764,65 @@ class ComfyStudioMcpServer {
     }
   }
 
+  async importComfyUiWorkflowTool(args = {}) {
+    if (!this.performAction) {
+      return errorResult('MCP workflow import bridge is not available. Restart Velorn and try again.')
+    }
+
+    let source
+    try {
+      source = await acquireComfyWorkflowSource(args)
+    } catch (error) {
+      return errorResult(`import_comfyui_workflow failed: ${error?.message || String(error)}`)
+    }
+
+    const previewOnly = args.previewOnly !== false
+    const payload = {
+      uiWorkflow: source.uiWorkflow,
+      sourceUrl: source.sourceUrl,
+      sourceKind: source.sourceKind,
+      name: String(args.name || '').trim() || source.defaultName,
+      title: String(args.title || '').trim(),
+      modelUrls: Array.isArray(args.modelUrls) ? args.modelUrls.slice(0, 20) : [],
+      overwrite: args.overwrite === true,
+      previewOnly,
+      timeoutMs: args.timeoutMs,
+    }
+
+    // The apply call re-passes the ORIGINAL source args (url/filePath/inline),
+    // never the fetched JSON — keeps the suggested call small and reproducible.
+    const sourceArgs = {}
+    if (source.sourceKind === 'url') sourceArgs.url = source.sourceUrl
+    else if (source.sourceKind === 'file') sourceArgs.filePath = String(args.filePath || '').trim()
+    else sourceArgs.workflowJson = args.workflowJson
+
+    try {
+      const result = await this.performAction({ action: 'import_comfyui_workflow', payload })
+      return textResult({
+        success: previewOnly ? undefined : result?.success !== false,
+        previewOnly,
+        action: 'import_comfyui_workflow',
+        message: result?.message || (previewOnly
+          ? 'Workflow analyzed — nothing imported yet. Review the dependency plan with the user, then apply with previewOnly:false.'
+          : 'Workflow imported into Velorn.'),
+        result,
+        suggestedApplyCall: previewOnly ? {
+          tool: 'import_comfyui_workflow',
+          arguments: {
+            ...sourceArgs,
+            name: payload.name || undefined,
+            title: payload.title || undefined,
+            modelUrls: payload.modelUrls.length > 0 ? payload.modelUrls : undefined,
+            overwrite: payload.overwrite || undefined,
+            previewOnly: false,
+          },
+        } : undefined,
+      })
+    } catch (error) {
+      return errorResult(`import_comfyui_workflow failed: ${error?.message || String(error)}`)
+    }
+  }
+
   normalizeActionPlanSteps(args = {}) {
     const rawSteps = Array.isArray(args.steps) ? args.steps : []
     const steps = rawSteps.slice(0, MCP_ACTION_PLAN_MAX_STEPS).map((step, index) => {
@@ -10852,12 +11135,46 @@ class ComfyStudioMcpServer {
     }
     if (plan.error) return errorResult(plan.error)
 
+    const buildRendererPayload = (previewOnly) => ({
+      ...buildTimelineTemplateApplyArguments(args, plan),
+      template: plan.importedWorkflowId ? undefined : plan.template,
+      templateName: plan.importedWorkflowId ? undefined : plan.template?.name,
+      templateQuery: plan.importedWorkflowId ? undefined : (args.templateQuery || args.query || args.templateTitle || args.template),
+      importedWorkflowId: plan.importedWorkflowId || undefined,
+      source: plan.source,
+      sourceClip: plan.source?.sourceClip,
+      inputAssetId: plan.source?.sourceClip?.asset?.id,
+      prompt: plan.prompt,
+      negativePrompt: plan.negativePrompt,
+      seed: plan.seed,
+      generationSettings: plan.generationSettings,
+      previewOnly,
+      timeoutMs: args.timeoutMs,
+    })
+
     if (args.previewOnly !== false) {
+      // Imported workflows: round-trip the preview through the renderer so the
+      // agent sees the manifest (required asset fields, parameters) that only
+      // the registry knows. Fall back to the main-only plan if the bridge is
+      // unavailable rather than failing the preview.
+      let rendererPlan = null
+      let rendererPlanError = ''
+      if (plan.importedWorkflowId && this.performAction) {
+        try {
+          rendererPlan = await this.performAction({
+            action: 'queue_timeline_template_generation',
+            payload: buildRendererPayload(true),
+          })
+        } catch (error) {
+          rendererPlanError = error?.message || String(error)
+        }
+      }
       return textResult({
         previewOnly: true,
         action: 'queue_timeline_template_generation',
         message: 'Timeline template generation plan only. No template was imported and no generation was queued.',
-        plan,
+        plan: rendererPlan?.plan ? { ...plan, renderer: rendererPlan.plan } : plan,
+        rendererPlanError: rendererPlanError || undefined,
         suggestedApplyCall: {
           tool: 'queue_timeline_template_generation',
           arguments: buildTimelineTemplateApplyArguments(args, plan),
@@ -10871,21 +11188,7 @@ class ComfyStudioMcpServer {
 
     const result = await this.performAction({
       action: 'queue_timeline_template_generation',
-      payload: {
-        ...buildTimelineTemplateApplyArguments(args, plan),
-        template: plan.template,
-        templateName: plan.template?.name,
-        templateQuery: args.templateQuery || args.query || args.templateTitle || args.template,
-        source: plan.source,
-        sourceClip: plan.source?.sourceClip,
-        inputAssetId: plan.source?.sourceClip?.asset?.id,
-        prompt: plan.prompt,
-        negativePrompt: plan.negativePrompt,
-        seed: plan.seed,
-        generationSettings: plan.generationSettings,
-        previewOnly: false,
-        timeoutMs: args.timeoutMs,
-      },
+      payload: buildRendererPayload(false),
     })
 
     return textResult({
