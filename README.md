@@ -60,6 +60,12 @@ Generate runs built-in local workflows, cloud/partner workflows, and custom Comf
   <img src="docs/readme/generate-featured.png" alt="Velorn Generate browser with Featured workflows, Local and Cloud filters, and the dependency checker" />
 </p>
 
+The Templates tab browses the official ComfyUI template catalog (500+ templates with size and popularity info) and launches any of them into the embedded ComfyUI tab.
+
+<p align="center">
+  <img src="docs/readme/generate-templates.png" alt="Velorn Templates browser showing the official ComfyUI template catalog with categories and filters" />
+</p>
+
 ### Create
 
 Create contains guided creator workflows built on Velorn's Director Mode engine.
@@ -82,10 +88,6 @@ The Music Video Creator supports:
 - Built-in video routes such as LTX 2.3 Music and WAN 2.2.
 - Custom video workflows with optional injected keyframe image, prompt, seed, width, height, FPS, duration, and audio.
 - Timeline assembly from generated shot assets.
-
-<p align="center">
-  <img src="docs/readme/music-video-custom-workflow.png" alt="Music Video Creator keyframe step with custom ComfyUI workflow controls and generated keyframes" />
-</p>
 
 ### Timeline Editor
 
