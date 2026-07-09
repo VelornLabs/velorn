@@ -8367,6 +8367,20 @@ function createToolDefinitions() {
           muted: { type: 'boolean', description: 'Mute/unmute the track.' },
           solo: { type: 'boolean', description: 'Solo/unsolo an audio track. While any audio track is soloed, only soloed unmuted audio tracks are audible in preview and export.' },
           volume: { type: 'number', description: 'Mixer fader level for audio tracks, 0-200 (100 = unity/0 dB, 200 = +6 dB). Applies to preview and export.' },
+          inserts: {
+            type: 'array',
+            description: 'Replace the audio track\'s mixer insert effects (processed before the fader; applies to preview and export). Read current inserts from get_timeline first when editing. Compressor params: thresholdDb (-60..0), ratio (1..20), kneeDb (0..40), attackMs (0..200), releaseMs (10..1000), makeupDb (0..24). Limiter params: ceilingDb (-24..0), releaseMs (10..500). Reverb params: preset (room|hall|plate), wet (0..1).',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Keep the existing id when editing an insert; omit for new inserts.' },
+                type: { type: 'string', enum: ['compressor', 'limiter', 'reverb'] },
+                enabled: { type: 'boolean', description: 'False = bypassed but kept in the chain.' },
+              },
+              required: ['type'],
+              additionalProperties: true,
+            },
+          },
           locked: { type: 'boolean', description: 'Lock/unlock the track.' },
           visible: { type: 'boolean', description: 'Show/hide the track.' },
           channels: { type: 'string', enum: ['mono', 'stereo'], description: 'Audio channel layout for audio tracks.' },

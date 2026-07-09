@@ -11,7 +11,9 @@ import {
 } from '../utils/adjustments'
 import { getAudioClipFadeGain, getAudioClipFadeValues } from '../utils/audioClipFades'
 import { getAudioClipLinearGain, normalizeAudioClipGainDb } from '../utils/audioClipGain'
-import { clampTrackVolume, hasAudioSolo, isAudioTrackAudible } from '../utils/audioTrackAudibility'
+import { clampTrackVolume, hasAudioSolo, isAudioTrackAudible, trackVolumeToLinearGain } from '../utils/audioTrackAudibility'
+import { getEnabledAudioInserts, hasEnabledAudioInserts } from '../utils/audioInserts'
+import { buildInsertChain } from './audioInsertChain'
 import {
   applyEffectsToTransform,
   applyGlowPassesToCanvas,
@@ -2736,8 +2738,147 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
       const activeTrackIds = new Set(activeTracks.map(track => track.id))
       const eligibleAudioClips = audioClips.filter(clip => activeTrackIds.has(clip.trackId))
 
+      const serializeClipForMix = (clip) => ({
+        id: clip.id,
+        assetId: clip.assetId,
+        trackId: clip.trackId,
+        type: clip.type,
+        startTime: clip.startTime,
+        duration: clip.duration,
+        trimStart: clip.trimStart || 0,
+        sourceTimeScale: clip.sourceTimeScale,
+        timelineFps: clip.timelineFps,
+        sourceFps: clip.sourceFps,
+        speed: clip.speed,
+        reverse: clip.reverse,
+        gainDb: normalizeAudioClipGainDb(clip.gainDb),
+        fadeIn: clip.fadeIn ?? 0,
+        fadeOut: clip.fadeOut ?? 0,
+        url: clip.url || null,
+      })
+      const serializeAssetsForMix = () => assetsState.assets.map(asset => ({
+        id: asset.id,
+        type: asset.type,
+        path: asset.path || null,
+        url: asset.url || null,
+      }))
+
+      // Mixer insert effects (compressor/limiter/reverb) path: FFmpeg renders
+      // one flat stem per track (clip gains/fades baked, fader EXCLUDED —
+      // desk order puts the fader after inserts), then the SAME insert chains
+      // the preview plays through (audioInsertChain) run in an
+      // OfflineAudioContext: stem → track inserts → track fader →
+      // master inserts → master gain. Parity by construction; never mirror
+      // these effects in FFmpeg filters.
+      const enabledMasterInserts = getEnabledAudioInserts(timelineState.masterAudioInserts)
+      const anyInsertEffects = enabledMasterInserts.length > 0
+        || activeTracks.some(track => hasEnabledAudioInserts(track.inserts))
+      if (
+        anyInsertEffects
+        && window.electronAPI?.mixAudio
+        && window.electronAPI?.readFileAsBuffer
+        && eligibleAudioClips.length > 0
+      ) {
+        const stemPaths = []
+        try {
+          const stems = []
+          for (const track of activeTracks) {
+            const trackClips = eligibleAudioClips.filter(clip => clip.trackId === track.id)
+            if (trackClips.length === 0) continue
+            updateAudioStatus(`Rendering stem: ${track.name || track.id}`, 81)
+            const stemPath = `${audioPath}.stem-${stems.length}.wav`
+            const stemResult = await window.electronAPI.mixAudio({
+              projectPath: projectHandle,
+              outputPath: stemPath,
+              rangeStart,
+              rangeEnd,
+              sampleRate,
+              channels: channelCount,
+              masterVolume: 100,
+              timeoutMs: AUDIO_MIX_TIMEOUT_MS,
+              clips: trackClips.map(serializeClipForMix),
+              // volume 100: the fader is applied post-inserts below
+              tracks: [{
+                id: track.id,
+                type: track.type,
+                muted: false,
+                visible: true,
+                channels: track.channels || 'stereo',
+                volume: 100,
+              }],
+              assets: serializeAssetsForMix(),
+            })
+            if (!stemResult?.success) {
+              throw new Error(stemResult?.error || `Stem mix failed for track ${track.id}`)
+            }
+            stemPaths.push(stemPath)
+            const readResult = await window.electronAPI.readFileAsBuffer(stemPath)
+            if (!readResult?.success || !readResult.data) {
+              throw new Error(readResult?.error || `Failed to read stem for track ${track.id}`)
+            }
+            stems.push({ track, data: readResult.data })
+          }
+
+          if (stems.length === 0) {
+            throw new Error('No stems produced for insert-effects mix.')
+          }
+
+          updateAudioStatus('Applying mixer effects…', 85)
+          const totalSamples = Math.ceil(totalDuration * sampleRate)
+          const offlineContext = new OfflineAudioContext(channelCount, totalSamples, sampleRate)
+
+          const masterChain = buildInsertChain(offlineContext, enabledMasterInserts)
+          const masterGainNode = offlineContext.createGain()
+          masterGainNode.gain.value = masterAudioGain
+          masterChain.output.connect(masterGainNode)
+          masterGainNode.connect(offlineContext.destination)
+
+          for (const stem of stems) {
+            const bytes = stem.data
+            const arrayBuffer = bytes instanceof ArrayBuffer
+              ? bytes
+              : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+            const stemBuffer = await withTimeout(
+              offlineContext.decodeAudioData(arrayBuffer),
+              AUDIO_DECODE_TIMEOUT_MS,
+              'Stem decode'
+            )
+            const source = offlineContext.createBufferSource()
+            source.buffer = stemBuffer
+            const trackChain = buildInsertChain(offlineContext, stem.track.inserts)
+            const faderGain = offlineContext.createGain()
+            faderGain.gain.value = trackVolumeToLinearGain(stem.track.volume ?? 100)
+            source.connect(trackChain.input)
+            trackChain.output.connect(faderGain)
+            faderGain.connect(masterChain.input)
+            source.start(0)
+          }
+
+          const mixedBuffer = await withTimeout(
+            offlineContext.startRendering(),
+            AUDIO_MIX_TIMEOUT_MS,
+            'Insert effects mix'
+          )
+          updateAudioStatus('Writing WAV…', 88)
+          const wavData = audioBufferToWav(mixedBuffer)
+          await window.electronAPI.writeFileFromArrayBuffer(audioPath, wavData)
+          audioFilePath = audioPath
+          updateAudioStatus('Audio mix complete (mixer effects applied)', 89)
+        } catch (err) {
+          console.warn('Mixer effects mix failed, falling back to mix WITHOUT insert effects:', err)
+          onProgress({ status: 'Mixer effects failed — exporting without insert effects', progress: 82 })
+          audioFilePath = null
+        } finally {
+          if (window.electronAPI?.deleteFile) {
+            for (const stemPath of stemPaths) {
+              window.electronAPI.deleteFile(stemPath).catch(() => { /* temp file; ignore */ })
+            }
+          }
+        }
+      }
+
       // Preferred path: mix in main process with FFmpeg (avoids renderer OfflineAudioContext hangs).
-      if (window.electronAPI?.mixAudio && eligibleAudioClips.length > 0) {
+      if (!audioFilePath && window.electronAPI?.mixAudio && eligibleAudioClips.length > 0) {
         let ffmpegMixHeartbeat = null
         try {
           updateAudioStatus('Preparing FFmpeg audio mix…', 82)
@@ -2753,24 +2894,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             channels: channelCount,
             masterVolume: masterAudioGain * 100,
             timeoutMs: AUDIO_MIX_TIMEOUT_MS,
-            clips: eligibleAudioClips.map(clip => ({
-              id: clip.id,
-              assetId: clip.assetId,
-              trackId: clip.trackId,
-              type: clip.type,
-              startTime: clip.startTime,
-              duration: clip.duration,
-              trimStart: clip.trimStart || 0,
-              sourceTimeScale: clip.sourceTimeScale,
-              timelineFps: clip.timelineFps,
-              sourceFps: clip.sourceFps,
-              speed: clip.speed,
-              reverse: clip.reverse,
-              gainDb: normalizeAudioClipGainDb(clip.gainDb),
-              fadeIn: clip.fadeIn ?? 0,
-              fadeOut: clip.fadeOut ?? 0,
-              url: clip.url || null,
-            })),
+            clips: eligibleAudioClips.map(serializeClipForMix),
             tracks: timelineState.tracks
               .filter(track => track.type === 'audio')
               .map(track => ({
@@ -2781,13 +2905,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
                 channels: track.channels || 'stereo',
                 volume: track.volume ?? 100,
               })),
-            assets: assetsState.assets
-              .map(asset => ({
-                id: asset.id,
-                type: asset.type,
-                path: asset.path || null,
-                url: asset.url || null,
-              })),
+            assets: serializeAssetsForMix(),
           })
           if (ffmpegMixHeartbeat) clearInterval(ffmpegMixHeartbeat)
           if (mixResult?.success) {
@@ -2810,10 +2928,28 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const decodedAudioCache = new Map()
         const resolvedAudioUrlCache = new Map()
 
-        // Mirror of the live graph's program master gain (mixer master fader)
+        // Mirror of the live graph's desk topology: clip gain → track inserts
+        // → track fader → master inserts → master gain (mixer master fader).
         const offlineMasterGain = offlineContext.createGain()
         offlineMasterGain.gain.value = masterAudioGain
         offlineMasterGain.connect(offlineContext.destination)
+        const offlineMasterChain = buildInsertChain(offlineContext, timelineState.masterAudioInserts)
+        offlineMasterChain.output.connect(offlineMasterGain)
+
+        const offlineTrackBuses = new Map()
+        const getOfflineTrackBus = (track) => {
+          let bus = offlineTrackBuses.get(track.id)
+          if (!bus) {
+            const chain = buildInsertChain(offlineContext, track.inserts)
+            const fader = offlineContext.createGain()
+            fader.gain.value = trackVolumeToLinearGain(track.volume ?? 100)
+            chain.output.connect(fader)
+            fader.connect(offlineMasterChain.input)
+            bus = { input: chain.input }
+            offlineTrackBuses.set(track.id, bus)
+          }
+          return bus
+        }
 
         for (let index = 0; index < eligibleAudioClips.length; index++) {
           const clip = eligibleAudioClips[index]
@@ -2885,10 +3021,8 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
 
             const gainNode = offlineContext.createGain()
             const { fadeIn, fadeOut } = getAudioClipFadeValues(clip)
-            const trackGain = track.volume !== undefined
-              ? Math.max(0, Number(track.volume) || 0) / 100
-              : 1
-            const baseGain = getAudioClipLinearGain(clip) * trackGain
+            // Track volume applies at the bus fader (after inserts), not here
+            const baseGain = getAudioClipLinearGain(clip)
             const endClipTime = Math.min(clipDuration, clipOffsetOnTimeline + visibleDuration)
             const startClipTime = Math.max(0, clipOffsetOnTimeline)
             const segmentEndTime = startOffset + visibleDuration
@@ -2920,7 +3054,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             }
 
             source.connect(gainNode)
-            gainNode.connect(offlineMasterGain)
+            gainNode.connect(getOfflineTrackBus(track).input)
             source.start(startOffset, sourceOffset, playDuration)
           } catch (err) {
             console.warn('Failed to decode audio clip for export:', err)

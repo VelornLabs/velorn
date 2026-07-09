@@ -6,6 +6,7 @@ import { getAdjustmentValue, mergeAdjustmentSettings, normalizeAdjustmentSetting
 import { clampAudioFadeDuration } from '../utils/audioClipFades'
 import { normalizeAudioClipGainDb } from '../utils/audioClipGain'
 import { clampTrackVolume } from '../utils/audioTrackAudibility'
+import { normalizeAudioInserts } from '../utils/audioInserts'
 import { CLIP_COMPOSITE_MODE, normalizeClipCompositeMode } from '../utils/layerCompositing'
 import { getKeyframeTimeTolerance } from '../utils/keyframes'
 import { normalizeTrackMatte } from '../utils/trackMatte'
@@ -657,6 +658,10 @@ export const useTimelineStore = create(
   // Program master audio gain (0-200, 100 = unity). Unlike the monitor volume
   // knob, this is part of the program: it applies to export mixdowns too.
   masterAudioVolume: 100,
+
+  // Master bus insert effects (compressor/limiter/reverb), processed before
+  // the master fader. Part of the program: export applies them too.
+  masterAudioInserts: [],
 
   // Tracks (default: 1 video, 1 audio; user can add more)
   tracks: [
@@ -4712,6 +4717,28 @@ export const useTimelineStore = create(
   },
 
   /**
+   * Replace an audio track's insert effects (normalized). No history entry,
+   * matching fader/mute/solo behavior.
+   */
+  setTrackInserts: (trackId, inserts) => {
+    const normalized = normalizeAudioInserts(inserts)
+    set((state) => ({
+      tracks: state.tracks.map(track =>
+        track.id === trackId && track.type === 'audio'
+          ? { ...track, inserts: normalized }
+          : track
+      )
+    }))
+  },
+
+  /**
+   * Replace the master bus insert effects (normalized).
+   */
+  setMasterAudioInserts: (inserts) => {
+    set({ masterAudioInserts: normalizeAudioInserts(inserts) })
+  },
+
+  /**
    * Toggle track lock
    */
   toggleTrackLock: (trackId) => {
@@ -4964,6 +4991,7 @@ export const useTimelineStore = create(
       shuttleMode: false,
       loopMode: 'normal',
       masterAudioVolume: 100,
+      masterAudioInserts: [],
       tracks: [
         { id: 'video-1', name: 'Video 1', type: 'video', muted: false, locked: false, visible: true },
         { id: 'audio-1', name: 'Audio 1', type: 'audio', channels: 'stereo', muted: false, locked: false, visible: true },
@@ -5039,6 +5067,7 @@ export const useTimelineStore = create(
       timelineFps: fps,
       zoom: timelineData.zoom || 100,
       masterAudioVolume: clampTrackVolume(timelineData.masterAudioVolume),
+      masterAudioInserts: normalizeAudioInserts(timelineData.masterAudioInserts),
       tracks: timelineData.tracks || [
         { id: 'video-1', name: 'Video 1', type: 'video', muted: false, locked: false, visible: true },
         { id: 'audio-1', name: 'Audio 1', type: 'audio', channels: 'stereo', muted: false, locked: false, visible: true },
@@ -5084,6 +5113,7 @@ export const useTimelineStore = create(
       duration: state.duration,
       zoom: state.zoom,
       masterAudioVolume: state.masterAudioVolume,
+      masterAudioInserts: state.masterAudioInserts,
       tracks: state.tracks,
       clips: state.clips,
       transitions: state.transitions,

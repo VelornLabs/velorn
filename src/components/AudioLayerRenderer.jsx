@@ -8,11 +8,14 @@ import {
   isAudioTrackAudible,
   trackVolumeToLinearGain,
 } from '../utils/audioTrackAudibility'
+import { getAudioInsertsSignature } from '../utils/audioInserts'
+import { buildInsertChain } from '../services/audioInsertChain'
 import {
   registerMixerGraph,
   unregisterMixerGraph,
   setTrackAnalyser,
   removeTrackAnalyser,
+  setInsertMeters,
 } from '../services/audioMixerGraph'
 
 /**
@@ -24,20 +27,25 @@ import {
  * - Respecting track muting, solo, and visibility
  * - Handling multiple overlapping audio clips
  *
- * Graph topology (the mixer reads its meters from this graph via
- * audioMixerGraph):
+ * Graph topology (desk order — inserts BEFORE the fader; the mixer reads its
+ * meters from this graph via audioMixerGraph; audioInsertChain.js is the
+ * shared DSP that export mixdowns run too):
  *
  *   clip source → clip gain (clip gain × fades)
- *     → track bus gain (track fader) → track analyser
- *       → program gain (master fader, part of the program: export applies it too)
- *         → master analyser → monitor gain (app volume knob, preview-only)
- *           → destination
+ *     → track bus input → track inserts → track fader → track analyser
+ *       → master bus input → master inserts
+ *         → program gain (master fader, part of the program: export applies it too)
+ *           → master analyser → monitor gain (app volume knob, preview-only)
+ *             → destination
  */
 function AudioLayerRenderer() {
   const audioElementsRef = useRef(new Map()) // clipId -> { element, currentSrc, sourceNode, gainNode, trackId }
-  const trackBusesRef = useRef(new Map()) // trackId -> { gain, analyser }
+  const trackBusesRef = useRef(new Map()) // trackId -> { input, chain, chainSignature, fader, analyser }
   const isPlayingRef = useRef(false)
   const audioContextRef = useRef(null)
+  const masterBusInputRef = useRef(null)
+  const masterChainRef = useRef(null)
+  const masterChainSignatureRef = useRef(null)
   const programGainRef = useRef(null)
   const monitorGainRef = useRef(null)
 
@@ -48,6 +56,7 @@ function AudioLayerRenderer() {
     playheadPosition,
     playbackRate,
     masterAudioVolume,
+    masterAudioInserts,
     getActiveClipsAtTime,
   } = useTimelineStore()
 
@@ -66,19 +75,25 @@ function AudioLayerRenderer() {
       if (!AudioContextCtor) return undefined
 
       audioContext = new AudioContextCtor()
+      const masterBusInput = audioContext.createGain()
       const programGain = audioContext.createGain()
       const masterAnalyser = audioContext.createAnalyser()
       masterAnalyser.fftSize = 2048
       masterAnalyser.smoothingTimeConstant = 0.2
       const monitorGain = audioContext.createGain()
 
+      // Master insert chain is wired between masterBusInput and programGain
+      // by syncMasterChain() in the main effect below.
       programGain.connect(masterAnalyser)
       masterAnalyser.connect(monitorGain)
       monitorGain.connect(audioContext.destination)
 
       audioContextRef.current = audioContext
+      masterBusInputRef.current = masterBusInput
       programGainRef.current = programGain
       monitorGainRef.current = monitorGain
+      masterChainRef.current = null
+      masterChainSignatureRef.current = null
       registerMixerGraph({ context: audioContext, masterAnalyser })
     } catch (err) {
       console.warn('Failed to initialize preview audio context:', err)
@@ -86,11 +101,16 @@ function AudioLayerRenderer() {
 
     return () => {
       unregisterMixerGraph(audioContext)
+      masterChainRef.current?.dispose?.()
+      masterChainRef.current = null
+      masterChainSignatureRef.current = null
+      trackBusesRef.current.forEach((bus) => bus.chain?.dispose?.())
       trackBusesRef.current.clear()
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {})
       }
       audioContextRef.current = null
+      masterBusInputRef.current = null
       programGainRef.current = null
       monitorGainRef.current = null
     }
@@ -103,23 +123,56 @@ function AudioLayerRenderer() {
     }
   }, [isPlaying])
 
-  // Lazily create the per-track bus (fader gain + meter analyser)
+  // (Re)build the master insert chain when masterAudioInserts change
+  const syncMasterChain = () => {
+    const audioContext = audioContextRef.current
+    const masterBusInput = masterBusInputRef.current
+    const programGain = programGainRef.current
+    if (!audioContext || !masterBusInput || !programGain) return
+
+    const signature = getAudioInsertsSignature(masterAudioInserts)
+    if (signature === masterChainSignatureRef.current) return
+
+    try {
+      masterBusInput.disconnect()
+    } catch (_) {}
+    masterChainRef.current?.dispose?.()
+
+    try {
+      const chain = buildInsertChain(audioContext, masterAudioInserts)
+      masterBusInput.connect(chain.input)
+      chain.output.connect(programGain)
+      masterChainRef.current = chain
+      masterChainSignatureRef.current = signature
+      setInsertMeters('master', chain.meters)
+    } catch (err) {
+      console.warn('Failed to build master insert chain, bypassing:', err)
+      masterBusInput.connect(programGain)
+      masterChainRef.current = null
+      masterChainSignatureRef.current = signature
+      setInsertMeters('master', [])
+    }
+  }
+
+  // Lazily create the per-track bus (insert chain + fader gain + meter analyser)
   const ensureTrackBus = (trackId) => {
     const audioContext = audioContextRef.current
-    const programGain = programGainRef.current
-    if (!audioContext || !programGain || !trackId) return null
+    const masterBusInput = masterBusInputRef.current
+    if (!audioContext || !masterBusInput || !trackId) return null
 
     let bus = trackBusesRef.current.get(trackId)
     if (bus) return bus
 
     try {
-      const gain = audioContext.createGain()
+      const input = audioContext.createGain()
+      const fader = audioContext.createGain()
       const analyser = audioContext.createAnalyser()
       analyser.fftSize = 2048
       analyser.smoothingTimeConstant = 0.2
-      gain.connect(analyser)
-      analyser.connect(programGain)
-      bus = { gain, analyser }
+      // Insert chain wired between input and fader by syncTrackChain
+      fader.connect(analyser)
+      analyser.connect(masterBusInput)
+      bus = { input, chain: null, chainSignature: null, fader, analyser }
       trackBusesRef.current.set(trackId, bus)
       setTrackAnalyser(trackId, analyser)
       return bus
@@ -129,17 +182,49 @@ function AudioLayerRenderer() {
     }
   }
 
+  // (Re)build a track's insert chain when its inserts change
+  const syncTrackChain = (bus, track) => {
+    const audioContext = audioContextRef.current
+    if (!audioContext || !bus) return
+
+    const signature = getAudioInsertsSignature(track.inserts)
+    if (signature === bus.chainSignature) return
+
+    try {
+      bus.input.disconnect()
+    } catch (_) {}
+    bus.chain?.dispose?.()
+
+    try {
+      const chain = buildInsertChain(audioContext, track.inserts)
+      bus.input.connect(chain.input)
+      chain.output.connect(bus.fader)
+      bus.chain = chain
+      bus.chainSignature = signature
+      setInsertMeters(track.id, chain.meters)
+    } catch (err) {
+      console.warn('Failed to build track insert chain, bypassing:', err)
+      bus.input.connect(bus.fader)
+      bus.chain = null
+      bus.chainSignature = signature
+      setInsertMeters(track.id, [])
+    }
+  }
+
   // Drop buses for tracks that no longer exist
   useEffect(() => {
     const liveTrackIds = new Set((tracks || []).filter(t => t.type === 'audio').map(t => t.id))
     for (const [trackId, bus] of trackBusesRef.current.entries()) {
       if (!liveTrackIds.has(trackId)) {
+        bus.chain?.dispose?.()
         try {
-          bus.gain.disconnect()
+          bus.input.disconnect()
+          bus.fader.disconnect()
           bus.analyser.disconnect()
         } catch (_) {}
         trackBusesRef.current.delete(trackId)
         removeTrackAnalyser(trackId)
+        setInsertMeters(trackId, [])
       }
     }
   }, [tracks])
@@ -169,14 +254,16 @@ function AudioLayerRenderer() {
       }
     }
 
-    // Keep bus faders in sync with track volume (also covers fader moves
-    // while nothing on the track is playing — the bus just sits at the new
-    // gain until clips arrive).
+    syncMasterChain()
+
+    // Keep bus chains + faders in sync with track state (also covers fader
+    // moves and insert edits while nothing on the track is playing).
     for (const track of tracks || []) {
       if (track.type !== 'audio') continue
       const bus = trackBusesRef.current.get(track.id)
       if (bus) {
-        bus.gain.gain.value = trackVolumeToLinearGain(track.volume ?? 100)
+        syncTrackChain(bus, track)
+        bus.fader.gain.value = trackVolumeToLinearGain(track.volume ?? 100)
       }
     }
 
@@ -210,10 +297,11 @@ function AudioLayerRenderer() {
         const bus = ensureTrackBus(track.id)
         if (audioContext && bus) {
           try {
+            syncTrackChain(bus, track)
             const sourceNode = audioContext.createMediaElementSource(audioEl)
             const gainNode = audioContext.createGain()
             sourceNode.connect(gainNode)
-            gainNode.connect(bus.gain)
+            gainNode.connect(bus.input)
             entry.sourceNode = sourceNode
             entry.gainNode = gainNode
             entry.trackId = track.id
@@ -228,8 +316,9 @@ function AudioLayerRenderer() {
         const bus = ensureTrackBus(track.id)
         if (bus) {
           try {
+            syncTrackChain(bus, track)
             entry.gainNode.disconnect()
-            entry.gainNode.connect(bus.gain)
+            entry.gainNode.connect(bus.input)
             entry.trackId = track.id
           } catch (err) {
             console.warn('Failed to reroute clip audio to new track bus:', err)
@@ -322,13 +411,14 @@ function AudioLayerRenderer() {
         audioEl.volume = 1
       } else {
         // No Web Audio: approximate the whole chain on the element itself
+        // (inserts can't run here — gain staging only)
         const trackGain = trackVolumeToLinearGain(track.volume ?? 100)
         const masterGain = trackVolumeToLinearGain(masterAudioVolume ?? 100)
         const fallbackVolume = Math.max(0, Math.min(1, volume * clipGain * trackGain * masterGain))
         audioEl.volume = fallbackVolume
       }
     })
-  }, [activeAudioClips, playheadPosition, isPlaying, playbackRate, getAssetById, clips, tracks, volume, masterAudioVolume])
+  }, [activeAudioClips, playheadPosition, isPlaying, playbackRate, getAssetById, clips, tracks, volume, masterAudioVolume, masterAudioInserts])
 
   // Cleanup on unmount
   useEffect(() => {

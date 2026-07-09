@@ -9,6 +9,7 @@ import { EFFECT_TYPES, getEffectPropertyId, getEffectTypeDefinition } from '../u
 import { normalizeAdjustmentSettings } from '../utils/adjustments'
 import { normalizeTrackMatte } from '../utils/trackMatte'
 import { clampTrackVolume } from '../utils/audioTrackAudibility'
+import { normalizeAudioInserts } from '../utils/audioInserts'
 import {
   MUSIC_KEY_SCALES,
   MUSIC_TIME_SIGNATURES,
@@ -187,7 +188,11 @@ function summarizeTrack(track) {
     role: track.role || null,
     channels: track.channels || null,
     ...(track.type === 'audio'
-      ? { solo: !!track.solo, volume: clampTrackVolume(track.volume) }
+      ? {
+        solo: !!track.solo,
+        volume: clampTrackVolume(track.volume),
+        inserts: normalizeAudioInserts(track.inserts),
+      }
       : {}),
   }
 }
@@ -3422,6 +3427,7 @@ function handleUpdateTrack(payload = {}) {
   if (Object.prototype.hasOwnProperty.call(payload, 'muted')) updates.muted = payload.muted === true
   if (current.type === 'audio' && Object.prototype.hasOwnProperty.call(payload, 'solo')) updates.solo = payload.solo === true
   if (current.type === 'audio' && Object.prototype.hasOwnProperty.call(payload, 'volume')) updates.volume = clampTrackVolume(payload.volume)
+  if (current.type === 'audio' && Object.prototype.hasOwnProperty.call(payload, 'inserts')) updates.inserts = normalizeAudioInserts(payload.inserts)
   if (Object.prototype.hasOwnProperty.call(payload, 'locked')) updates.locked = payload.locked === true
   if (Object.prototype.hasOwnProperty.call(payload, 'visible')) updates.visible = payload.visible !== false
   if (current.type === 'audio' && Object.prototype.hasOwnProperty.call(payload, 'channels')) updates.channels = normalizeAudioChannels(payload.channels)

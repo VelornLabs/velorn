@@ -10,6 +10,7 @@ const registry = {
   context: null,
   masterAnalyser: null,
   trackAnalysers: new Map(), // trackId -> AnalyserNode
+  insertMeters: new Map(), // trackId | 'master' -> [{ id, type, getReductionDb }]
 }
 
 export function registerMixerGraph({ context, masterAnalyser }) {
@@ -24,6 +25,24 @@ export function unregisterMixerGraph(context) {
   registry.context = null
   registry.masterAnalyser = null
   registry.trackAnalysers.clear()
+  registry.insertMeters.clear()
+}
+
+/**
+ * Register gain-reduction meter accessors for a bus's insert chain.
+ * `key` is a track id or 'master'; pass an empty array to clear.
+ */
+export function setInsertMeters(key, meters) {
+  if (!key) return
+  if (Array.isArray(meters) && meters.length > 0) {
+    registry.insertMeters.set(key, meters)
+  } else {
+    registry.insertMeters.delete(key)
+  }
+}
+
+export function getInsertMeters(key) {
+  return registry.insertMeters.get(key) || []
 }
 
 export function setTrackAnalyser(trackId, analyser) {
