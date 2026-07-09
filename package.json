@@ -1,6 +1,6 @@
 {
   "name": "velorn",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "AI-native video editing built around real creative timelines, generative workflows, and local agent control.",
   "main": "electron/main.js",
   "scripts": {

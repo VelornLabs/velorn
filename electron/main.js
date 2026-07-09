@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, screen, session } = require('electron')
 const crypto = require('crypto')
 const path = require('path')
 const os = require('os')
@@ -6226,8 +6226,44 @@ ipcMain.handle('export:checkNvenc', async () => {
 // App Lifecycle
 // ============================================
 
+// Recent ComfyUI builds validate the Origin header on API requests to block
+// DNS-rebinding attacks: cross-origin calls (which is what our renderer's
+// fetches to ComfyUI are) get a 403 unless the user launched ComfyUI with
+// --enable-cors-header. The failure is silent — blank embedded tab, dead
+// queue/history polling. A desktop app talking to the user's own loopback
+// services is exactly the traffic that check exists to allow, so for
+// loopback requests we rewrite Origin to match the target: the server sees
+// same-origin traffic and no launch flag is needed. Scoped to
+// 127.0.0.1/localhost only (http and ws) — remote hosts are untouched.
+function installLoopbackOriginRewrite() {
+  const filter = {
+    urls: [
+      'http://127.0.0.1/*',
+      'http://localhost/*',
+      'ws://127.0.0.1/*',
+      'ws://localhost/*',
+    ],
+  }
+  session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+    const headers = details.requestHeaders || {}
+    try {
+      const target = new URL(details.url)
+      // WebSocket handshakes carry an http(s) Origin, not ws(s).
+      const scheme = target.protocol === 'ws:' ? 'http:' : target.protocol === 'wss:' ? 'https:' : target.protocol
+      const originValue = `${scheme}//${target.host}`
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === 'origin') headers[key] = originValue
+      }
+    } catch {
+      // Malformed URL — leave the request untouched.
+    }
+    callback({ requestHeaders: headers })
+  })
+}
+
 app.whenReady().then(async () => {
   registerFileProtocol()
+  installLoopbackOriginRewrite()
   mcpServer = createComfyStudioMcpServer({
     port: DEFAULT_MCP_PORT,
     version: app.getVersion(),

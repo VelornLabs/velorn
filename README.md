@@ -228,8 +228,9 @@ Depending on the workflow, users may need:
 - Custom nodes installed in ComfyUI.
 - Model files in the expected folders.
 - Cloud/partner credentials.
-- CORS enabled for the local ComfyUI endpoint.
 - Enough local VRAM for the selected model and resolution.
+
+Velorn 0.2.1+ talks to local ComfyUI without any CORS setup. On older Velorn versions, launch ComfyUI with `--enable-cors-header` if the embedded tab is blank or API calls return 403.
 
 Inside Generate, use the workflow setup and dependency tools when something is missing.
 
