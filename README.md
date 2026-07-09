@@ -54,6 +54,11 @@ Generate runs built-in local workflows, cloud/partner workflows, and custom Comf
 - API JSON import for advanced users who prefer exporting workflows manually from ComfyUI.
 - Velorn Bridge support so compatible graphs can be sent from ComfyUI back to the correct Velorn panel.
 - Workflow setup checks for missing nodes, models, credentials, and configuration.
+- A Featured / My Workflows / Templates browser with Local and Cloud filters. Imported community workflows appear in Featured next to the built-ins.
+
+<p align="center">
+  <img src="docs/readme/generate-featured.png" alt="Velorn Generate browser with Featured workflows, Local and Cloud filters, and the dependency checker" />
+</p>
 
 ### Create
 
@@ -117,6 +122,10 @@ The Export tab includes practical render presets, hardware-accelerated options w
 
 The Stock tab uses Pexels so you can search and import photos or videos directly into the current project. A Pexels API key is optional and can be added in Settings.
 
+<p align="center">
+  <img src="docs/readme/stock-pexels.png" alt="Velorn Stock tab with Pexels photo and video search" />
+</p>
+
 ### ComfyUI Integration
 
 Velorn talks to a local ComfyUI server and can also help launch it.
@@ -134,15 +143,21 @@ Only localhost/loopback ComfyUI endpoints are supported in the desktop app.
 
 ### AI Agents (MCP)
 
-Velorn includes a local MCP server for Codex, Claude Code, Cursor-compatible tools, and other MCP clients.
+Velorn includes a local MCP server with 100+ tools for Codex, Claude Code, Cursor-compatible tools, and other MCP clients.
 
 - Endpoint: `http://127.0.0.1:19790/mcp`
-- In-app setup: `Settings > Agents (MCP)`
+- In-app setup: `Settings > Agents (MCP)` (one copy-paste command per client)
 - Guide: [docs/MCP.md](docs/MCP.md)
 
 Agents can inspect the open project, review timeline frames and visible shots, troubleshoot ComfyUI setup, preview safe timeline edits, queue approved generation work, and start delivery exports.
 
-MCP is the recommended automation path for agent-assisted review, timeline operations, graphics polish, and generation workflows.
+Agents can also bring in community ComfyUI workflows: hand one a workflow link or file, and it analyzes the graph, reports missing custom nodes and models, installs them after your approval, and runs the workflow on your timeline assets.
+
+Write tools preview their plan first and apply only after approval, on Velorn's normal undo stack. MCP is the recommended automation path for agent-assisted review, timeline operations, graphics polish, and generation workflows.
+
+<p align="center">
+  <img src="docs/readme/agents-mcp.png" alt="Velorn Agents (MCP) settings with the running local server, connect commands, and the full tool list" />
+</p>
 
 ## Custom Workflows
 
