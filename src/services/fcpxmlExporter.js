@@ -1,3 +1,5 @@
+import { applySoloAsMute } from '../utils/audioTrackAudibility'
+
 const FCPXML_VERSION = '1.10'
 const DEFAULT_FPS = 24
 
@@ -239,7 +241,8 @@ export function buildFcpXml({
   const width = Math.max(1, Math.round(safeNumber(timelineSettings.width, 1920)))
   const height = Math.max(1, Math.round(safeNumber(timelineSettings.height, 1080)))
   const clips = Array.isArray(timeline.clips) ? timeline.clips : []
-  const tracks = Array.isArray(timeline.tracks) ? timeline.tracks : []
+  // Fold solo into muted so the mute checks below export what the mixer plays.
+  const tracks = applySoloAsMute(Array.isArray(timeline.tracks) ? timeline.tracks : [])
   const assetsById = new Map((Array.isArray(assets) ? assets : []).map((asset) => [asset.id, asset]))
   const tracksById = new Map(tracks.map((track) => [track.id, track]))
   const trackLaneMaps = buildTrackLaneMaps(tracks)

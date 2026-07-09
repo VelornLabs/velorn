@@ -12,6 +12,7 @@ import LeftPanel from './components/LeftPanel'
 import PreviewPanel from './components/PreviewPanel'
 import Timeline from './components/Timeline'
 import DopeSheet from './components/DopeSheet'
+import MixerPanel from './components/MixerPanel'
 import TransportControls from './components/TransportControls'
 import InspectorPanel from './components/InspectorPanel'
 import ResizeHandle from './components/ResizeHandle'
@@ -834,9 +835,24 @@ function App() {
                     >
                       Dope Sheet
                     </button>
+                    <button
+                      onClick={() => setBottomEditorView('mixer')}
+                      className={`px-2 py-0.5 rounded text-[10px] transition-colors ${
+                        bottomEditorView === 'mixer'
+                          ? 'bg-sf-accent/20 text-sf-accent border border-sf-accent/40'
+                          : 'bg-sf-dark-700 text-sf-text-muted hover:bg-sf-dark-600'
+                      }`}
+                      title="Audio mixer: track faders, mute/solo, meters, master"
+                    >
+                      Mixer
+                    </button>
                   </div>
                   <span className="text-[10px] text-sf-text-muted">
-                    {bottomEditorView === 'timeline' ? `Timeline · ${activeTimelineToolLabel}` : 'Keyframe edit mode'}
+                    {bottomEditorView === 'timeline'
+                      ? `Timeline · ${activeTimelineToolLabel}`
+                      : bottomEditorView === 'mixer'
+                        ? 'Audio mixer'
+                        : 'Keyframe edit mode'}
                   </span>
                 </div>
                 {/* Selected bottom editor view - takes remaining height */}
@@ -845,6 +861,8 @@ function App() {
                     <Timeline
                       onActiveToolChange={handleActiveTimelineToolChange}
                     />
+                  ) : bottomEditorView === 'mixer' ? (
+                    <MixerPanel />
                   ) : (
                     <DopeSheet />
                   )}

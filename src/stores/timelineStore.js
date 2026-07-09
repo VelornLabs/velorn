@@ -5,6 +5,7 @@ import { buildTextAnimationPresetKeyframes, TEXT_ANIMATION_KEYFRAME_PROPERTIES }
 import { getAdjustmentValue, mergeAdjustmentSettings, normalizeAdjustmentSettings } from '../utils/adjustments'
 import { clampAudioFadeDuration } from '../utils/audioClipFades'
 import { normalizeAudioClipGainDb } from '../utils/audioClipGain'
+import { clampTrackVolume } from '../utils/audioTrackAudibility'
 import { CLIP_COMPOSITE_MODE, normalizeClipCompositeMode } from '../utils/layerCompositing'
 import { getKeyframeTimeTolerance } from '../utils/keyframes'
 import { normalizeTrackMatte } from '../utils/trackMatte'
@@ -652,7 +653,11 @@ export const useTimelineStore = create(
   
   // Playback loop modes: 'normal', 'loop', 'loop-in-out', 'loop-selection', 'ping-pong'
   loopMode: 'normal',
-  
+
+  // Program master audio gain (0-200, 100 = unity). Unlike the monitor volume
+  // knob, this is part of the program: it applies to export mixdowns too.
+  masterAudioVolume: 100,
+
   // Tracks (default: 1 video, 1 audio; user can add more)
   tracks: [
     { id: 'video-1', name: 'Video 1', type: 'video', muted: false, locked: false, visible: true },
@@ -4674,6 +4679,39 @@ export const useTimelineStore = create(
   },
 
   /**
+   * Toggle track solo (audio tracks). Solo does not override mute; when any
+   * audio track is soloed, only soloed unmuted audio tracks are audible.
+   */
+  toggleTrackSolo: (trackId) => {
+    set((state) => ({
+      tracks: state.tracks.map(track =>
+        track.id === trackId ? { ...track, solo: !track.solo } : track
+      )
+    }))
+  },
+
+  /**
+   * Set track volume (0-200, 100 = unity). No history entry: fader drags
+   * would flood undo, matching mute/solo toggles which also skip history.
+   */
+  setTrackVolume: (trackId, volume) => {
+    const clamped = clampTrackVolume(volume)
+    set((state) => ({
+      tracks: state.tracks.map(track =>
+        track.id === trackId ? { ...track, volume: clamped } : track
+      )
+    }))
+  },
+
+  /**
+   * Set program master audio gain (0-200, 100 = unity). Applies to preview
+   * and export mixdowns alike.
+   */
+  setMasterAudioVolume: (volume) => {
+    set({ masterAudioVolume: clampTrackVolume(volume) })
+  },
+
+  /**
    * Toggle track lock
    */
   toggleTrackLock: (trackId) => {
@@ -4925,6 +4963,7 @@ export const useTimelineStore = create(
       playbackRate: 1,
       shuttleMode: false,
       loopMode: 'normal',
+      masterAudioVolume: 100,
       tracks: [
         { id: 'video-1', name: 'Video 1', type: 'video', muted: false, locked: false, visible: true },
         { id: 'audio-1', name: 'Audio 1', type: 'audio', channels: 'stereo', muted: false, locked: false, visible: true },
@@ -4999,6 +5038,7 @@ export const useTimelineStore = create(
       duration: timelineData.duration || 60,
       timelineFps: fps,
       zoom: timelineData.zoom || 100,
+      masterAudioVolume: clampTrackVolume(timelineData.masterAudioVolume),
       tracks: timelineData.tracks || [
         { id: 'video-1', name: 'Video 1', type: 'video', muted: false, locked: false, visible: true },
         { id: 'audio-1', name: 'Audio 1', type: 'audio', channels: 'stereo', muted: false, locked: false, visible: true },
@@ -5043,6 +5083,7 @@ export const useTimelineStore = create(
     return {
       duration: state.duration,
       zoom: state.zoom,
+      masterAudioVolume: state.masterAudioVolume,
       tracks: state.tracks,
       clips: state.clips,
       transitions: state.transitions,

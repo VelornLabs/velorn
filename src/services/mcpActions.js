@@ -8,6 +8,7 @@ import { DEFAULT_SHAPE_PROPERTIES, getShapeDisplayName, normalizeShapeProperties
 import { EFFECT_TYPES, getEffectPropertyId, getEffectTypeDefinition } from '../utils/effects'
 import { normalizeAdjustmentSettings } from '../utils/adjustments'
 import { normalizeTrackMatte } from '../utils/trackMatte'
+import { clampTrackVolume } from '../utils/audioTrackAudibility'
 import {
   MUSIC_KEY_SCALES,
   MUSIC_TIME_SIGNATURES,
@@ -185,6 +186,9 @@ function summarizeTrack(track) {
     visible: track.visible !== false,
     role: track.role || null,
     channels: track.channels || null,
+    ...(track.type === 'audio'
+      ? { solo: !!track.solo, volume: clampTrackVolume(track.volume) }
+      : {}),
   }
 }
 
@@ -3416,13 +3420,15 @@ function handleUpdateTrack(payload = {}) {
   const updates = {}
   if (Object.prototype.hasOwnProperty.call(payload, 'name')) updates.name = String(payload.name || '').trim().slice(0, 80)
   if (Object.prototype.hasOwnProperty.call(payload, 'muted')) updates.muted = payload.muted === true
+  if (current.type === 'audio' && Object.prototype.hasOwnProperty.call(payload, 'solo')) updates.solo = payload.solo === true
+  if (current.type === 'audio' && Object.prototype.hasOwnProperty.call(payload, 'volume')) updates.volume = clampTrackVolume(payload.volume)
   if (Object.prototype.hasOwnProperty.call(payload, 'locked')) updates.locked = payload.locked === true
   if (Object.prototype.hasOwnProperty.call(payload, 'visible')) updates.visible = payload.visible !== false
   if (current.type === 'audio' && Object.prototype.hasOwnProperty.call(payload, 'channels')) updates.channels = normalizeAudioChannels(payload.channels)
   const newIndex = Number(payload.index ?? payload.newIndex)
   const shouldReorder = Number.isFinite(newIndex)
   if (Object.keys(updates).length === 0 && !shouldReorder) {
-    throw new Error('Provide a track update such as name, muted, locked, visible, channels, or index.')
+    throw new Error('Provide a track update such as name, muted, solo, volume, locked, visible, channels, or index.')
   }
 
   if (payload.previewOnly !== false) {

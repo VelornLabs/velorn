@@ -11,6 +11,7 @@ import {
 } from '../utils/adjustments'
 import { getAudioClipFadeGain, getAudioClipFadeValues } from '../utils/audioClipFades'
 import { getAudioClipLinearGain, normalizeAudioClipGainDb } from '../utils/audioClipGain'
+import { clampTrackVolume, hasAudioSolo, isAudioTrackAudible } from '../utils/audioTrackAudibility'
 import {
   applyEffectsToTransform,
   applyGlowPassesToCanvas,
@@ -2723,8 +2724,12 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
     }
     updateAudioStatus('Preparing audio clips', 80)
     const audioClips = timelineState.clips.filter(clip => clip.type === 'audio' && clip.enabled !== false)
-    const activeTracks = timelineState.tracks.filter(t => t.type === 'audio' && t.visible && !t.muted)
-    
+    const anyAudioSolo = hasAudioSolo(timelineState.tracks)
+    const activeTracks = timelineState.tracks.filter(t => t.type === 'audio' && isAudioTrackAudible(t, anyAudioSolo))
+    // Program master gain from the mixer; part of the program, so it must be
+    // baked into the export mix (unlike the preview-only monitor volume).
+    const masterAudioGain = clampTrackVolume(timelineState.masterAudioVolume) / 100
+
     if (audioClips.length > 0 && activeTracks.length > 0) {
       const sampleRate = audioSampleRate || DEFAULT_SAMPLE_RATE
       const channelCount = audioChannels || 2
@@ -2746,6 +2751,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             rangeEnd,
             sampleRate,
             channels: channelCount,
+            masterVolume: masterAudioGain * 100,
             timeoutMs: AUDIO_MIX_TIMEOUT_MS,
             clips: eligibleAudioClips.map(clip => ({
               id: clip.id,
@@ -2803,11 +2809,16 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         const offlineContext = new OfflineAudioContext(channelCount, totalSamples, sampleRate)
         const decodedAudioCache = new Map()
         const resolvedAudioUrlCache = new Map()
-        
+
+        // Mirror of the live graph's program master gain (mixer master fader)
+        const offlineMasterGain = offlineContext.createGain()
+        offlineMasterGain.gain.value = masterAudioGain
+        offlineMasterGain.connect(offlineContext.destination)
+
         for (let index = 0; index < eligibleAudioClips.length; index++) {
           const clip = eligibleAudioClips[index]
           const track = timelineState.tracks.find(t => t.id === clip.trackId)
-          if (!track || track.muted || !track.visible) continue
+          if (!track || !isAudioTrackAudible(track, anyAudioSolo)) continue
           const asset = assetsState.getAssetById(clip.assetId)
           if (!asset?.url) continue
           let audioUrl = resolvedAudioUrlCache.get(asset.id)
@@ -2909,7 +2920,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             }
 
             source.connect(gainNode)
-            gainNode.connect(offlineContext.destination)
+            gainNode.connect(offlineMasterGain)
             source.start(startOffset, sourceOffset, playDuration)
           } catch (err) {
             console.warn('Failed to decode audio clip for export:', err)

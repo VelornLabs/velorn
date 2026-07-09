@@ -5339,7 +5339,9 @@ const buildAudioFadeVolumeExpression = (clipDuration, fadeIn, fadeOut, clipOffse
   const normalizedFadeIn = clampAudioFadeSeconds(fadeIn, duration)
   const normalizedFadeOut = clampAudioFadeSeconds(fadeOut, duration)
   const offset = Math.max(0, Math.min(Number(clipOffset) || 0, duration))
-  const trackGain = Math.max(0, Math.min(1, (Number(trackVolume) || 0) / 100))
+  // 0-200 range (200% = +6 dB) to match the mixer fader and the live preview
+  // graph, which applies track volume unclamped above unity.
+  const trackGain = Math.max(0, Math.min(2, (Number(trackVolume) || 0) / 100))
   const baseGain = audioGainDbToLinear(gainDb) * trackGain
 
   const fadeInExpr = normalizedFadeIn > 0
@@ -5370,6 +5372,7 @@ ipcMain.handle('export:mixAudio', async (event, options = {}) => {
     rangeEnd = 0,
     sampleRate = 44100,
     channels = 2,
+    masterVolume = 100,
     clips = [],
     tracks = [],
     assets = [],
@@ -5493,9 +5496,19 @@ ipcMain.handle('export:mixAudio', async (event, options = {}) => {
     mixLabels.push(`[${label}]`)
   })
 
+  // Program master gain from the mixer (0-200, 100 = unity). Applied after
+  // the mix so it scales the summed program exactly like the preview graph.
+  const masterGain = Math.max(0, Math.min(2, (Number(masterVolume) || 100) / 100))
+  const masterFilter = Math.abs(masterGain - 1) < 0.000001
+    ? ''
+    : `,volume=${formatFilterNumber(masterGain)}`
+
+  // normalize=0: sum inputs as-is. amix's default input normalization would
+  // duck the mix as the number of live inputs changes — the preview graph
+  // (and the OfflineAudioContext fallback) sum without scaling.
   const finalMixFilter = mixLabels.length === 1
-    ? `${mixLabels[0]}atrim=duration=${formatFilterNumber(totalDuration)},asetpts=PTS-STARTPTS[outa]`
-    : `${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=longest:dropout_transition=0,atrim=duration=${formatFilterNumber(totalDuration)},asetpts=PTS-STARTPTS[outa]`
+    ? `${mixLabels[0]}atrim=duration=${formatFilterNumber(totalDuration)},asetpts=PTS-STARTPTS${masterFilter}[outa]`
+    : `${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=longest:dropout_transition=0:normalize=0,atrim=duration=${formatFilterNumber(totalDuration)},asetpts=PTS-STARTPTS${masterFilter}[outa]`
   const filterComplex = `${inputFilters.join(';')};${finalMixFilter}`
 
   args.push(

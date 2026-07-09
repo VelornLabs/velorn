@@ -8358,13 +8358,15 @@ function createToolDefinitions() {
     },
     {
       name: 'update_track',
-      description: 'Preview or update an existing timeline track: rename it, mute/unmute, lock/unlock, show/hide, change audio channels, or reorder within its video/audio group. Undoable in Velorn.',
+      description: 'Preview or update an existing timeline track: rename it, mute/unmute, solo, lock/unlock, show/hide, set mixer volume, change audio channels, or reorder within its video/audio group. Undoable in Velorn.',
       inputSchema: {
         type: 'object',
         properties: {
           trackId: { type: 'string', description: 'Track ID from get_timeline.' },
           name: { type: 'string', description: 'Optional new track name.' },
           muted: { type: 'boolean', description: 'Mute/unmute the track.' },
+          solo: { type: 'boolean', description: 'Solo/unsolo an audio track. While any audio track is soloed, only soloed unmuted audio tracks are audible in preview and export.' },
+          volume: { type: 'number', description: 'Mixer fader level for audio tracks, 0-200 (100 = unity/0 dB, 200 = +6 dB). Applies to preview and export.' },
           locked: { type: 'boolean', description: 'Lock/unlock the track.' },
           visible: { type: 'boolean', description: 'Show/hide the track.' },
           channels: { type: 'string', enum: ['mono', 'stereo'], description: 'Audio channel layout for audio tracks.' },

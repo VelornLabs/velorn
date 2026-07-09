@@ -27,6 +27,7 @@ import { useTimelineStore } from '../stores/timelineStore'
 import { useAssetsStore } from '../stores/assetsStore'
 import { useProjectStore } from '../stores/projectStore'
 import { audioBufferToWav } from './exporter'
+import { applySoloAsMute, hasAudioSolo, isAudioTrackAudible } from '../utils/audioTrackAudibility'
 
 // Qwen3-ASR native rate. Sticking to 16k saves ~2/3 of the upload size vs
 // 44.1/48k without losing any transcription accuracy.
@@ -91,7 +92,9 @@ function buildIpcPayload({ duration }) {
     url: clip.url || null,
   }))
 
-  const tracks = (timelineState.tracks || []).map((track) => ({
+  // Fold solo into muted so the FFmpeg IPC (which only understands mute)
+  // hears the same tracks the preview graph plays.
+  const tracks = applySoloAsMute(timelineState.tracks || []).map((track) => ({
     id: track.id,
     type: track.type,
     muted: !!track.muted,
@@ -197,11 +200,12 @@ async function mixViaWebAudio({ report }) {
   }
 
   const trackById = new Map(tracks.map((t) => [t.id, t]))
+  const anySolo = hasAudioSolo(tracks)
   const audibleClips = enabledClips.filter((clip) => {
     const track = trackById.get(clip.trackId)
     if (!track) return false
-    if (track.muted) return false
-    if (track.visible === false) return false
+    if (track.type === 'audio' && !isAudioTrackAudible(track, anySolo)) return false
+    if (track.type !== 'audio' && (track.muted || track.visible === false)) return false
     const asset = assetsState.getAssetById(clip.assetId)
     return clipHasUsableAudio(clip, asset)
   })
@@ -355,11 +359,12 @@ export async function mixTimelineAudioToWav({ onProgress } = {}) {
     throw new Error('The timeline has no audio-producing clips to transcribe.')
   }
   const trackById = new Map(tracks.map((t) => [t.id, t]))
+  const anySolo = hasAudioSolo(tracks)
   const hasAudibleClip = enabledClips.some((clip) => {
     const track = trackById.get(clip.trackId)
     if (!track) return false
-    if (track.muted) return false
-    if (track.visible === false) return false
+    if (track.type === 'audio' && !isAudioTrackAudible(track, anySolo)) return false
+    if (track.type !== 'audio' && (track.muted || track.visible === false)) return false
     const asset = assetsState.getAssetById(clip.assetId)
     return clipHasUsableAudio(clip, asset)
   })
