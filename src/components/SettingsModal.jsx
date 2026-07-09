@@ -3,7 +3,7 @@ import {
   X, Server, FolderOpen, Palette, Monitor, Save,
   HardDrive, Film, Keyboard, Wrench, Power,
   KeyRound, CheckCircle2, ExternalLink, Loader2, RefreshCcw,
-  Volume2, Play, Bot, Copy,
+  Volume2, Play, Bot, Copy, MessageSquare,
 } from 'lucide-react'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useTimelineStore from '../stores/timelineStore'
@@ -11,6 +11,7 @@ import useAssetsStore from '../stores/assetsStore'
 import { THEMES, getStoredThemeId, applyTheme } from '../config/themes'
 import { getPexelsApiKey, setPexelsApiKey } from '../services/pexelsSettings'
 import WorkflowSetupSection from './WorkflowSetupSection'
+import FeedbackSection from './FeedbackSection'
 import ComfyLauncherSettingsSection from './ComfyLauncherSettingsSection'
 import ComfyLauncherLogViewer from './ComfyLauncherLogViewer'
 import ApiKeyDialog from './ApiKeyDialog'
@@ -124,6 +125,12 @@ const SETTINGS_SECTIONS = [
     title: 'New Project Defaults',
     icon: Monitor,
     description: 'Set default resolution and frame rate for new projects.',
+  },
+  {
+    id: 'feedback',
+    title: 'Send Feedback',
+    icon: MessageSquare,
+    description: 'Report a bug or share an idea — it lands directly with the team.',
   },
 ]
 
@@ -910,6 +917,9 @@ function GeneralTab({ initialSection = null }) {
           </div>
         </div>
       )
+      break
+    case 'feedback':
+      activeSectionContent = <FeedbackSection />
       break
     case 'agents': {
       const mcpUrl = mcpStatus?.url || 'http://127.0.0.1:19790/mcp'
