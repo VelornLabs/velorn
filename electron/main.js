@@ -6226,16 +6226,22 @@ ipcMain.handle('export:checkNvenc', async () => {
 // App Lifecycle
 // ============================================
 
-// Recent ComfyUI builds validate the Origin header on API requests to block
-// DNS-rebinding attacks: cross-origin calls (which is what our renderer's
-// fetches to ComfyUI are) get a 403 unless the user launched ComfyUI with
-// --enable-cors-header. The failure is silent — blank embedded tab, dead
-// queue/history polling. A desktop app talking to the user's own loopback
-// services is exactly the traffic that check exists to allow, so for
-// loopback requests we rewrite Origin to match the target: the server sees
-// same-origin traffic and no launch flag is needed. Scoped to
-// 127.0.0.1/localhost only (http and ws) — remote hosts are untouched.
-function installLoopbackOriginRewrite() {
+// ComfyUI's origin-only middleware (installed whenever --enable-cors-header
+// is absent) rejects our renderer's API calls with a silent 403 — blank
+// embedded tab, dead queue/history polling. It trips on two headers that
+// Chromium's network stack stamps onto requests and that page JS cannot
+// touch (they're forbidden headers):
+//   1. `Sec-Fetch-Site: cross-site` → immediate 403 (ComfyUI >= 0.20.1;
+//      server.py create_origin_only_middleware). This is the one that bites:
+//      plain GET fetches carry no Origin at all, only fetch metadata.
+//   2. `Origin` mismatching the Host → 403 (mainly the WebSocket handshake,
+//      which always carries Origin).
+// A desktop app talking to the user's own loopback services is exactly the
+// traffic those checks exist to allow, so for loopback requests we rewrite
+// both headers to look same-origin: no launch flag needed, any ComfyUI
+// version. Scoped to 127.0.0.1/localhost only (http and ws) — remote hosts
+// are untouched.
+function installLoopbackHeaderRewrite() {
   const filter = {
     urls: [
       'http://127.0.0.1/*',
@@ -6252,7 +6258,9 @@ function installLoopbackOriginRewrite() {
       const scheme = target.protocol === 'ws:' ? 'http:' : target.protocol === 'wss:' ? 'https:' : target.protocol
       const originValue = `${scheme}//${target.host}`
       for (const key of Object.keys(headers)) {
-        if (key.toLowerCase() === 'origin') headers[key] = originValue
+        const lower = key.toLowerCase()
+        if (lower === 'origin') headers[key] = originValue
+        else if (lower === 'sec-fetch-site') headers[key] = 'same-origin'
       }
     } catch {
       // Malformed URL — leave the request untouched.
@@ -6263,7 +6271,7 @@ function installLoopbackOriginRewrite() {
 
 app.whenReady().then(async () => {
   registerFileProtocol()
-  installLoopbackOriginRewrite()
+  installLoopbackHeaderRewrite()
   mcpServer = createComfyStudioMcpServer({
     port: DEFAULT_MCP_PORT,
     version: app.getVersion(),
