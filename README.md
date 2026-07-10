@@ -1,12 +1,28 @@
+<div align="center">
+
 # Velorn
+
+**The open-source AI video workstation — a real editor for you, and 100+ MCP tools for your agent.**
+
+[![Latest Release](https://img.shields.io/github/v/release/VelornLabs/velorn?label=Latest&color=6C63FF)](https://github.com/VelornLabs/velorn/releases/latest)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
+[![Platforms](https://img.shields.io/badge/Platforms-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-444444)](https://github.com/VelornLabs/velorn/releases/latest)
+
+[![Website](https://img.shields.io/badge/Website-velorn.ai-0A9396)](https://velorn.ai)
+[![Follow on X](https://img.shields.io/badge/Follow-%40getvelorn-000000?logo=x&logoColor=white)](https://x.com/getvelorn)
+[![Join our Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/QWZUuUChVK)
+
+[![Download for Windows](https://img.shields.io/badge/Windows-Download-0078D4?style=for-the-badge)](https://github.com/VelornLabs/velorn/releases/latest)
+[![Download for macOS](https://img.shields.io/badge/macOS-Download-1a1a1a?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/VelornLabs/velorn/releases/latest)
+[![Download for Linux](https://img.shields.io/badge/Linux-Download-E95420?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/VelornLabs/velorn/releases/latest)
+
+English · [Español](docs/i18n/README.es.md) · [简体中文](docs/i18n/README.zh-CN.md) · [日本語](docs/i18n/README.ja.md) · [한국어](docs/i18n/README.ko.md) · [Português (Brasil)](docs/i18n/README.pt-BR.md) · [Français](docs/i18n/README.fr.md)
+
+</div>
 
 Velorn is an open-source desktop AI video workstation for creators who use ComfyUI. It brings planning, generation, asset management, timeline editing, captions, effects, and export into one project-based app.
 
 Use built-in local and cloud workflows, bring your own ComfyUI API workflow JSON, or install the bundled Velorn Bridge so a graph open in ComfyUI can be sent back into Velorn.
-
-**Website:** [velorn.ai](https://velorn.ai)
-
-**Downloads:** [GitHub Releases](https://github.com/VelornLabs/velorn/releases)
 
 <p align="center">
   <img src="docs/readme/editor-timeline.png" alt="Velorn editor with generated assets, preview, timeline tracks, and inspector" />
