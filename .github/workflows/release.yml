@@ -82,8 +82,9 @@ jobs:
       - name: Install Azure signing PowerShell module
         shell: pwsh
         run: |
-          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
-          Install-Module -Name TrustedSigning -Force -Scope CurrentUser -Repository PSGallery
+          Install-PSResource -Name TrustedSigning -Scope CurrentUser -TrustRepository
+          Import-Module TrustedSigning -ErrorAction Stop
+          Get-Command Invoke-TrustedSigning | Out-Null
 
       - name: Install dependencies
         run: npm ci
