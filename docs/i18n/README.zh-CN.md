@@ -20,6 +20,9 @@
 
 </div>
 
+<p align="center"><img src="../readme/agent-editing.gif" alt="一句提示词：Claude 通过 MCP 在 Velorn 中完成剪辑" width="860"></p>
+<p align="center"><i>一句提示词。智能体生成素材、搭建时间线并混音 — 全程实时，通过 MCP 完成。</i></p>
+
 > 本翻译尽力保持更新。如有不清楚之处，请以[英文版 README](../../README.md) 为准。欢迎提交 PR 改进翻译！
 
 Velorn 是一款面向 ComfyUI 用户的开源桌面 AI 视频工作站。它将策划、生成、素材管理、时间线剪辑、字幕、特效和导出整合到一个以项目为单位的应用中。

@@ -20,6 +20,9 @@
 
 </div>
 
+<p align="center"><img src="../readme/agent-editing.gif" alt="Un prompt : Claude construit le montage dans Velorn via MCP" width="860"></p>
+<p align="center"><i>Un seul prompt. L'agent génère les médias, assemble la timeline et mixe l'audio — en direct, via MCP.</i></p>
+
 > Cette traduction est maintenue au mieux. En cas de doute, le [README anglais](../../README.md) fait foi. Les PR d'amélioration sont les bienvenues !
 
 Velorn est une station de travail vidéo IA open source pour ordinateur, pensée pour les créateurs qui utilisent ComfyUI. Elle réunit la planification, la génération, la gestion des assets, le montage sur timeline, les sous-titres, les effets et l'export dans une seule application organisée par projets.

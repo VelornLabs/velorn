@@ -20,6 +20,9 @@ English · [Español](docs/i18n/README.es.md) · [简体中文](docs/i18n/README
 
 </div>
 
+<p align="center"><img src="docs/readme/agent-editing.gif" alt="One prompt: Claude builds the edit in Velorn via MCP" width="860"></p>
+<p align="center"><i>One prompt. The agent generates media, builds the timeline, and mixes the audio — live, via MCP.</i></p>
+
 Velorn is an open-source desktop AI video workstation for creators who use ComfyUI. It brings planning, generation, asset management, timeline editing, captions, effects, and export into one project-based app.
 
 Use built-in local and cloud workflows, bring your own ComfyUI API workflow JSON, or install the bundled Velorn Bridge so a graph open in ComfyUI can be sent back into Velorn.
