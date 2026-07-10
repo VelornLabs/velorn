@@ -5226,6 +5226,39 @@ ipcMain.handle('export:runInWorker', async (event, payload) => {
     },
   })
   const workerContents = exportWorkerWindow.webContents
+  // The export worker is a hidden window, so its console is invisible in
+  // normal use. Mirror it to userData/export-worker.log (truncated per run)
+  // so export failures are diagnosable from disk — including renderer
+  // crashes, which otherwise present as a silently frozen progress line.
+  const workerLogPath = path.join(app.getPath('userData'), 'export-worker.log')
+  try {
+    fsSync.writeFileSync(workerLogPath, `--- export worker started ${new Date().toISOString()}\n`)
+  } catch { /* logging must never block exporting */ }
+  const workerLog = (line) => {
+    try { fsSync.appendFileSync(workerLogPath, `${line}\n`) } catch { /* ignore */ }
+  }
+  workerContents.on('console-message', (_event, level, message, lineNo, sourceId) => {
+    workerLog(`[${new Date().toISOString().slice(11, 19)}] [${level}] ${message} (${String(sourceId).split('/').pop()}:${lineNo})`)
+  })
+  // A crashed worker renderer cannot run its own error handling or timeout
+  // fallbacks — without this hook the export just freezes on its last status
+  // line forever AND blocks every future export with "already in progress".
+  workerContents.on('render-process-gone', (_event, details) => {
+    workerLog(`!!! RENDER PROCESS GONE: ${JSON.stringify(details)}`)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(
+        'export:error',
+        `Export process crashed (${details?.reason || 'unknown'}, code ${details?.exitCode ?? '?'}). Details in export-worker.log.`
+      )
+    }
+    if (exportWorkerWindow && !exportWorkerWindow.isDestroyed()) {
+      exportWorkerWindow.close()
+    }
+    exportWorkerWindow = null
+  })
+  exportWorkerWindow.on('unresponsive', () => {
+    workerLog('!!! WORKER WINDOW UNRESPONSIVE')
+  })
   const forwardToMain = (channel, data) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(channel, data)

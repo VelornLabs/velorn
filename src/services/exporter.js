@@ -2763,6 +2763,73 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
         url: asset.url || null,
       }))
 
+      // Parses the RIFF/WAVE files our own FFmpeg stem mixes produce
+      // (pcm_s16le, with float32 tolerated) into an AudioBuffer WITHOUT
+      // Chromium's native decodeAudioData — which hard-crashes the export
+      // worker's renderer (access violation 0xC0000005, observed on
+      // Electron 28 with an ordinary 16-bit stem). A dead renderer can't
+      // run its own timeout fallbacks, so that crash presented as an export
+      // frozen forever on "Applying mixer effects…".
+      const parseWavToAudioBuffer = (arrayBuffer, context) => {
+        const view = new DataView(arrayBuffer)
+        if (view.byteLength < 44
+          || view.getUint32(0, false) !== 0x52494646 // 'RIFF'
+          || view.getUint32(8, false) !== 0x57415645 // 'WAVE'
+        ) {
+          throw new Error('Stem is not a RIFF/WAVE file')
+        }
+        let offset = 12
+        let fmt = null
+        let dataOffset = -1
+        let dataLength = 0
+        while (offset + 8 <= view.byteLength) {
+          const chunkId = view.getUint32(offset, false)
+          const chunkSize = view.getUint32(offset + 4, true)
+          const body = offset + 8
+          if (chunkId === 0x666d7420 && body + 16 <= view.byteLength) { // 'fmt '
+            fmt = {
+              format: view.getUint16(body, true),
+              channels: view.getUint16(body + 2, true),
+              sampleRate: view.getUint32(body + 4, true),
+              bitsPerSample: view.getUint16(body + 14, true),
+            }
+          } else if (chunkId === 0x64617461) { // 'data'
+            dataOffset = body
+            dataLength = Math.min(chunkSize, view.byteLength - body)
+          }
+          offset = body + chunkSize + (chunkSize % 2) // chunks are word-aligned
+        }
+        if (!fmt || dataOffset < 0) throw new Error('Stem WAV is missing fmt/data chunks')
+        const { channels, sampleRate, bitsPerSample } = fmt
+        const isFloat32 = (fmt.format === 3 || fmt.format === 0xfffe) && bitsPerSample === 32
+        const isPcm16 = (fmt.format === 1 || fmt.format === 0xfffe) && bitsPerSample === 16
+        if (!isFloat32 && !isPcm16) {
+          throw new Error(`Unsupported stem WAV: format ${fmt.format}, ${bitsPerSample}-bit`)
+        }
+        if (!channels || channels > 8 || !sampleRate) {
+          throw new Error(`Unsupported stem WAV layout: ${channels}ch @ ${sampleRate}Hz`)
+        }
+        const bytesPerSample = bitsPerSample / 8
+        const frameCount = Math.floor(dataLength / (bytesPerSample * channels))
+        if (frameCount <= 0) throw new Error('Stem WAV has no samples')
+        // AudioBufferSourceNode resamples automatically if the WAV rate ever
+        // differs from the offline context rate.
+        const buffer = context.createBuffer(channels, frameCount, sampleRate)
+        for (let ch = 0; ch < channels; ch++) {
+          const out = buffer.getChannelData(ch)
+          if (isFloat32) {
+            for (let i = 0; i < frameCount; i++) {
+              out[i] = view.getFloat32(dataOffset + (i * channels + ch) * 4, true)
+            }
+          } else {
+            for (let i = 0; i < frameCount; i++) {
+              out[i] = view.getInt16(dataOffset + (i * channels + ch) * 2, true) / 32768
+            }
+          }
+        }
+        return buffer
+      }
+
       // Mixer insert effects (compressor/limiter/reverb) path: FFmpeg renders
       // one flat stem per track (clip gains/fades baked, fader EXCLUDED —
       // desk order puts the fader after inserts), then the SAME insert chains
@@ -2786,6 +2853,8 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             const trackClips = eligibleAudioClips.filter(clip => clip.trackId === track.id)
             if (trackClips.length === 0) continue
             updateAudioStatus(`Rendering stem: ${track.name || track.id}`, 81)
+            console.log(`[mixerfx] rendering stem for track ${track.id} (${trackClips.length} clips)`)
+            const stemStart = Date.now()
             const stemPath = `${audioPath}.stem-${stems.length}.wav`
             const stemResult = await window.electronAPI.mixAudio({
               projectPath: projectHandle,
@@ -2818,6 +2887,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
               throw new Error(readResult?.error || `Failed to read stem for track ${track.id}`)
             }
             stems.push({ track, data: readResult.data })
+            console.log(`[mixerfx] stem done in ${Date.now() - stemStart}ms (${readResult.data?.byteLength ?? readResult.data?.length ?? '?'} bytes)`)
           }
 
           if (stems.length === 0) {
@@ -2826,6 +2896,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
 
           updateAudioStatus('Applying mixer effects…', 85)
           const totalSamples = Math.ceil(totalDuration * sampleRate)
+          console.log(`[mixerfx] offline ctx: ch=${channelCount} samples=${totalSamples} rate=${sampleRate} dur=${totalDuration}s stems=${stems.length}`)
           const offlineContext = new OfflineAudioContext(channelCount, totalSamples, sampleRate)
 
           const masterChain = buildInsertChain(offlineContext, enabledMasterInserts)
@@ -2839,11 +2910,10 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             const arrayBuffer = bytes instanceof ArrayBuffer
               ? bytes
               : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-            const stemBuffer = await withTimeout(
-              offlineContext.decodeAudioData(arrayBuffer),
-              AUDIO_DECODE_TIMEOUT_MS,
-              'Stem decode'
-            )
+            console.log(`[mixerfx] parsing stem for track ${stem.track.id} (${arrayBuffer.byteLength} bytes)`)
+            const decodeStart = Date.now()
+            const stemBuffer = parseWavToAudioBuffer(arrayBuffer, offlineContext)
+            console.log(`[mixerfx] parsed in ${Date.now() - decodeStart}ms: ${stemBuffer.duration.toFixed(2)}s ${stemBuffer.numberOfChannels}ch @ ${stemBuffer.sampleRate}Hz`)
             const source = offlineContext.createBufferSource()
             source.buffer = stemBuffer
             const trackChain = buildInsertChain(offlineContext, stem.track.inserts)
@@ -2864,11 +2934,14 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             source.start(0)
           }
 
+          console.log('[mixerfx] startRendering…')
+          const renderStart = Date.now()
           const mixedBuffer = await withTimeout(
             offlineContext.startRendering(),
             AUDIO_MIX_TIMEOUT_MS,
             'Insert effects mix'
           )
+          console.log(`[mixerfx] rendered in ${Date.now() - renderStart}ms`)
           updateAudioStatus('Writing WAV…', 88)
           const wavData = audioBufferToWav(mixedBuffer)
           await window.electronAPI.writeFileFromArrayBuffer(audioPath, wavData)
