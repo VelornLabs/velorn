@@ -5449,6 +5449,7 @@ ipcMain.handle('export:mixAudio', async (event, options = {}) => {
       fadeIn: clampAudioFadeSeconds(clip.fadeIn, clipDuration),
       fadeOut: clampAudioFadeSeconds(clip.fadeOut, clipDuration),
       trackVolume: track.volume ?? 100,
+      trackPan: Math.max(-100, Math.min(100, Number(track.pan) || 0)),
       forceMono: track.channels === 'mono',
     })
   }
@@ -5486,6 +5487,19 @@ ipcMain.handle('export:mixAudio', async (event, options = {}) => {
     }
     if (entry.fadeIn > 0 || entry.fadeOut > 0 || entry.gainDb !== 0 || entry.trackVolume !== 100) {
       filters.push(`volume='${buildAudioFadeVolumeExpression(entry.clipDuration, entry.fadeIn, entry.fadeOut, entry.clipOffsetOnTimeline, entry.gainDb, entry.trackVolume)}':eval=frame`)
+    }
+    if (entry.trackPan) {
+      // Web Audio STEREO pan law (StereoPannerNode with stereo input); the
+      // preview graph forces stereo into its panner, so upmix first to match.
+      // Center (0) is a passthrough and is skipped entirely.
+      const p = Math.max(-1, Math.min(1, entry.trackPan / 100))
+      const x = p <= 0 ? p + 1 : p
+      const gl = formatFilterNumber(Math.cos(x * Math.PI / 2))
+      const gr = formatFilterNumber(Math.sin(x * Math.PI / 2))
+      filters.push('aformat=channel_layouts=stereo')
+      filters.push(p <= 0
+        ? `pan=stereo|c0=c0+${gl}*c1|c1=${gr}*c1`
+        : `pan=stereo|c0=${gl}*c0|c1=c1+${gr}*c0`)
     }
     if (entry.delayMs > 0) {
       filters.push(`adelay=${entry.delayMs}:all=1`)

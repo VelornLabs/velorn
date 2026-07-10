@@ -11,7 +11,7 @@ import {
 } from '../utils/adjustments'
 import { getAudioClipFadeGain, getAudioClipFadeValues } from '../utils/audioClipFades'
 import { getAudioClipLinearGain, normalizeAudioClipGainDb } from '../utils/audioClipGain'
-import { clampTrackVolume, hasAudioSolo, isAudioTrackAudible, trackVolumeToLinearGain } from '../utils/audioTrackAudibility'
+import { clampTrackVolume, hasAudioSolo, isAudioTrackAudible, trackPanToStereoPosition, trackVolumeToLinearGain } from '../utils/audioTrackAudibility'
 import { getEnabledAudioInserts, hasEnabledAudioInserts } from '../utils/audioInserts'
 import { buildInsertChain } from './audioInsertChain'
 import {
@@ -2797,7 +2797,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
               masterVolume: 100,
               timeoutMs: AUDIO_MIX_TIMEOUT_MS,
               clips: trackClips.map(serializeClipForMix),
-              // volume 100: the fader is applied post-inserts below
+              // volume 100 / pan 0: fader and pan apply post-inserts below
               tracks: [{
                 id: track.id,
                 type: track.type,
@@ -2805,6 +2805,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
                 visible: true,
                 channels: track.channels || 'stereo',
                 volume: 100,
+                pan: 0,
               }],
               assets: serializeAssetsForMix(),
             })
@@ -2850,7 +2851,16 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             faderGain.gain.value = trackVolumeToLinearGain(stem.track.volume ?? 100)
             source.connect(trackChain.input)
             trackChain.output.connect(faderGain)
-            faderGain.connect(masterChain.input)
+            let trackOutput = faderGain
+            if (channelCount >= 2 && typeof offlineContext.createStereoPanner === 'function') {
+              faderGain.channelCount = 2
+              faderGain.channelCountMode = 'explicit'
+              const panner = offlineContext.createStereoPanner()
+              panner.pan.value = trackPanToStereoPosition(stem.track.pan)
+              faderGain.connect(panner)
+              trackOutput = panner
+            }
+            trackOutput.connect(masterChain.input)
             source.start(0)
           }
 
@@ -2904,6 +2914,7 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
                 visible: track.visible !== false,
                 channels: track.channels || 'stereo',
                 volume: track.volume ?? 100,
+                pan: track.pan ?? 0,
               })),
             assets: serializeAssetsForMix(),
           })
@@ -2944,7 +2955,16 @@ export const exportTimeline = async (options = {}, onProgress = () => {}) => {
             const fader = offlineContext.createGain()
             fader.gain.value = trackVolumeToLinearGain(track.volume ?? 100)
             chain.output.connect(fader)
-            fader.connect(offlineMasterChain.input)
+            let output = fader
+            if (channelCount >= 2 && typeof offlineContext.createStereoPanner === 'function') {
+              fader.channelCount = 2
+              fader.channelCountMode = 'explicit'
+              const panner = offlineContext.createStereoPanner()
+              panner.pan.value = trackPanToStereoPosition(track.pan)
+              fader.connect(panner)
+              output = panner
+            }
+            output.connect(offlineMasterChain.input)
             bus = { input: chain.input }
             offlineTrackBuses.set(track.id, bus)
           }

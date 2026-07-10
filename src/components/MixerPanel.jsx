@@ -169,6 +169,28 @@ function Fader({ volume, onChange, onReset, disabled = false }) {
   )
 }
 
+/** Compact pan slider: -100 (L) .. 0 (C) .. 100 (R), double-click centers. */
+function PanControl({ pan, onChange }) {
+  const value = Math.round(Number(pan) || 0)
+  const display = value === 0 ? 'C' : value < 0 ? `L${Math.abs(value)}` : `R${value}`
+  return (
+    <div className="mb-1">
+      <input
+        type="range"
+        min={-100}
+        max={100}
+        step={1}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        onDoubleClick={() => onChange(0)}
+        className="w-full h-1 accent-sf-accent"
+        title="Pan · double-click to center"
+      />
+      <div className="text-[8px] text-center font-mono text-sf-text-muted leading-3">{display}</div>
+    </div>
+  )
+}
+
 /** Thin vertical level meter fed by a shared analyser level (dB). */
 function StripMeter({ levelDb, peakDb }) {
   return (
@@ -190,6 +212,7 @@ function StripMeter({ levelDb, peakDb }) {
 function ChannelStrip({
   name,
   volume,
+  pan = 0,
   levelDb,
   peakDb,
   muted,
@@ -200,6 +223,7 @@ function ChannelStrip({
   onSelect,
   onVolumeChange,
   onVolumeReset,
+  onPanChange,
   onToggleMute,
   onToggleSolo,
   isMaster = false,
@@ -242,6 +266,9 @@ function ChannelStrip({
           ))
         )}
       </div>
+      {!isMaster && onPanChange && (
+        <PanControl pan={pan} onChange={onPanChange} />
+      )}
       <div className="flex-1 min-h-0 flex items-stretch justify-center gap-1.5">
         <Fader volume={volume} onChange={onVolumeChange} onReset={onVolumeReset} />
         <StripMeter levelDb={levelDb} peakDb={peakDb} />
@@ -436,6 +463,7 @@ function MixerPanel() {
   const masterAudioVolume = useTimelineStore(state => state.masterAudioVolume)
   const masterAudioInserts = useTimelineStore(state => state.masterAudioInserts)
   const setTrackVolume = useTimelineStore(state => state.setTrackVolume)
+  const setTrackPan = useTimelineStore(state => state.setTrackPan)
   const setMasterAudioVolume = useTimelineStore(state => state.setMasterAudioVolume)
   const setTrackInserts = useTimelineStore(state => state.setTrackInserts)
   const setMasterAudioInserts = useTimelineStore(state => state.setMasterAudioInserts)
@@ -530,6 +558,7 @@ function MixerPanel() {
             key={track.id}
             name={track.name || track.id}
             volume={track.volume ?? 100}
+            pan={track.pan ?? 0}
             levelDb={meterState.levels[track.id] ?? METER_MIN_DB}
             peakDb={meterState.peaks[track.id] ?? METER_MIN_DB}
             muted={!!track.muted}
@@ -540,6 +569,7 @@ function MixerPanel() {
             onSelect={() => setSelectedStrip(track.id)}
             onVolumeChange={(value) => setTrackVolume(track.id, value)}
             onVolumeReset={() => setTrackVolume(track.id, 100)}
+            onPanChange={(value) => setTrackPan(track.id, value)}
             onToggleMute={() => toggleTrackMute(track.id)}
             onToggleSolo={() => toggleTrackSolo(track.id)}
           />

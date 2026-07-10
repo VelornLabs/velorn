@@ -20,6 +20,25 @@ export function trackVolumeToLinearGain(volume) {
   return clampTrackVolume(volume) / TRACK_VOLUME_UNITY
 }
 
+export const TRACK_PAN_MIN = -100 // full left
+export const TRACK_PAN_MAX = 100 // full right
+
+export function clampTrackPan(value, fallback = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(TRACK_PAN_MIN, Math.min(TRACK_PAN_MAX, parsed))
+}
+
+/**
+ * Track pan as the -1..1 value StereoPannerNode takes. Every consumer forces
+ * the pan stage to stereo input so the Web Audio STEREO pan law applies
+ * uniformly (center = exact passthrough); the FFmpeg export matrix implements
+ * the same law.
+ */
+export function trackPanToStereoPosition(pan) {
+  return clampTrackPan(pan) / TRACK_PAN_MAX
+}
+
 export function hasAudioSolo(tracks = []) {
   return (tracks || []).some((track) => track?.type === 'audio' && track.solo === true)
 }

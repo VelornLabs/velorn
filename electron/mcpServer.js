@@ -8358,7 +8358,7 @@ function createToolDefinitions() {
     },
     {
       name: 'update_track',
-      description: 'Preview or update an existing timeline track: rename it, mute/unmute, solo, lock/unlock, show/hide, set mixer volume, change audio channels, or reorder within its video/audio group. Undoable in Velorn.',
+      description: 'Preview or update an existing timeline track: rename it, mute/unmute, solo, lock/unlock, show/hide, set mixer volume/pan, edit insert effects, change audio channels, or reorder within its video/audio group. Undoable in Velorn.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -8367,6 +8367,7 @@ function createToolDefinitions() {
           muted: { type: 'boolean', description: 'Mute/unmute the track.' },
           solo: { type: 'boolean', description: 'Solo/unsolo an audio track. While any audio track is soloed, only soloed unmuted audio tracks are audible in preview and export.' },
           volume: { type: 'number', description: 'Mixer fader level for audio tracks, 0-200 (100 = unity/0 dB, 200 = +6 dB). Applies to preview and export.' },
+          pan: { type: 'number', description: 'Stereo pan for audio tracks, -100 (full left) to 100 (full right), 0 = center. Applies to preview and export.' },
           inserts: {
             type: 'array',
             description: 'Replace the audio track\'s mixer insert effects (processed before the fader; applies to preview and export). Read current inserts from get_timeline first when editing. Compressor params: thresholdDb (-60..0), ratio (1..20), kneeDb (0..40), attackMs (0..200), releaseMs (10..1000), makeupDb (0..24). Limiter params: ceilingDb (-24..0), releaseMs (10..500). Reverb params: preset (room|hall|plate), wet (0..1).',

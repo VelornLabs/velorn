@@ -5,7 +5,7 @@ import { buildTextAnimationPresetKeyframes, TEXT_ANIMATION_KEYFRAME_PROPERTIES }
 import { getAdjustmentValue, mergeAdjustmentSettings, normalizeAdjustmentSettings } from '../utils/adjustments'
 import { clampAudioFadeDuration } from '../utils/audioClipFades'
 import { normalizeAudioClipGainDb } from '../utils/audioClipGain'
-import { clampTrackVolume } from '../utils/audioTrackAudibility'
+import { clampTrackPan, clampTrackVolume } from '../utils/audioTrackAudibility'
 import { normalizeAudioInserts } from '../utils/audioInserts'
 import { CLIP_COMPOSITE_MODE, normalizeClipCompositeMode } from '../utils/layerCompositing'
 import { getKeyframeTimeTolerance } from '../utils/keyframes'
@@ -4714,6 +4714,21 @@ export const useTimelineStore = create(
    */
   setMasterAudioVolume: (volume) => {
     set({ masterAudioVolume: clampTrackVolume(volume) })
+  },
+
+  /**
+   * Set track pan (-100 = full left, 0 = center, 100 = full right). No
+   * history entry, matching fader/mute/solo behavior.
+   */
+  setTrackPan: (trackId, pan) => {
+    const clamped = clampTrackPan(pan)
+    set((state) => ({
+      tracks: state.tracks.map(track =>
+        track.id === trackId && track.type === 'audio'
+          ? { ...track, pan: clamped }
+          : track
+      )
+    }))
   },
 
   /**

@@ -6,6 +6,7 @@ import { getAudioClipLinearGain } from '../utils/audioClipGain'
 import {
   hasAudioSolo,
   isAudioTrackAudible,
+  trackPanToStereoPosition,
   trackVolumeToLinearGain,
 } from '../utils/audioTrackAudibility'
 import { getAudioInsertsSignature } from '../utils/audioInserts'
@@ -32,11 +33,15 @@ import {
  * shared DSP that export mixdowns run too):
  *
  *   clip source → clip gain (clip gain × fades)
- *     → track bus input → track inserts → track fader → track analyser
+ *     → track bus input → track inserts → track fader → track pan → track analyser
  *       → master bus input → master inserts
  *         → program gain (master fader, part of the program: export applies it too)
  *           → master analyser → monitor gain (app volume knob, preview-only)
  *             → destination
+ *
+ * The fader is forced to explicit stereo so the panner always sees stereo
+ * input — one pan law everywhere, and center stays an exact passthrough
+ * (mono sources would otherwise drop 3 dB at center under the mono law).
  */
 function AudioLayerRenderer() {
   const audioElementsRef = useRef(new Map()) // clipId -> { element, currentSrc, sourceNode, gainNode, trackId }
@@ -169,10 +174,25 @@ function AudioLayerRenderer() {
       const analyser = audioContext.createAnalyser()
       analyser.fftSize = 2048
       analyser.smoothingTimeConstant = 0.2
+
+      let panner = null
+      if (typeof audioContext.createStereoPanner === 'function') {
+        // Force stereo into the panner so the stereo pan law applies to mono
+        // sources too (center = passthrough; see topology comment above)
+        fader.channelCount = 2
+        fader.channelCountMode = 'explicit'
+        panner = audioContext.createStereoPanner()
+      }
+
       // Insert chain wired between input and fader by syncTrackChain
-      fader.connect(analyser)
+      if (panner) {
+        fader.connect(panner)
+        panner.connect(analyser)
+      } else {
+        fader.connect(analyser)
+      }
       analyser.connect(masterBusInput)
-      bus = { input, chain: null, chainSignature: null, fader, analyser }
+      bus = { input, chain: null, chainSignature: null, fader, panner, analyser }
       trackBusesRef.current.set(trackId, bus)
       setTrackAnalyser(trackId, analyser)
       return bus
@@ -220,6 +240,7 @@ function AudioLayerRenderer() {
         try {
           bus.input.disconnect()
           bus.fader.disconnect()
+          bus.panner?.disconnect()
           bus.analyser.disconnect()
         } catch (_) {}
         trackBusesRef.current.delete(trackId)
@@ -264,6 +285,9 @@ function AudioLayerRenderer() {
       if (bus) {
         syncTrackChain(bus, track)
         bus.fader.gain.value = trackVolumeToLinearGain(track.volume ?? 100)
+        if (bus.panner) {
+          bus.panner.pan.value = trackPanToStereoPosition(track.pan)
+        }
       }
     }
 
