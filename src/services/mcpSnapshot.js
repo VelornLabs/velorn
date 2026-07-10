@@ -1,6 +1,8 @@
 import useProjectStore from '../stores/projectStore'
 import useAssetsStore from '../stores/assetsStore'
 import useTimelineStore from '../stores/timelineStore'
+import { clampTrackPan, clampTrackVolume } from '../utils/audioTrackAudibility'
+import { normalizeAudioInserts } from '../utils/audioInserts'
 
 const SNAPSHOT_VERSION = 1
 const MAX_TEXT_LENGTH = 2000
@@ -110,6 +112,14 @@ function sanitizeTrack(track = {}) {
     visible: track.visible !== false,
     role: track.role || null,
     channels: track.channels || null,
+    ...(track.type === 'audio'
+      ? {
+        solo: Boolean(track.solo),
+        volume: clampTrackVolume(track.volume),
+        pan: clampTrackPan(track.pan),
+        inserts: normalizeAudioInserts(track.inserts),
+      }
+      : {}),
   }
 }
 
@@ -187,6 +197,10 @@ function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeCli
     markerCount: Array.isArray(timeline.markers) ? timeline.markers.length : 0,
     selectedClipIds: Array.isArray(selectedClipIds) ? selectedClipIds.filter(Boolean) : [],
     selectedClipCount: Array.isArray(selectedClipIds) ? selectedClipIds.filter(Boolean).length : 0,
+    masterAudio: {
+      volume: clampTrackVolume(timeline.masterAudioVolume),
+      inserts: normalizeAudioInserts(timeline.masterAudioInserts),
+    },
     tracks: tracks.map(sanitizeTrack),
     clips: includeClips ? clips.map(sanitizeClip) : undefined,
     transitions: transitions.map(sanitizeTransition),

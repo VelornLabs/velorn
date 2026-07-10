@@ -50,6 +50,7 @@ const MCP_ACTION_PLAN_WRITABLE_TOOLS = new Set([
   'move_unused_assets_to_folder',
   'add_track',
   'update_track',
+  'set_master_audio',
   'remove_track',
   'add_transition',
   'update_transition',
@@ -8390,6 +8391,31 @@ function createToolDefinitions() {
           previewOnly: { type: 'boolean', description: 'When true, returns the track update plan without changing the timeline. Defaults to true.' },
         },
         required: ['trackId'],
+      },
+    },
+    {
+      name: 'set_master_audio',
+      description: 'Preview or update the mixer master bus: program master volume and master insert effects (compressor/limiter/reverb). Both apply to preview and export. Read current master state from get_timeline (masterAudio). Track-level mixing (volume/pan/solo/inserts) lives on update_track.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          volume: { type: 'number', description: 'Program master gain, 0-200 (100 = unity/0 dB, 200 = +6 dB).' },
+          inserts: {
+            type: 'array',
+            description: 'Replace the master bus insert effects (processed before the master fader). Same shape as update_track inserts: compressor (thresholdDb, ratio, kneeDb, attackMs, releaseMs, makeupDb), limiter (ceilingDb, releaseMs), reverb (preset room|hall|plate, wet 0-1).',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Keep the existing id when editing an insert; omit for new inserts.' },
+                type: { type: 'string', enum: ['compressor', 'limiter', 'reverb'] },
+                enabled: { type: 'boolean', description: 'False = bypassed but kept in the chain.' },
+              },
+              required: ['type'],
+              additionalProperties: true,
+            },
+          },
+          previewOnly: { type: 'boolean', description: 'When true, returns the master update plan without changing the timeline. Defaults to true.' },
+        },
       },
     },
     {

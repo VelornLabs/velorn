@@ -198,6 +198,49 @@ function summarizeTrack(track) {
   }
 }
 
+function summarizeMasterAudio(state) {
+  return {
+    volume: clampTrackVolume(state.masterAudioVolume),
+    inserts: normalizeAudioInserts(state.masterAudioInserts),
+  }
+}
+
+/**
+ * set_master_audio — the master-bus counterpart of update_track's
+ * volume/inserts: program master fader (0-200) and master insert effects.
+ * Both apply to preview AND export.
+ */
+function handleSetMasterAudio(payload = {}) {
+  const state = useTimelineStore.getState()
+
+  const updates = {}
+  if (Object.prototype.hasOwnProperty.call(payload, 'volume')) updates.volume = clampTrackVolume(payload.volume)
+  if (Object.prototype.hasOwnProperty.call(payload, 'inserts')) updates.inserts = normalizeAudioInserts(payload.inserts)
+  if (Object.keys(updates).length === 0) {
+    throw new Error('Provide a master audio update: volume (0-200, 100 = unity) and/or inserts.')
+  }
+
+  const before = summarizeMasterAudio(state)
+
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      action: 'set_master_audio',
+      before,
+      updates,
+    }
+  }
+
+  if (updates.volume !== undefined) state.setMasterAudioVolume?.(updates.volume)
+  if (updates.inserts !== undefined) state.setMasterAudioInserts?.(updates.inserts)
+
+  return {
+    action: 'set_master_audio',
+    before,
+    master: summarizeMasterAudio(useTimelineStore.getState()),
+  }
+}
+
 function normalizeProjectName(value) {
   const name = String(value || '').trim().replace(/\s+/g, ' ').slice(0, 120)
   if (!name) throw new Error('Provide a project name.')
@@ -7801,6 +7844,8 @@ async function handleMcpAction(request = {}) {
       return handleAddTrack(request.payload || {})
     case 'update_track':
       return handleUpdateTrack(request.payload || {})
+    case 'set_master_audio':
+      return handleSetMasterAudio(request.payload || {})
     case 'remove_track':
       return handleRemoveTrack(request.payload || {})
     case 'switch_timeline':
