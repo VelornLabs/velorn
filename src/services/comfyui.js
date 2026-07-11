@@ -52,6 +52,47 @@ const VELORN_OUTPUT_RESIZE_TITLE = 'Velorn Output Resize'
 const LEGACY_COMFYSTUDIO_OUTPUT_RESIZE_TITLE = 'ComfyStudio Output Resize'
 const OUTPUT_RESIZE_TITLES = [VELORN_OUTPUT_RESIZE_TITLE, LEGACY_COMFYSTUDIO_OUTPUT_RESIZE_TITLE]
 
+// Users commonly organize ComfyUI model folders into subfolders (e.g.
+// models/diffusion_models/WAN/wan2.2_i2v.safetensors); ComfyUI then lists the
+// file to loader nodes as the relative path "WAN/wan2.2_i2v.safetensors".
+// Velorn's built-in workflows reference bare filenames, so an unmatched
+// model input is resolved against the node's actual choice list by basename
+// before queueing (see resolveSubfolderModelPaths).
+const MODEL_FILE_INPUT_RE = /\.(safetensors|sft|ckpt|pt|pth|bin|gguf|onnx)$/i
+
+function modelPathBasename(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return ''
+  const parts = normalized.split(/[\\/]+/)
+  return parts[parts.length - 1] || ''
+}
+
+function extractComboChoicesFromSpec(inputSpec) {
+  const asList = (values) => Array.isArray(values)
+    ? values.map((entry) => String(entry || '').trim()).filter(Boolean)
+    : []
+  if (!inputSpec) return []
+  if (Array.isArray(inputSpec)) {
+    const [first] = inputSpec
+    if (Array.isArray(first)) return asList(first)
+    if (first && typeof first === 'object') {
+      return asList(first.values || first.choices || first.options || first.enum)
+    }
+  }
+  if (typeof inputSpec === 'object') {
+    return asList(inputSpec.values || inputSpec.choices || inputSpec.options || inputSpec.enum)
+  }
+  return []
+}
+
+function getSchemaInputSpec(nodeSchema, inputKey) {
+  const requiredSpec = nodeSchema?.input?.required?.[inputKey]
+  if (requiredSpec !== undefined) return requiredSpec
+  const optionalSpec = nodeSchema?.input?.optional?.[inputKey]
+  if (optionalSpec !== undefined) return optionalSpec
+  return null
+}
+
 function parseNumericLike(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
@@ -834,14 +875,89 @@ class ComfyUIService {
     return response.json()
   }
 
+  async getObjectInfoCached(maxAgeMs = 60000) {
+    const now = Date.now()
+    if (this._objectInfoCache && (now - this._objectInfoCacheAt) < maxAgeMs) {
+      return this._objectInfoCache
+    }
+    const info = await this.getObjectInfo()
+    this._objectInfoCache = info
+    this._objectInfoCacheAt = now
+    return info
+  }
+
+  /**
+   * Rewrite model-file inputs whose bare filename lives in a subfolder of a
+   * ComfyUI models directory. ComfyUI validates combo inputs against its own
+   * choice list ("WAN/wan2.2.safetensors"), so a bare "wan2.2.safetensors"
+   * from a built-in workflow would be rejected with value_not_in_list even
+   * though the file is installed. Exact matches are left untouched; ambiguous
+   * basenames (same filename in several subfolders) pick the first
+   * alphabetically and say so in the log. Fails open: any error returns the
+   * workflow unchanged and lets ComfyUI's own validation report the problem.
+   */
+  async resolveSubfolderModelPaths(workflow) {
+    try {
+      if (!workflow || typeof workflow !== 'object') return workflow
+
+      const pending = []
+      for (const [nodeId, node] of Object.entries(workflow)) {
+        const inputs = node?.inputs
+        if (!inputs || typeof inputs !== 'object') continue
+        for (const [inputKey, value] of Object.entries(inputs)) {
+          if (typeof value !== 'string') continue
+          const trimmed = value.trim()
+          if (!MODEL_FILE_INPUT_RE.test(trimmed)) continue
+          pending.push({ nodeId, classType: String(node?.class_type || '').trim(), inputKey, value: trimmed })
+        }
+      }
+      if (pending.length === 0) return workflow
+
+      const objectInfo = await this.getObjectInfoCached()
+      if (!objectInfo || typeof objectInfo !== 'object') return workflow
+
+      const substitutions = []
+      for (const entry of pending) {
+        const nodeSchema = objectInfo[entry.classType]
+        if (!nodeSchema) continue
+        const choices = extractComboChoicesFromSpec(getSchemaInputSpec(nodeSchema, entry.inputKey))
+        if (choices.length === 0) continue
+        const lowerValue = entry.value.toLowerCase()
+        if (choices.some((choice) => String(choice).toLowerCase() === lowerValue)) continue
+        const wantedBasename = modelPathBasename(entry.value)
+        if (!wantedBasename) continue
+        const candidates = choices.filter((choice) => modelPathBasename(choice) === wantedBasename)
+        if (candidates.length === 0) continue
+        const resolved = [...candidates].sort()[0]
+        substitutions.push({ ...entry, resolved, ambiguous: candidates.length > 1 })
+      }
+      if (substitutions.length === 0) return workflow
+
+      const resolvedWorkflow = JSON.parse(JSON.stringify(workflow))
+      for (const sub of substitutions) {
+        const target = resolvedWorkflow?.[sub.nodeId]?.inputs
+        if (target) target[sub.inputKey] = sub.resolved
+        console.log(
+          `[ComfyUI] Resolved model input to subfolder path: ${sub.classType}.${sub.inputKey} '${sub.value}' -> '${sub.resolved}'`
+          + (sub.ambiguous ? ' (multiple matches; picked first alphabetically)' : '')
+        )
+      }
+      return resolvedWorkflow
+    } catch (error) {
+      try { console.warn('[ComfyUI] Subfolder model path resolution skipped:', error?.message) } catch (_) { /* ignore */ }
+      return workflow
+    }
+  }
+
   /**
    * Queue a prompt for execution
    */
   async queuePrompt(workflow) {
     try {
+      const resolvedWorkflow = await this.resolveSubfolderModelPaths(workflow)
       const apiKey = await this.getComfyOrgApiKey();
       const payload = {
-        prompt: workflow,
+        prompt: resolvedWorkflow,
         client_id: this.clientId
       };
       if (apiKey) {

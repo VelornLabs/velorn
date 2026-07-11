@@ -38,6 +38,13 @@ function getInputSpec(nodeSchema, inputKey) {
   return null
 }
 
+function modelChoiceBasename(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return ''
+  const parts = normalized.split(/[\\/]+/)
+  return parts[parts.length - 1] || ''
+}
+
 function collectPriceBadgesFromSchema(nodeSchema, out = []) {
   if (nodeSchema === null || nodeSchema === undefined) return out
 
@@ -494,8 +501,15 @@ export async function checkWorkflowDependencies(workflowId, options = {}) {
       continue
     }
 
+    // Match by full value first, then by basename: models organized into
+    // subfolders (models/diffusion_models/WAN/...) appear in ComfyUI's choice
+    // list as relative paths ("WAN/wan2.2.safetensors"), which still satisfy
+    // a pack that asks for the bare filename. The queue path rewrites the
+    // input to the subfolder value (comfyui.resolveSubfolderModelPaths).
+    const lowerFilename = filename.toLowerCase()
     const installedChoices = new Set(choices.map((item) => item.toLowerCase()))
-    if (!installedChoices.has(filename.toLowerCase())) {
+    const installedBasenames = new Set(choices.map((item) => modelChoiceBasename(item)))
+    if (!installedChoices.has(lowerFilename) && !installedBasenames.has(lowerFilename)) {
       missingModels.push({
         classType,
         inputKey,

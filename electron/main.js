@@ -4971,19 +4971,45 @@ ipcMain.handle('workflowSetup:checkFiles', async (_event, payload = {}) => {
     const extraModelPaths = await loadExtraModelPathConfigForComfyRoot(validation.normalizedPath)
 
     // Cache per-subdir directory listings so we can do case-insensitive matching
-    // on filesystems where casing differs from the declared filename.
+    // on filesystems where casing differs from the declared filename. Users
+    // often organize model folders into subfolders (models/diffusion_models/
+    // WAN/...), so each listing also walks two levels deep and maps the
+    // lowercased filename to its relative path (shallower entries win).
+    const MODEL_SCAN_MAX_DEPTH = 2
+    const MODEL_SCAN_MAX_ENTRIES = 5000
     const dirListingCache = new Map()
     const getDirListing = async (absoluteDir) => {
       if (dirListingCache.has(absoluteDir)) return dirListingCache.get(absoluteDir)
-      let entries = []
-      try {
-        entries = await fs.readdir(absoluteDir)
-      } catch {
-        entries = []
+      const relPathByLowerName = new Map()
+      const walk = async (dir, relPrefix, depth) => {
+        if (depth > MODEL_SCAN_MAX_DEPTH || relPathByLowerName.size >= MODEL_SCAN_MAX_ENTRIES) return
+        let entries = []
+        try {
+          entries = await fs.readdir(dir, { withFileTypes: true })
+        } catch {
+          return
+        }
+        const subdirNames = []
+        for (const entry of entries) {
+          if (relPathByLowerName.size >= MODEL_SCAN_MAX_ENTRIES) break
+          const name = String(entry?.name || '')
+          if (!name) continue
+          if (entry.isDirectory()) {
+            subdirNames.push(name)
+            continue
+          }
+          const lowerName = name.toLowerCase()
+          if (!relPathByLowerName.has(lowerName)) {
+            relPathByLowerName.set(lowerName, relPrefix ? path.join(relPrefix, name) : name)
+          }
+        }
+        for (const subdirName of subdirNames) {
+          await walk(path.join(dir, subdirName), relPrefix ? path.join(relPrefix, subdirName) : subdirName, depth + 1)
+        }
       }
-      const lowerSet = new Set(entries.map((name) => String(name || '').toLowerCase()))
-      dirListingCache.set(absoluteDir, lowerSet)
-      return lowerSet
+      await walk(absoluteDir, '', 0)
+      dirListingCache.set(absoluteDir, relPathByLowerName)
+      return relPathByLowerName
     }
 
     for (const file of files) {
@@ -5021,9 +5047,10 @@ ipcMain.handle('workflowSetup:checkFiles', async (_event, payload = {}) => {
 
       for (const absoluteDir of candidateDirs) {
         const listing = await getDirListing(absoluteDir)
-        if (listing.has(lowerTarget)) {
+        const matchedRelPath = listing.get(lowerTarget)
+        if (matchedRelPath) {
           exists = true
-          resolvedPath = path.join(absoluteDir, filename)
+          resolvedPath = path.join(absoluteDir, matchedRelPath)
           break
         }
       }
