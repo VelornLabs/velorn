@@ -20,6 +20,9 @@
 
 </div>
 
+<p align="center"><img src="../readme/agent-editing.gif" alt="Um prompt: Claude monta a edição no Velorn via MCP" width="860"></p>
+<p align="center"><i>Um único prompt. O agente gera a mídia, monta a linha do tempo e mixa o áudio — ao vivo, via MCP.</i></p>
+
 > Esta tradução é mantida com o melhor esforço possível. Em caso de dúvida, o [README em inglês](../../README.md) é a referência oficial. PRs com correções são bem-vindos!
 
 O Velorn é uma estação de trabalho de vídeo com IA, de código aberto e para desktop, feita para criadores que usam o ComfyUI. Ele reúne planejamento, geração, gestão de assets, edição em linha do tempo, legendas, efeitos e exportação em um único app baseado em projetos.
