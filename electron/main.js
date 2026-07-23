@@ -4463,6 +4463,11 @@ ipcMain.handle('captions:mixTimelineAudio', async (event, options = {}) => {
     if (entry.delayMs > 0) {
       filters.push(`adelay=${entry.delayMs}:all=1`)
     }
+    // See the export mixAudio handler for why: pad every input to the same
+    // known length before amix so its duration heuristic (which can
+    // truncate the whole mix at the first delayed input's start time) never
+    // has ambiguity to get wrong.
+    filters.push(`apad=whole_dur=${formatFilterNumber(programDuration)}`)
     const label = `m${index}`
     inputFilters.push(`[${index}:a]${filters.join(',')}[${label}]`)
     mixLabels.push(`[${label}]`)
@@ -4471,7 +4476,7 @@ ipcMain.handle('captions:mixTimelineAudio', async (event, options = {}) => {
   const durationClip = `atrim=duration=${formatFilterNumber(programDuration)},asetpts=PTS-STARTPTS`
   const finalFilter = mixLabels.length === 1
     ? `${mixLabels[0]}${durationClip}[outa]`
-    : `${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=longest:dropout_transition=0:normalize=0,${durationClip}[outa]`
+    : `${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=first:dropout_transition=0:normalize=0,${durationClip}[outa]`
 
   args.push(
     '-filter_complex', `${inputFilters.join(';')};${finalFilter}`,
@@ -5359,6 +5364,16 @@ const getExportClipTimeScale = (clip) => {
 
 const buildAtempoFilterChain = (rate) => {
   const safeRate = Math.max(0.01, Number(rate) || 1)
+  // No-op for unsped clips (the overwhelming majority): skip the filter
+  // entirely rather than emitting `atempo=1.000000`. That no-op atempo node
+  // still changes the stream's internal PTS/timing bookkeeping just enough
+  // that downstream `amix` (especially combined with `adelay`/`apad` on
+  // other inputs) miscounts stream length and truncates the whole mix at
+  // the first delayed input's start time — reproduced directly via `ffmpeg`
+  // CLI while investigating the Phu Quoc export's audio cutting off after
+  // the intro. Cheap, safe fix: only touch atempo when there's a real
+  // speed change to apply.
+  if (Math.abs(safeRate - 1) < 0.0001) return []
   let remaining = safeRate
   const filters = []
   let guard = 0
@@ -5565,6 +5580,18 @@ ipcMain.handle('export:mixAudio', async (event, options = {}) => {
       filters.push(`adelay=${entry.delayMs}:all=1`)
     }
 
+    // Explicitly pad every input to the full program length before mixing.
+    // amix's `duration=longest` is supposed to extend the mix to the longest
+    // live input, but with adelay-shifted inputs starting at different
+    // times, amix's internal EOF/framesync bookkeeping can flag end-of-stream
+    // as soon as the FIRST delayed input's silence-then-audio transition is
+    // reached, truncating the whole mix at that point (observed: an 8s
+    // export with a clip delayed by adelay=4000 truncated to ~4s even though
+    // the music bed input ran the full 8s with no delay). Padding every
+    // input to the same known length up front sidesteps amix's duration
+    // heuristics entirely, so `duration=first` below is safe.
+    filters.push(`apad=whole_dur=${formatFilterNumber(totalDuration)}`)
+
     const label = `mix${index}`
     inputFilters.push(`[${index}:a]${filters.join(',')}[${label}]`)
     mixLabels.push(`[${label}]`)
@@ -5580,9 +5607,12 @@ ipcMain.handle('export:mixAudio', async (event, options = {}) => {
   // normalize=0: sum inputs as-is. amix's default input normalization would
   // duck the mix as the number of live inputs changes — the preview graph
   // (and the OfflineAudioContext fallback) sum without scaling.
+  // duration=first: safe now that every input above is apad'd to the exact
+  // same totalDuration, so there's no "longest input" ambiguity for amix to
+  // get wrong.
   const finalMixFilter = mixLabels.length === 1
     ? `${mixLabels[0]}atrim=duration=${formatFilterNumber(totalDuration)},asetpts=PTS-STARTPTS${masterFilter}[outa]`
-    : `${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=longest:dropout_transition=0:normalize=0,atrim=duration=${formatFilterNumber(totalDuration)},asetpts=PTS-STARTPTS${masterFilter}[outa]`
+    : `${mixLabels.join('')}amix=inputs=${mixLabels.length}:duration=first:dropout_transition=0:normalize=0,atrim=duration=${formatFilterNumber(totalDuration)},asetpts=PTS-STARTPTS${masterFilter}[outa]`
   const filterComplex = `${inputFilters.join(';')};${finalMixFilter}`
 
   args.push(
