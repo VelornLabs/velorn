@@ -30,13 +30,34 @@ function isLoopbackHost(hostname) {
     .every((value) => Number.isInteger(value) && value >= 0 && value <= 255)
 }
 
+function getRuntimeComfyHost() {
+  if (typeof window === 'undefined' || window?.electronAPI?.isElectron === true) {
+    return LOCAL_COMFY_HOST
+  }
+
+  const pageHost = String(window?.location?.hostname || '')
+    .trim()
+    .replace(/^\[|\]$/g, '')
+
+  if (!pageHost || pageHost === '0.0.0.0' || isLoopbackHost(pageHost)) {
+    return LOCAL_COMFY_HOST
+  }
+  return pageHost
+}
+
+function formatHostForUrl(host) {
+  return host.includes(':') ? `[${host}]` : host
+}
+
 function buildConnection(port) {
   const safePort = normalizePort(port) || DEFAULT_COMFY_PORT
+  const host = getRuntimeComfyHost()
+  const urlHost = formatHostForUrl(host)
   return {
-    host: LOCAL_COMFY_HOST,
+    host,
     port: safePort,
-    httpBase: `http://${LOCAL_COMFY_HOST}:${safePort}`,
-    wsBase: `ws://${LOCAL_COMFY_HOST}:${safePort}`,
+    httpBase: `http://${urlHost}:${safePort}`,
+    wsBase: `ws://${urlHost}:${safePort}`,
   }
 }
 
@@ -320,4 +341,3 @@ export async function checkLocalComfyConnection(options = {}) {
     clearTimeout(timer)
   }
 }
-

@@ -5,11 +5,13 @@
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
+    "dev:lan": "vite --host 0.0.0.0 --port 5173 --strictPort",
     "build": "vite build",
     "icons:generate": "icon-gen -i build/icon.png -o build --ico --ico-name icon --icns --icns-name icon",
     "preview": "vite preview",
     "electron": "electron .",
     "electron:dev": "concurrently -k \"vite --host 127.0.0.1 --port 5173 --strictPort\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "electron:dev:lan": "concurrently -k \"vite --host 0.0.0.0 --port 5173 --strictPort\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "electron:build": "npm run build && electron-builder",
     "electron:build:win": "npm run build && electron-builder --win",
     "electron:build:mac": "npm run build && electron-builder --mac",
@@ -26,7 +28,8 @@
     "test:premiere-xml": "node --experimental-default-type=module --test ./src/services/premiereXmlExporter.test.js",
     "test:export-frame-source": "node --experimental-default-type=module --test ./src/services/exportFrameSource.test.js",
     "test:export-source-preparation": "node --test ./tests/exportSourcePreparation.test.js",
-    "test:mcp-h3": "node --test ./tests/mcpH3ReferenceVideo.test.js"
+    "test:mcp-h3": "node --test ./tests/mcpH3ReferenceVideo.test.js",
+    "test:local-comfy-connection": "node --test ./tests/localComfyConnection.test.mjs"
   },
   "keywords": [
     "animatic",

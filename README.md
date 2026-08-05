@@ -162,6 +162,15 @@ Velorn talks to a local ComfyUI server and can also help launch it.
 
 Only localhost/loopback ComfyUI endpoints are supported in the desktop app.
 
+When the Vite development UI is deliberately exposed to a LAN, browser mode
+connects to ComfyUI on the same hostname used to open Velorn and on the port
+configured in Settings. For example, a page opened at
+`http://192.168.1.20:5173` connects to `http://192.168.1.20:8188` by default.
+ComfyUI must be started with LAN listening and CORS enabled (for example,
+`--listen 0.0.0.0 --enable-cors-header *`), and the relevant Windows Firewall
+ports must be allowed. This development setup has no Velorn authentication;
+use it only on a trusted network.
+
 ### AI Agents (MCP)
 
 Velorn includes a local MCP server with 100+ tools for Codex, Claude Code, Cursor-compatible tools, and other MCP clients.
@@ -263,6 +272,19 @@ npm run electron:dev
 ```
 
 Browser-only `npm run dev` is useful for frontend work, but Electron is the normal development path because many features depend on desktop APIs.
+
+To expose the browser UI on a trusted LAN while also running the Electron app
+on the host machine:
+
+```bash
+npm run electron:dev:lan
+```
+
+Or run only the browser UI with `npm run dev:lan`. Open
+`http://<host-ip>:5173` from the other machine. Browser mode will connect to
+ComfyUI at `<host-ip>` using the port selected in Velorn Settings; start
+ComfyUI with `--listen 0.0.0.0 --enable-cors-header *` and allow ports 5173
+and 8188 (or your configured port) through the Windows Firewall.
 
 ## Build Commands
 

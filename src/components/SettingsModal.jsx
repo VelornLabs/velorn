@@ -76,7 +76,7 @@ const SETTINGS_SECTIONS = [
     id: 'connection',
     title: 'ComfyUI Connection',
     icon: Server,
-    description: 'Configure the local ComfyUI endpoint, partner API key, and advanced tab visibility.',
+    description: 'Configure the ComfyUI endpoint, partner API key, and advanced tab visibility.',
   },
   {
     id: 'agents',
@@ -175,7 +175,7 @@ function GeneralTab({ initialSection = null }) {
   const [comfyPortInput, setComfyPortInput] = useState(String(initialComfyConnection.port || DEFAULT_COMFY_PORT))
   const [comfyConnectionState, setComfyConnectionState] = useState({
     status: 'idle',
-    message: `Local endpoint: ${initialComfyConnection.httpBase}`,
+    message: `Endpoint: ${initialComfyConnection.httpBase}`,
   })
   const [outputPath, setOutputPath] = useState('')
   const [workflowPath, setWorkflowPath] = useState('')
@@ -266,7 +266,7 @@ function GeneralTab({ initialSection = null }) {
         setComfyPortInput(String(connection.port || DEFAULT_COMFY_PORT))
         setComfyConnectionState({
           status: 'idle',
-          message: `Local endpoint: ${connection.httpBase}`,
+          message: `Endpoint: ${connection.httpBase}`,
         })
       } catch {
         setComfyConnectionState({
@@ -427,7 +427,7 @@ function GeneralTab({ initialSection = null }) {
     setComfyPortInput(String(result.config.port))
     setComfyConnectionState({
       status: 'idle',
-      message: `Saved local endpoint: ${result.config.httpBase}`,
+      message: `Saved endpoint: ${result.config.httpBase}`,
     })
     return true
   }
@@ -442,9 +442,10 @@ function GeneralTab({ initialSection = null }) {
       return
     }
 
+    const targetHost = getLocalComfyConnectionSync().host
     setComfyConnectionState({
       status: 'testing',
-      message: `Testing localhost:${parsed.port}...`,
+      message: `Testing ${targetHost}:${parsed.port}...`,
     })
 
     const testResult = await checkLocalComfyConnection({ port: parsed.port })
@@ -458,7 +459,7 @@ function GeneralTab({ initialSection = null }) {
 
     setComfyConnectionState({
       status: 'error',
-      message: testResult.error || `Could not connect to localhost:${parsed.port}.`,
+      message: testResult.error || `Could not connect to ${targetHost}:${parsed.port}.`,
     })
   }
 
@@ -474,7 +475,7 @@ function GeneralTab({ initialSection = null }) {
     }
     setComfyConnectionState({
       status: 'idle',
-      message: `Reset to local endpoint: ${result.config.httpBase}`,
+      message: `Reset endpoint: ${result.config.httpBase}`,
     })
   }
 
@@ -803,7 +804,7 @@ function GeneralTab({ initialSection = null }) {
       activeSectionContent = (
         <div className="space-y-4">
           <div>
-            <label className="block text-xs text-sf-text-muted mb-1">Local ComfyUI Port</label>
+            <label className="block text-xs text-sf-text-muted mb-1">ComfyUI Port</label>
             <input
               type="number"
               min={1}
@@ -816,7 +817,7 @@ function GeneralTab({ initialSection = null }) {
               className="w-full bg-sf-dark-800 border border-sf-dark-600 rounded px-3 py-2 text-sm text-sf-text-primary focus:outline-none focus:border-sf-accent"
             />
             <p className="text-[10px] text-sf-text-muted mt-1">
-              Local-only mode. Remote/LAN ComfyUI is disabled in this build.
+              The desktop app uses loopback. Browser mode uses the Velorn page&apos;s host, allowing a LAN-hosted page to connect back to ComfyUI on that machine.
             </p>
           </div>
 
