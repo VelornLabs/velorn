@@ -18,6 +18,7 @@ import {
   getMusicVideoShotTypeOption,
   normalizeMusicVideoShot,
 } from '../config/musicVideoShotConfig'
+import { extractComboChoicesFromSpec } from './comfyObjectInfo.mjs'
 
 const COMFY_ORG_API_KEY_SETTING_KEY = 'comfyApiKeyComfyOrg';
 const COMFY_ORG_API_KEY_LOCAL_KEY = 'comfystudio-comfy-api-key';
@@ -65,24 +66,6 @@ function modelPathBasename(value) {
   if (!normalized) return ''
   const parts = normalized.split(/[\\/]+/)
   return parts[parts.length - 1] || ''
-}
-
-function extractComboChoicesFromSpec(inputSpec) {
-  const asList = (values) => Array.isArray(values)
-    ? values.map((entry) => String(entry || '').trim()).filter(Boolean)
-    : []
-  if (!inputSpec) return []
-  if (Array.isArray(inputSpec)) {
-    const [first] = inputSpec
-    if (Array.isArray(first)) return asList(first)
-    if (first && typeof first === 'object') {
-      return asList(first.values || first.choices || first.options || first.enum)
-    }
-  }
-  if (typeof inputSpec === 'object') {
-    return asList(inputSpec.values || inputSpec.choices || inputSpec.options || inputSpec.enum)
-  }
-  return []
 }
 
 function getSchemaInputSpec(nodeSchema, inputKey) {

@@ -53,6 +53,7 @@
     "test:caption-vocabulary": "node --experimental-default-type=module --test ./src/services/captionVocabulary.test.js",
     "test:caption-word-timing": "node --experimental-default-type=module --test ./src/services/captionWordTiming.test.js",
     "test:caption-cue-editing": "node --test ./src/utils/captionCueEditing.test.mjs",
+    "test:comfy-object-info": "node --test ./src/services/comfyObjectInfo.test.mjs",
     "test:music-visual-style": "node --experimental-default-type=module --test ./src/utils/musicVisualStyle.test.js",
     "test:i18n": "node --test ./src/i18n/core.test.js",
     "test:dirty-tracker": "node --experimental-default-type=module --test ./src/services/projectDirtyTracker.test.js",
