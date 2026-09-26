@@ -655,11 +655,14 @@
   },
   "267:276": {
     "inputs": {
-      "image": "example.png"
+      "width": 512,
+      "height": 512,
+      "batch_size": 1,
+      "color": 0
     },
-    "class_type": "LoadImage",
+    "class_type": "EmptyImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Empty Image"
     }
   },
   "267:277": {

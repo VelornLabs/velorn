@@ -17,6 +17,12 @@ export default function TemplateCard({ template, selected = false, onSelect }) {
   const coverIsVideo = /\.(mp4|webm|mov)(\?|#|$)/i.test(String(template.thumbnailUrl || ''))
   const sizeLabel = template.sizeBytes > 0 ? formatBytes(template.sizeBytes) : ''
   const usageLabel = formatUsageCount(template.usage)
+  const portfolioRole = String(template.operational?.portfolioRole || '')
+  const portfolioRoleLabel = portfolioRole && portfolioRole !== 'UNASSESSED'
+    ? portfolioRole.replaceAll('_', ' ')
+    : ''
+  const evidenceLevel = String(template.operational?.evidenceLevel || '')
+  const recommendation = template.routeRecommendation || null
 
   return (
     <button
@@ -58,6 +64,18 @@ export default function TemplateCard({ template, selected = false, onSelect }) {
           <span className="h-1.5 w-1.5 rounded-full bg-sky-300" />
           ComfyUI
         </span>
+        {portfolioRoleLabel && (
+          <span className={`absolute right-2 top-2 rounded-full border px-2 py-0.5 text-[9px] font-bold tracking-wide backdrop-blur ${
+            portfolioRole === 'CHAMPION' || portfolioRole === 'SPECIALIST_CHAMPION'
+              ? 'border-emerald-300/35 bg-emerald-400/20 text-emerald-100'
+              : portfolioRole === 'FRONTIER_BLOCKED'
+                ? 'border-red-300/30 bg-red-400/20 text-red-100'
+                : 'border-violet-300/30 bg-violet-400/20 text-violet-100'
+          }`}
+          >
+            {portfolioRoleLabel}
+          </span>
+        )}
         <span className={`absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold backdrop-blur ${
           template.openSource
             ? 'bg-black/55 text-white'
@@ -82,8 +100,31 @@ export default function TemplateCard({ template, selected = false, onSelect }) {
         <div className="line-clamp-2 text-[13px] font-semibold leading-snug text-sf-text-primary">
           {template.title}
         </div>
+        {recommendation && (
+          <div
+            className={`rounded-lg border px-2 py-1.5 text-[10px] ${
+              recommendation.eligible
+                ? 'border-sf-accent/35 bg-sf-accent/10 text-sf-text-secondary'
+                : 'border-red-400/25 bg-red-400/10 text-red-200/90'
+            }`}
+            title={(recommendation.explanation || []).join('\n')}
+          >
+            <div className="flex items-center justify-between gap-2 font-semibold">
+              <span>{recommendation.selected ? 'Recommended' : `Route #${recommendation.rank}`}</span>
+              <span className="font-mono">{recommendation.score.toFixed(2)}</span>
+            </div>
+            <div className="mt-0.5 truncate text-sf-text-muted">
+              route {recommendation.routeEvidenceLevel} · model {recommendation.modelEvidenceLevel}
+            </div>
+          </div>
+        )}
         {template.models.length > 0 && (
           <div className="truncate text-[11px] text-sf-text-secondary">{template.models.join(' · ')}</div>
+        )}
+        {portfolioRoleLabel && (
+          <div className="truncate text-[10px] font-medium text-emerald-200/90">
+            {template.operational?.capabilityLane} · {evidenceLevel}
+          </div>
         )}
         <div className="line-clamp-2 text-[11px] leading-relaxed text-sf-text-muted">{template.description}</div>
         <div className="flex items-center justify-between gap-2 pt-1">

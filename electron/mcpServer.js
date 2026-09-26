@@ -3,6 +3,13 @@ const fs = fsSync.promises
 const http = require('http')
 const path = require('path')
 const { spawnSync } = require('child_process')
+const { comfyTemplateOverrides: MCP_COMFY_TEMPLATE_OVERRIDES } = require('./workflowPortfolioData.cjs')
+const {
+  resolveCalibrationProfile,
+  summarizeCalibrationProfilesForTemplate,
+} = require('./workflowCalibrationProfiles.cjs')
+const { recommendWorkflowRoutes } = require('./workflowRouteRecommendation.cjs')
+const { buildSpecialistPublication } = require('./specialistCapabilityManifest.cjs')
 
 const DEFAULT_MCP_PORT = 19790
 const MCP_PROTOCOL_VERSION = '2024-11-05'
@@ -3557,7 +3564,9 @@ function checkExportReadiness(snapshot, args = {}) {
   const visualTracks = tracks.filter((track) => track?.type !== 'audio')
   const audioTracks = tracks.filter((track) => track?.type === 'audio')
   const activeClips = clips.filter((clip) => clip?.enabled !== false)
-  const exportableVisualClips = activeClips.filter((clip) => isAssetBackedClip(clip) && clip?.type !== 'audio')
+  const exportableVisualClips = activeClips.filter((clip) => (
+    clip?.type === 'text' || (isAssetBackedClip(clip) && clip?.type !== 'audio')
+  ))
   const audioClips = activeClips.filter((clip) => clip?.type === 'audio' || (clip?.type === 'video' && clip?.assetId))
   const missingAssetClips = exportableVisualClips.filter((clip) => clip.assetId && !assetIds.has(clip.assetId)).map(clipRef)
   const disabledClips = clips.filter((clip) => clip?.enabled === false).map(clipRef)
@@ -4169,7 +4178,44 @@ function splitWorkflowList(value) {
 }
 
 const MCP_TEMPLATE_SKIPPED_CATEGORY_TITLES = new Set(['Getting Started', 'Node Basics'])
+const MCP_TEMPLATE_PORTFOLIO_RANK = Object.freeze({
+  CHAMPION: 0,
+  SPECIALIST_CHAMPION: 0,
+  SOVEREIGN_ALTERNATIVE: 1,
+  ECONOMIC_ALTERNATIVE: 1,
+  PREMIUM_ALTERNATIVE: 1,
+  FRONTIER_CANDIDATE: 2,
+  FRONTIER_BLOCKED: 3,
+  UNASSESSED: 4,
+})
 let mcpTemplateCatalogCache = null
+
+function getMcpTemplateOperationalMetadata(template) {
+  const override = MCP_COMFY_TEMPLATE_OVERRIDES[String(template?.name || '').trim()] || {}
+  return {
+    capabilityLane: override.capabilityLane || template?.categoryLabel || 'ComfyUI template',
+    portfolioRole: override.portfolioRole || 'UNASSESSED',
+    evidenceLevel: override.evidenceLevel || 'DISCOVERABLE',
+    modelEvidenceLevel: override.modelEvidenceLevel || override.evidenceLevel || 'DISCOVERABLE',
+    routeEvidenceLevel: override.routeEvidenceLevel || 'DISCOVERABLE',
+    sovereignty: template?.openSource ? 'Open source workflow' : 'Commercial API',
+    evidenceLabel: override.evidenceLabel || 'Official ComfyUI template is discoverable; no exact product receipt is attached.',
+    qualityObservation: override.qualityObservation || '',
+    limitation: override.limitation || 'Import, dependency readiness and an exact-route artifact are still required.',
+    benchmark: override.benchmark || null,
+  }
+}
+
+function enrichMcpTemplateCatalogWithPortfolio(catalog) {
+  return {
+    ...catalog,
+    templates: catalog.templates.map((template) => ({
+      ...template,
+      operational: getMcpTemplateOperationalMetadata(template),
+      calibrationProfiles: summarizeCalibrationProfilesForTemplate(template.name),
+    })),
+  }
+}
 
 function normalizeMcpTemplateSearchText(value) {
   return String(value || '')
@@ -4259,7 +4305,7 @@ async function fetchMcpComfyTemplateCatalog({ forceRefresh = false } = {}) {
     const response = await fetch(MCP_TEMPLATE_INDEX_URL, { signal: controller.signal, cache: 'no-store' })
     if (!response.ok) throw new Error(`Template index request failed (${response.status})`)
     const raw = await response.json()
-    const normalized = normalizeMcpTemplateIndex(raw)
+    const normalized = enrichMcpTemplateCatalogWithPortfolio(normalizeMcpTemplateIndex(raw))
     mcpTemplateCatalogCache = { fetchedAt: now, normalized }
     return { ...normalized, fetchedAt: now, fromCache: false }
   } finally {
@@ -4359,7 +4405,16 @@ function scoreMcpTemplateMatch(template, query) {
   const normalizedCategory = normalizeMcpTemplateSearchText(template?.categoryLabel)
   const normalizedTags = normalizeMcpTemplateSearchText((template?.tags || []).join(' '))
   const normalizedModels = normalizeMcpTemplateSearchText((template?.models || []).join(' '))
-  const haystack = [normalizedName, normalizedTitle, normalizedCategory, normalizedTags, normalizedModels]
+  const normalizedOperational = normalizeMcpTemplateSearchText([
+    template?.operational?.capabilityLane,
+    template?.operational?.portfolioRole,
+    template?.operational?.evidenceLevel,
+    template?.operational?.sovereignty,
+    template?.operational?.evidenceLabel,
+    template?.operational?.qualityObservation,
+    template?.operational?.limitation,
+  ].filter(Boolean).join(' '))
+  const haystack = [normalizedName, normalizedTitle, normalizedCategory, normalizedTags, normalizedModels, normalizedOperational]
     .filter(Boolean)
     .join(' ')
   const compactName = compactMcpTemplateSearchText(template?.name)
@@ -4386,11 +4441,17 @@ function filterMcpTemplates(templates = [], args = {}) {
   const category = normalizeMcpTemplateSearchText(args.category || args.categoryLabel || '')
   const model = normalizeMcpTemplateSearchText(args.model || '')
   const tag = normalizeMcpTemplateSearchText(args.tag || '')
+  const portfolioRole = normalizeMcpTemplateSearchText(args.portfolioRole || '')
+  const evidenceLevel = normalizeMcpTemplateSearchText(args.evidenceLevel || '')
+  const capabilityLane = normalizeMcpTemplateSearchText(args.capabilityLane || '')
 
   let results = templates.filter((template) => {
     if (category && normalizeMcpTemplateSearchText(template.categoryLabel) !== category && normalizeMcpTemplateSearchText(template.categoryId) !== category) return false
     if (model && !(template.models || []).some((entry) => normalizeMcpTemplateSearchText(entry).includes(model))) return false
     if (tag && !(template.tags || []).some((entry) => normalizeMcpTemplateSearchText(entry).includes(tag))) return false
+    if (portfolioRole && normalizeMcpTemplateSearchText(template.operational?.portfolioRole) !== portfolioRole) return false
+    if (evidenceLevel && normalizeMcpTemplateSearchText(template.operational?.evidenceLevel) !== evidenceLevel) return false
+    if (capabilityLane && !normalizeMcpTemplateSearchText(template.operational?.capabilityLane).includes(capabilityLane)) return false
     return true
   })
 
@@ -4402,6 +4463,13 @@ function filterMcpTemplates(templates = [], args = {}) {
       .map((entry) => ({ ...entry.template, matchScore: entry.score }))
   } else {
     results = results.slice().sort((a, b) => {
+      const aRole = a.operational?.portfolioRole || 'UNASSESSED'
+      const bRole = b.operational?.portfolioRole || 'UNASSESSED'
+      const roleCompare = (MCP_TEMPLATE_PORTFOLIO_RANK[aRole] ?? MCP_TEMPLATE_PORTFOLIO_RANK.UNASSESSED)
+        - (MCP_TEMPLATE_PORTFOLIO_RANK[bRole] ?? MCP_TEMPLATE_PORTFOLIO_RANK.UNASSESSED)
+      if (roleCompare !== 0) return roleCompare
+      const benchmarkCompare = (Number(b.operational?.benchmark?.score) || 0) - (Number(a.operational?.benchmark?.score) || 0)
+      if (benchmarkCompare !== 0) return benchmarkCompare
       const dateCompare = String(b.date || '').localeCompare(String(a.date || ''))
       return dateCompare || (b.usage || 0) - (a.usage || 0)
     })
@@ -4795,11 +4863,18 @@ function buildTimelineTemplateApplyArguments(args = {}, plan = {}) {
       : (plan.template?.name || args.templateName || args.templateId || args.templateTitle || args.templateQuery),
     inputAssetId: plan.source?.sourceClip?.asset?.id || args.inputAssetId || args.assetId,
     sourceClip: plan.source?.sourceClip || args.sourceClip,
+    sourceFrameTimeSeconds: plan.sourceFrameTimeSeconds ?? args.sourceFrameTimeSeconds,
+    frameTime: plan.sourceFrameTimeSeconds ?? args.frameTime,
     durationSeconds: plan.generationSettings?.durationSeconds ?? args.durationSeconds ?? args.duration,
     fps: plan.generationSettings?.fps ?? args.fps,
     resolution: plan.generationSettings?.resolution || args.resolution,
     resolutionSource: plan.generationSettings?.resolutionSource || args.resolutionSource,
     templateParameters: plan.generationSettings?.templateParameters || args.templateParameters || args.parameters,
+    calibrationProfileId: plan.calibrationProfile?.id || args.calibrationProfileId || undefined,
+    calibrationControls: plan.calibrationPatch?.controls || args.calibrationControls || undefined,
+    calibrationProfile: plan.calibrationProfile || undefined,
+    calibrationPatch: plan.calibrationPatch || undefined,
+    calibrationReceipt: plan.calibrationReceipt || undefined,
   }
 }
 
@@ -4857,14 +4932,45 @@ async function resolveTimelineTemplateGenerationPlan(snapshot, args = {}) {
     resolutionSource: args.resolutionSource ?? args.matchResolution ?? 'timeline',
   })
   const templateParameters = normalizeMcpTemplateParameterOverrides(args, resolutionPlan.resolution)
+  const sourceFrameTimeSeconds = roundTime(Math.max(
+    0,
+    toFiniteNumber(sourcePlan.frame?.timeSeconds, 0) - toFiniteNumber(sourceClip?.startTime, 0)
+  ))
   const prompt = String(args.prompt ?? sourcePlan.prompt ?? '').trim().slice(0, 5000)
   const negativePrompt = String(args.negativePrompt ?? sourcePlan.negativePrompt ?? '').trim().slice(0, 2000)
   const seed = Number(args.seed)
+  const normalizedSeed = Number.isFinite(seed) ? Math.max(0, Math.floor(seed)) : null
+  const calibrationProfile = importedWorkflowId
+    ? null
+    : resolveCalibrationProfile(template?.name, args, {
+      seed: normalizedSeed,
+      sourceClipId: sourceClip?.id || null,
+      sourceFrameTimeSeconds,
+    })
+  const calibrationReceipt = calibrationProfile ? {
+    schema: 'velorn.calibration-receipt/v1',
+    status: 'prepared',
+    profileId: calibrationProfile.id,
+    profileVersion: calibrationProfile.version,
+    presetId: calibrationProfile.preset?.id || null,
+    workflowSha256: calibrationProfile.calibrationPatch?.workflowSha256 || null,
+    controls: calibrationProfile.calibrationPatch?.controls || {},
+    sourceAssetId: sourceClip.asset.id,
+    sourceClipId: sourceClip.id,
+    sourceFrameTimeSeconds,
+    targetClipId: calibrationProfile.retake?.targetClipId || null,
+    retakeRange: calibrationProfile.retake?.timelineRange || null,
+    assetFieldIds: normalizePromptBatchAssetFieldIds({
+      assetFieldIds: args.assetFieldIds || args.assetFields || {},
+    }),
+    estimatedCost: calibrationProfile.estimatedCost || null,
+  } : null
 
   return {
     action: 'queue_timeline_template_generation',
     previewOnly: args.previewOnly !== false,
     importedWorkflowId: importedWorkflowId || undefined,
+    sourceFrameTimeSeconds,
     template: importedWorkflowId ? {
       importedWorkflowId,
       name: template.name,
@@ -4896,7 +5002,10 @@ async function resolveTimelineTemplateGenerationPlan(snapshot, args = {}) {
     },
     prompt,
     negativePrompt,
-    seed: Number.isFinite(seed) ? Math.max(0, Math.floor(seed)) : null,
+    seed: normalizedSeed,
+    calibrationProfile: calibrationProfile || undefined,
+    calibrationPatch: calibrationProfile?.calibrationPatch || undefined,
+    calibrationReceipt: calibrationReceipt || undefined,
     generationSettings: {
       durationSeconds: durationPlan.durationSeconds,
       durationSource: durationPlan.source,
@@ -4905,6 +5014,9 @@ async function resolveTimelineTemplateGenerationPlan(snapshot, args = {}) {
       resolutionSource: resolutionPlan.source,
       resolutionReference: resolutionPlan.reference,
       templateParameters,
+      calibrationProfile: calibrationProfile || undefined,
+      calibrationPatch: calibrationProfile?.calibrationPatch || undefined,
+      calibrationReceipt: calibrationReceipt || undefined,
     },
     catalog: catalogInfo || undefined,
   }
@@ -6961,6 +7073,43 @@ function createToolDefinitions() {
             type: 'string',
             description: 'Optional tag filter, for example "Video Outpainting".',
           },
+          portfolioRole: {
+            type: 'string',
+            description: 'Optional operational role filter, for example CHAMPION, SPECIALIST_CHAMPION, SOVEREIGN_ALTERNATIVE or FRONTIER_BLOCKED.',
+          },
+          evidenceLevel: {
+            type: 'string',
+            description: 'Optional evidence filter: DISCOVERABLE, INSTALLED, EXECUTABLE, TECHNICALLY_VALIDATED or PRODUCT_PROVEN.',
+          },
+          capabilityLane: {
+            type: 'string',
+            description: 'Optional operational lane filter, for example "Video · identity motion" or "Avatar · lipsync".',
+          },
+          recommend: {
+            type: 'boolean',
+            description: 'When true, ranks matching templates with an explainable advisory score. It never authorizes spend or queues generation.',
+          },
+          intent: {
+            type: 'string',
+            description: 'Creative or production intent used by advisory routing, for example "video identity motion" or "audio voice".',
+          },
+          qualityPriority: { type: 'number', minimum: 0, maximum: 100 },
+          costPriority: { type: 'number', minimum: 0, maximum: 100 },
+          privacyPriority: { type: 'number', minimum: 0, maximum: 100 },
+          readinessPriority: { type: 'number', minimum: 0, maximum: 100 },
+          minimumRouteEvidence: {
+            type: 'string',
+            enum: ['DISCOVERABLE', 'INSTALLED', 'EXECUTABLE', 'TECHNICALLY_VALIDATED', 'PRODUCT_PROVEN'],
+            description: 'Minimum exact-route evidence required for eligibility. Model-family evidence never satisfies this field.',
+          },
+          requireSovereign: {
+            type: 'boolean',
+            description: 'When true, only self-hosted, open-source, or user-controlled routes are eligible.',
+          },
+          includeIneligible: {
+            type: 'boolean',
+            description: 'When true, include blocked or policy-ineligible routes with explicit exclusion reasons.',
+          },
           limit: {
             type: 'integer',
             description: 'Maximum templates to return. Defaults to 20, max 100.',
@@ -7009,6 +7158,14 @@ function createToolDefinitions() {
           time: {
             type: 'number',
             description: 'Alias for timeSeconds.',
+          },
+          retakeTargetClipId: {
+            type: 'string',
+            description: 'Optional existing timeline clip ID that the generated candidate is intended to repair. The clip selected by timeSeconds remains the identity/input source.',
+          },
+          retakeStartTimeSeconds: {
+            type: 'number',
+            description: 'Optional timeline start of the localized retake. Preview metadata only; the artifact is added to a review lane before replacement.',
           },
           frame: {
             type: 'integer',
@@ -7063,6 +7220,24 @@ function createToolDefinitions() {
             type: 'string',
             enum: ['auto', 'source', 'input', 'timeline', 'sequence', 'project', 'generate'],
             description: 'When width/height/resolution are omitted, choose which aspect to match. Defaults to timeline for template generation so vertical clips can outpaint into a 16:9 sequence.',
+          },
+          calibrationProfileId: {
+            type: 'string',
+            description: 'Optional Velorn CalibrationProfile id. The current champion is "wan-animate2-identity-motion-v1" for template video_wan_animate2.',
+          },
+          calibrationIntent: {
+            type: 'string',
+            description: 'Optional registered natural-language calibration intent. Resolution is deterministic and fail-closed; unsupported or conflicting intent is rejected instead of guessed.',
+          },
+          calibrationControls: {
+            type: 'object',
+            description: 'Optional semantic controls for the selected CalibrationProfile. Wan Animate 2 accepts identityFidelity, motionAdherence, and choreographyLock on a 0-100 scale.',
+            properties: {
+              identityFidelity: { type: 'number', minimum: 0, maximum: 100 },
+              motionAdherence: { type: 'number', minimum: 0, maximum: 100 },
+              choreographyLock: { type: 'number', minimum: 0, maximum: 100 },
+            },
+            additionalProperties: false,
           },
           templateParameters: {
             type: 'object',
@@ -10447,6 +10622,14 @@ function createToolDefinitions() {
             type: 'number',
             description: 'CRF quality value. Defaults to 18 for H.264 delivery.',
           },
+          normalizeAudio: {
+            type: 'boolean',
+            description: 'Normalize final program loudness during export. Defaults to false.',
+          },
+          loudnessTarget: {
+            type: 'number',
+            description: 'Integrated loudness target in LUFS when normalizeAudio is true. Defaults to -14.',
+          },
           previewOnly: {
             type: 'boolean',
             description: 'When true, returns the export plan without starting the export.',
@@ -11502,7 +11685,11 @@ class ComfyStudioMcpServer {
         refresh: args.refresh === true,
       })
       if (result?.success === false) return errorResult(result.error || 'Could not list Velorn workflows.')
-      return textResult(result)
+      const publication = buildSpecialistPublication(result, { serverVersion: this.version })
+      return textResult({
+        ...result,
+        ...publication,
+      })
     } catch (error) {
       return errorResult(`Could not list Velorn workflows: ${error?.message || String(error)}`)
     }
@@ -11981,7 +12168,12 @@ class ComfyStudioMcpServer {
     try {
       const catalog = await fetchMcpComfyTemplateCatalog({ forceRefresh: args.forceRefresh === true })
       const limit = clampLimit(args.limit, 20, 100)
-      const templates = filterMcpTemplates(catalog.templates, args).slice(0, limit)
+      const filteredTemplates = filterMcpTemplates(catalog.templates, args)
+      const routingRequested = args.recommend === true || Boolean(String(args.intent || '').trim())
+      const templates = (routingRequested
+        ? recommendWorkflowRoutes(filteredTemplates, args)
+        : filteredTemplates
+      ).slice(0, limit)
       return textResult({
         success: true,
         action: 'list_comfyui_templates',
@@ -11991,6 +12183,13 @@ class ComfyStudioMcpServer {
         fetchedAt: catalog.fetchedAt,
         fromCache: catalog.fromCache,
         categories: catalog.categories,
+        routing: routingRequested ? {
+          mode: 'advisory',
+          intent: args.intent || args.capabilityLane || '',
+          selectedTemplateName: templates.find((template) => template.routeRecommendation?.selected)?.name || null,
+          kernelAuthorizationRequiredForSpend: true,
+          mediaBytesThroughKernel: false,
+        } : undefined,
         templates: templates.map((template) => ({
           name: template.name,
           title: template.title,
@@ -12006,6 +12205,9 @@ class ComfyStudioMcpServer {
           io: template.io,
           workflowUrl: template.workflowUrl,
           sourceUrl: template.sourceUrl,
+          operational: template.operational || undefined,
+          calibrationProfiles: template.calibrationProfiles?.length > 0 ? template.calibrationProfiles : undefined,
+          routeRecommendation: template.routeRecommendation || undefined,
           matchScore: template.matchScore || undefined,
         })),
       })
@@ -12078,6 +12280,13 @@ class ComfyStudioMcpServer {
       action: 'queue_timeline_template_generation',
       payload: buildRendererPayload(false),
     })
+    if (result?.success === false) {
+      return errorResult(
+        result.error
+          || result.message
+          || `Could not queue "${plan.template?.title || plan.template?.name || 'ComfyUI template'}" through Velorn.`
+      )
+    }
 
     return textResult({
       success: true,

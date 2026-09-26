@@ -156,6 +156,41 @@ test('forwards the My Workflows source filter through the public MCP listing too
   assert.equal(receivedOptions.source, 'my-workflows')
   assert.equal(receivedOptions.refresh, true)
   assert.equal(payload.workflows[0].id, 'my-workflow:portrait-look')
+  assert.equal(payload.capabilityManifest.schema, 'velorn.capability-manifest/v1')
+  assert.equal(payload.capabilityManifest.specialistId, 'velorn')
+  assert.equal(payload.capabilityManifest.protocol.workflowCatalogTool, 'list_velorn_workflows')
+  assert.equal(payload.capabilityManifest.interoperability.bridge, 'existing-external-contract')
+  assert.equal(payload.capabilityManifest.interoperability.gateway, 'existing-external-gateway')
+  assert.equal(payload.capabilityManifest.interoperability.mediaBytesCrossKernel, false)
+  assert.equal(payload.capabilityManifest.authorityBoundary.specialistIssuesExecutionGrants, false)
+  assert.equal(payload.workflowCatalog.schema, 'velorn.workflow-catalog/v1')
+  assert.equal(payload.workflowCatalog.count, 2)
+  assert.equal(payload.calibrationProfileCatalog.schema, 'velorn.calibration-profile-catalog/v1')
+  assert.equal(payload.calibrationProfileCatalog.count, 1)
+  assert.equal(payload.calibrationProfiles[0].descriptor.id, 'wan-animate2-identity-motion-v1')
+  assert.equal(payload.calibrationProfiles[0].profile.preset.id, 'product-v2-balanced-face-source')
+  assert.equal(payload.calibrationProfiles[0].profile.calibrationPatch.profileVersion, 1)
+  assert.equal(payload.calibrationProfiles[0].bridgeProfile.schema, 'monstruo-calibration-profile/v1')
+  assert.equal(payload.calibrationProfiles[0].bridgeProfile.specialist_id, 'velorn')
+  assert.equal(payload.calibrationProfiles[0].bridgeProfile.workflow_id, 'video_wan_animate2')
+  assert.equal(payload.calibrationProfiles[0].bridgeProfile.controls.length, 3)
+  assert.deepEqual(payload.calibrationProfiles[0].bridgeProfile.controls.map((control) => control.control_id), [
+    'identity-fidelity',
+    'motion-adherence',
+    'choreography-lock',
+  ])
+  assert.deepEqual(payload.calibrationProfiles[0].bridgeProfile.locks, [
+    'WanAnimate2ToVideo.video_frame_offset',
+    'WanAnimate2ToVideo.pose_start_percent',
+    'workflow.dimensionsMultipleOf',
+    'output.nonDestructive',
+    'timeline.originalMediaPreserved',
+  ])
+  assert.equal(Object.hasOwn(payload.calibrationProfiles[0], 'bridgeProfileDigest'), false)
+  assert.equal(Object.hasOwn(payload.calibrationProfiles[0].bridgeProfile, 'profile_digest'), false)
+  assert.equal(payload.calibrationProfileCatalog.digestAuthority, 'existing-bridge-host')
+  assert.equal(payload.capabilityManifest.interoperability.bridgeSchemas.calibrationProfile, 'monstruo-calibration-profile/v1')
+  assert.equal(payload.capabilityManifest.interoperability.bridgeSchemas.executionGrant, 'monstruo-calibration-grant/v1')
 })
 
 test('dispatches an approved My Workflows generation through the renderer bridge', async () => {

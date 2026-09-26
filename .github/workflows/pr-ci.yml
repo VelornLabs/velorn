@@ -1,0 +1,61 @@
+name: PR CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Versions validated against the official releases on 2026-09-10.
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Node.js 24 LTS
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24.21.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run multimedia specialist regressions
+        run: >-
+          node --test
+          tests/windowLifecycle.test.js
+          tests/mcpWanAnimate2Calibration.test.js
+          tests/myWorkflowCatalog.test.js
+          src/config/workflowPortfolio.test.js
+          src/services/workflowCalibration.test.js
+
+      - name: Build Velorn
+        run: npm run build
+
+      - name: Validate Breadth evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="docs/evidence/velorn-multimedia-breadth-product-02-20260910"
+          (
+            cd "$evidence_dir"
+            sha256sum --check MANIFEST.sha256
+          )
+          test "$(wc -l < "$evidence_dir/LANE_RECEIPTS.jsonl" | tr -d ' ')" = "20"
+          node -e '
+            const fs = require("node:fs");
+            const path = process.argv[1];
+            const result = JSON.parse(fs.readFileSync(path, "utf8"));
+            if (result.valid !== true) process.exit(1);
+          ' "$evidence_dir/FINAL_CLOSURE_VALIDATION.json"

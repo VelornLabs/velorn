@@ -1,3 +1,5 @@
+import { applyCalibrationPatch } from './workflowCalibration.js'
+
 // Field detection + queue-time value binding for imported ComfyUI templates.
 // Works on API-format (prompt) workflows produced by graphToPrompt: node ids
 // are string keys, link inputs are [nodeId, slot] arrays, widget inputs are
@@ -424,5 +426,5 @@ export function applyImportedWorkflowBindings(workflowJson, bindings, values = {
     for (const prefixBinding of bindings?.outputPrefixes || []) setInput(prefixBinding, filenamePrefix)
   }
 
-  return workflow
+  return values.calibrationPatch ? applyCalibrationPatch(workflow, values.calibrationPatch) : workflow
 }

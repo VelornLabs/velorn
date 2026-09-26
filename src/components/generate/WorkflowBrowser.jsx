@@ -17,6 +17,7 @@ import {
 import WorkflowCard from './WorkflowCard'
 import TemplateCard from './TemplateCard'
 import { useI18n } from '../../i18n/I18nContext'
+import workflowRouteRecommendation from '../../../electron/workflowRouteRecommendation.cjs'
 
 // Browser tabs are a presentation layer over manifest routes: "featured"
 // shows the curated local+cloud manifests (Create mode and the Set up flow
@@ -44,6 +45,11 @@ function matchesWorkflow(workflow, query, filterId) {
     workflow.description,
     workflow.provider,
     workflow.category,
+    workflow.operational?.capabilityLane,
+    workflow.operational?.evidenceLevel,
+    workflow.operational?.availability,
+    workflow.operational?.sovereignty,
+    workflow.operational?.evidenceLabel,
     ...(workflow.tags || []),
   ].join(' ').toLowerCase()
 
@@ -60,6 +66,14 @@ function matchesTemplate(template, query, filterId, sourceId) {
     template.title,
     template.description,
     template.name,
+    template.operational?.portfolioRole,
+    template.operational?.capabilityLane,
+    template.operational?.evidenceLevel,
+    template.operational?.modelEvidenceLevel,
+    template.operational?.routeEvidenceLevel,
+    template.operational?.sovereignty,
+    template.operational?.evidenceLabel,
+    template.operational?.limitation,
     ...(template.tags || []),
     ...(template.models || []),
   ].join(' ').toLowerCase()
@@ -74,13 +88,58 @@ const TEMPLATE_SOURCE_OPTIONS = Object.freeze([
 ])
 
 const TEMPLATE_SORT_OPTIONS = Object.freeze([
+  { id: 'recommended', label: 'Recommended' },
+  { id: 'portfolio', label: 'Portfolio' },
   { id: 'popular', label: 'Most used' },
   { id: 'newest', label: 'Newest' },
 ])
 
+const TEMPLATE_PORTFOLIO_OPTIONS = Object.freeze([
+  { id: 'all', label: 'All roles' },
+  { id: 'champions', label: 'Champions' },
+  { id: 'alternatives', label: 'Alternatives' },
+  { id: 'blocked', label: 'Blocked frontier' },
+  { id: 'unassessed', label: 'Unassessed' },
+])
+
+const TEMPLATE_PORTFOLIO_RANK = Object.freeze({
+  CHAMPION: 0,
+  SPECIALIST_CHAMPION: 0,
+  SOVEREIGN_ALTERNATIVE: 1,
+  ECONOMIC_ALTERNATIVE: 1,
+  PREMIUM_ALTERNATIVE: 1,
+  FRONTIER_CANDIDATE: 2,
+  FRONTIER_BLOCKED: 3,
+  UNASSESSED: 4,
+})
+
+function matchesTemplatePortfolio(template, filterId) {
+  if (filterId === 'all') return true
+  const role = String(template.operational?.portfolioRole || 'UNASSESSED')
+  if (filterId === 'champions') return role === 'CHAMPION' || role === 'SPECIALIST_CHAMPION'
+  if (filterId === 'alternatives') return role.endsWith('_ALTERNATIVE') || role === 'FRONTIER_CANDIDATE'
+  if (filterId === 'blocked') return role === 'FRONTIER_BLOCKED'
+  return role === 'UNASSESSED'
+}
+
 const TEMPLATE_COLLAPSE_LIMIT = 10
 
 function compareTemplates(a, b, sortId) {
+  if (sortId === 'recommended') {
+    const aRoute = a.routeRecommendation
+    const bRoute = b.routeRecommendation
+    if (Boolean(aRoute?.eligible) !== Boolean(bRoute?.eligible)) return aRoute?.eligible ? -1 : 1
+    const byScore = (Number(bRoute?.score) || 0) - (Number(aRoute?.score) || 0)
+    if (byScore !== 0) return byScore
+  }
+  if (sortId === 'portfolio') {
+    const aRank = TEMPLATE_PORTFOLIO_RANK[a.operational?.portfolioRole] ?? TEMPLATE_PORTFOLIO_RANK.UNASSESSED
+    const bRank = TEMPLATE_PORTFOLIO_RANK[b.operational?.portfolioRole] ?? TEMPLATE_PORTFOLIO_RANK.UNASSESSED
+    if (aRank !== bRank) return aRank - bRank
+    const aScore = Number(a.operational?.benchmark?.score) || 0
+    const bScore = Number(b.operational?.benchmark?.score) || 0
+    if (aScore !== bScore) return bScore - aScore
+  }
   if (sortId === 'newest') {
     // Dates are ISO strings, so plain string compare orders correctly.
     const byDate = String(b.date || '').localeCompare(String(a.date || ''))
@@ -112,8 +171,13 @@ export default function WorkflowBrowser({
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [filterId, setFilterId] = useState('all')
-  const [templateSort, setTemplateSort] = useState('popular')
+  const [templateSort, setTemplateSort] = useState('portfolio')
   const [templateSource, setTemplateSource] = useState('all')
+  const [templatePortfolio, setTemplatePortfolio] = useState('all')
+  const [routingEnabled, setRoutingEnabled] = useState(false)
+  const [routingIntent, setRoutingIntent] = useState('')
+  const [routingPriorities, setRoutingPriorities] = useState({ quality: 55, cost: 10, privacy: 10, readiness: 25 })
+  const [requireSovereign, setRequireSovereign] = useState(false)
   const [expandedTemplateCategories, setExpandedTemplateCategories] = useState(() => new Set())
   const isCreateLauncher = variant === 'create-launcher'
   const isTemplatesRoute = !isCreateLauncher && route === GENERATE_WORKFLOW_ROUTES.templates
@@ -249,21 +313,43 @@ export default function WorkflowBrowser({
     isTemplatesRoute
       ? templateCatalog.templates.filter((template) => (
         matchesTemplate(template, normalizedQuery, activeFilterId, templateSource)
+        && matchesTemplatePortfolio(template, templatePortfolio)
       ))
       : []
-  ), [activeFilterId, isTemplatesRoute, normalizedQuery, templateCatalog.templates, templateSource])
+  ), [activeFilterId, isTemplatesRoute, normalizedQuery, templateCatalog.templates, templatePortfolio, templateSource])
+
+  const routedTemplates = useMemo(() => (
+    routingEnabled
+      ? workflowRouteRecommendation.recommendWorkflowRoutes(filteredTemplates, {
+        intent: routingIntent || normalizedQuery,
+        qualityPriority: routingPriorities.quality,
+        costPriority: routingPriorities.cost,
+        privacyPriority: routingPriorities.privacy,
+        readinessPriority: routingPriorities.readiness,
+        requireSovereign,
+        includeIneligible: true,
+      })
+      : filteredTemplates
+  ), [filteredTemplates, normalizedQuery, requireSovereign, routingEnabled, routingIntent, routingPriorities])
 
   const groupedTemplates = useMemo(() => {
     const groups = new Map()
-    filteredTemplates.forEach((template) => {
+    routedTemplates.forEach((template) => {
       if (!groups.has(template.categoryLabel)) groups.set(template.categoryLabel, [])
       groups.get(template.categoryLabel).push(template)
     })
     for (const items of groups.values()) {
       items.sort((a, b) => compareTemplates(a, b, templateSort))
     }
-    return Array.from(groups.entries())
-  }, [filteredTemplates, templateSort])
+    const entries = Array.from(groups.entries())
+    if (templateSort === 'recommended') {
+      entries.sort(([, aItems], [, bItems]) => (
+        (Number(aItems[0]?.routeRecommendation?.rank) || Number.MAX_SAFE_INTEGER)
+        - (Number(bItems[0]?.routeRecommendation?.rank) || Number.MAX_SAFE_INTEGER)
+      ))
+    }
+    return entries
+  }, [routedTemplates, templateSort])
 
   const toggleTemplateCategoryExpanded = (categoryLabel) => {
     setExpandedTemplateCategories((prev) => {
@@ -369,7 +455,40 @@ export default function WorkflowBrowser({
             ))}
           </div>
           <div className="flex items-center gap-1 rounded-lg border border-sf-dark-700 bg-sf-dark-800 p-0.5">
-            {TEMPLATE_SORT_OPTIONS.map((option) => (
+            {TEMPLATE_PORTFOLIO_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setTemplatePortfolio(option.id)}
+                className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  templatePortfolio === option.id
+                    ? 'bg-sf-dark-600 text-sf-text-primary'
+                    : 'text-sf-text-muted hover:text-sf-text-primary'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setRoutingEnabled((enabled) => {
+                const next = !enabled
+                if (next) setTemplateSort('recommended')
+                return next
+              })
+            }}
+            className={`rounded-lg border px-3 py-1 text-[11px] font-semibold transition-colors ${
+              routingEnabled
+                ? 'border-sf-accent/60 bg-sf-accent/15 text-sf-accent'
+                : 'border-sf-dark-700 bg-sf-dark-800 text-sf-text-muted hover:border-sf-dark-500 hover:text-sf-text-primary'
+            }`}
+          >
+            Intelligent route
+          </button>
+          <div className="flex items-center gap-1 rounded-lg border border-sf-dark-700 bg-sf-dark-800 p-0.5">
+            {TEMPLATE_SORT_OPTIONS.filter((option) => routingEnabled || option.id !== 'recommended').map((option) => (
               <button
                 key={option.id}
                 type="button"
@@ -380,9 +499,59 @@ export default function WorkflowBrowser({
                     : 'text-sf-text-muted hover:text-sf-text-primary'
                 }`}
               >
-                {t(`generate.browser.sort.${option.id}`)}
+                {option.label}
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {isTemplatesRoute && routingEnabled && (
+        <div className="mt-3 rounded-xl border border-sf-accent/30 bg-sf-accent/5 p-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+            <label className="min-w-0 flex-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-sf-text-muted">
+              Production intent
+              <input
+                type="text"
+                value={routingIntent}
+                onChange={(event) => setRoutingIntent(event.target.value)}
+                placeholder="e.g. video identity motion, voice, matte, 3D"
+                className="mt-1 w-full rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-xs font-normal normal-case tracking-normal text-sf-text-primary outline-none placeholder:text-sf-text-muted focus:border-sf-accent"
+              />
+            </label>
+            <label className="inline-flex items-center gap-2 rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-[11px] text-sf-text-secondary">
+              <input
+                type="checkbox"
+                checked={requireSovereign}
+                onChange={(event) => setRequireSovereign(event.target.checked)}
+                className="accent-sf-accent"
+              />
+              Require sovereign route
+            </label>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              ['quality', 'Quality'],
+              ['cost', 'Cost'],
+              ['privacy', 'Privacy'],
+              ['readiness', 'Route proof'],
+            ].map(([key, label]) => (
+              <label key={key} className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-2 text-[10px] text-sf-text-muted">
+                <span className="flex justify-between gap-2"><span>{label}</span><span className="font-mono text-sf-text-primary">{routingPriorities[key]}</span></span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="5"
+                  value={routingPriorities[key]}
+                  onChange={(event) => setRoutingPriorities((current) => ({ ...current, [key]: Number(event.target.value) }))}
+                  className="mt-1 w-full accent-sf-accent"
+                />
+              </label>
+            ))}
+          </div>
+          <div className="mt-2 text-[10px] leading-relaxed text-sf-text-muted">
+            Advisory ranking only. Model benchmark and exact-route proof remain separate; Kernel still authorizes spend and policy, while media stays direct between Velorn and the selected runtime.
           </div>
         </div>
       )}

@@ -59,6 +59,7 @@ const {
 } = require('./mainWindowBounds')
 const { createRifeInterpolationCache } = require('./rifeInterpolation')
 const { resolveRifeRuntime } = require('./rifeRuntime')
+const { clearTrackedWindowIfCurrent } = require('./windowLifecycle.cjs')
 
 const isDev = !app.isPackaged
 
@@ -3561,7 +3562,8 @@ async function createWindow(restoredWindowState = null) {
       webSecurity: !isDev,
     }
   })
-  const mainWindowContentsId = mainWindow.webContents.id
+  const createdMainWindow = mainWindow
+  const mainWindowContentsId = createdMainWindow.webContents.id
 
   // Mirror the main window's console and crash events to userData/app.log
   // (same append+cap pattern as export-worker.log). Failures before the
@@ -3919,7 +3921,7 @@ async function createWindow(restoredWindowState = null) {
       clearTimeout(mainWindowStateSaveTimer)
       mainWindowStateSaveTimer = null
     }
-    mainWindow = null
+    mainWindow = clearTrackedWindowIfCurrent(mainWindow, createdMainWindow)
   })
 
   mainWindow.on('restore', () => {

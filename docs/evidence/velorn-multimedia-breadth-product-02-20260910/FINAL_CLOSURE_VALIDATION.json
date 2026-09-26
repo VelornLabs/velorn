@@ -1,0 +1,20 @@
+{
+  "schema": "velorn.multimedia-breadth-product-02.final-validation/v1",
+  "valid": true,
+  "checks": {
+    "thirteen_projects": true,
+    "thirteen_product_proven": true,
+    "all_cold_reopen": true,
+    "all_exports_hashed": true,
+    "all_projects_hashed": true,
+    "twenty_lanes": true,
+    "unique_lanes": true,
+    "no_mac_pending": true,
+    "k_3d_fail_closed": true,
+    "l_alpha_reversible": true,
+    "m_no_false_granularity": true,
+    "calibration_equivalence": true,
+    "no_secret_shapes": true
+  },
+  "failed": []
+}

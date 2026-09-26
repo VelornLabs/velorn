@@ -1,0 +1,1732 @@
+{
+  "schema": "velorn.multimedia-breadth-product-02.am-closure/v1",
+  "project_count": 13,
+  "product_proven_count": 13,
+  "valid": true,
+  "errors": [],
+  "projects": {
+    "A": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_A_Image_Identity_20260909",
+      "project_sha256": "e263b19f866c61595043b5bef406278fcf43ab843413d47a2de347d3bb0d8b78",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "track_count": 3,
+          "clip_count": 6,
+          "transition_count": 2,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6"
+          ],
+          "content_end": 12.0,
+          "asset_count": 4,
+          "asset_ids": [
+            "asset_1788948791877_ymdx4e1zu",
+            "asset_1788948791922_nxx71eq9h",
+            "asset_1788948791958_mrsk1jhza",
+            "asset_1788948791991_gkcf3gi9z"
+          ],
+          "missing": []
+        },
+        "postreopen": {
+          "track_count": 3,
+          "clip_count": 6,
+          "transition_count": 2,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6"
+          ],
+          "content_end": 12.0,
+          "asset_count": 4,
+          "asset_ids": [
+            "asset_1788948791877_ymdx4e1zu",
+            "asset_1788948791922_nxx71eq9h",
+            "asset_1788948791958_mrsk1jhza",
+            "asset_1788948791991_gkcf3gi9z"
+          ],
+          "missing": []
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_A_Image_Identity_20260909/renders/breadth02_A_cold_reopen_20260910.mp4",
+        "bytes": 1773739,
+        "sha256": "2affa5b2ac2c749da83ae9716fe56ffca03532707ec2761345e94e200c55a877",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "12.000000",
+            "size": "1773739"
+          }
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/A_timeline_contact_sheet.png",
+        "sha256": "58c96f75400a3f89203416a4360d1aaaafdea1a418bd9ff9037dbe817b5ecd1e"
+      },
+      "limitations": []
+    },
+    "B": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_B_Video_Continuity_20260909",
+      "project_sha256": "96012713a0c1a8fe3b2fd4ee49a5c14d8a2ad562edb8000d2680d5054caf2e5c",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "track_count": 3,
+          "clip_count": 8,
+          "transition_count": 3,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8"
+          ],
+          "content_end": 20.0,
+          "asset_count": 4,
+          "asset_ids": [
+            "asset_1788949106805_aruajp8fw",
+            "asset_1788949106891_zk5uhhtjx",
+            "asset_1788949106939_vubhlwf10",
+            "asset_1788949107006_mo9xvl8mz"
+          ],
+          "missing": []
+        },
+        "postreopen": {
+          "track_count": 3,
+          "clip_count": 8,
+          "transition_count": 3,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8"
+          ],
+          "content_end": 20.0,
+          "asset_count": 4,
+          "asset_ids": [
+            "asset_1788949106805_aruajp8fw",
+            "asset_1788949106891_zk5uhhtjx",
+            "asset_1788949106939_vubhlwf10",
+            "asset_1788949107006_mo9xvl8mz"
+          ],
+          "missing": []
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_B_Video_Continuity_20260909/renders/breadth02_B_cold_reopen_20260910.mp4",
+        "bytes": 17247211,
+        "sha256": "005f5f4335aceb2a8c9e653f7eb0f82b5cc152843ab814f902a8639658a20cb6",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "20.000000",
+            "size": "17247211"
+          }
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/B_timeline_contact_sheet.png",
+        "sha256": "3e026dd40017759fecc96ceb66abf18de7d7ac8e6a2e39297d53a6a0bf26afa8"
+      },
+      "limitations": []
+    },
+    "C": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_C_Character_Sound_20260909",
+      "project_sha256": "7089162d29cd010cde473d8360c3a92a6073f52c3dccc739d02cc6a588e3e363",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "track_count": 6,
+          "clip_count": 13,
+          "transition_count": 3,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "audio-2",
+            "audio-3",
+            "video-1",
+            "video-2",
+            "video-3"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-11",
+            "clip-12",
+            "clip-13",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "content_end": 36.5,
+          "asset_count": 8,
+          "asset_ids": [
+            "asset_1788949717683_5ipc7shdv",
+            "asset_1788949717730_6bwfl5dp0",
+            "asset_1788949717761_5r6j13cio",
+            "asset_1788949717801_ottcbsz7g",
+            "asset_1788949766537_gdkaj17ts",
+            "asset_1788949766570_4bnx2og42",
+            "asset_1788949766605_mxrchwuzp",
+            "asset_1788949766633_i0kx1cmo9"
+          ],
+          "missing": []
+        },
+        "postreopen": {
+          "track_count": 6,
+          "clip_count": 13,
+          "transition_count": 3,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "audio-2",
+            "audio-3",
+            "video-1",
+            "video-2",
+            "video-3"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-11",
+            "clip-12",
+            "clip-13",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "content_end": 36.5,
+          "asset_count": 8,
+          "asset_ids": [
+            "asset_1788949717683_5ipc7shdv",
+            "asset_1788949717730_6bwfl5dp0",
+            "asset_1788949717761_5r6j13cio",
+            "asset_1788949717801_ottcbsz7g",
+            "asset_1788949766537_gdkaj17ts",
+            "asset_1788949766570_4bnx2og42",
+            "asset_1788949766605_mxrchwuzp",
+            "asset_1788949766633_i0kx1cmo9"
+          ],
+          "missing": []
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_C_Character_Sound_20260909/renders/breadth02_C_cold_reopen_20260910.mp4",
+        "bytes": 1618407,
+        "sha256": "0dabcd5cf97d18cb0b6fad7eb425a093feba22dc55b6dd68f5bce262da4aea62",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            },
+            {
+              "index": 1,
+              "codec_name": "aac",
+              "codec_type": "audio",
+              "sample_rate": "44100",
+              "channels": 2
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "36.500000",
+            "size": "1618407"
+          }
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/C_timeline_contact_sheet.png",
+        "sha256": "4a4edc717782d6548d934e4ef3eade146fb7d2a3b10ad3ba1fc9e9b4b885b345"
+      },
+      "limitations": []
+    },
+    "D": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_D_Post_20260909",
+      "project_sha256": "0dfdb4467b5469f0990217821b079dda50a3db72ccf9891e2a4f432459fdb377",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "track_count": 3,
+          "clip_count": 8,
+          "transition_count": 3,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8"
+          ],
+          "content_end": 20.0,
+          "asset_count": 5,
+          "asset_ids": [
+            "asset_1788950010351_gj0t2gdye",
+            "asset_1788950010411_u6r14z04i",
+            "asset_1788950010466_n733pwre4",
+            "asset_1788950010509_lmceajv8l",
+            "asset_1788950010538_qehpciuhu"
+          ],
+          "missing": []
+        },
+        "postreopen": {
+          "track_count": 3,
+          "clip_count": 8,
+          "transition_count": 3,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8"
+          ],
+          "content_end": 20.0,
+          "asset_count": 5,
+          "asset_ids": [
+            "asset_1788950010351_gj0t2gdye",
+            "asset_1788950010411_u6r14z04i",
+            "asset_1788950010466_n733pwre4",
+            "asset_1788950010509_lmceajv8l",
+            "asset_1788950010538_qehpciuhu"
+          ],
+          "missing": []
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_D_Post_20260909/renders/breadth02_D_cold_reopen_20260910.mp4",
+        "bytes": 11755112,
+        "sha256": "fa744b8709d8f50bf4755487b49b7cee452161df45b1e61351f9ffca5ff4087e",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "20.000000",
+            "size": "11755112"
+          }
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/D_timeline_contact_sheet.png",
+        "sha256": "21669dc02c2e8c8497cbb334eaf459c3fe2c711e5116b7d077df318651f65081"
+      },
+      "limitations": []
+    },
+    "E": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn Breadth E Avatar Voice 20260909",
+      "project_sha256": "b17eec95f578528f7d7a25cf51f36086eb35b4413734b15e355d7961a927afdd",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "track_count": 3,
+          "clip_count": 5,
+          "transition_count": 0,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5"
+          ],
+          "content_end": 14.96,
+          "asset_count": 3,
+          "asset_ids": [
+            "asset_1788952347910_2nwxkp9xu",
+            "asset_1788952347949_vzmjsgbjl",
+            "asset_1788952348056_f7qog4trf"
+          ],
+          "missing": []
+        },
+        "postreopen": {
+          "track_count": 3,
+          "clip_count": 5,
+          "transition_count": 0,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5"
+          ],
+          "content_end": 14.96,
+          "asset_count": 3,
+          "asset_ids": [
+            "asset_1788952347910_2nwxkp9xu",
+            "asset_1788952347949_vzmjsgbjl",
+            "asset_1788952348056_f7qog4trf"
+          ],
+          "missing": []
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn Breadth E Avatar Voice 20260909/renders/breadth02_E_cold_reopen_20260910.mp4",
+        "bytes": 9402908,
+        "sha256": "454a1094a3971b502df420b56d14d902ebcd7c2582294bf04206cfef3a853fe1",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            },
+            {
+              "index": 1,
+              "codec_name": "aac",
+              "codec_type": "audio",
+              "sample_rate": "44100",
+              "channels": 2
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "14.960000",
+            "size": "9402908"
+          }
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/E_timeline_contact_sheet.png",
+        "sha256": "d1982f382fa88724d25749c7b3bd50616b6ae9181df77b14a8d0973ba937c713"
+      },
+      "limitations": []
+    },
+    "F": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_F_SFX_Foley_20260909",
+      "project_sha256": "a69d9ffa23edd1b82849db1622e3fa74b4aefcdce44685fd840c99cdab7a96ce",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "track_count": 3,
+          "clip_count": 6,
+          "transition_count": 0,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6"
+          ],
+          "content_end": 10.0,
+          "asset_count": 5,
+          "asset_ids": [
+            "asset_1788952993459_hjy5ljded",
+            "asset_1788952993501_oq007n2ju",
+            "asset_1788952993525_4hqtkslj5",
+            "asset_1788953389373_rj12ej86a",
+            "asset_1788953389487_7ih3rq5am"
+          ],
+          "missing": []
+        },
+        "postreopen": {
+          "track_count": 3,
+          "clip_count": 6,
+          "transition_count": 0,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6"
+          ],
+          "content_end": 10.0,
+          "asset_count": 5,
+          "asset_ids": [
+            "asset_1788952993459_hjy5ljded",
+            "asset_1788952993501_oq007n2ju",
+            "asset_1788952993525_4hqtkslj5",
+            "asset_1788953389373_rj12ej86a",
+            "asset_1788953389487_7ih3rq5am"
+          ],
+          "missing": []
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_F_SFX_Foley_20260909/renders/breadth02_F_cold_reopen_20260910.mp4",
+        "bytes": 7526774,
+        "sha256": "4afe8029e7f998cb09c0f5844e38958315eefbea2465bb75f349ac04a652fe56",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            },
+            {
+              "index": 1,
+              "codec_name": "aac",
+              "codec_type": "audio",
+              "sample_rate": "44100",
+              "channels": 2
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "10.000000",
+            "size": "7526774"
+          }
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/F_timeline_contact_sheet.png",
+        "sha256": "0931fc377433228cf51663cdf447db6a6548c73715bcbc2b261701d7bff79b15"
+      },
+      "limitations": []
+    },
+    "G": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_G_Dubbing_Multilingual_20260909",
+      "project_sha256": "446493e14811d946f46acfd7cf5a9fe2073fd8843a7e1365fb57c21524fe780c",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "track_count": 3,
+          "clip_count": 6,
+          "transition_count": 0,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6"
+          ],
+          "content_end": 23.916666666666668,
+          "asset_count": 3,
+          "asset_ids": [
+            "asset_1788953883554_q57vnz3ws",
+            "asset_1788953883620_3eb1q89uw",
+            "asset_1788953883691_852gpx90k"
+          ],
+          "missing": []
+        },
+        "postreopen": {
+          "track_count": 3,
+          "clip_count": 6,
+          "transition_count": 0,
+          "asset_count_from_timeline": 0,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6"
+          ],
+          "content_end": 23.916666666666668,
+          "asset_count": 3,
+          "asset_ids": [
+            "asset_1788953883554_q57vnz3ws",
+            "asset_1788953883620_3eb1q89uw",
+            "asset_1788953883691_852gpx90k"
+          ],
+          "missing": []
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_G_Dubbing_Multilingual_20260909/renders/breadth02_G_cold_reopen_20260910.mp4",
+        "bytes": 18011053,
+        "sha256": "3ba4041feedc0f13ef4f8d2fd883ce7b95e2bcc8e6051dc7e5aa093cbf8bae46",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            },
+            {
+              "index": 1,
+              "codec_name": "aac",
+              "codec_type": "audio",
+              "sample_rate": "44100",
+              "channels": 2
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "23.917007",
+            "size": "18011053"
+          }
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/G_timeline_contact_sheet.png",
+        "sha256": "3d6fc62af813594e88c9229d8b392fb869ffa6e7bead04fb6f23430dc102ab47"
+      },
+      "limitations": []
+    },
+    "H": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_H_Lipsync_20260910",
+      "project_sha256": "7168fde9f8c08c14eb28a047f884fdc9ba6a49f01f883310a44ce90e1da76f0f",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_H_Lipsync_20260910",
+          "project_name": "Velorn_Breadth_02_H_Lipsync_20260910",
+          "track_count": 3,
+          "clip_count": 9,
+          "transition_count": 0,
+          "asset_count": 4,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789072347261_j3xp46t49",
+            "asset_1789072566801_1lq1ghgvr",
+            "asset_1789072706940_7fllvtwon",
+            "asset_1789072708033_gntpatxkt"
+          ],
+          "content_end": 35.96
+        },
+        "postreopen": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_H_Lipsync_20260910",
+          "project_name": "Velorn_Breadth_02_H_Lipsync_20260910",
+          "track_count": 3,
+          "clip_count": 9,
+          "transition_count": 0,
+          "asset_count": 4,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789072347261_j3xp46t49",
+            "asset_1789072566801_1lq1ghgvr",
+            "asset_1789072706940_7fllvtwon",
+            "asset_1789072708033_gntpatxkt"
+          ],
+          "content_end": 35.96
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_H_Lipsync_20260910/renders/breadth02_H_product_proven_20260910.mp4",
+        "bytes": 27143282,
+        "sha256": "99d6bf32b29fa4414c07f635cbd9797074c2389a8e0e1faefce1944dd41b19da",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            },
+            {
+              "index": 1,
+              "codec_name": "aac",
+              "codec_type": "audio",
+              "sample_rate": "44100",
+              "channels": 2
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "35.960000",
+            "size": "27143282"
+          }
+        },
+        "inspect": {
+          "action": "inspect_export_file",
+          "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_H_Lipsync_20260910/renders/breadth02_H_product_proven_20260910.mp4",
+          "exists": true,
+          "file": {
+            "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_H_Lipsync_20260910/renders/breadth02_H_product_proven_20260910.mp4",
+            "exists": true,
+            "isFile": true,
+            "isDirectory": false,
+            "size": 27143282,
+            "modifiedAt": "2026-09-10T20:39:08.887Z",
+            "zeroBytes": false
+          },
+          "ready": true,
+          "warnings": [],
+          "blockers": [],
+          "ffprobe": {
+            "duration": 35.96,
+            "bitrate": 6038549,
+            "formatName": "mov,mp4,m4a,3gp,3g2,mj2",
+            "streamCount": 2,
+            "video": {
+              "codec": "h264",
+              "width": 1080,
+              "height": 1920,
+              "fps": 25,
+              "pixFmt": "yuv420p"
+            },
+            "audio": [
+              {
+                "codec": "aac",
+                "channels": 2,
+                "sampleRate": 44100
+              }
+            ]
+          },
+          "ffprobeAvailable": true
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/H_timeline_contact_sheet.png",
+        "bytes": 132110,
+        "sha256": "a03a33fc58be6d3ca90115c7b18bfe181712c93e74db37ad21dd744a7ee7e6bd"
+      },
+      "limitations": [
+        "PRODUCT_PROVEN is limited to the exact A/B/C lipsync comparison project; it is not a universal model champion claim."
+      ]
+    },
+    "I": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_I_Voice_Cleanup_20260910",
+      "project_sha256": "a64bf27e1bbe8b457448cb04aa2f258bcdb99b6839fb1083d52649d1e50e1e66",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_I_Voice_Cleanup_20260910",
+          "project_name": "Velorn_Breadth_02_I_Voice_Cleanup_20260910",
+          "track_count": 3,
+          "clip_count": 15,
+          "transition_count": 0,
+          "asset_count": 10,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-11",
+            "clip-12",
+            "clip-13",
+            "clip-14",
+            "clip-15",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789072770095_ct7ej3h8a",
+            "asset_1789072771279_5ayoq3u1e",
+            "asset_1789072772309_5ffh3pzq0",
+            "asset_1789072773391_p5qnj3p9w",
+            "asset_1789072774420_jgj0p3hmx",
+            "asset_1789072775507_l9fowt0uv",
+            "asset_1789072776587_mi5w6n8nk",
+            "asset_1789072777682_julhks4dh",
+            "asset_1789072778713_tiukq0rg0",
+            "asset_1789072779831_xf2uohdb0"
+          ],
+          "content_end": 51.4
+        },
+        "postreopen": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_I_Voice_Cleanup_20260910",
+          "project_name": "Velorn_Breadth_02_I_Voice_Cleanup_20260910",
+          "track_count": 3,
+          "clip_count": 15,
+          "transition_count": 0,
+          "asset_count": 10,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-11",
+            "clip-12",
+            "clip-13",
+            "clip-14",
+            "clip-15",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789072770095_ct7ej3h8a",
+            "asset_1789072771279_5ayoq3u1e",
+            "asset_1789072772309_5ffh3pzq0",
+            "asset_1789072773391_p5qnj3p9w",
+            "asset_1789072774420_jgj0p3hmx",
+            "asset_1789072775507_l9fowt0uv",
+            "asset_1789072776587_mi5w6n8nk",
+            "asset_1789072777682_julhks4dh",
+            "asset_1789072778713_tiukq0rg0",
+            "asset_1789072779831_xf2uohdb0"
+          ],
+          "content_end": 51.4
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_I_Voice_Cleanup_20260910/renders/breadth02_I_product_proven_20260910.mp4",
+        "bytes": 1935595,
+        "sha256": "b9010d6e70ed0b0213fe4db3fbd1edc7b2c66bdbe2254b04a4dcfd53eec40485",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            },
+            {
+              "index": 1,
+              "codec_name": "aac",
+              "codec_type": "audio",
+              "sample_rate": "44100",
+              "channels": 2
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "51.400000",
+            "size": "1935595"
+          }
+        },
+        "inspect": {
+          "action": "inspect_export_file",
+          "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_I_Voice_Cleanup_20260910/renders/breadth02_I_product_proven_20260910.mp4",
+          "exists": true,
+          "file": {
+            "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_I_Voice_Cleanup_20260910/renders/breadth02_I_product_proven_20260910.mp4",
+            "exists": true,
+            "isFile": true,
+            "isDirectory": false,
+            "size": 1935595,
+            "modifiedAt": "2026-09-10T20:40:33.683Z",
+            "zeroBytes": false
+          },
+          "ready": true,
+          "warnings": [],
+          "blockers": [],
+          "ffprobe": {
+            "duration": 51.4,
+            "bitrate": 301259,
+            "formatName": "mov,mp4,m4a,3gp,3g2,mj2",
+            "streamCount": 2,
+            "video": {
+              "codec": "h264",
+              "width": 1080,
+              "height": 1920,
+              "fps": 30,
+              "pixFmt": "yuv420p"
+            },
+            "audio": [
+              {
+                "codec": "aac",
+                "channels": 2,
+                "sampleRate": 44100
+              }
+            ]
+          },
+          "ffprobeAvailable": true
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/I_timeline_contact_sheet.png",
+        "bytes": 71265,
+        "sha256": "0ab1ecab05e14857ef116da4ea294a5dd1c5e967f64c986f08f01977b2c9e816"
+      },
+      "limitations": [
+        "DeepFilterNet won only for the exact synthetic noisy input; no universal cleanup champion claim."
+      ]
+    },
+    "J": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_J_Music_Stems_20260910",
+      "project_sha256": "6dd72da8e1ef6b62af91baed66109ca782bbeb735ff073d18f6a18060e91426c",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_J_Music_Stems_20260910",
+          "project_name": "Velorn_Breadth_02_J_Music_Stems_20260910",
+          "track_count": 10,
+          "clip_count": 11,
+          "transition_count": 0,
+          "asset_count": 9,
+          "track_ids": [
+            "audio-1",
+            "audio-2",
+            "audio-3",
+            "audio-4",
+            "audio-5",
+            "audio-6",
+            "audio-7",
+            "audio-8",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-11",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789072851609_yleljdk8y",
+            "asset_1789072852692_gja0clj2x",
+            "asset_1789072853769_9wnzbgpoa",
+            "asset_1789072854813_1u00mg1kf",
+            "asset_1789072855880_4fxcmq7lx",
+            "asset_1789072856915_55x9pjdq4",
+            "asset_1789072857961_dh47zn18b",
+            "asset_1789072858997_k094z14u0",
+            "asset_1789072860036_iikd7f85p"
+          ],
+          "content_end": 61.56666666666667
+        },
+        "postreopen": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_J_Music_Stems_20260910",
+          "project_name": "Velorn_Breadth_02_J_Music_Stems_20260910",
+          "track_count": 10,
+          "clip_count": 11,
+          "transition_count": 0,
+          "asset_count": 9,
+          "track_ids": [
+            "audio-1",
+            "audio-2",
+            "audio-3",
+            "audio-4",
+            "audio-5",
+            "audio-6",
+            "audio-7",
+            "audio-8",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-11",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789072851609_yleljdk8y",
+            "asset_1789072852692_gja0clj2x",
+            "asset_1789072853769_9wnzbgpoa",
+            "asset_1789072854813_1u00mg1kf",
+            "asset_1789072855880_4fxcmq7lx",
+            "asset_1789072856915_55x9pjdq4",
+            "asset_1789072857961_dh47zn18b",
+            "asset_1789072858997_k094z14u0",
+            "asset_1789072860036_iikd7f85p"
+          ],
+          "content_end": 61.56666666666667
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_J_Music_Stems_20260910/renders/breadth02_J_product_proven_20260910.mp4",
+        "bytes": 1843431,
+        "sha256": "94d1f7f069f9a888e51256f03d916398b10f912e8a18ea135e3dd59253e91f0f",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            },
+            {
+              "index": 1,
+              "codec_name": "aac",
+              "codec_type": "audio",
+              "sample_rate": "44100",
+              "channels": 2
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "61.567007",
+            "size": "1843431"
+          }
+        },
+        "inspect": {
+          "action": "inspect_export_file",
+          "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_J_Music_Stems_20260910/renders/breadth02_J_product_proven_20260910.mp4",
+          "exists": true,
+          "file": {
+            "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_J_Music_Stems_20260910/renders/breadth02_J_product_proven_20260910.mp4",
+            "exists": true,
+            "isFile": true,
+            "isDirectory": false,
+            "size": 1843431,
+            "modifiedAt": "2026-09-10T20:41:55.853Z",
+            "zeroBytes": false
+          },
+          "ready": true,
+          "warnings": [],
+          "blockers": [],
+          "ffprobe": {
+            "duration": 61.567,
+            "bitrate": 239534,
+            "formatName": "mov,mp4,m4a,3gp,3g2,mj2",
+            "streamCount": 2,
+            "video": {
+              "codec": "h264",
+              "width": 1080,
+              "height": 1920,
+              "fps": 30,
+              "pixFmt": "yuv420p"
+            },
+            "audio": [
+              {
+                "codec": "aac",
+                "channels": 2,
+                "sampleRate": 44100
+              }
+            ]
+          },
+          "ffprobeAvailable": true
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/J_timeline_contact_sheet.png",
+        "bytes": 46724,
+        "sha256": "80dcb7b181b952a169a057c6574997ccb487a34ee4e2dbd225074a467ef1e838"
+      },
+      "limitations": [
+        "Stems are product-proven as independently editable Velorn tracks; model generalization is not claimed."
+      ]
+    },
+    "K": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_K_Meshy_3D_20260910",
+      "project_sha256": "426624052e5b248523afe9c79f073307a6b42bde0be28075053dbb5cbb395aa4",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_K_Meshy_3D_20260910",
+          "project_name": "Velorn_Breadth_02_K_Meshy_3D_20260910",
+          "track_count": 3,
+          "clip_count": 10,
+          "transition_count": 0,
+          "asset_count": 5,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789073898245_ke13drpin",
+            "asset_1789073899287_ka7f4xu9r",
+            "asset_1789073900327_qqhuv9v6h",
+            "asset_1789073901371_bjac31mm9",
+            "asset_1789073902407_alpwu1bsf"
+          ],
+          "content_end": 25.0
+        },
+        "postreopen": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_K_Meshy_3D_20260910",
+          "project_name": "Velorn_Breadth_02_K_Meshy_3D_20260910",
+          "track_count": 3,
+          "clip_count": 10,
+          "transition_count": 0,
+          "asset_count": 5,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-5",
+            "clip-6",
+            "clip-7",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789073898245_ke13drpin",
+            "asset_1789073899287_ka7f4xu9r",
+            "asset_1789073900327_qqhuv9v6h",
+            "asset_1789073901371_bjac31mm9",
+            "asset_1789073902407_alpwu1bsf"
+          ],
+          "content_end": 25.0
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_K_Meshy_3D_20260910/renders/breadth02_K_product_proven_20260910.mp4",
+        "bytes": 222842,
+        "sha256": "b2f8755fa822b6094248440d8e0782f308aefb0b7c2b9cf984462d01014437ae",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "25.000000",
+            "size": "222842"
+          }
+        },
+        "inspect": {
+          "action": "inspect_export_file",
+          "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_K_Meshy_3D_20260910/renders/breadth02_K_product_proven_20260910.mp4",
+          "exists": true,
+          "file": {
+            "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_K_Meshy_3D_20260910/renders/breadth02_K_product_proven_20260910.mp4",
+            "exists": true,
+            "isFile": true,
+            "isDirectory": false,
+            "size": 222842,
+            "modifiedAt": "2026-09-10T20:58:52.495Z",
+            "zeroBytes": false
+          },
+          "ready": true,
+          "warnings": [],
+          "blockers": [],
+          "ffprobe": {
+            "duration": 25,
+            "bitrate": 71309,
+            "formatName": "mov,mp4,m4a,3gp,3g2,mj2",
+            "streamCount": 1,
+            "video": {
+              "codec": "h264",
+              "width": 1080,
+              "height": 1920,
+              "fps": 30,
+              "pixFmt": "yuv420p"
+            },
+            "audio": []
+          },
+          "ffprobeAvailable": true
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/K_timeline_contact_sheet.png",
+        "bytes": 41439,
+        "sha256": "71de818cafd1451cbfbc31efff6eb8f3c49f6e9f40dad1215a846eda5c8c3383"
+      },
+      "limitations": [
+        "Velorn has no native 3D import/edit contract; the GLB remains an external artifact with verified hash while five rendered views are editable in the project."
+      ],
+      "native_3d_editing": "BLOCKED_EXTERNAL",
+      "external_glb": {
+        "source": "/Users/alfredogongora/.manus_velorn_breadth/hm_resume_20260910/assets/K_meshy_3d/model.glb",
+        "destination": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_K_Meshy_3D_20260910/external_artifacts/model.glb",
+        "bytes": 59740932,
+        "sha256": "2f9e4e972a65cadad690b90486971a05a0b76840778957cf97411cbd2a12b164",
+        "copied": true
+      },
+      "gate": {
+        "tools_total": 130,
+        "native_3d_tool_matches": [],
+        "import_asset_categories": [
+          "video",
+          "audio",
+          "images",
+          "image"
+        ],
+        "placeable_timeline_types": [
+          "video",
+          "image",
+          "audio"
+        ],
+        "native_3d_contract": false,
+        "glb_imported_into_velorn": false,
+        "quicklook_preview": "BLOCKED_LOCAL_TIMEOUT_120S_NO_ARTIFACT",
+        "classification": "EXTERNAL_3D_ARTIFACT_PRESERVED; NATIVE_3D_EDITING_UNSUPPORTED"
+      }
+    },
+    "L": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_L_MatAnyone2_Alpha_20260910",
+      "project_sha256": "ef221ede14d5c95923d155ff326b908556aff64d1d3534d5ddf81f5e2c3e0d1f",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_L_MatAnyone2_Alpha_20260910",
+          "project_name": "Velorn_Breadth_02_L_MatAnyone2_Alpha_20260910",
+          "track_count": 8,
+          "clip_count": 13,
+          "transition_count": 0,
+          "asset_count": 8,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2",
+            "video-3",
+            "video-4",
+            "video-5",
+            "video-6",
+            "video-7"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-13",
+            "clip-14",
+            "clip-15",
+            "clip-16",
+            "clip-17",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-6",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789073951442_n81zgmcfk",
+            "asset_1789073952500_ulte3g34x",
+            "asset_1789073953788_h9slhiddj",
+            "asset_1789073954886_i3jghn8lo",
+            "asset_1789073955927_4mwsjepaa",
+            "asset_1789073956965_c475ymonw",
+            "asset_1789075468369_h965vgutp",
+            "asset_1789075468990_jowfehvwb"
+          ],
+          "content_end": 35.04
+        },
+        "postreopen": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_L_MatAnyone2_Alpha_20260910",
+          "project_name": "Velorn_Breadth_02_L_MatAnyone2_Alpha_20260910",
+          "track_count": 8,
+          "clip_count": 13,
+          "transition_count": 0,
+          "asset_count": 8,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2",
+            "video-3",
+            "video-4",
+            "video-5",
+            "video-6",
+            "video-7"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-10",
+            "clip-13",
+            "clip-14",
+            "clip-15",
+            "clip-16",
+            "clip-17",
+            "clip-2",
+            "clip-3",
+            "clip-4",
+            "clip-6",
+            "clip-8",
+            "clip-9"
+          ],
+          "asset_ids": [
+            "asset_1789073951442_n81zgmcfk",
+            "asset_1789073952500_ulte3g34x",
+            "asset_1789073953788_h9slhiddj",
+            "asset_1789073954886_i3jghn8lo",
+            "asset_1789073955927_4mwsjepaa",
+            "asset_1789073956965_c475ymonw",
+            "asset_1789075468369_h965vgutp",
+            "asset_1789075468990_jowfehvwb"
+          ],
+          "content_end": 35.04
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_L_MatAnyone2_Alpha_20260910/renders/breadth02_L_product_proven_20260910.mp4",
+        "bytes": 10588231,
+        "sha256": "c9bf082f5b671898b16a86532f6c344e0b7c64313124a2d596c1a2f35110c0d5",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "35.040000",
+            "size": "10588231"
+          }
+        },
+        "inspect": {
+          "action": "inspect_export_file",
+          "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_L_MatAnyone2_Alpha_20260910/renders/breadth02_L_product_proven_20260910.mp4",
+          "exists": true,
+          "file": {
+            "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_L_MatAnyone2_Alpha_20260910/renders/breadth02_L_product_proven_20260910.mp4",
+            "exists": true,
+            "isFile": true,
+            "isDirectory": false,
+            "size": 10588231,
+            "modifiedAt": "2026-09-10T21:25:45.778Z",
+            "zeroBytes": false
+          },
+          "ready": true,
+          "warnings": [],
+          "blockers": [],
+          "ffprobe": {
+            "duration": 35.04,
+            "bitrate": 2417404,
+            "formatName": "mov,mp4,m4a,3gp,3g2,mj2",
+            "streamCount": 1,
+            "video": {
+              "codec": "h264",
+              "width": 1080,
+              "height": 1920,
+              "fps": 25,
+              "pixFmt": "yuv420p"
+            },
+            "audio": []
+          },
+          "ffprobeAvailable": true
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/L_timeline_contact_sheet.png",
+        "bytes": 103665,
+        "sha256": "9380c95d03f99fb9f11e8f2d96636441d18844d020f1c8a43e6e9418b15916a1"
+      },
+      "limitations": [
+        "Chromium export cannot decode gray16le/qtrle originals; hash-preserved H.264 proxies are used only for delivery. MatAnyone2 remains auxiliary due to observed halo/flicker."
+      ],
+      "alpha_rgba": {
+        "originals_preserved": true,
+        "original_assets": [
+          {
+            "id": "asset_1789073953788_h9slhiddj",
+            "name": "rgba.mov",
+            "path": "assets/video/rgba.mov"
+          },
+          {
+            "id": "asset_1789073952500_ulte3g34x",
+            "name": "alpha.mkv",
+            "path": "assets/video/alpha.mkv"
+          }
+        ],
+        "final_reversible_proof": {
+          "time_seconds": 32.0,
+          "rgba_track_id": "video-4",
+          "native_gradient_background_clip": "clip-14",
+          "rgba_proxy_clip": "clip-17",
+          "visible": {
+            "path": "/Users/alfredogongora/.manus_velorn_breadth/L_final_visible.jpg",
+            "bytes": 109959,
+            "sha256": "c70a698a13d73648b5697f8d16b1b81372088b04f271304e53dd246317dee7d9",
+            "time_seconds": 32.0
+          },
+          "hidden": {
+            "path": "/Users/alfredogongora/.manus_velorn_breadth/L_final_hidden.jpg",
+            "bytes": 47295,
+            "sha256": "4ddacb7e656711e529c57403fefcf798f093ec208e97d43934589e50039a4942",
+            "time_seconds": 32.0
+          },
+          "restored": {
+            "path": "/Users/alfredogongora/.manus_velorn_breadth/L_final_restored.jpg",
+            "bytes": 109959,
+            "sha256": "c70a698a13d73648b5697f8d16b1b81372088b04f271304e53dd246317dee7d9",
+            "time_seconds": 32.0
+          },
+          "visible_vs_hidden": {
+            "ssim": 0.833321,
+            "psnr_db": 16.473817
+          },
+          "visible_vs_restored": {
+            "ssim": 1.0,
+            "psnr_db": Infinity
+          },
+          "gate": "PASS when visible/hidden SSIM < 0.95 and visible/restored SSIM >= 0.995",
+          "result": "PASS"
+        }
+      }
+    },
+    "M": {
+      "status": "PRODUCT_PROVEN",
+      "route_scope": "Velorn native editable project for the exact existing artifacts and composition represented by the project.",
+      "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_M_Multiref_Image_20260910",
+      "project_sha256": "f04373ee40d61f6c1bdff47f624435e0186e1d7cd3de0a9f873f75e94d8fb777",
+      "cold_reopen": true,
+      "counts": {
+        "preclose": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_M_Multiref_Image_20260910",
+          "project_name": "Velorn_Breadth_02_M_Multiref_Image_20260910",
+          "track_count": 3,
+          "clip_count": 4,
+          "transition_count": 0,
+          "asset_count": 2,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4"
+          ],
+          "asset_ids": [
+            "asset_1789075565130_rik8zr132",
+            "asset_1789075566174_47o02v5dc"
+          ],
+          "content_end": 16.0
+        },
+        "postreopen": {
+          "project_path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_M_Multiref_Image_20260910",
+          "project_name": "Velorn_Breadth_02_M_Multiref_Image_20260910",
+          "track_count": 3,
+          "clip_count": 4,
+          "transition_count": 0,
+          "asset_count": 2,
+          "track_ids": [
+            "audio-1",
+            "video-1",
+            "video-2"
+          ],
+          "clip_ids": [
+            "clip-1",
+            "clip-2",
+            "clip-3",
+            "clip-4"
+          ],
+          "asset_ids": [
+            "asset_1789075565130_rik8zr132",
+            "asset_1789075566174_47o02v5dc"
+          ],
+          "content_end": 16.0
+        }
+      },
+      "export": {
+        "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_M_Multiref_Image_20260910/renders/breadth02_M_product_proven_20260910.mp4",
+        "bytes": 697753,
+        "sha256": "4bce58471792ec56270a03f5f3471e35b79c262196651c23f7d5a8ba245036c2",
+        "ffprobe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "index": 0,
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 1080,
+              "height": 1920,
+              "pix_fmt": "yuv420p"
+            }
+          ],
+          "format": {
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": "16.000000",
+            "size": "697753"
+          }
+        },
+        "inspect": {
+          "action": "inspect_export_file",
+          "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_M_Multiref_Image_20260910/renders/breadth02_M_product_proven_20260910.mp4",
+          "exists": true,
+          "file": {
+            "path": "/Users/alfredogongora/VelornProjects/Velorn_Breadth_02_M_Multiref_Image_20260910/renders/breadth02_M_product_proven_20260910.mp4",
+            "exists": true,
+            "isFile": true,
+            "isDirectory": false,
+            "size": 697753,
+            "modifiedAt": "2026-09-10T21:26:28.639Z",
+            "zeroBytes": false
+          },
+          "ready": true,
+          "warnings": [],
+          "blockers": [],
+          "ffprobe": {
+            "duration": 16,
+            "bitrate": 348876,
+            "formatName": "mov,mp4,m4a,3gp,3g2,mj2",
+            "streamCount": 1,
+            "video": {
+              "codec": "h264",
+              "width": 1080,
+              "height": 1920,
+              "fps": 30,
+              "pixFmt": "yuv420p"
+            },
+            "audio": []
+          },
+          "ffprobeAvailable": true
+        }
+      },
+      "contact_sheet": {
+        "path": "/Users/alfredogongora/.manus_velorn_breadth/M_timeline_contact_sheet.png",
+        "bytes": 112462,
+        "sha256": "c5b3a0d9d554704725227b47132627c9001b3f22ffe78c2062c366aaf1405fd2"
+      },
+      "limitations": [
+        "Only two independent materialized artifacts exist; four references and three candidates are not separately editable."
+      ],
+      "artifact_granularity": {
+        "independent_assets_present": 2,
+        "assets": [
+          "comparison.png",
+          "composite.png"
+        ],
+        "four_independent_references_present": false,
+        "three_independent_candidates_present": false,
+        "correction": "The resume brief overstated asset granularity. Only a three-panel comparison and the Seedream composite are materialized."
+      },
+      "route_status": "PRODUCT_PROVEN for localized background replacement/composition with subject preservation; not proven for exact layout transfer or face swap."
+    }
+  }
+}

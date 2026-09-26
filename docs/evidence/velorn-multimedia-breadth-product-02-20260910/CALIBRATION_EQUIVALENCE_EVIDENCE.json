@@ -1,0 +1,67 @@
+{
+  "schema": "velorn.calibration-equivalence-evidence/v1",
+  "profileId": "wan-animate2-identity-motion-v1",
+  "profileVersion": 1,
+  "route": "video_wan_animate2",
+  "observedWinner": {
+    "referenceImageStrength": 1.35,
+    "poseStrength": 1.25,
+    "poseEndPercent": 1
+  },
+  "naturalLanguage": {
+    "phrase": "Conserva al máximo la identidad, sigue el movimiento aprobado y bloquea la coreografía.",
+    "normalizedIntent": "conserva al maximo la identidad sigue el movimiento aprobado y bloquea la coreografia",
+    "controls": {
+      "identityFidelity": 96,
+      "motionAdherence": 75,
+      "choreographyLock": 100
+    },
+    "patchSha256": "9b6d1b0f36848e4284d60db71d6987f9bca63272769976883d538d8cfa94157a"
+  },
+  "manualEdit": {
+    "controls": {
+      "identityFidelity": 96,
+      "motionAdherence": 75,
+      "choreographyLock": 100
+    },
+    "patchSha256": "9b6d1b0f36848e4284d60db71d6987f9bca63272769976883d538d8cfa94157a"
+  },
+  "equivalence": {
+    "patchesDeepEqual": true,
+    "technicalParametersDeepEqual": true,
+    "result": "PASS"
+  },
+  "failClosed": {
+    "unsupportedIntentRejected": true,
+    "conflictingManualOverrideRejected": true
+  },
+  "publicationDecision": {
+    "publishedProfile": "wan-animate2-identity-motion-v1",
+    "deferredProfiles": [
+      {
+        "id": "heygen-precision-lipsync-v1",
+        "reason": "Exact Velorn template/route remains unproven."
+      },
+      {
+        "id": "elevenlabs-voice-transform-george-v1",
+        "reason": "Provider artifact exists, but the exact current Velorn route remains unproven."
+      },
+      {
+        "id": "deepfilternet-cleanup-reference-v1",
+        "reason": "No exact executable Velorn workflow binding."
+      },
+      {
+        "id": "matanyone2-alpha-aux-v1",
+        "reason": "Project L proves imported alpha/RGBA composition, not exact MatAnyone2 route execution."
+      },
+      {
+        "id": "velorn-live-captions-top-safearea-v1",
+        "reason": "Observed native settings recovered; no generic CalibrationPatch contract for captions yet."
+      },
+      {
+        "id": "velorn-broadcast-mastering-14lufs-v1",
+        "reason": "Observed export preset exists; no generic CalibrationPatch contract for export settings yet."
+      }
+    ]
+  }
+}

@@ -102,6 +102,12 @@ export default function WorkflowDetail({
   }
 
   const queueLabel = `Queue ${workflow.outputType === 'audio' ? 'Audio' : workflow.outputType === 'image' ? 'Image' : 'Video'}`
+  const operational = workflow.operational && typeof workflow.operational === 'object'
+    ? workflow.operational
+    : null
+  const equalizer = workflow.equalizer && typeof workflow.equalizer === 'object'
+    ? workflow.equalizer
+    : null
   // Imported templates can pre-download their dependencies before they are runnable.
   const setupMode = (workflow.runnable || workflow.imported) && setup ? setup.mode : 'hidden'
   const setupItems = setup?.items || []
@@ -220,6 +226,124 @@ export default function WorkflowDetail({
             {workflow.runnable ? 'Runnable' : 'Preview only'}
           </span>
         </div>
+
+        {operational && (
+          <div className="mb-4 rounded-xl border border-sf-dark-700 bg-sf-dark-800/60 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.1em]">
+              <span className="rounded-full border border-sf-accent/30 bg-sf-accent/10 px-2 py-0.5 text-sf-accent">
+                {String(operational.evidenceLevel || 'DISCOVERABLE').replaceAll('_', ' ')}
+              </span>
+              <span className="rounded-full border border-sf-dark-600 px-2 py-0.5 text-sf-text-secondary">
+                {operational.capabilityLane}
+              </span>
+              <span className="rounded-full border border-sf-dark-600 px-2 py-0.5 text-sf-text-secondary">
+                {operational.sovereignty}
+              </span>
+            </div>
+            <div className="mt-2 grid gap-2 text-[11px] md:grid-cols-2">
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-sf-text-muted">Availability</div>
+                <div className="mt-0.5 text-sf-text-primary">{operational.availability}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-sf-text-muted">Evidence</div>
+                <div className="mt-0.5 text-sf-text-primary">{operational.evidenceLabel}</div>
+              </div>
+            </div>
+            {operational.qualityObservation && (
+              <div className="mt-2 text-[11px] text-sf-text-secondary">
+                <span className="font-semibold text-sf-text-primary">Observed quality: </span>
+                {operational.qualityObservation}
+              </div>
+            )}
+            {operational.limitation && (
+              <div className="mt-1 text-[11px] text-sf-text-muted">
+                <span className="font-semibold text-sf-text-secondary">Limitation: </span>
+                {operational.limitation}
+              </div>
+            )}
+          </div>
+        )}
+
+        {equalizer && (
+          <div className="mb-4 rounded-xl border border-sf-accent/35 bg-sf-accent/5 p-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-sf-accent">Workflow Equalizer</div>
+                <div className="mt-1 text-sm font-semibold text-sf-text-primary">{equalizer.title}</div>
+                <div className="mt-0.5 text-[10px] text-sf-text-muted">
+                  {equalizer.preset?.label || equalizer.id} · v{equalizer.version} · {String(equalizer.lifecycle || '').toUpperCase()}
+                </div>
+              </div>
+              <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                {String(equalizer.routeEvidenceLevel || equalizer.evidenceLevel || 'DISCOVERABLE').replaceAll('_', ' ')}
+              </span>
+            </div>
+
+            <div className="mt-3 space-y-3">
+              {(equalizer.controls || []).map((control) => (
+                <label key={control.id} className="block rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-2.5">
+                  <div className="flex items-center justify-between gap-3 text-[11px]">
+                    <span className="font-medium text-sf-text-primary">{control.label}</span>
+                    <span className="font-mono text-sf-accent">{control.value}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={control.min}
+                    max={control.max}
+                    step={control.step}
+                    value={control.value}
+                    disabled={disabled}
+                    onChange={(event) => actions.onCalibrationControlChange?.(
+                      equalizer.id,
+                      control.id,
+                      Number(event.target.value)
+                    )}
+                    className="mt-2 w-full accent-sf-accent"
+                    aria-label={control.label}
+                  />
+                  <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[10px] text-sf-text-muted">
+                    <span>{control.mapsTo}</span>
+                    <span>Technical value: <span className="font-mono text-sf-text-secondary">{control.technicalValue}</span></span>
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            <div className="mt-3 grid gap-2 text-[10px] md:grid-cols-2">
+              <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 p-2">
+                <div className="font-semibold uppercase tracking-wide text-sf-text-muted">Technical parameters</div>
+                <div className="mt-1 space-y-0.5 text-sf-text-secondary">
+                  {Object.entries(equalizer.technicalParameters || {}).map(([key, value]) => (
+                    <div key={key} className="flex justify-between gap-3">
+                      <span>{key}</span>
+                      <span className="font-mono text-sf-text-primary">{value == null ? '—' : String(value)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 p-2">
+                <div className="font-semibold uppercase tracking-wide text-sf-text-muted">Locks and recovery</div>
+                <div className="mt-1 space-y-0.5 text-sf-text-secondary">
+                  {Object.entries(equalizer.locks || {}).map(([key, value]) => (
+                    <div key={key} className="flex justify-between gap-3">
+                      <span>{key}</span>
+                      <span className="font-mono text-sf-text-primary">{String(value)}</span>
+                    </div>
+                  ))}
+                  <div className="border-t border-sf-dark-700 pt-1 text-sf-text-muted">
+                    Checkpoint: {equalizer.checkpoint?.requiredBeforeApply ? 'required before timeline apply' : 'not required'}
+                  </div>
+                  <div className="text-sf-text-muted">Undo: {equalizer.undo?.strategy || 'not declared'}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-2 text-[10px] text-sf-text-muted">
+              Estimated cost: {equalizer.estimatedCost?.currency || 'USD'} {Array.isArray(equalizer.estimatedCost?.estimatedRange) ? equalizer.estimatedCost.estimatedRange.join('–') : 'runtime-dependent'} · actual spend is recorded in the receipt.
+            </div>
+          </div>
+        )}
 
         <div className="space-y-3">
           {(workflow.fields || []).map((field) => (

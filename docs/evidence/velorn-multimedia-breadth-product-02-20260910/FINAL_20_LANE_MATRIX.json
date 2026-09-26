@@ -1,0 +1,171 @@
+{
+  "schema": "velorn.multimedia-breadth-product-02.lane-matrix/v1",
+  "project_closure": {
+    "project_count": 13,
+    "product_proven_count": 13,
+    "valid": true
+  },
+  "lane_count": 20,
+  "lanes": [
+    {
+      "lane": "Avatar / lipsync",
+      "state": "PRODUCT_PROVEN (exact artifacts/projects E and H)",
+      "best": "HeyGen Precision Lipsync for the exact source; Avatar IV for the exact presenter artifact.",
+      "decision": "Precision beat image lipsync perceptually for this source; no universal provider champion is claimed.",
+      "blocked": "OSS MuseTalk/LatentSync remains BLOCKED_EXTERNAL without a reproducible CUDA runtime and comparable artifact.",
+      "evidence": "E: `breadth02_E_cold_reopen_20260910.mp4` `454a1094a397…`; H: `breadth02_H_product_proven_20260910.mp4` `99d6bf32b29f…`"
+    },
+    {
+      "lane": "Acting / mocap",
+      "state": "Avatar performance PRODUCT_PROVEN; motion capture BLOCKED_EXTERNAL",
+      "best": "HeyGen Avatar IV for the exact synthetic presenter; no mocap champion.",
+      "decision": "The finished avatar performance is proven; it is not evidence of skeletal/body mocap.",
+      "blocked": "A real mocap product requires a capture source or licensed route; CoTracker is not mocap.",
+      "evidence": "E: `breadth02_E_cold_reopen_20260910.mp4` `454a1094a397…`"
+    },
+    {
+      "lane": "Voice / TTS / conversion / dubbing",
+      "state": "PRODUCT_PROVEN (exact artifacts/projects E, G and I); cloning BLOCKED_EXTERNAL",
+      "best": "ElevenLabs for the exact TTS, Voice Changer and dubbing artifacts.",
+      "decision": "Text/timing and editable-track persistence are proven for the exact outputs.",
+      "blocked": "Voice cloning remains blocked without an authorized sample, consent and exact validated route.",
+      "evidence": "E: `breadth02_E_cold_reopen_20260910.mp4` `454a1094a397…`; G: `breadth02_G_cold_reopen_20260910.mp4` `3ba4041feedc…`; I: `breadth02_I_product_proven_20260910.mp4` `b9010d6e70ed…`"
+    },
+    {
+      "lane": "Music",
+      "state": "PRODUCT_PROVEN (existing Runway music + ElevenLabs stems in project J)",
+      "best": "Runway for the existing instrumental; ElevenLabs for its separated stems.",
+      "decision": "Independent stems, reversible solo/mute and reconstructed comparison persisted through cold reopen.",
+      "blocked": "ACE-Step remains BLOCKED_EXTERNAL until weights/runtime and a comparable artifact exist.",
+      "evidence": "J: `breadth02_J_product_proven_20260910.mp4` `94d1f7f069f9…`"
+    },
+    {
+      "lane": "SFX / Foley / video-to-audio",
+      "state": "PRODUCT_PROVEN artifacts and Velorn project F; QUALITY_REJECTED for cinematic sync",
+      "best": "No champion selected.",
+      "decision": "Both ElevenLabs and Runway variants remain editable and reproducible, but neither passed the cinematic adherence gate.",
+      "blocked": "HunyuanVideo-Foley remains BLOCKED_EXTERNAL without preseeded checkpoints and a completed artifact.",
+      "evidence": "F: `breadth02_F_cold_reopen_20260910.mp4` `4afe8029e7f9…`"
+    },
+    {
+      "lane": "Audio cleanup / mix / master",
+      "state": "PRODUCT_PROVEN for the exact cleanup comparison and native Velorn mix/master",
+      "best": "DeepFilterNet 0.5.6 for the exact noisy WAV; Velorn native mastering for the project deliverables.",
+      "decision": "DeepFilterNet wins only for the tested input; five sources and level matching remain editable in I.",
+      "blocked": "RoEx/iZotope remain unavailable under a current licensed execution route.",
+      "evidence": "C: `breadth02_C_cold_reopen_20260910.mp4` `0dabcd5cf97d…`; I: `breadth02_I_product_proven_20260910.mp4` `b9010d6e70ed…`; J: `breadth02_J_product_proven_20260910.mp4` `94d1f7f069f9…`"
+    },
+    {
+      "lane": "VFX",
+      "state": "Wan Animate face-only PRODUCT_PROVEN; matte VFX PRODUCT_PROVEN_AUXILIARY",
+      "best": "Wan Animate 2 for the historical reversible face-only retake; MatAnyone2 only as an auxiliary matte source.",
+      "decision": "L proves foreground/alpha/RGBA composition and delivery; halos/flicker prevent premium-matte promotion.",
+      "blocked": "General generative removal/fill still lacks a current comparative product.",
+      "evidence": "L: `breadth02_L_product_proven_20260910.mp4` `c9bf082f5b67…`"
+    },
+    {
+      "lane": "Composition",
+      "state": "PRODUCT_PROVEN (projects D and L)",
+      "best": "Velorn native multilayer composition and reversible RGBA compositing.",
+      "decision": "Layer order, native background, visible/hidden/restored cycle and export are proven.",
+      "blocked": "NONE for the exact projects.",
+      "evidence": "D: `breadth02_D_cold_reopen_20260910.mp4` `fa744b8709d8…`; L: `breadth02_L_product_proven_20260910.mp4` `c9bf082f5b67…`"
+    },
+    {
+      "lane": "Rotoscopy / matte",
+      "state": "PRODUCT_PROVEN_AUXILIARY for MatAnyone2; premium gate not passed",
+      "best": "No premium champion; MatAnyone2 is the best exact auxiliary route in this mission.",
+      "decision": "Original gray16le alpha and qtrle RGBA are preserved; H.264 proxies were required only for Chromium export.",
+      "blocked": "A premium artifact without halo/flicker remains BLOCKED_EXTERNAL.",
+      "evidence": "L: `breadth02_L_product_proven_20260910.mp4` `c9bf082f5b67…`"
+    },
+    {
+      "lane": "Tracking",
+      "state": "BLOCKED_EXTERNAL",
+      "best": "No proven candidate.",
+      "decision": "No artifact exists; installation or discoverability is not promoted.",
+      "blocked": "CoTracker3 weights were not preseeded and its NC license blocks commercial-champion adoption.",
+      "evidence": "NONE"
+    },
+    {
+      "lane": "3D / NeRF / Gaussian",
+      "state": "Meshy GLB PRODUCT_PROVEN as external artifact; native Velorn 3D editing BLOCKED_EXTERNAL",
+      "best": "Meshy 7 for the exact textured GLB and five rendered views.",
+      "decision": "K is a product-proven editable evidence project, but the GLB was correctly kept outside Velorn.",
+      "blocked": "The live 130-tool surface has no native 3D import/edit contract; NeRF/Gaussian routes also lack a product.",
+      "evidence": "K: `breadth02_K_product_proven_20260910.mp4` `b2f8755fa822…`"
+    },
+    {
+      "lane": "Virtual production",
+      "state": "BLOCKED_EXTERNAL",
+      "best": "No proven candidate.",
+      "decision": "No false promotion from generic NLE or 3D evidence.",
+      "blocked": "Requires stage/Unreal/tracking hardware and a dedicated product brief.",
+      "evidence": "NONE"
+    },
+    {
+      "lane": "NLE editing",
+      "state": "PRODUCT_PROVEN (13/13 projects A–M)",
+      "best": "Velorn native timeline, checkpoint, save, export and cold reopen.",
+      "decision": "All thirteen exact projects persisted and re-exported; limitations remain lane-specific.",
+      "blocked": "NONE for 2D/audio NLE scope; native 3D remains excluded.",
+      "evidence": "A: `breadth02_A_cold_reopen_20260910.mp4` `2affa5b2ac2c…`; B: `breadth02_B_cold_reopen_20260910.mp4` `005f5f4335ac…`; C: `breadth02_C_cold_reopen_20260910.mp4` `0dabcd5cf97d…`; D: `breadth02_D_cold_reopen_20260910.mp4` `fa744b8709d8…`; E: `breadth02_E_cold_reopen_20260910.mp4` `454a1094a397…`; F: `breadth02_F_cold_reopen_20260910.mp4` `4afe8029e7f9…`; G: `breadth02_G_cold_reopen_20260910.mp4` `3ba4041feedc…`; H: `breadth02_H_product_proven_20260910.mp4` `99d6bf32b29f…`; I: `breadth02_I_product_proven_20260910.mp4` `b9010d6e70ed…`; J: `breadth02_J_product_proven_20260910.mp4` `94d1f7f069f9…`; K: `breadth02_K_product_proven_20260910.mp4` `b2f8755fa822…`; L: `breadth02_L_product_proven_20260910.mp4` `c9bf082f5b67…`; M: `breadth02_M_product_proven_20260910.mp4` `4bce58471792…`"
+    },
+    {
+      "lane": "Color",
+      "state": "EXECUTABLE; no dedicated color product",
+      "best": "Velorn deterministic color tools; no AI color champion.",
+      "decision": "No promotion from incidental color in other projects.",
+      "blocked": "A dedicated scopes-based grading comparison is still required; ColorMNet is NC and unbenchmarked.",
+      "evidence": "NONE"
+    },
+    {
+      "lane": "Restoration",
+      "state": "PRODUCT_PROVEN exact baseline in D; commercial alternative QUALITY_REJECTED",
+      "best": "Deterministic FFmpeg baseline for the exact source; no premium champion.",
+      "decision": "The restored source survives editable project, export and cold reopen; quality ceiling remains below frontier restoration.",
+      "blocked": "Topaz/frontier model route remains unavailable or unbenchmarked.",
+      "evidence": "D: `breadth02_D_cold_reopen_20260910.mp4` `fa744b8709d8…`"
+    },
+    {
+      "lane": "Upscale",
+      "state": "PRODUCT_PROVEN exact local/commercial artifacts in D; frontier champion absent",
+      "best": "No champion; local scaler is a deterministic control and the commercial result remained rejected.",
+      "decision": "Persistence is proven; quality rejection is preserved rather than promoted.",
+      "blocked": "No validated Topaz/Upscayl/frontier GPU product route.",
+      "evidence": "D: `breadth02_D_cold_reopen_20260910.mp4` `fa744b8709d8…`"
+    },
+    {
+      "lane": "Interpolation",
+      "state": "INSTALLED / DISCOVERABLE; product BLOCKED_EXTERNAL",
+      "best": "RIFE 4.26 candidate only.",
+      "decision": "No artifact means no promotion.",
+      "blocked": "Exact graph/runtime and quality checks for doubles, faces, hands and flicker were not executed.",
+      "evidence": "NONE"
+    },
+    {
+      "lane": "Captions / localization",
+      "state": "PRODUCT_PROVEN (projects C and G)",
+      "best": "Velorn live captions with top safe area; ElevenLabs dubbing for the exact multilingual artifact.",
+      "decision": "Caption cues/style and multilingual audio tracks persisted through cold reopen and export.",
+      "blocked": "Translated lip-sync as a combined premium route remains unproven.",
+      "evidence": "C: `breadth02_C_cold_reopen_20260910.mp4` `0dabcd5cf97d…`; G: `breadth02_G_cold_reopen_20260910.mp4` `3ba4041feedc…`"
+    },
+    {
+      "lane": "QC",
+      "state": "PRODUCT_PROVEN deterministic QC; Q-ReAlign Mini TECHNICALLY_VALIDATED",
+      "best": "ffprobe, SHA-256, project structure, asset presence and cold reopen as objective gates.",
+      "decision": "Thirteen projects passed; Q-ReAlign remains relative perceptual ranking, not a universal quality oracle.",
+      "blocked": "Specialized industrial QC suites remain outside the current licensed toolchain.",
+      "evidence": "A: `breadth02_A_cold_reopen_20260910.mp4` `2affa5b2ac2c…`; B: `breadth02_B_cold_reopen_20260910.mp4` `005f5f4335ac…`; C: `breadth02_C_cold_reopen_20260910.mp4` `0dabcd5cf97d…`; D: `breadth02_D_cold_reopen_20260910.mp4` `fa744b8709d8…`; E: `breadth02_E_cold_reopen_20260910.mp4` `454a1094a397…`; F: `breadth02_F_cold_reopen_20260910.mp4` `4afe8029e7f9…`; G: `breadth02_G_cold_reopen_20260910.mp4` `3ba4041feedc…`; H: `breadth02_H_product_proven_20260910.mp4` `99d6bf32b29f…`; I: `breadth02_I_product_proven_20260910.mp4` `b9010d6e70ed…`; J: `breadth02_J_product_proven_20260910.mp4` `94d1f7f069f9…`; K: `breadth02_K_product_proven_20260910.mp4` `b2f8755fa822…`; L: `breadth02_L_product_proven_20260910.mp4` `c9bf082f5b67…`; M: `breadth02_M_product_proven_20260910.mp4` `4bce58471792…`"
+    },
+    {
+      "lane": "Finishing / delivery",
+      "state": "PRODUCT_PROVEN (13/13 exports)",
+      "best": "Velorn H.264/AAC or H.264-only delivery according to source content.",
+      "decision": "All exact exports exist, are nonzero, ffprobe-valid and hash-addressed after cold reopen.",
+      "blocked": "No blocker for exact products; premium mastering/generalized delivery presets remain route-scoped.",
+      "evidence": "A: `breadth02_A_cold_reopen_20260910.mp4` `2affa5b2ac2c…`; B: `breadth02_B_cold_reopen_20260910.mp4` `005f5f4335ac…`; C: `breadth02_C_cold_reopen_20260910.mp4` `0dabcd5cf97d…`; D: `breadth02_D_cold_reopen_20260910.mp4` `fa744b8709d8…`; E: `breadth02_E_cold_reopen_20260910.mp4` `454a1094a397…`; F: `breadth02_F_cold_reopen_20260910.mp4` `4afe8029e7f9…`; G: `breadth02_G_cold_reopen_20260910.mp4` `3ba4041feedc…`; H: `breadth02_H_product_proven_20260910.mp4` `99d6bf32b29f…`; I: `breadth02_I_product_proven_20260910.mp4` `b9010d6e70ed…`; J: `breadth02_J_product_proven_20260910.mp4` `94d1f7f069f9…`; K: `breadth02_K_product_proven_20260910.mp4` `b2f8755fa822…`; L: `breadth02_L_product_proven_20260910.mp4` `c9bf082f5b67…`; M: `breadth02_M_product_proven_20260910.mp4` `4bce58471792…`"
+    }
+  ]
+}

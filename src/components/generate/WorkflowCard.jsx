@@ -11,6 +11,17 @@ export default function WorkflowCard({ workflow, selected = false, onSelect, sho
       ? 'bg-amber-400/15 text-amber-200 border-amber-300/25'
       : 'bg-emerald-400/15 text-emerald-200 border-emerald-300/25'
   const routeLabel = workflow.route === 'cloud' ? 'Cloud' : workflow.route === 'custom' ? 'Custom' : 'Local'
+  const evidenceLevel = String(workflow.operational?.evidenceLevel || '').trim()
+  const evidenceLabel = evidenceLevel
+    ? evidenceLevel.toLowerCase().replaceAll('_', ' ').replace(/^./, (value) => value.toUpperCase())
+    : ''
+  const evidenceClass = evidenceLevel === 'PRODUCT_PROVEN'
+    ? 'border-emerald-300/30 bg-emerald-400/15 text-emerald-200'
+    : evidenceLevel === 'TECHNICALLY_VALIDATED'
+      ? 'border-sky-300/30 bg-sky-400/15 text-sky-200'
+      : evidenceLevel === 'INSTALLED' || evidenceLevel === 'EXECUTABLE'
+        ? 'border-amber-300/30 bg-amber-400/15 text-amber-200'
+        : 'border-sf-dark-500 bg-black/45 text-sf-text-secondary'
 
   return (
     <button
@@ -50,6 +61,11 @@ export default function WorkflowCard({ workflow, selected = false, onSelect, sho
             {routeLabel}
           </span>
         )}
+        {evidenceLabel && (
+          <span className={`absolute right-2 top-2 rounded-full border px-2 py-0.5 text-[9px] font-semibold ${evidenceClass}`}>
+            {evidenceLabel}
+          </span>
+        )}
         <span className="absolute bottom-2 right-2 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
           {workflow.badge || workflow.provider}
         </span>
@@ -68,9 +84,11 @@ export default function WorkflowCard({ workflow, selected = false, onSelect, sho
         <div className="line-clamp-2 text-[11px] leading-relaxed text-sf-text-muted">{workflow.description}</div>
         <div className="flex items-center justify-between gap-2 pt-1">
           <span className="rounded border border-sf-dark-600 bg-sf-dark-800 px-1.5 py-0.5 text-[10px] text-sf-text-secondary">
-            {workflow.provider}
+            {workflow.operational?.capabilityLane || workflow.provider}
           </span>
-          <span className="truncate text-[10px] text-sf-text-muted">{workflow.runtimeLabel}</span>
+          <span className="truncate text-[10px] text-sf-text-muted">
+            {workflow.operational?.availability || workflow.runtimeLabel}
+          </span>
         </div>
       </div>
     </button>
