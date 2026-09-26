@@ -74,6 +74,7 @@ import {
 } from '../utils/frameSampling'
 import { createGpuCompositor, isGpuExportEnabled } from './gpuCompositor'
 import { isAbsoluteRecordedPath } from './assetRelinkFallback'
+import { createExportScheduler } from './exportScheduler.mjs'
 import {
   cleanupCompletedPngSequenceTemp,
   getPngSequenceFrameFilename,
@@ -162,40 +163,6 @@ const getMediaErrorMessage = (err) => {
   if (targetError?.code != null) return `Media error code ${targetError.code}`
   if (err?.type) return `Media event: ${err.type}`
   return String(err)
-}
-
-/** Yield to the event loop so the UI can repaint and avoid the window going black during export */
-const yieldToMain = () => new Promise(resolve => {
-  const hiddenDocument = typeof document !== 'undefined' && document.visibilityState === 'hidden'
-  if (hiddenDocument || typeof requestAnimationFrame !== 'function') {
-    setTimeout(resolve, 0)
-    return
-  }
-  requestAnimationFrame(resolve)
-})
-
-/**
- * Stronger yield: a full event-loop task boundary (helps prevent renderer
- * crash under heavy export — tasks already queued, like decoder outputs and
- * IPC responses, run before the promise resolves). MessageChannel instead
- * of setTimeout(0) because consecutive zero-delay timers are clamped to
- * ~4ms in a hot loop.
- */
-const yieldTaskQueue = []
-let yieldPostPort = null
-const yieldToEventLoop = () => {
-  if (typeof MessageChannel === 'undefined') {
-    return new Promise(resolve => setTimeout(resolve, 0))
-  }
-  if (!yieldPostPort) {
-    const channel = new MessageChannel()
-    channel.port1.onmessage = () => yieldTaskQueue.shift()?.()
-    yieldPostPort = channel.port2
-  }
-  return new Promise((resolve) => {
-    yieldTaskQueue.push(resolve)
-    yieldPostPort.postMessage(null)
-  })
 }
 
 const isElectron = () => typeof window !== 'undefined' && window.electronAPI != null
@@ -1152,7 +1119,7 @@ const formatAudioMixDropError = (skipped, includedCount, expectedCount) => {
   return `${head} Dropped: ${details.join('; ')}`
 }
 
-const runExportTimeline = async (options = {}, onProgress = () => {}) => {
+const runExportTimeline = async (options, onProgress, scheduler) => {
   // Compound children are a read-only render view. Preserve their original
   // local clocks; parent trims limit visibility rather than slicing media.
   const timelineState = getCompoundRenderState(useTimelineStore.getState())
@@ -1854,7 +1821,7 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
   const FRAME_CURSOR_PREFETCH_SEC = 3
   // Per-phase wall-clock accumulators, surfaced in the completion payload so
   // a single export run shows where render time actually goes.
-  const exportPerf = { yieldMs: 0, layersMs: 0, sampleMs: 0, readbackMs: 0, pipeMs: 0, preSeekBatches: 0, preSeekClips: 0 }
+  const exportPerf = { progressYieldMs: 0, taskYieldMs: 0, layersMs: 0, sampleMs: 0, readbackMs: 0, pipeMs: 0, preSeekBatches: 0, preSeekClips: 0 }
   resetFrameSourceStats()
   // Pipe writes stack up to a small in-flight depth so the renderer's
   // structured-clone serialize, the main process's handling, and FFmpeg's
@@ -2221,14 +2188,13 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
   try {
   for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
     throwIfCancelled()
-    // The rAF-based yield caps the loop at the display refresh rate. With
-    // sequential decode producing frames much faster than vsync, yield for
-    // UI paint only every few frames — still ~15Hz of UI updates during
-    // export, without a per-frame vsync wait.
+    // Foreground direct exports allow periodic UI paints. The dedicated
+    // offscreen worker uses a task boundary instead, never a display-refresh
+    // callback: RAF can stall in a never-shown window despite visible state.
     if (frameIndex % 4 === 0) {
       const yieldStart = performance.now()
-      await yieldToMain()
-      exportPerf.yieldMs += performance.now() - yieldStart
+      await scheduler.yieldForProgress()
+      exportPerf.progressYieldMs += performance.now() - yieldStart
     }
     throwIfCancelled()
     const targetTime = rangeStart + frameIndex * frameDuration + frameSampleOffset
@@ -3400,8 +3366,8 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
       // synchronous — without yielding, decoded frames sit undelivered
       // until the next seek is forced to wait for them.
       const taskYieldStart = performance.now()
-      await yieldToEventLoop()
-      exportPerf.yieldMs += performance.now() - taskYieldStart
+      await scheduler.yieldTask()
+      exportPerf.taskYieldMs += performance.now() - taskYieldStart
     } else {
       const frameBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
       if (!frameBlob) {
@@ -3440,7 +3406,9 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
       })
     }
     if (frameIndex > 0 && frameIndex % 10 === 0) {
-      await yieldToEventLoop()
+      const taskYieldStart = performance.now()
+      await scheduler.yieldTask()
+      exportPerf.taskYieldMs += performance.now() - taskYieldStart
     }
 
     // Frame-cursor lifecycle: warm decoders for clips that start soon so
@@ -3543,12 +3511,15 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
       perf: {
         frames: totalFrames,
         gpuCompositing: false,
+        scheduling: scheduler.mode,
         perFrameMs: {
           mediaSample: perFrameMs(exportPerf.sampleMs),
           layerComposite: perFrameMs(exportPerf.layersMs - exportPerf.sampleMs),
           readback: perFrameMs(exportPerf.readbackMs),
           pipeWrite: 0,
-          uiYield: perFrameMs(exportPerf.yieldMs),
+          uiYield: perFrameMs(exportPerf.progressYieldMs + exportPerf.taskYieldMs),
+          progressYield: perFrameMs(exportPerf.progressYieldMs),
+          taskYield: perFrameMs(exportPerf.taskYieldMs),
         },
         preSeek: { batches: exportPerf.preSeekBatches, clips: exportPerf.preSeekClips },
         frameSource: getFrameSourceStats(),
@@ -4034,7 +4005,7 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
             console.warn('Failed to decode audio clip for export:', err)
             updateAudioStatus(`Failed clip ${index + 1}/${eligibleAudioClips.length} (skipped)`, 82)
           }
-          await yieldToEventLoop()
+          await scheduler.yieldTask()
         }
 
         let renderHeartbeat = null
@@ -4070,7 +4041,7 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
     status: gifExport ? 'Building optimized 256-color GIF...' : EXPORT_STATUS.encoding,
     progress: 90,
   })
-  await yieldToMain()
+  await scheduler.yieldForProgress()
 
   let encodeResult = null
   if (gifExport) {
@@ -4212,12 +4183,15 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
     perf: {
       frames: totalFrames,
       gpuCompositing: !!gpu,
+      scheduling: scheduler.mode,
       perFrameMs: {
         mediaSample: perFrameMs(exportPerf.sampleMs),
         layerComposite: perFrameMs(exportPerf.layersMs - exportPerf.sampleMs),
         readback: perFrameMs(exportPerf.readbackMs),
         pipeWrite: perFrameMs(exportPerf.pipeMs),
-        uiYield: perFrameMs(exportPerf.yieldMs),
+        uiYield: perFrameMs(exportPerf.progressYieldMs + exportPerf.taskYieldMs),
+        progressYield: perFrameMs(exportPerf.progressYieldMs),
+        taskYield: perFrameMs(exportPerf.taskYieldMs),
       },
       preSeek: { batches: exportPerf.preSeekBatches, clips: exportPerf.preSeekClips },
       frameSource: getFrameSourceStats(),
@@ -4241,21 +4215,27 @@ const runExportTimeline = async (options = {}, onProgress = () => {}) => {
  * or is cancelled. Existing folders (including the selected parent) are
  * rejected and are never cleanup targets.
  */
-export const exportTimeline = async (options = {}, onProgress = () => {}) => {
-  if (options.format !== 'png-seq') {
-    return runExportTimeline(options, onProgress)
-  }
+export const exportTimeline = async (options = {}, onProgress = () => {}, runtime = {}) => {
+  // Runtime-only context, not a saved preset or user-controllable job option.
+  const scheduler = createExportScheduler({ offscreen: runtime.offscreen === true })
+  try {
+    if (options.format !== 'png-seq') {
+      return await runExportTimeline(options, onProgress, scheduler)
+    }
 
-  const api = typeof window !== 'undefined' ? window.electronAPI : null
-  if (!api?.exists || !api?.createDirectory || !api?.deleteDirectory || !api?.pathJoin || !api?.writeFileFromArrayBuffer) {
-    throw new Error('PNG sequence export requires the Velorn desktop app.')
-  }
+    const api = typeof window !== 'undefined' ? window.electronAPI : null
+    if (!api?.exists || !api?.createDirectory || !api?.deleteDirectory || !api?.pathJoin || !api?.writeFileFromArrayBuffer) {
+      throw new Error('PNG sequence export requires the Velorn desktop app.')
+    }
 
-  return withOwnedPngSequenceOutput({
-    api,
-    outputPath: options.outputPath,
-    run: outputPath => runExportTimeline({ ...options, outputPath }, onProgress),
-  })
+    return await withOwnedPngSequenceOutput({
+      api,
+      outputPath: options.outputPath,
+      run: outputPath => runExportTimeline({ ...options, outputPath }, onProgress, scheduler),
+    })
+  } finally {
+    scheduler.dispose()
+  }
 }
 
 export default exportTimeline

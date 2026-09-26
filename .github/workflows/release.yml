@@ -43,6 +43,9 @@ jobs:
       - name: Build application
         run: npm run build
 
+      - name: Verify export scheduling
+        run: npm run test:export-scheduler
+
       - name: Verify RIFE source and package hardening
         run: npm run test:rife-hardening
 
