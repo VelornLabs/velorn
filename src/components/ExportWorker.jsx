@@ -69,7 +69,8 @@ export default function ExportWorker() {
             } else {
               window.electronAPI.sendExportProgress?.(progress)
             }
-          }
+          },
+          { offscreen: true }
         )
         let finalResult = result
         if (postProcess?.type === 'rtx-4k') {

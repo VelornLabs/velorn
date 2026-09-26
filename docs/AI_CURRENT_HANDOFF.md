@@ -1,6 +1,18 @@
 # Current AI Handoff
 
-Last updated: 2026-09-15
+Last updated: 2026-09-26
+
+## Issue #130 export scheduling hotfix
+
+The maintainer approved finishing validation and shipping the existing local scheduling fix for issue #130. A focused `codex/issue-130-export-scheduling` branch is based on published v0.3.34 / upstream main `140d3b6`, deliberately excluding unrelated local commits and unfinished changes. Those checkouts remain preserved.
+
+The hidden worker explicitly selects task-queue scheduling instead of display-refresh callbacks, including the pre-encoding progress wait. Foreground direct exports keep repaint opportunities. Encoding, frame sampling, GPU readback, project formats, and authored settings are unchanged. Per-export scheduler ports are disposed on success, failure, and cancellation.
+
+Version metadata targets v0.3.35. Keep the release draft and unpublished for maintainer review. See `docs/RELEASE_NOTES_0.3.35.md`; check GitHub for current PR, CLA, regression-matrix, and release-build status before continuing. Do not treat this preparation note as proof that cross-platform builds passed.
+
+Local validation: production renderer build passed; 131 focused scheduling/export/media tests passed; RIFE hardening passed 44 tests with one optional real-runtime skip; Linux native media dependency gate passed. The sandboxed, never-shown Electron 28.3.3 fixture passed with refresh callbacks deliberately suspended, correct pixel ordering, cancellation/recovery, and a fully decoded 144-frame native H.264 output. See `docs/ISSUE_130_EXPORT_SCHEDULING.md`. Record Windows/macOS/Linux CI outcomes in the PR before merging. Keep issue #130 open for confirmation against the draft build rather than closing it on preparation alone.
+
+The older sections below retain the historical editing and migration context.
 
 ## Current local editing review
 

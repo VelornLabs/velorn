@@ -1,0 +1,51 @@
+name: Export Scheduling Regression
+
+on:
+  pull_request:
+    paths:
+      - 'src/services/exporter.js'
+      - 'src/services/exportScheduler.mjs'
+      - 'src/components/ExportWorker.jsx'
+      - 'tests/exportScheduler.test.mjs'
+      - 'tests/fixtures/export-scheduler*'
+      - 'scripts/check-export-worker-scheduling.cjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/export-scheduling.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scheduling:
+    name: Hidden export (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022, macos-15, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:export-scheduler
+      - name: Configure Linux Electron sandbox
+        if: runner.os == 'Linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: Run never-shown Linux export and native encode
+        if: runner.os == 'Linux'
+        env:
+          VELORN_TEST_NATIVE_ENCODE: '1'
+        run: xvfb-run -a npm run check:export-worker-scheduling
+      - name: Run never-shown Windows/macOS export and native encode
+        if: runner.os != 'Linux'
+        env:
+          VELORN_TEST_NATIVE_ENCODE: '1'
+        run: npm run check:export-worker-scheduling

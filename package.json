@@ -1,9 +1,11 @@
 {
   "name": "velorn",
-  "version": "0.3.34",
+  "version": "0.3.35",
   "description": "AI-native video editing built around real creative timelines, generative workflows, and local agent control.",
   "main": "electron/main.js",
   "scripts": {
+    "test:export-scheduler": "node --test ./tests/exportScheduler.test.mjs",
+    "check:export-worker-scheduling": "node ./scripts/check-export-worker-scheduling.cjs --serve",
     "test:audio-ducking": "node --test ./src/utils/audioDucking.test.mjs ./src/services/audioDucking.test.mjs ./tests/audioDuckingNative.test.mjs ./src/utils/playAroundStore.test.mjs",
     "test:export-readiness": "node --test ./src/utils/exportReadiness.test.mjs ./src/services/exportReadiness.test.mjs",
     "test:export-custom-presets": "node --test ./src/utils/exportPresetLibrary.test.mjs",
