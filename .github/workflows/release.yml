@@ -46,6 +46,11 @@ jobs:
       - name: Verify export scheduling
         run: npm run test:export-scheduler
 
+      - name: Verify media preparation and native CPU recovery
+        run: |
+          npm run test:media-preparation
+          npm run check:media-preparation
+
       - name: Verify RIFE source and package hardening
         run: npm run test:rife-hardening
 

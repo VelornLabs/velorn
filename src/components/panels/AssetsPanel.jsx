@@ -18,6 +18,7 @@ import TopazVideoUpscaleDialog from '../TopazVideoUpscaleDialog'
 import ConfirmDialog from '../ConfirmDialog'
 import NewTimelineDialog from '../NewTimelineDialog'
 import ImageSequenceImportDialog from './ImageSequenceImportDialog'
+import MediaPreparationStatus from '../MediaPreparationStatus'
 import { buildSequenceImportPlan, importImageSequenceAsAsset, canImportImageSequences } from '../../services/imageSequenceImport'
 import { canRevealAssetInFileManager, getRevealInFileManagerLabel, revealAssetInFileManager } from '../../utils/revealInFileManager'
 // Thumbnail size presets (xs = extra small for denser grid)
@@ -2267,6 +2268,8 @@ function AssetsPanel({ isActive = true }) {
         )}
       </div>
       
+      <MediaPreparationStatus />
+
       {/* New folder input */}
       {showNewFolderInput && (
         <div className="px-2 py-1.5 border-b border-sf-dark-700 flex items-center gap-2">

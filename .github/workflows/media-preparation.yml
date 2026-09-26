@@ -1,0 +1,50 @@
+name: Media Preparation Regression
+
+on:
+  pull_request:
+    paths:
+      - 'electron/mediaPreparation.js'
+      - 'electron/main.js'
+      - 'electron/preload.js'
+      - 'src/services/playbackCache.js'
+      - 'src/services/proxyCache.js'
+      - 'src/components/MediaPreparationStatus.jsx'
+      - 'src/components/panels/AssetsPanel.jsx'
+      - 'src/utils/mediaPreparation*'
+      - 'tests/mediaPreparation*'
+      - 'scripts/check-media-preparation.cjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/media-preparation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preparation:
+    name: Media preparation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022, macos-15, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Verify queue, renderer lifecycle and IPC contracts
+        run: npm run test:media-preparation
+      - name: Verify native CPU media and encode-failure recovery
+        run: npm run check:media-preparation
+      - name: Attempt native VideoToolbox with explicit fallback reporting
+        if: runner.os == 'macOS'
+        shell: bash
+        # Hosted Macs may not expose a hardware encoder. The checker reports
+        # validatedHardware only after a real encode and full output checks;
+        # otherwise it requires a working CPU fallback and records the reason.
+        run: npm run check:media-preparation -- --hardware-ffmpeg "$(node -p "require('ffmpeg-static')")"
