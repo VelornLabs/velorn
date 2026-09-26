@@ -8,6 +8,7 @@
 const { spawn } = require('node:child_process')
 const http = require('node:http')
 const path = require('node:path')
+const { stripVTControlCharacters } = require('node:util')
 
 const root = path.resolve(__dirname, '..')
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
@@ -63,7 +64,7 @@ async function main() {
         if (server.exitCode !== null || server.signalCode !== null) throw new Error('Isolated Vite server exited before the fixture was ready')
         // Only probe after our child announces its own listening URL, so an
         // occupied port cannot silently route this test to somebody else's app.
-        if (output.includes(base.origin) && await isReady(new URL('/tests/fixtures/export-scheduler.html', base))) break
+        if (stripVTControlCharacters(output).includes(base.origin) && await isReady(new URL('/tests/fixtures/export-scheduler.html', base))) break
         if (Date.now() >= deadline) throw new Error('Isolated Vite server did not become ready within 30 seconds')
         await delay(100)
       }
