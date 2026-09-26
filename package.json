@@ -1,9 +1,11 @@
 {
   "name": "velorn",
-  "version": "0.3.35",
+  "version": "0.3.36",
   "description": "AI-native video editing built around real creative timelines, generative workflows, and local agent control.",
   "main": "electron/main.js",
   "scripts": {
+    "test:media-preparation": "node --test ./tests/mediaPreparation.test.cjs ./tests/mediaPreparationBridge.test.cjs ./tests/mediaPreparationServices.test.mjs ./src/utils/mediaPreparationStatus.test.mjs ./src/utils/mediaPreparationTarget.test.mjs",
+    "check:media-preparation": "node ./scripts/check-media-preparation.cjs",
     "test:export-scheduler": "node --test ./tests/exportScheduler.test.mjs",
     "check:export-worker-scheduling": "node ./scripts/check-export-worker-scheduling.cjs --serve",
     "test:audio-ducking": "node --test ./src/utils/audioDucking.test.mjs ./src/services/audioDucking.test.mjs ./tests/audioDuckingNative.test.mjs ./src/utils/playAroundStore.test.mjs",

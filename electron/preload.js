@@ -216,6 +216,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   transcodeForPlayback: (options) => ipcRenderer.invoke('playback:transcode', options),
 
+  // Read-only progress for this window's shared playback/proxy queue.
+  getMediaPreparationStatus: () => ipcRenderer.invoke('mediaPreparation:getStatus'),
+  onMediaPreparationStatus: (callback) => {
+    const handler = (_event, snapshot) => callback(snapshot)
+    ipcRenderer.on('mediaPreparation:status', handler)
+    return () => ipcRenderer.removeListener('mediaPreparation:status', handler)
+  },
+
   /**
    * Inspect GIF structure without decoding it. Used to deterministically keep
    * single-frame GIFs as images and normalize multi-frame GIFs as video.
@@ -255,7 +263,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /**
    * Transcode video to a low-res proxy (default 540p, CRF 28, keyframe every 6)
-   * for fast multi-layer timeline preview. Never used for export.
+   * for fast multi-layer timeline preview. Only explicit proxy-review exports use these.
    * @param {{ inputPath: string, outputPath: string, targetHeight?: number }}
    * @returns {Promise<{ success: boolean, error?: string }>}
    */

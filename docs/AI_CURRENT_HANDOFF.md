@@ -2,6 +2,12 @@
 
 Last updated: 2026-09-26
 
+## Issue #131 / v0.3.36 release preparation
+
+The maintainer approved the tested hardware-assisted playback/proxy preparation, bounded background concurrency and clearer progress, then authorized committing, pushing and preparing the next release on 2026-09-26. The isolated sibling checkout `velorn-issue-131`, branch `codex/issue-131-import-cache`, is based on released v0.3.35 (`6d12833`). Version metadata targets v0.3.36. Use the normal PR/CLA/main/tag/build process and keep the release **draft and unpublished** for maintainer review. Other dirty/unique checkouts are untouched.
+
+See `docs/ISSUE_131_MEDIA_PREPARATION.md` for contracts and tests and `docs/RELEASE_NOTES_0.3.36.md` for release copy. Actual Linux RTX 5090 NVENC and CPU fallback checks pass; Windows/macOS actual-device validation remains pending. Check the current PR/regression matrix/release workflow rather than treating this preparation note as proof of completed builds. Keep issue #131 open for reporter confirmation. Historical issue #130 preparation notes below are retained, but v0.3.35 has since been published.
+
 ## Issue #130 export scheduling hotfix
 
 The maintainer approved finishing validation and shipping the existing local scheduling fix for issue #130. A focused `codex/issue-130-export-scheduling` branch is based on published v0.3.34 / upstream main `140d3b6`, deliberately excluding unrelated local commits and unfinished changes. Those checkouts remain preserved.

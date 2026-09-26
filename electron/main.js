@@ -59,6 +59,7 @@ const {
 } = require('./mainWindowBounds')
 const { createRifeInterpolationCache } = require('./rifeInterpolation')
 const { resolveRifeRuntime } = require('./rifeRuntime')
+const { createMediaPreparationService } = require('./mediaPreparation')
 
 const isDev = !app.isPackaged
 
@@ -268,9 +269,17 @@ async function probeVideoInfo(filePath) {
   }
 
   return await new Promise((resolve) => {
+    let settled = false
+    let timer = null
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(result)
+    }
     const args = [
       '-v', 'error',
-      '-show_entries', 'stream=codec_type,codec_name,profile,pix_fmt,avg_frame_rate,r_frame_rate:stream_tags=alpha_mode',
+      '-show_entries', 'stream=codec_type,codec_name,profile,pix_fmt,avg_frame_rate,r_frame_rate,width,height,duration:stream_tags=alpha_mode:format=duration',
       '-of', 'json',
       filePath
     ]
@@ -278,19 +287,23 @@ async function probeVideoInfo(filePath) {
     const proc = spawn(ffprobePath, args, { windowsHide: true })
     let stdout = ''
     let stderr = ''
+    timer = setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* already stopped */ }
+      finish({ success: false, error: 'Media probe timed out.' })
+    }, 30000)
 
     proc.stdout.on('data', (data) => {
       stdout += data.toString()
     })
     proc.stderr.on('data', (data) => {
-      stderr += data.toString()
+      stderr = appendLimitedStderr(stderr, data)
     })
     proc.on('error', (err) => {
-      resolve({ success: false, error: err.message })
+      finish({ success: false, error: err.message })
     })
     proc.on('close', (code) => {
       if (code !== 0) {
-        resolve({ success: false, error: stderr || `FFprobe exited with code ${code}` })
+        finish({ success: false, error: stderr || `FFprobe exited with code ${code}` })
         return
       }
       try {
@@ -299,7 +312,7 @@ async function probeVideoInfo(filePath) {
         const videoStream = streams.find((stream) => stream?.codec_type === 'video') || null
         const audioStream = streams.find((stream) => stream?.codec_type === 'audio') || null
         const fps = parseFpsRatio(videoStream?.avg_frame_rate) || parseFpsRatio(videoStream?.r_frame_rate)
-        resolve({
+        finish({
           success: true,
           hasVideo: Boolean(videoStream),
           fps: fps || null,
@@ -309,9 +322,12 @@ async function probeVideoInfo(filePath) {
           pixelFormat: videoStream?.pix_fmt || null,
           videoProfile: videoStream?.profile || null,
           hasAlpha: probeStreamHasAlpha(videoStream),
+          width: Number(videoStream?.width) || null,
+          height: Number(videoStream?.height) || null,
+          duration: Number(videoStream?.duration) || Number(parsed?.format?.duration) || null,
         })
       } catch (err) {
-        resolve({ success: false, error: err.message })
+        finish({ success: false, error: err.message })
       }
     })
   })
@@ -7445,85 +7461,58 @@ ipcMain.handle('export:muxAudioVideo', async (event, options = {}) => {
 // ============================================
 // Playback cache (Flame-style: transcode for smooth playback)
 // ============================================
-ipcMain.handle('playback:transcode', async (event, { inputPath, outputPath }) => {
-  if (!ffmpegPath) {
-    return { success: false, error: 'FFmpeg binary not available.' }
-  }
-  if (!inputPath || !outputPath) {
-    return { success: false, error: 'Missing inputPath or outputPath.' }
-  }
-
-  const inputProbe = await probeVideoInfo(inputPath)
-  const targetFps = normalizePlaybackCacheFps(inputProbe?.fps)
-  const tempOutputPath = path.join(
-    path.dirname(outputPath),
-    `.${path.basename(outputPath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp.mp4`
-  )
-
-  // Same dimensions, H.264, CFR, keyframe every 6 frames, no B-frames = easy decode.
-  // Original media stays untouched; preview swaps to this cache file after validation.
-  const args = [
-    '-y',
-    '-i', inputPath,
-    '-map', '0:v:0',
-    '-map', '0:a:0?',
-    ...(targetFps ? ['-vf', `fps=${targetFps}`] : []),
-    '-c:v', 'libx264',
-    '-preset', 'fast',
-    '-crf', '23',
-    '-g', '6',
-    '-keyint_min', '6',
-    '-bf', '0',
-    '-pix_fmt', 'yuv420p',
-    '-movflags', '+faststart',
-    '-c:a', 'aac',
-    '-b:a', '192k',
-    '-ar', '48000',
-    '-ac', '2',
-    tempOutputPath
-  ]
-
-  return await new Promise((resolve) => {
-    const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true })
-    let stderr = ''
-    let settled = false
-
-    const finish = async (payload) => {
-      if (settled) return
-      settled = true
-      if (!payload?.success) {
-        try { await fs.unlink(tempOutputPath) } catch (_) { /* ignore */ }
-      }
-      resolve(payload)
+// A single native queue covers every renderer/import/rebuild entry point and
+// both cache tiers. Export and alpha/GIF normalization stay separate.
+const mediaPreparationOwners = new Map()
+const mediaPreparation = createMediaPreparationService({
+  ffmpegPath,
+  resolveHardwareFfmpeg: resolveHardwareExportFfmpegSelection,
+  probeVideoInfo,
+  normalizeFps: normalizePlaybackCacheFps,
+  probeHardwareEncoder,
+  onStatus: () => {
+    for (const [ownerId, sender] of mediaPreparationOwners) {
+      if (sender.isDestroyed()) continue
+      try { sender.send('mediaPreparation:status', mediaPreparation.getStatus(ownerId)) } catch { /* window closing */ }
     }
-
-    ffmpeg.stderr.on('data', (data) => {
-      stderr = appendLimitedStderr(stderr, data)
-    })
-
-    ffmpeg.on('error', (err) => {
-      finish({ success: false, error: err.message })
-    })
-
-    ffmpeg.on('close', async (code) => {
-      if (code === 0) {
-        const outputProbe = await probeVideoInfo(tempOutputPath)
-        if (!outputProbe?.success || !outputProbe?.hasVideo) {
-          await finish({ success: false, error: outputProbe?.error || 'Playback cache validation failed.' })
-          return
-        }
-        try {
-          await fs.rename(tempOutputPath, outputPath)
-          await finish({ success: true, fps: outputProbe.fps || targetFps || null })
-        } catch (err) {
-          await finish({ success: false, error: err.message || 'Could not finalize playback cache file.' })
-        }
-      } else {
-        await finish({ success: false, error: stderr || `FFmpeg exited with code ${code}` })
-      }
-    })
-  })
+  },
 })
+
+function registerMediaPreparationOwner(sender) {
+  const ownerId = sender.id
+  if (!mediaPreparationOwners.has(ownerId)) {
+    mediaPreparationOwners.set(ownerId, sender)
+    sender.once('destroyed', () => {
+      mediaPreparationOwners.delete(ownerId)
+      mediaPreparation.cancelOwner(ownerId)
+    })
+    sender.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) mediaPreparation.cancelOwner(ownerId)
+    })
+  }
+  return ownerId
+}
+
+function enqueueMediaPreparation(event, options, kind) {
+  const input = options && typeof options === 'object' ? options : {}
+  return mediaPreparation.enqueue({
+    kind,
+    inputPath: input.inputPath,
+    outputPath: input.outputPath,
+    targetHeight: input.targetHeight,
+    ownerId: registerMediaPreparationOwner(event.sender),
+    assetId: typeof input.assetId === 'string' ? input.assetId.slice(0, 120) : null,
+    label: typeof input.label === 'string'
+      ? input.label.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 160)
+      : (typeof input.inputPath === 'string' ? path.basename(input.inputPath) : ''),
+  })
+}
+
+ipcMain.handle('mediaPreparation:getStatus', (event) => (
+  mediaPreparation.getStatus(registerMediaPreparationOwner(event.sender))
+))
+ipcMain.handle('playback:transcode', (event, options) => enqueueMediaPreparation(event, options, 'playback'))
+app.on('will-quit', () => mediaPreparation.cancelAll())
 
 // ============================================
 // GIF import (static probe + animated editing intermediate)
@@ -7599,60 +7588,10 @@ ipcMain.handle('imageSequence:transcode', async (event, options = {}) => {
 // Separate from the playback cache above. The playback cache keeps source
 // resolution so single-layer preview is smooth; the proxy cache drops to
 // a short dimension (default 540px) so multi-layer timelines with heavy
-// effect stacks decode a fraction of the pixels. Export never uses these.
+// effect stacks decode a fraction of the pixels. Only explicit proxy-review
+// exports use them; normal full-quality delivery continues to use originals.
 // ============================================
-ipcMain.handle('proxy:transcode', async (event, { inputPath, outputPath, targetHeight = 540 }) => {
-  if (!ffmpegPath) {
-    return { success: false, error: 'FFmpeg binary not available.' }
-  }
-  if (!inputPath || !outputPath) {
-    return { success: false, error: 'Missing inputPath or outputPath.' }
-  }
-
-  // scale=-2:H → preserve aspect, force-even width (H.264 requirement).
-  // veryfast + crf 28 gives small files (~1/4 playback-cache size) and
-  // keeps ffmpeg fast enough to run in the background at import time.
-  // Keyframe every 6 frames matches the playback cache so scrubbing is
-  // identical across both tiers.
-  const scaleFilter = `scale=-2:${Math.max(180, Math.min(1080, Number(targetHeight) || 540))}`
-  const args = [
-    '-y',
-    '-i', inputPath,
-    '-vf', scaleFilter,
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-crf', '28',
-    '-g', '6',
-    '-keyint_min', '6',
-    '-bf', '0',
-    '-pix_fmt', 'yuv420p',
-    '-movflags', '+faststart',
-    '-c:a', 'aac',
-    '-b:a', '128k',
-    outputPath
-  ]
-
-  return await new Promise((resolve) => {
-    const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true })
-    let stderr = ''
-
-    ffmpeg.stderr.on('data', (data) => {
-      stderr += data.toString()
-    })
-
-    ffmpeg.on('error', (err) => {
-      resolve({ success: false, error: err.message })
-    })
-
-    ffmpeg.on('close', (code) => {
-      if (code === 0) {
-        resolve({ success: true })
-      } else {
-        resolve({ success: false, error: stderr || `FFmpeg exited with code ${code}` })
-      }
-    })
-  })
-})
+ipcMain.handle('proxy:transcode', (event, options) => enqueueMediaPreparation(event, options, 'proxy'))
 
 // Hardware-encoder availability check. Despite the historical channel name
 // this is platform-aware: NVENC on Windows/Linux, VideoToolbox on macOS.

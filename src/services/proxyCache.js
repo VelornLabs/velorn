@@ -30,6 +30,7 @@
 import { isElectron } from './fileSystem'
 import { canUseOpaqueVideoDerivative } from '../utils/alphaMedia.mjs'
 import { getProjectFileUrl } from './fileSystem'
+import { createMediaPreparationTarget } from '../utils/mediaPreparationTarget.mjs'
 
 const CACHE_DIR = 'cache'
 const PREFIX = 'proxy_'
@@ -185,6 +186,8 @@ export async function transcodeVideoForProxy(projectDir, assetId, sourcePath, op
     inputPath: sourcePath,
     outputPath,
     targetHeight,
+    assetId,
+    label: options.label,
   })
 
   if (!result?.success) {
@@ -205,30 +208,36 @@ export async function enqueueProxyTranscode(projectDir, assetId, sourcePath, opt
   if (!isElectron()) return
 
   const { useAssetsStore } = await import('../stores/assetsStore')
+  const { useProjectStore } = await import('../stores/projectStore')
   const store = useAssetsStore.getState()
   const currentAsset = store.assets.find((asset) => asset.id === assetId)
   if (currentAsset && !isProxyableVideoAsset(currentAsset)) return
-  // Signature of the source as it exists RIGHT NOW — recorded with the
-  // proxy on success so later loads can detect in-place source replacement.
-  const currentSignature = await buildProxySourceSignature(sourcePath)
-  // Guard: don't re-encode a proxy that's already ready unless forced —
-  // but a ready proxy whose recorded source signature no longer matches
-  // the file on disk is stale and DOES re-encode.
-  if (!options.force) {
-    const existing = currentAsset
-    const existingIsStale = Boolean(
-      existing?.proxySourceSignature
-      && currentSignature
-      && existing.proxySourceSignature !== currentSignature
-    )
-    if (existing?.proxyStatus === 'ready' && existing?.proxyPath && !existingIsStale) return
-    if (existing?.proxyStatus === 'encoding') return
-  }
-
-  store.setProxyCacheStatus?.(assetId, 'encoding')
-
+  if (!options.force && currentAsset?.proxyStatus === 'encoding') return
+  const target = createMediaPreparationTarget({
+    projectDir, assetId, kind: 'proxy', assetsStore: useAssetsStore, projectStore: useProjectStore,
+    deferClaim: true,
+  })
   try {
-    const result = await transcodeVideoForProxy(projectDir, assetId, sourcePath, options)
+    if (!target.isCurrent()) return
+    // Signature of the source as it exists RIGHT NOW — recorded with the
+    // proxy on success so later loads can detect in-place source replacement.
+    const currentSignature = await buildProxySourceSignature(sourcePath)
+    if (!target.isCurrent()) return
+    // Don't re-encode a ready proxy unless it is stale or a rebuild was requested.
+    if (!options.force) {
+      const existingIsStale = Boolean(
+        currentAsset?.proxySourceSignature
+        && currentSignature
+        && currentAsset.proxySourceSignature !== currentSignature
+      )
+      if (currentAsset?.proxyStatus === 'ready' && currentAsset?.proxyPath && !existingIsStale) return
+      if (useAssetsStore.getState().assets.find(asset => asset.id === assetId)?.proxyStatus === 'encoding') return
+    }
+
+    if (!target.claim()) return
+    store.setProxyCacheStatus?.(assetId, 'encoding')
+    const result = await transcodeVideoForProxy(projectDir, assetId, sourcePath, { ...options, label: currentAsset?.name })
+    if (!target.isCurrent()) return
     if (!result.success) {
       useAssetsStore.getState().setProxyCacheStatus?.(assetId, 'failed')
       console.warn('[ProxyCache] Transcode failed:', result.error, { assetId })
@@ -236,11 +245,14 @@ export async function enqueueProxyTranscode(projectDir, assetId, sourcePath, opt
     }
 
     const url = await getProjectFileUrl(projectDir, result.relativePath)
+    if (!target.isCurrent()) return
     useAssetsStore.getState().setProxyCache?.(assetId, result.relativePath, url, currentSignature)
     useAssetsStore.getState().setProxyCacheStatus?.(assetId, 'ready')
   } catch (err) {
-    useAssetsStore.getState().setProxyCacheStatus?.(assetId, 'failed')
+    if (target.isCurrent()) useAssetsStore.getState().setProxyCacheStatus?.(assetId, 'failed')
     console.warn('[ProxyCache] Transcode error:', err?.message || err, { assetId })
+  } finally {
+    target.release()
   }
 }
 
