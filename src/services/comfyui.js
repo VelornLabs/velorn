@@ -18,7 +18,10 @@ import {
   getMusicVideoShotTypeOption,
   normalizeMusicVideoShot,
 } from '../config/musicVideoShotConfig'
-import { extractComboChoicesFromSpec } from './comfyObjectInfo.mjs'
+import {
+  resolveSubfolderModelPathsFromObjectInfo,
+  workflowHasModelFileInputs,
+} from './comfyObjectInfo.mjs'
 
 const COMFY_ORG_API_KEY_SETTING_KEY = 'comfyApiKeyComfyOrg';
 const COMFY_ORG_API_KEY_LOCAL_KEY = 'comfystudio-comfy-api-key';
@@ -59,23 +62,6 @@ const OUTPUT_RESIZE_TITLES = [VELORN_OUTPUT_RESIZE_TITLE, LEGACY_COMFYSTUDIO_OUT
 // Velorn's built-in workflows reference bare filenames, so an unmatched
 // model input is resolved against the node's actual choice list by basename
 // before queueing (see resolveSubfolderModelPaths).
-const MODEL_FILE_INPUT_RE = /\.(safetensors|sft|ckpt|pt|pth|bin|gguf|onnx)$/i
-
-function modelPathBasename(value) {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (!normalized) return ''
-  const parts = normalized.split(/[\\/]+/)
-  return parts[parts.length - 1] || ''
-}
-
-function getSchemaInputSpec(nodeSchema, inputKey) {
-  const requiredSpec = nodeSchema?.input?.required?.[inputKey]
-  if (requiredSpec !== undefined) return requiredSpec
-  const optionalSpec = nodeSchema?.input?.optional?.[inputKey]
-  if (optionalSpec !== undefined) return optionalSpec
-  return null
-}
-
 function parseNumericLike(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
@@ -882,50 +868,18 @@ class ComfyUIService {
   async resolveSubfolderModelPaths(workflow) {
     try {
       if (!workflow || typeof workflow !== 'object') return workflow
-
-      const pending = []
-      for (const [nodeId, node] of Object.entries(workflow)) {
-        const inputs = node?.inputs
-        if (!inputs || typeof inputs !== 'object') continue
-        for (const [inputKey, value] of Object.entries(inputs)) {
-          if (typeof value !== 'string') continue
-          const trimmed = value.trim()
-          if (!MODEL_FILE_INPUT_RE.test(trimmed)) continue
-          pending.push({ nodeId, classType: String(node?.class_type || '').trim(), inputKey, value: trimmed })
-        }
-      }
-      if (pending.length === 0) return workflow
+      if (!workflowHasModelFileInputs(workflow)) return workflow
 
       const objectInfo = await this.getObjectInfoCached()
-      if (!objectInfo || typeof objectInfo !== 'object') return workflow
-
-      const substitutions = []
-      for (const entry of pending) {
-        const nodeSchema = objectInfo[entry.classType]
-        if (!nodeSchema) continue
-        const choices = extractComboChoicesFromSpec(getSchemaInputSpec(nodeSchema, entry.inputKey))
-        if (choices.length === 0) continue
-        const lowerValue = entry.value.toLowerCase()
-        if (choices.some((choice) => String(choice).toLowerCase() === lowerValue)) continue
-        const wantedBasename = modelPathBasename(entry.value)
-        if (!wantedBasename) continue
-        const candidates = choices.filter((choice) => modelPathBasename(choice) === wantedBasename)
-        if (candidates.length === 0) continue
-        const resolved = [...candidates].sort()[0]
-        substitutions.push({ ...entry, resolved, ambiguous: candidates.length > 1 })
-      }
-      if (substitutions.length === 0) return workflow
-
-      const resolvedWorkflow = JSON.parse(JSON.stringify(workflow))
-      for (const sub of substitutions) {
-        const target = resolvedWorkflow?.[sub.nodeId]?.inputs
-        if (target) target[sub.inputKey] = sub.resolved
+      const result = resolveSubfolderModelPathsFromObjectInfo(workflow, objectInfo)
+      if (result.substitutions.length === 0) return workflow
+      for (const sub of result.substitutions) {
         console.log(
           `[ComfyUI] Resolved model input to subfolder path: ${sub.classType}.${sub.inputKey} '${sub.value}' -> '${sub.resolved}'`
           + (sub.ambiguous ? ' (multiple matches; picked first alphabetically)' : '')
         )
       }
-      return resolvedWorkflow
+      return result.workflow
     } catch (error) {
       try { console.warn('[ComfyUI] Subfolder model path resolution skipped:', error?.message) } catch (_) { /* ignore */ }
       return workflow
