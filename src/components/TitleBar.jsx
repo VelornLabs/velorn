@@ -15,7 +15,8 @@ const TOP_TABS = [
   { id: 'storyboard', label: 'Storyboard' },
   { id: 'editor', label: 'Editor' },
   { id: 'generate', label: 'Director' },
-  { id: 'create', label: 'Create' },
+  // Pictures and video. The tab's internal id stays 'create'; people see "Visuals" beside "Sound" (Jaime, 2026-11-18).
+  { id: 'create', label: 'Visuals' },
   { id: 'sound', label: 'Sound' },
   { id: 'agent', label: 'Agent' },
   { id: 'flow-ai', label: 'Flow AI' },
@@ -156,6 +157,12 @@ function TitleBar({
                   {tab.id === 'discover' && <PlayCircle className="hidden h-3.5 w-3.5 2xl:block" aria-hidden="true" />}
                   {tab.id === 'comfyui' ? tab.label : t(`topTabs.${tab.id}`, undefined, tab.label)}
                 </button>
+                {/* GPU sharing is experimental: a small red mark right under its name, always shown. It sits inside the bar because the bar clips what hangs below it. */}
+                {tab.id === 'gpu-sharing' && (
+                  <span data-tab-beta="gpu-sharing" className="pointer-events-none absolute bottom-0 left-1/2 -translate-x-1/2 rounded-sm bg-red-600 px-1 text-[7px] font-bold uppercase leading-[9px] tracking-[0.12em] text-white">
+                    Beta
+                  </span>
+                )}
                 {tab.id === 'mog' && activeTab === 'mog' && (
                   <div className="pointer-events-none absolute left-1/2 top-full mt-1 -translate-x-1/2 rounded-full bg-pink-300/12 px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-pink-200/65 shadow-[0_0_10px_rgba(244,114,182,0.12)]">
                     beta

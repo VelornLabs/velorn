@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 
 export const HIDEABLE_TOP_TABS = [
-  { id: 'create', label: 'Create' },
+  { id: 'create', label: 'Visuals' },
   { id: 'sound', label: 'Sound' },
   { id: 'stock', label: 'Stock' },
   { id: 'gpu-sharing', label: 'GPU sharing' },

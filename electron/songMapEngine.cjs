@@ -44,6 +44,8 @@ function createSongMapEngine({
 } = {}) {
   let active = null
   let installing = null
+  // Set when the graphics-card version of the speech program found no card or failed: it is not tried again until Velorn restarts.
+  let cardGaveUp = false
 
   const modelsDir = () => path.join(app.getPath('userData'), ENGINE_DIR_NAME, 'models')
 
@@ -61,6 +63,7 @@ function createSongMapEngine({
       alignerDictPath: songModel('alignerDict'),
       ffmpegPath,
       whisperCliPath: null,
+      whisperGpuCliPath: null,
       whisperModelPath: null,
       speechModelId: null,
     }
@@ -69,6 +72,8 @@ function createSongMapEngine({
     try { speech = captionService?.getStatus?.() } catch { speech = null }
     if (speech?.binaryPath && fs.existsSync(speech.binaryPath)) pieces.whisperCliPath = speech.binaryPath
     else missing.push('speech engine')
+    // The graphics-card version, when there is one and it has not already let us down since Velorn started.
+    if (!cardGaveUp && speech?.gpuBinaryPath && fs.existsSync(speech.gpuBinaryPath)) pieces.whisperGpuCliPath = speech.gpuBinaryPath
     const installed = Array.isArray(speech?.models) ? speech.models : []
     const model = SPEECH_MODEL_PREFERENCE.map((id) => installed.find((entry) => entry.id === id && entry.path)).find(Boolean) || installed.find((entry) => entry.path)
     if (model) { pieces.whisperModelPath = model.path; pieces.speechModelId = model.id } else missing.push('speech model')
@@ -143,15 +148,18 @@ function createSongMapEngine({
       inputPath,
       ffmpegPath: pieces.ffmpegPath,
       whisperCliPath: pieces.whisperCliPath,
+      ...(pieces.whisperGpuCliPath ? { whisperGpuCliPath: pieces.whisperGpuCliPath } : {}),
       whisperModelPath: pieces.whisperModelPath,
       separatorModelPath: pieces.separatorModelPath,
       alignerModelPath: pieces.alignerModelPath,
       alignerDictPath: pieces.alignerDictPath,
       threads: Math.max(2, Math.min(8, (os.cpus()?.length || 4) - 2)),
       language: 'en',
+      // After the card has let us down once, the worker is told not to try it at all.
+      ...(cardGaveUp ? { useCard: false } : {}),
     }
 
-    return new Promise((resolve) => {
+    const attempt = (request) => new Promise((resolve) => {
       const child = spawnProcess(execPath, [workerPath, JSON.stringify(request)], {
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -199,6 +207,7 @@ function createSongMapEngine({
       child.on('close', () => {
         if (job.cancelled) return finish(failure('SONG_MAP_CANCELLED', 'Listening was stopped.'))
         if (result?.type === 'result') {
+          if (result.speech?.cardProblem || Object.values(result.models || {}).some(model => model?.problem)) cardGaveUp = true
           return finish({
             success: true,
             duration: result.duration,
@@ -206,10 +215,25 @@ function createSongMapEngine({
             voice: result.voice,
             speechModelId: pieces.speechModelId,
             seconds: result.seconds,
+            // Where the words were heard: 'card' (graphics card) or 'processor'; and why the card was not used, if it was tried.
+            speech: { used: result.speech?.used === 'card' ? 'card' : 'processor', ...(result.speech?.cardProblem ? { cardProblem: result.speech.cardProblem === 'no-card' ? 'no-card' : 'failed' } : {}) },
+            // The other two steps: 'card' or 'processor' each.
+            models: Object.fromEntries(['voice', 'timing'].map(name => [name, result.models?.[name]?.on === 'card' ? 'card' : 'processor'])),
           })
         }
-        finish(failure('SONG_MAP_FAILED', result?.error || `Listening stopped unexpectedly. ${errorTail}`.trim()))
+        // A problem the worker reported itself (a song it cannot read, say) is final. Only a worker that died without a word is tried again.
+        finish({ ...failure('SONG_MAP_FAILED', result?.error || `Listening stopped unexpectedly. ${errorTail}`.trim()), ...(result ? {} : { stopped: true }) })
       })
+    })
+    // A graphics card can also take the whole worker down with it, which the worker cannot catch itself.
+    // So a listen that stopped while the card was allowed is tried once more on the processor alone, and
+    // the card is left alone until Velorn restarts.
+    return attempt(request).then((first) => {
+      const { stopped, ...answer } = first
+      if (!stopped || request.useCard === false) return answer
+      cardGaveUp = true
+      const { whisperGpuCliPath, ...plain } = request
+      return attempt({ ...plain, useCard: false }).then(({ stopped: again, ...second }) => second)
     })
   }
 

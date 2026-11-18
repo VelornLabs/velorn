@@ -321,7 +321,7 @@ export function footnote({ connected, remembered, model, price }) {
   if (model?.via === 'comfyui') return 'Runs through ComfyUI and uses credits from your Comfy account. Pressing the button approves the price shown.'
   if (!connected) return 'You see the cost before anything is charged.'
   return ['Uses credits from your Comfy account.',
-    model && !model.firmQuote && price ? 'You see the exact cost after each picture.' : '',
+    model && !model.firmQuote && price ? `You see the exact cost after each ${model.kind === 'image' ? 'picture' : 'one'}.` : '',
     model?.refusalCharged === 'yes' ? 'This model charges even if it refuses a request.' : '',
     remembered === false ? 'Your key is kept until Velorn closes.' : ''].filter(Boolean).join(' ')
 }
@@ -345,7 +345,7 @@ export function problemFor(result, { model = null, kind = 'image' } = {}) {
   if (code === 'COMFY_ROUTER_KEY_REQUIRED') return { screen: 'connect', keyError: '' }
   if (type === 'insufficient_credits' || http === 402 || jobError === 'insufficient_credits') return { screen: 'nocredits' }
   if (code === 'COMFY_ROUTER_DECLINED') return { screen: 'compose' }
-  if (code === 'COMFY_ROUTER_LOCAL_ONLY') return { screen: 'compose', notice: 'Cloud generation is turned off. Choose "Ask before cloud" in Settings, under Generation spending, to use Create.' }
+  if (code === 'COMFY_ROUTER_LOCAL_ONLY') return { screen: 'compose', notice: 'Cloud generation is turned off. Choose "Ask before cloud" in Settings, under Generation spending, to make this.' }
   if (code === 'COMFY_ROUTER_PROJECT_REQUIRED') return { screen: 'compose', notice: 'Open or save a project first, so the result has somewhere to go.' }
   if (code === 'COMFY_ROUTER_INVALID') return { screen: 'compose', notice: result?.error && !/Review the Comfy Router request/.test(result.error) ? result.error : "Comfy can't take that request as written. Check the description and try again." }
   if (code === 'ROUTER_EXPORT_BUSY') return { screen: 'compose', notice: 'Wait for the export to finish, then try again.' }
@@ -359,7 +359,7 @@ export function problemFor(result, { model = null, kind = 'image' } = {}) {
   if (code === 'COMFY_ROUTER_UNCERTAIN' || result?.job?.status === 'UNCERTAIN') return { screen: 'trouble', kind: 'lost',
     title: 'We lost touch with Comfy',
     body: `Your ${NOUN(kind)} may still be on its way. Check your Comfy usage page before generating again, or you could pay twice for the same thing.`,
-    note: "Velorn won't send this request again on its own.", primary: 'Back to Create' }
+    note: "Velorn won't send this request again on its own.", primary: 'Go back' }
   return { screen: 'trouble', kind: 'failed', title: "That one didn't work",
     body: 'Comfy ran into a problem and stopped. Your description and settings are still here.',
     note: 'Your Comfy usage page shows whether this attempt was charged.', primary: 'Try again', secondary: 'Change something first' }

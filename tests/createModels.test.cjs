@@ -34,7 +34,7 @@ test('covers five request formats and leaves out clip editing', () => {
 test('records which models charge for a refused request', () => {
   const charged = value => listModels().filter(m => m.refusalCharged === value).map(m => m.id)
   assert.deepEqual(charged('no'), ['seedance-2-0-mini', 'seedance-2-0-fast', 'seedance-2-0', 'seedance-2-5', 'flux-3-image'])
-  assert.deepEqual(charged('unknown'), ['gpt-image-2-5', 'eleven-v4', 'eleven-v4-turbo', 'eleven-sfx-v2'])
+  assert.deepEqual(charged('unknown'), ['gpt-image-2-5', 'eleven-v4', 'eleven-v4-turbo', 'eleven-sfx-v2', 'pika-music'])
   assert.equal(charged('yes').length, 6)
 })
 

@@ -49,11 +49,81 @@ test('Velorn names the shape from what a workflow starts with and what it saves'
   for (const [name, graph, words] of [
     ['two results', { ...TEXT, 9: node('SaveImage', { filename_prefix: 'b', images: ['6', 0] }) }, /saves 2 results/],
     ['no result', { ...TEXT, 7: node('PreviewImage', { images: ['6', 0] }) }, /could not find where the result is saved/],
-    ['sound out', { ...TEXT, 9: node('SaveAudio', { filename_prefix: 'a', audio: ['6', 0] }) }, /other than a picture or a video/],
+    ['a picture and a sound out', { ...TEXT, 9: node('SaveAudio', { filename_prefix: 'a', audio: ['6', 0] }) }, /saves 2 results/],
+    ['something else out', { ...TEXT, 9: node('SaveGLB', { filename_prefix: 'a' }) }, /other than a picture, a video or a sound/],
     ['two pictures in', { ...EDIT, 9: node('LoadImage', { image: 'dog.png' }) }, /starts from 2 pictures/],
     ['a video in', { ...TEXT, 9: node('LoadVideo', { file: 'a.mp4' }) }, /starts from a video, a sound or another file/],
     ['nowhere for words', Object.fromEntries(Object.entries(TEXT).filter(([id]) => !['2', '3'].includes(id))), /could not find a place for the description/],
   ]) assert.ok(shape(graph).problems.some(problem => words.test(problem)), name)
+})
+
+// A music workflow in the shape of ComfyUI's MiniMax Music 3 template: one part holds the description
+// ("caption") and the words to sing ("lyrics"), and a Save Audio part writes the file.
+const MUSIC = {
+  1: node('CLIPLoader', { clip_name: 'music_text_encoder.safetensors', type: 'minimax_music' }),
+  2: node('MiniMaxMusic3TextEncode', { caption: 'lo-fi, slow', lyrics: '[verse]\nthe owner\'s own words', seed: 5, max_duration: 60, clip: ['1', 0] }, 'Text to Music'),
+  3: node('EmptyMiniMaxMusic3LatentAudio', { seconds: ['2', 1] }),
+  // Numbered so the sampler is part 5, where this file's pretend library says the seed is.
+  5: node('KSampler', { seed: 9, steps: 20, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1, positive: ['2', 0], latent_image: ['3', 0] }),
+  4: node('VAEDecodeAudio', { samples: ['5', 0] }),
+  6: node('SaveAudioAdvanced', { filename_prefix: 'audio/mine', format: 'mp3', 'format.quality': 'V0', audio: ['4', 0] }, 'Save Audio'),
+}
+const musicBindings = { prompt: null, seeds: [{ nodeId: '2', inputKey: 'seed' }, { nodeId: '5', inputKey: 'seed' }], assets: [] }
+
+test('a workflow that saves one sound from a description is "text to music", with its lyrics box found', () => {
+  const found = describeGraph(MUSIC, musicBindings)
+  assert.deepEqual([found.shape, found.kind, found.problems], ['text-to-music', 'audio', []])
+  assert.deepEqual([found.prompt, found.lyrics, found.image, found.output], [{ nodeId: '2', inputKey: 'caption' }, { nodeId: '2', inputKey: 'lyrics' }, null, { nodeId: '6', classType: 'SaveAudioAdvanced', label: 'Save Audio' }])
+  // A music workflow without a lyrics box is still music; it just takes no words to sing.
+  const plainGraph = { ...MUSIC, 2: node('CLIPTextEncode', { text: 'rain', clip: ['1', 0] }) }
+  const plainFound = describeGraph(plainGraph, { ...musicBindings, prompt: { nodeId: '2', inputKey: 'text' } })
+  assert.deepEqual([plainFound.shape, plainFound.lyrics, plainFound.prompt], ['text-to-music', null, { nodeId: '2', inputKey: 'text' }])
+  for (const [name, graph, words] of [
+    ['starts from a picture', { ...MUSIC, 9: node('LoadImage', { image: 'cat.png' }) }, /makes a sound but starts from a picture/],
+    ['starts from a sound', { ...MUSIC, 9: node('LoadAudio', { audio: 'a.mp3' }) }, /starts from a video, a sound or another file/],
+    ['two sounds out', { ...MUSIC, 9: node('SaveAudioMP3', { filename_prefix: 'b', audio: ['4', 0] }) }, /saves 2 results/],
+  ]) assert.ok(describeGraph(graph, { ...musicBindings, assets: Object.entries(graph).filter(([, item]) => item.class_type === 'LoadImage').map(([nodeId]) => ({ nodeId, inputKey: 'image', assetType: 'image' })) }).problems.some(problem => words.test(problem)), name)
+})
+
+test('a music job carries the sender\'s description and lyrics, and never the owner\'s own lyrics', () => {
+  const record = { id: 'own-0123456789abcdef', name: 'Songs', kind: 'audio', prompt: { nodeId: '2', inputKey: 'caption' }, lyrics: { nodeId: '2', inputKey: 'lyrics' }, image: null,
+    output: { nodeId: '6', classType: 'SaveAudioAdvanced' }, seeds: [{ nodeId: '2', inputKey: 'seed' }, { nodeId: '5', inputKey: 'seed' }] }
+  const entry = entryFor(record)
+  assert.deepEqual([entry.kind, entry.needsImage], ['audio', false])
+  assert.deepEqual(entry.normalize({ prompt: ' stadium rock ', lyrics: ' [chorus]\nla la ' }), { prompt: 'stadium rock', seed: null, lyrics: '[chorus]\nla la' })
+  assert.deepEqual(entry.normalize({ prompt: 'piano' }), { prompt: 'piano', seed: null, lyrics: '' })
+  for (const bad of [{ prompt: 'x', lyrics: 7 }, { prompt: 'x', lyrics: 'y'.repeat(3001) }, { prompt: 'x', max_duration: 300 }, { prompt: 'x', format: 'flac' }])
+    assert.throws(() => entry.normalize(bad), error => error.code === 'GPU_SHARE_INVALID')
+  const sung = entry.bind(MUSIC, entry.normalize({ prompt: 'stadium rock', lyrics: '[chorus]\nla la', seed: 3 }), { imageName: null, prefix: 'velorn_network/job1', randomSeed: () => 1 })
+  assert.deepEqual([sung.workflow[2].inputs.caption, sung.workflow[2].inputs.lyrics, sung.workflow[2].inputs.seed, sung.workflow[5].inputs.seed, sung.workflow[6].inputs.filename_prefix], ['stadium rock', '[chorus]\nla la', 3, 3, 'velorn_network/job1'])
+  // The length, the model and the file format stay as the owner set them.
+  assert.deepEqual([sung.workflow[2].inputs.max_duration, sung.workflow[6].inputs.format, sung.workflow[1].inputs.clip_name], [60, 'mp3', 'music_text_encoder.safetensors'])
+  const instrumental = entry.bind(MUSIC, entry.normalize({ prompt: 'piano' }), { imageName: null, prefix: 'p', randomSeed: () => 1 })
+  assert.equal(instrumental.workflow[2].inputs.lyrics, '')
+  assert.equal(MUSIC[2].inputs.lyrics.includes('owner'), true) // The saved workflow itself is untouched.
+  // A picture or video workflow takes no lyrics at all.
+  assert.throws(() => entryFor({ ...record, kind: 'image', lyrics: undefined }).normalize({ prompt: 'x', lyrics: 'la' }), error => error.code === 'GPU_SHARE_INVALID')
+})
+
+test('a music workflow is added, tested with a music description, and keeps its sound as the example', async t => {
+  const f = await fixture(t, { graphs: { 'my-workflow:song': MUSIC } })
+  f.state.result = { mimeType: 'audio/mpeg', bytes: Buffer.concat([Buffer.from('ID3\x04\x00\x00\x00\x00\x00\x21', 'latin1'), Buffer.alloc(200, 3)]) }
+  const seen = await f.own.inspect({ workflowId: 'my-workflow:song' })
+  assert.deepEqual([seen.shape, seen.shapeLabel, seen.kind, seen.canAdd], ['text-to-music', 'Text to music', 'audio', true])
+  const added = await f.own.add({ workflowId: 'my-workflow:song', name: 'My songs' })
+  const id = added.workflow.id
+  await f.own.test({ id })
+  assert.match(f.state.ran[0].choices.prompt, /piano/)
+  const listed = (await f.own.list()).workflows[0]
+  assert.deepEqual([listed.shape, listed.kind, listed.hasExample], ['text-to-music', 'audio', true])
+  const example = await f.own.example({ id })
+  assert.equal(example.mimeType, 'audio/mpeg')
+  assert.deepEqual((await fs.readdir(f.dir)).filter(name => name.endsWith('.mp3')), [`${id}.mp3`])
+  // It survives a restart, lyrics box included.
+  const again = f.make()
+  assert.deepEqual((await again.list()).workflows.map(item => item.shape), ['text-to-music'])
+  const own = await again.resolve(id)
+  assert.deepEqual(own.entry.normalize({ prompt: 'x', lyrics: 'y' }), { prompt: 'x', seed: null, lyrics: 'y' })
 })
 
 test('a job through an own workflow fills the found spots and nothing else', () => {

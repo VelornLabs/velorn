@@ -37,13 +37,13 @@ const dims = pair => `${pair[0]}x${pair[1]}`
 // take a description and a length. None of them takes a picture or a shape.
 function normalizeAudio(model, input) {
   const voice = model.kind === 'voice'
-  const allowed = voice ? ['prompt', 'voice'] : model.kind === 'sound' ? ['prompt', 'seconds', 'loop'] : ['prompt', 'seconds']
+  const allowed = voice ? ['prompt', 'voice'] : model.kind === 'sound' ? ['prompt', 'seconds', 'loop'] : model.lyrics ? ['prompt', 'seconds', 'lyrics'] : ['prompt', 'seconds']
   for (const key of Object.keys(input)) if (!allowed.includes(key)) throw refuse(`"${key}" is not a choice ${model.name} takes.`)
   const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : ''
   if (!prompt || /\x00/.test(prompt)) throw refuse(voice ? 'Write what the voice should say first.' : 'Write a description first.')
   if (voice) {
     if (prompt.length > model.characters.max) throw refuse(`${model.name} takes up to ${model.characters.max.toLocaleString('en-US')} characters at a time.`)
-    const chosen = getVoice(input.voice)
+    const chosen = getVoice(input.voice, model)
     if (typeof input.voice !== 'string' || !chosen) throw refuse('Choose a voice.')
     return { model, picture: null, choices: { prompt, voice: chosen.id, characters: prompt.length } }
   }
@@ -51,7 +51,14 @@ function normalizeAudio(model, input) {
   const seconds = input.seconds === undefined ? model.seconds.offered[0] : input.seconds
   if (!Number.isInteger(seconds) || seconds < model.seconds.min || seconds > model.seconds.max) throw refuse(`${model.name} makes ${model.seconds.min} to ${model.seconds.max} seconds.`)
   if (input.loop !== undefined && typeof input.loop !== 'boolean') throw refuse('Unknown repeat choice.')
-  return { model, picture: null, choices: { prompt, seconds, ...(input.loop ? { loop: true } : {}) } }
+  // Words to sing. Left out, or empty, the music is instrumental.
+  let lyrics = ''
+  if (input.lyrics !== undefined) {
+    if (typeof input.lyrics !== 'string' || /\x00/.test(input.lyrics)) throw refuse('The lyrics could not be read.')
+    lyrics = input.lyrics.trim()
+    if (lyrics.length > model.lyrics.max) throw refuse(`${model.name} takes up to ${model.lyrics.max.toLocaleString('en-US')} characters of lyrics.`)
+  }
+  return { model, picture: null, choices: { prompt, seconds, ...(input.loop ? { loop: true } : {}), ...(lyrics ? { lyrics } : {}) } }
 }
 
 function normalize(modelId, input) {
@@ -111,7 +118,10 @@ const BUILDERS = {
   'eleven-dialogue': c => ({ inputs: [{ text: c.prompt, voice_id: getVoice(c.voice).voiceId }] }),
   // The length is required on this route and is what the request is charged on.
   // `loop` asks for a sound whose end runs smoothly back into its start.
-  'eleven-sfx': c => ({ text: c.prompt, duration_seconds: c.seconds, ...(c.loop ? { loop: true } : {}) })
+  'eleven-sfx': c => ({ text: c.prompt, duration_seconds: c.seconds, ...(c.loop ? { loop: true } : {}) }),
+  // Pika Music from a description. Lyrics, when given, are sung. No reference audio, cover or
+  // voice cloning is ever sent, and the description is used as written.
+  'pika-music': c => ({ mode: 'text_to_music', prompt: c.prompt, duration: c.seconds, ...(c.lyrics ? { lyrics: c.lyrics } : {}), rewrite_prompt: false })
 }
 
 // Returns { model, choices, picture, body }. `choices` is the validated,

@@ -4,7 +4,9 @@ const METHODS = ['status', 'connect', 'clear', 'preview', 'submit', 'list', 'ref
   // Create tab. `submitCreate` may skip the native confirmation for a small priced
   // request, so the preload only forwards it during a live user gesture and it is
   // never offered to agent tools.
-  'models', 'previewCreate', 'previewCreateBatch', 'submitCreate']
+  'models', 'previewCreate', 'previewCreateBatch', 'submitCreate',
+  // Read only: the account's credit balance as a number, for the figure at the top of the window.
+  'balance']
 const GUIDE = 'https://platform.comfy.org/profile/api-keys?onboarding=router'
 
 // No Router authority is exposed to embedded ComfyUI, other windows or workers.

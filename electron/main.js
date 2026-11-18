@@ -169,6 +169,9 @@ let generationRuns = null
 let comfyRouter = null
 function getComfyRouter() {
   if (!comfyRouter) comfyRouter = createComfyRouter({
+    // Developer run only: also offer models and voices that are still waiting for their first real request
+    // (createModels.json `pending` / `verified`). Never in an installed Velorn.
+    allowPending: !app.isPackaged && process.env.VELORN_CREATE_PENDING === '1',
     storageDir: path.join(app.getPath('userData'), 'comfy-router-jobs'),
     // Remembers the Router key between launches, encrypted by the OS password store.
     // Native-owned: there is no IPC or agent call that returns the key.

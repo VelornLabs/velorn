@@ -18,6 +18,10 @@ const LIMITS = Object.freeze({ objectInfoBytes: 96 * 1024 * 1024, jsonBytes: 8 *
 const MODEL_FILE = /\.(?:safetensors|ckpt|pth|pt|gguf|bin)$/i
 const VIDEO = Object.freeze({ '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm' })
 const IMAGE = Object.freeze({ '.png': 'image/png' })
+// What ComfyUI's Save Audio parts write. An .opus file is an Ogg container.
+const AUDIO = Object.freeze({ '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.opus': 'audio/ogg' })
+// MP3 (a tag or a frame header), FLAC or Ogg, judged from the first bytes.
+const soundFile = bytes => bytes.toString('latin1', 0, 3) === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) || bytes.toString('latin1', 0, 4) === 'fLaC' || bytes.toString('latin1', 0, 4) === 'OggS'
 const PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const safeJobId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(value)
@@ -140,7 +144,7 @@ function createGpuShareHostRunner({ getEndpoint, readWorkflow, fetchImpl = globa
   // The one finished file of the kind this workflow makes: a clip, or a PNG picture.
   function findResult(outputs, types) {
     for (const node of Object.values(plain(outputs) ? outputs : {})) {
-      for (const key of ['videos', 'gifs', 'images']) {
+      for (const key of ['videos', 'gifs', 'images', 'audio']) {
         for (const item of Array.isArray(node?.[key]) ? node[key] : []) {
           const extension = typeof item?.filename === 'string' ? item.filename.slice(item.filename.lastIndexOf('.')).toLowerCase() : ''
           if (!Object.hasOwn(types, extension) || item.type !== 'output' || !/^[A-Za-z0-9 ._-]{1,200}$/.test(item.filename) || item.filename.includes('..')
@@ -193,16 +197,16 @@ function createGpuShareHostRunner({ getEndpoint, readWorkflow, fetchImpl = globa
         const state = String(record.status?.status_str || '').toLowerCase()
         if (['error', 'failed', 'cancelled', 'interrupted'].includes(state)) throw refuse(state === 'error' || state === 'failed' ? 'ComfyUI could not finish the job.' : 'The job was stopped.', state === 'error' || state === 'failed' ? 'GPU_SHARE_COMFY_FAILED' : 'GPU_SHARE_STOPPED')
         if (state === 'success' || state === 'completed' || record.status?.completed === true) {
-          const picture = entry.kind === 'image'
-          const found = findResult(record.outputs, picture ? IMAGE : VIDEO)
-          if (!found) throw refuse(`ComfyUI finished but there was no ${picture ? 'picture' : 'video'} to collect.`, 'GPU_SHARE_COMFY_FAILED')
+          const picture = entry.kind === 'image', sound = entry.kind === 'audio', what = picture ? 'picture' : sound ? 'sound file' : 'video'
+          const found = findResult(record.outputs, picture ? IMAGE : sound ? AUDIO : VIDEO)
+          if (!found) throw refuse(`ComfyUI finished but there was no ${what} to collect.`, 'GPU_SHARE_COMFY_FAILED')
           tell('collecting')
           const query = new URLSearchParams({ filename: found.filename, subfolder: found.subfolder, type: 'output' })
           const file = await call(base, `/view?${query}`, { binary: true, timeoutMs: LIMITS.downloadMs, maxBytes: LIMITS.resultBytes })
-          if (!file.ok || file.bytes.length < 12) throw refuse(`The finished ${picture ? 'picture' : 'video'} could not be read from ComfyUI.`, 'GPU_SHARE_COMFY_FAILED')
-          if (picture ? !file.bytes.subarray(0, 8).equals(PNG) : found.extension !== '.webm' && file.bytes.toString('ascii', 4, 8) !== 'ftyp') throw refuse(`The finished file is not a ${picture ? 'picture' : 'video'}.`, 'GPU_SHARE_COMFY_FAILED')
+          if (!file.ok || file.bytes.length < 12) throw refuse(`The finished ${what} could not be read from ComfyUI.`, 'GPU_SHARE_COMFY_FAILED')
+          if (picture ? !file.bytes.subarray(0, 8).equals(PNG) : sound ? !soundFile(file.bytes) : found.extension !== '.webm' && file.bytes.toString('ascii', 4, 8) !== 'ftyp') throw refuse(`The finished file is not a ${what}.`, 'GPU_SHARE_COMFY_FAILED')
           return { jobId, workflowId: entry.id, bytes: file.bytes, mimeType: found.mimeType, filename: `velorn-network-${jobId}${found.extension}`,
-            ...(bound.width ? { width: bound.width, height: bound.height } : {}), ...(picture ? {} : { seconds: bound.seconds, fps: bound.fps }), seed: bound.seed }
+            ...(bound.width ? { width: bound.width, height: bound.height } : {}), ...(picture || sound ? {} : { seconds: bound.seconds, fps: bound.fps }), seed: bound.seed }
         }
       }
       let where = 'unknown'

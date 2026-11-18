@@ -11,10 +11,10 @@ export const isPictureWorkflow = id => id === NETWORK_PICTURE.make || id === NET
 // How a shared workflow is named everywhere in Create. The computer that ran it is named only afterwards, as a thank-you.
 export const networkLabel = workflowId => `${isPictureWorkflow(workflowId) ? 'MiniMax H3' : 'LTX 2.3'} · Shared GPU`
 // What a job makes. A job for an owner's own workflow says so itself; Velorn's own are known by their id.
-export const jobKind = job => ['image', 'video'].includes(job?.kind) ? job.kind : isPictureWorkflow(job?.workflowId) ? 'image' : 'video'
-const nounOf = job => jobKind(job) === 'image' ? 'picture' : 'clip'
+export const jobKind = job => ['image', 'video', 'music'].includes(job?.kind) ? job.kind : isPictureWorkflow(job?.workflowId) ? 'image' : 'video'
+const nounOf = job => jobKind(job) === 'image' ? 'picture' : jobKind(job) === 'music' ? 'song' : 'clip'
 // The stage texts speak of a clip; a picture job says picture.
-const stageText = (key, job) => { const text = NETWORK_STAGE[key]; return text && nounOf(job) === 'picture' ? text.replace('The clip', 'The picture').replace('a few minutes', 'a minute or two') : text }
+const stageText = (key, job) => { const text = NETWORK_STAGE[key]; return text && nounOf(job) === 'picture' ? text.replace('The clip', 'The picture').replace('a few minutes', 'a minute or two') : text && nounOf(job) === 'song' ? text.replace('The clip', 'The song').replace('the clip', 'the song') : text }
 export const NETWORK_PRICE = 'free, on the Velorn network'
 // Every whole second the shared workflow accepts.
 const SECONDS = Object.freeze([3, 4, 5, 6, 7, 8, 9, 10])
@@ -32,12 +32,13 @@ export const NETWORK_STAGE = Object.freeze({ waiting: 'Waiting for the other com
 // whatever they want; Velorn does not choose). The list is empty, so only creators' own workflows become cards.
 const FAMILIES = Object.freeze([])
 // Where a computer remembers which shared workflows it has been offered (see networkModels' `known`).
-// The four shapes an owner's own workflow can have.
+// The five shapes an owner's own workflow can have.
 const OWN_SHAPES = Object.freeze({
   'text-to-picture': { kind: 'image', needsImage: false, note: 'Makes a picture from your description.' },
   'picture-edit': { kind: 'image', needsImage: true, note: 'Changes a picture you add.' },
   'picture-to-video': { kind: 'video', needsImage: true, note: 'Makes a clip from a picture you add.' },
-  'text-to-video': { kind: 'video', needsImage: false, note: 'Makes a clip from your description.' } })
+  'text-to-video': { kind: 'video', needsImage: false, note: 'Makes a clip from your description.' },
+  'text-to-music': { kind: 'music', needsImage: false, note: 'Makes music from your description. Add lyrics to have them sung.' } })
 export const NETWORK_KNOWN_KEY = 'velorn.network.known.v1'
 export const NETWORK_STATE = Object.freeze({ ready: 'Ready', busy: 'Busy', unavailable: 'Not available' })
 const canUse = host => !Number.isInteger(host.remainingToday) || host.remainingToday > 0
@@ -67,7 +68,7 @@ export function networkModels(hosts, { known = [] } = {}) {
       const shape = OWN_SHAPES[entry.shape], maker = String(host.maker || 'A Velorn creator').slice(0, 40)
       const state = !canUse(host) ? 'unavailable' : host.idle !== false ? 'ready' : 'busy'
       models.push({ id: `network-own:${host.hostId}:${entry.id}`, kind: shape.kind, network: true, own: true, ownId: entry.id, shape: entry.shape, needsImage: shape.needsImage, maker, state,
-        name: entry.name.slice(0, 60), characters: { max: 2000 }, ...(shape.kind === 'video' ? { seconds: { offered: [5] }, resolutions: ['720p'] } : { sizes: ['1K'] }),
+        name: entry.name.slice(0, 60), characters: { max: 2000 }, ...(shape.kind === 'video' ? { seconds: { offered: [5] }, resolutions: ['720p'] } : shape.kind === 'music' ? { lyrics: { max: 3000 } } : { sizes: ['1K'] }),
         note: state === 'unavailable' ? 'You\'ve used today\'s free jobs. Check again later.' : `By ${maker}. ${shape.note} Free, on their shared GPU.${state === 'busy' ? ' Busy right now, so there is a wait.' : ''}`,
         hosts: [{ hostId: host.hostId, hostName: String(host.name || 'A Velorn computer').slice(0, 80), ownComputer: host.sameAccount === true, idle: host.idle !== false,
           waiting: Number.isInteger(host.waiting) ? host.waiting : 0, usable: canUse(host), ...(Number.isInteger(host.remainingToday) ? { left: host.remainingToday } : {}), workflows: [entry.id] }] })

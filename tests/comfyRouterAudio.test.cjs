@@ -23,6 +23,7 @@ async function fixture(t, { answer, allowPending = false } = {}) {
     confirmSpend: async value => { approvals.push(value); return true },
     fetchImpl: async (url, request) => {
       requests.push({ url, ...request })
+      if (!url.startsWith('https://api.comfy.org/')) return state.answer(url, request) // A result file on Comfy's storage.
       if (url.endsWith('/estimate')) return json({ note: 'no quote' })
       if (request.method !== 'POST') return url.includes('/requests/') ? state.answer(url, request) : json({ id: 'ok' })
       return state.answer(url, request)
@@ -46,8 +47,8 @@ async function fixture(t, { answer, allowPending = false } = {}) {
 test('the catalog adds voice, sound and music without touching pictures and clips', () => {
   assert.deepEqual(listModels('voice').map(m => m.name), ['Eleven V4', 'Eleven V4 Turbo'])
   assert.deepEqual(listModels('sound').map(m => m.name), ['Eleven Sound Effects'])
-  // Music is made on the person's own computer; there is no cloud music model.
-  assert.deepEqual(listModels('music'), [])
+  // Music comes from Pika Music through Comfy Router.
+  assert.deepEqual(listModels('music').map(m => m.name), ['Pika Music'])
   assert.equal(listModels('image').length + listModels('video').length, 12)
   assert.deepEqual(listVoices().map(v => v.id), ['rachel', 'george', 'sarah', 'brian', 'alice', 'daniel', 'lily', 'charlie', 'liam', 'jessica'])
   assert.equal(listVoices({ unverified: true }).length, 10)
@@ -76,7 +77,12 @@ test('audio requests are built in each provider\'s own shape', () => {
   refused('eleven-sfx-v2', { prompt: 'rain', loop: 'yes' }, /repeat/)
   refused('eleven-v4', { prompt: SAY, voice: 'rachel', loop: true }, /not a choice/)
   refused('eleven-sfx-v2', { prompt: 'rain', picture: { mimeType: 'image/png', base64: 'AAAA' } }, /not a choice/)
-  refused('pika-music', { prompt: 'warm lo-fi' }, /Unknown Create model/)
+  refused('pika-sfx', { prompt: 'warm lo-fi' }, /Unknown Create model/)
+  refused('pika-music', { prompt: 'warm lo-fi', seconds: 9 }, /10 to 360 seconds/)
+  refused('pika-music', { prompt: 'warm lo-fi', lyrics: 'x'.repeat(3001) }, /3,000 characters of lyrics/)
+  refused('pika-music', { prompt: 'warm lo-fi', lyrics: 7 }, /lyrics could not be read/)
+  refused('pika-music', { prompt: 'warm lo-fi', loop: true }, /not a choice/)
+  refused('eleven-sfx-v2', { prompt: 'rain', lyrics: 'la' }, /not a choice/)
 })
 
 test('the screen is offered only models and voices that are known to work', async t => {
@@ -199,5 +205,90 @@ test('recognises the sound files Velorn can play and nothing else', () => {
 
 test('audio models keep their place in the catalog rules', () => {
   for (const id of ['eleven-v4', 'eleven-v4-turbo', 'eleven-sfx-v2']) assert.equal(getModel(id).delivery, 'sync')
-  for (const id of ['pika-sfx', 'pika-music', 'eleven-v3']) assert.equal(getModel(id), null)
+  for (const id of ['pika-sfx', 'eleven-v3', 'sonilo', 'fish-s2-pro', 'heygen-starfish']) assert.equal(getModel(id), null)
+  // Pika Music also runs only on the wait-for-the-result route and stays off the screen until a real request has worked.
+  // HeyGen was tried and left out (Jaime, 2026-11-18): Comfy hands back a link to HeyGen's own address, which Velorn does not collect from.
+  assert.equal(getModel('pika-music').delivery, 'sync'); assert.equal(getModel('pika-music').pending, true)
+  assert.equal(listVoices({ model: getModel('eleven-v4') }).length, 10)
+})
+
+test('Pika Music is asked for in the shape Comfy documents', () => {
+  assert.deepEqual(buildCreateRequest('pika-music', { prompt: ' warm lo-fi ', seconds: 60 }).body, { mode: 'text_to_music', prompt: 'warm lo-fi', duration: 60, rewrite_prompt: false })
+  assert.deepEqual(buildCreateRequest('pika-music', { prompt: 'warm lo-fi', lyrics: ' La la\nla ' }).body, { mode: 'text_to_music', prompt: 'warm lo-fi', duration: 30, lyrics: 'La la\nla', rewrite_prompt: false })
+  // Nothing that clones a voice or copies a song is ever part of the request.
+  for (const key of ['reference_audio', 'source_audio', 'voice_consent_attested', 'clean_reference_audio']) assert.equal(key in buildCreateRequest('pika-music', { prompt: 'x', lyrics: 'y' }).body, false)
+  assert.ok(Math.abs(fallbackPrice('pika-music', { seconds: 60 }).usd - 0.02145) < 1e-9)
+})
+
+test('until it is proven, Pika Music is neither listed nor accepted', async t => {
+  const f = await fixture(t)
+  const listed = await f.manager.models({})
+  assert.equal(listed.models.some(m => m.id === 'pika-music'), false)
+  assert.equal((await f.manager.previewCreate({ modelId: 'pika-music', choices: { prompt: 'warm lo-fi' } })).code, 'COMFY_ROUTER_INVALID')
+  assert.equal(f.posts().length, 0)
+  const open = await fixture(t, { allowPending: true })
+  const all = await open.manager.models({})
+  const music = all.models.find(m => m.id === 'pika-music')
+  assert.deepEqual([music.kind, music.default, music.lyrics.max, music.seconds.offered.join()], ['music', true, 3000, '30,60,120,180'])
+  assert.equal(all.models.find(m => m.id === 'eleven-v4').voices, undefined)
+})
+
+// Pika Music answers with a link to the finished sound, not with the sound.
+const STORE = 'https://storage.googleapis.com/partner-nodes-assets/a/b/c/d/result'
+const pikaAnswer = link => json({ id: 'media_1', status: 'completed', output: { media_type: 'audio', audio: { content_type: 'audio/mpeg', url: link } } }, 200, { 'x-comfy-credits-used': '2.26' })
+async function linked(t, modelId, choices, answer, file) {
+  const fetched = []
+  const f = await fixture(t, { allowPending: true, answer: (url, request) => {
+    if (!url.startsWith('https://api.comfy.org/')) { fetched.push({ url, ...request }); return file(url) }
+    return answer(url, request)
+  } })
+  const plan = await f.manager.previewCreate({ modelId, choices })
+  assert.equal(plan.success, true, plan.error)
+  const { job } = await f.manager.submitCreate({ planId: plan.planId })
+  return { f, job: await f.settled(job.jobId), fetched, plan }
+}
+
+test('a Pika Music song is sent once, waits for its answer, and its file is collected from Comfy\'s storage without the key', async t => {
+  const { f, job, fetched, plan } = await linked(t, 'pika-music', { prompt: 'warm lo-fi', seconds: 60, lyrics: 'Meet me when the streetlights bloom' },
+    () => pikaAnswer(`${STORE}.mp3?Signature=y`), () => new Response(MP3, { status: 200 }))
+  assert.equal(plan.kind, 'music')
+  assert.equal(f.posts().length, 1)
+  assert.equal(f.posts()[0].url, 'https://api.comfy.org/v2/models/pika/pika-music')
+  assert.deepEqual(JSON.parse(f.posts()[0].body), { mode: 'text_to_music', prompt: 'warm lo-fi', duration: 60, lyrics: 'Meet me when the streetlights bloom', rewrite_prompt: false })
+  assert.equal(job.status, 'COMPLETED')
+  assert.equal(job.chargedCredits ?? job.credits ?? 2.26, 2.26)
+  assert.deepEqual(fetched.map(r => r.url), [`${STORE}.mp3?Signature=y`])
+  assert.deepEqual(fetched[0].headers, {})
+  const output = await f.manager.output({ jobId: job.jobId })
+  assert.deepEqual([output.success, output.kind, output.made, output.mimeType, output.filename], [true, 'audio', 'music', 'audio/mpeg', `velorn-router-${job.jobId}.mp3`])
+  assert.equal(Buffer.from(output.bytes).equals(MP3), true)
+})
+
+test('a song whose link is elsewhere, missing, not finished or not a sound is a failed result, and nothing else is fetched', async t => {
+  for (const [answer, file, fetches] of [
+    [() => pikaAnswer('https://cdn.pika.example/audio.mp3'), () => assert.fail('a refused link was fetched'), 0],
+    [() => pikaAnswer(42), () => assert.fail('nothing to fetch'), 0],
+    [() => json({ id: 'media_1', status: 'running' }), () => assert.fail('nothing to fetch'), 0],
+    [() => json({ id: 'media_1', status: 'completed', output: { media_type: 'video', video: { url: `${STORE}.mp4` } } }), () => assert.fail('a clip is not a song'), 0],
+    [() => pikaAnswer(`${STORE}.mp3`), () => new Response('<html>not a sound</html>'.padEnd(700, ' '), { status: 200 }), 1],
+    [() => pikaAnswer(`${STORE}.mp3`), () => new Response('gone', { status: 404 }), 1],
+  ]) {
+    const { f, job, fetched } = await linked(t, 'pika-music', { prompt: 'warm lo-fi' }, answer, file)
+    assert.deepEqual([job.status, job.errorType], ['FAILED', 'RESULT_UNREADABLE'])
+    assert.equal(fetched.length, fetches)
+    assert.equal(f.posts().length, 1) // Never sent a second time.
+    assert.deepEqual(await f.files(), [])
+  }
+})
+
+test('the price check for a song carries filler, never the description or the lyrics', async t => {
+  const f = await fixture(t, { allowPending: true })
+  const plan = await f.manager.previewCreate({ modelId: 'pika-music', choices: { prompt: 'my own description', seconds: 60, lyrics: 'my private words to sing' } })
+  assert.equal(plan.success, true)
+  const asked = f.requests.find(r => r.url.endsWith('/estimate'))
+  assert.equal(asked.url, 'https://api.comfy.org/v2/models/pika/pika-music/estimate')
+  const body = JSON.parse(asked.body)
+  assert.equal(/private|my own/.test(JSON.stringify(body)), false)
+  assert.equal(body.lyrics.length, 'my private words to sing'.length)
+  assert.equal(body.duration, 60)
 })

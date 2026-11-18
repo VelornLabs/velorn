@@ -319,6 +319,33 @@ test('cancellation after truncation reports possible partial changes, never roll
   assert.equal(truncations, 1); assert.equal(await fs.readFile(path.join(f.cwd, 'target'), 'utf8'), '')
 })
 
+test('a command still running when the tool returns says it will be stopped, and a stopped one is shown as stopped', async t => {
+  const f = await fixture(t)
+  const job = await f.call('run_computer_command', { command: 'sleep 30', yieldMs: 30 })
+  assert.equal(job.status, 'running')
+  // The model must not answer "it is running in the background": the receipt tells it what will happen.
+  assert.match(job.note, /STILL RUNNING and is stopped the moment this turn ends/)
+  assert.match(job.note, /wait_computer_command/)
+  assert.match((await f.call('wait_computer_command', { jobId: job.jobId, yieldMs: 20 })).note, /STILL RUNNING/)
+  const done = await f.call('run_computer_command', { command: 'true' })
+  assert.equal(done.status, 'completed'); assert.doesNotMatch(done.note, /STILL RUNNING/)
+  f.controller.abort()
+  assert.equal((await f.executor.close()).success, true)
+  // A command ended by Stop or by the end of the turn did not fail by itself.
+  const rows = f.events.filter(event => event.type === 'tool' && event.callId === `velo-computer:${job.jobId}`)
+  assert.equal(rows.at(-1).status, 'stopped')
+  assert.equal(rows.some(event => event.status === 'failed'), false)
+})
+
+test('the tool wording never invites leaving a command running past the answer', () => {
+  for (const list of [TOOLS, MAC_TOOLS, WINDOWS_TOOLS]) {
+    const run = list.find(tool => tool.name === 'run_computer_command').description
+    assert.match(run, /does not keep running: wait for it first with wait_computer_command/)
+    assert.match(run, /never tell the user it is running in the background/)
+    assert.doesNotMatch(run, /keep the command itself running \(yieldMs 0\)/)
+  }
+})
+
 test('Stop kills the owned shell process group and normal grandchildren; no new calls after close', async t => {
   const f = await fixture(t)
   const job = await f.call('run_computer_command', { command: 'sleep 30 & printf "%s\\n" "$!"; wait', yieldMs: 30 })

@@ -114,6 +114,15 @@
       "refusalCharged": "unknown", "quote": "firm", "priceSource": "paid-test",
       "seconds": { "min": 1, "max": 30, "offered": [3, 5, 10, 20] },
       "usdPerAudioSecond": 0.002334
+    },
+    {
+      "id": "pika-music", "kind": "music", "name": "Pika Music", "default": true,
+      "note": "Instrumental, or sung from your lyrics.",
+      "model": "pika/pika-music", "format": "pika-music", "delivery": "sync", "pending": true,
+      "refusalCharged": "unknown", "quote": "range", "priceSource": "list",
+      "seconds": { "min": 10, "max": 360, "offered": [30, 60, 120, 180] },
+      "lyrics": { "max": 3000 },
+      "usdPerAudioSecond": 0.0003575
     }
   ],
   "voices": [

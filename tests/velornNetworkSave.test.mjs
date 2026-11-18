@@ -50,3 +50,23 @@ test('a picture from the network becomes one image asset, and its name must matc
   assert.equal((await other.save({ ...picture, mimeType: 'video/mp4' })).success, false)
   assert.equal(other.state.imported.length, 0)
 })
+
+test('a song becomes one sound asset with its length, and is not set as the picture preview', async () => {
+  const state = { project: { currentProject: { name: 'Beach' }, currentProjectHandle: '/projects/beach' }, assets: [], imported: [], preview: null }
+  const save = createVelornNetworkSaver({
+    getProject: () => state.project, measureDuration: async url => (url.endsWith('.mp3') ? 211.4 : null),
+    getAssets: () => ({ assets: state.assets, addAsset: asset => { const made = { id: `asset-${state.assets.length + 1}`, ...asset }; state.assets.push(made); return made }, setPreview: asset => { state.preview = asset.id } }),
+    importFile: async (handle, file, category) => { state.imported.push({ name: file.name, type: file.type, category }); return { path: `assets/audio/${file.name}` } },
+    makeFile: (parts, name, options) => ({ name, type: options.type, size: parts[0].byteLength }),
+    resolveAssetUrl: async (handle, asset) => `file://${handle}/${asset.path}` })
+  const song = { jobId: 'job-87654321', filename: 'velorn-network-job-876543.mp3', mimeType: 'audio/mpeg', bytes: new Uint8Array(4096), hostName: 'Studio 5090', prompt: 'anthemic rock' }
+  assert.deepEqual(await save(song), { success: true, assetId: 'asset-1' })
+  assert.deepEqual(state.imported, [{ name: 'velorn-network-job-876543.mp3', type: 'audio/mpeg', category: 'audio' }])
+  assert.deepEqual([state.assets[0].type, state.assets[0].duration, state.preview], ['audio', 211.4, null])
+  // The name and the type must agree: a sound is never taken under a clip's name, or the other way round.
+  for (const bad of [{ ...song, jobId: 'job-22222222', filename: 'velorn-network-job-222222.mp4' }, { ...song, jobId: 'job-33333333', mimeType: 'video/mp4' },
+    { ...song, jobId: 'job-44444444', filename: 'velorn-network-job-444444.flac' }, { ...song, jobId: 'job-55555555', mimeType: 'audio/wav' }]) {
+    assert.equal((await save(bad)).success, false)
+  }
+  assert.equal(state.assets.length, 1)
+})

@@ -34,6 +34,8 @@ const fail = error => ({ success: false, code: faults.has(error) ? error.code : 
   ...(faults.has(error) && error.diagnostics?.errorType === 'not_enabled' ? { queueNotEnabled: true } : {}) })
 const invalid = () => fault('COMFY_ROUTER_INVALID', 'Review the Comfy Router request and try again.')
 const fingerprint = key => createHash('sha256').update(key).digest('hex')
+// The account's credit balance, the same address ComfyUI's own screen reads.
+const BALANCE_URL = `${ORIGIN}/customers/balance`
 const endpoint = (suffix, model = MODEL) => `${ORIGIN}/v2/models/${model}${suffix}`
 // Create requests: a person's click on a button that shows the price approves
 // a request up to this amount. Above it, or with no price on record, the native
@@ -76,6 +78,8 @@ function createEstimate(modelId, choices) {
 // Create pictures come back inline from these formats. The other two (FLUX and
 // Seedance) return a signed download link to Comfy's result storage.
 const INLINE_FORMATS = new Set(['gemini-image', 'seedream', 'gpt-image'])
+// Audio models whose answer is a link to the file, not the file.
+const LINKED_AUDIO = new Set(['pika-music'])
 // The ONLY place a result link may point. Observed on a real FLUX 3 Image result
 // on 2026-11-09. The host is shared by all of Google Cloud Storage, so the bucket
 // prefix is part of the rule. A link anywhere else (Comfy's docs say a provider's
@@ -92,6 +96,8 @@ function storageLink(value, places = [RESULT_STORAGE]) {
 function resultLink(format, result) {
   if (format === 'flux') return result.status === 'Ready' && object(result.result) ? result.result.sample : null
   if (format === 'seedance') return result.status === 'succeeded' && object(result.content) ? result.content.video_url : null
+  // Pika answers with the job and, once completed, one audio file behind a link (Comfy's published shape).
+  if (format === 'pika-music') return result.status === 'completed' && object(result.output) && result.output.media_type === 'audio' && object(result.output.audio) ? result.output.audio.url : null
   return null
 }
 // A light check that bytes are a sound file of a kind Velorn can play: MP3, WAV, Ogg, FLAC or M4A.
@@ -474,12 +480,27 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
   }, false) }
   // The Create list for the screen: names, choices and recorded prices. No key,
   // project or network is needed to read it.
+  // How many Comfy credits the connected key's account has left, for the figure at the top of the window.
+  // Read only: nothing is charged and no model runs. The key never leaves this process; the window gets a number.
+  // `known: false` covers every way of not knowing (no key, Comfy does not say, an answer in another shape).
+  function balance(payload = {}) { return perform(payload, [], async op => {
+    if (!credential) return { success: true, connected: false, known: false }
+    let reply
+    try { reply = await request(op, BALANCE_URL) }
+    catch (error) { if (faults.has(error) && ['COMFY_ROUTER_AUTH', 'COMFY_ROUTER_ACCESS', 'COMFY_ROUTER_PROVIDER'].includes(error.code)) return { success: true, connected: true, known: false }; throw error }
+    // Comfy names these fields "micros" but they hold US cents (as ComfyUI's own screen reads them).
+    const cents = [reply.effective_balance_micros, reply.amount_micros].find(value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value < 1e12)
+    if (cents === undefined || (reply.currency !== undefined && String(reply.currency).toLowerCase() !== 'usd')) return { success: true, connected: true, known: false }
+    return { success: true, connected: true, known: true, credits: Math.round(cents / 100 * catalog.creditsPerUsd * 100) / 100, usd: Math.round(cents) / 100 }
+  }, false) }
   function models(payload = {}) { return perform(payload, [], async () => ({ success: true, pricesAsOf: catalog.pricesAsOf, buttonApprovalUsd: BUTTON_APPROVAL_USD, creditsPerUsd: catalog.creditsPerUsd,
     voices: listVoices({ unverified: allowPending }).map(v => ({ id: v.id, name: v.name, note: v.note })),
     models: listModels().filter(m => allowPending || !m.pending).map(m => ({ id: m.id, kind: m.kind, name: m.name, note: m.note, default: m.default === true, refusalCharged: m.refusalCharged,
       firmQuote: m.quote === 'firm', editQuote: m.editQuote !== false,
-      ...(m.kind === 'voice' ? { characters: { ...m.characters }, usdPer1kCharacters: m.usdPer1kCharacters }
-        : isAudio(m) ? { seconds: { ...m.seconds, offered: [...m.seconds.offered] }, usdPerAudioSecond: m.usdPerAudioSecond }
+      // A voice model from another provider lists its own voices; the others use the shared list above.
+      ...(m.kind === 'voice' ? { characters: { ...m.characters }, usdPer1kCharacters: m.usdPer1kCharacters,
+          ...(m.voices ? { voices: listVoices({ unverified: allowPending, model: m }).map(v => ({ id: v.id, name: v.name, note: v.note })) } : {}) }
+        : isAudio(m) ? { seconds: { ...m.seconds, offered: [...m.seconds.offered] }, usdPerAudioSecond: m.usdPerAudioSecond, ...(m.lyrics ? { lyrics: { max: m.lyrics.max } } : {}) }
         : m.kind === 'video' ? { seconds: { ...m.seconds, offered: [...m.seconds.offered] }, resolutions: resolutionsFor(m), usdPerSecond: { ...m.usdPerSecond } }
         : { sizes: sizesFor(m), usdPerImage: { ...m.usdPerImage } }) })) }), false) }
   function connect(payload) { return perform(payload, ['apiKey'], async op => {
@@ -566,6 +587,8 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
       // Speech is priced on its length, so the stand-in is filler of the same length.
       const { characters, ...asked } = choices
       const standIn = model.kind === 'voice' ? 'la '.repeat(Math.ceil(characters / 3)).slice(0, characters).replace(/ $/, 'a') : QUOTE_PROMPT
+      // Lyrics are the person's own words too: the price check carries filler of the same length.
+      if (asked.lyrics) asked.lyrics = 'la '.repeat(Math.ceil(asked.lyrics.length / 3)).slice(0, asked.lyrics.length).replace(/ $/, 'a')
       reply = await request(op, endpoint('/estimate', model.model), { method: 'POST', body: buildCreateRequest(model.id, { ...asked, prompt: standIn }).body })
     } catch (error) {
       if (faults.has(error) && !['COMFY_ROUTER_PROVIDER', 'COMFY_ROUTER_ACCESS'].includes(error.code)) throw error
@@ -597,9 +620,9 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
     let built
     try { built = buildCreateRequest(payload.modelId, payload.choices) }
     catch (error) { throw error?.code === 'CREATE_REQUEST_INVALID' ? fault('COMFY_ROUTER_INVALID', error.message) : error }
-    if (secretLike(built.choices.prompt, credential)) throw invalid()
+    if (secretLike(built.choices.prompt, credential) || built.choices.lyrics && secretLike(built.choices.lyrics, credential)) throw invalid()
     if (count > 1 && built.model.kind !== 'image') throw fault('COMFY_ROUTER_INVALID', 'Only pictures can be made several at a time.')
-    if (!allowPending && (built.model.pending || built.choices.voice && !getVoice(built.choices.voice).verified)) throw fault('COMFY_ROUTER_INVALID', 'That model or voice is not available yet.')
+    if (!allowPending && (built.model.pending || built.choices.voice && !getVoice(built.choices.voice, built.model).verified)) throw fault('COMFY_ROUTER_INVALID', 'That model or voice is not available yet.')
     for (const picture of [built.picture, ...(built.pictures || [])]) if (picture) checkPictureHeader(picture)
     for (const [id, plan] of plans) if (now() - plan.createdAt > LIMITS.planMs) plans.delete(id)
     if (plans.size >= LIMITS.plans) throw fault('COMFY_ROUTER_PLAN_LIMIT', 'Too many recent previews. Wait for an older preview to expire (previews last 10 minutes), then create another. Existing jobs remain recorded.')
@@ -710,6 +733,27 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
           try { await reader.cancel() } catch {}
           if (length <= AUDIO_MAX) data = Buffer.concat(chunks)
         } catch { data = null }
+        // Some models answer with the address of the finished sound instead of the sound itself.
+        // It is collected at once, without the key, and only from Comfy's result storage.
+        const format = getModel(job.create.modelId)?.format
+        if (data && !audioHeader(data) && LINKED_AUDIO.has(format)) {
+          let offered = null
+          try { const parsed = data.length <= LIMITS.response ? JSON.parse(data.toString('utf8')) : null; offered = object(parsed) ? resultLink(format, parsed) : null } catch { offered = null }
+          const link = storageLink(offered)
+          if (allowPending && typeof offered === 'string') { try { const at = new URL(offered); console.warn(`[comfy-router] ${format} result is at ${at.protocol}//${at.host}${at.pathname.split('/').slice(0, 2).join('/')}/… ${link ? '(accepted)' : '(NOT an address Velorn collects from)'}`) } catch {} }
+          data = null
+          if (link) {
+            try {
+              const file = await fetchImpl(link, { method: 'GET', redirect: 'error', credentials: 'omit', cache: 'no-store', signal: controller.signal, headers: {} })
+              if (file?.ok) {
+                const reader = file.body.getReader(), chunks = []; let length = 0
+                while (length <= AUDIO_MAX) { const item = await reader.read(); if (item.done) break; length += item.value.byteLength; chunks.push(Buffer.from(item.value)) }
+                try { await reader.cancel() } catch {}
+                if (length <= AUDIO_MAX) data = Buffer.concat(chunks)
+              } else { try { await file?.body?.cancel?.() } catch {} }
+            } catch { data = null }
+          }
+        }
         if (!data || !audioHeader(data)) { settle('FAILED', 'RESULT_UNREADABLE'); return }
         try { await fs.writeFile(resultFile(job), data, { mode: 0o600, flag: 'wx' }) } catch { settle('FAILED', 'RESULT_UNSAVED'); return }
         settle('COMPLETED')
@@ -969,7 +1013,7 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
     await check(op); announce(job)
     return { success: true, job: view(job) }
   }) }
-  return { status, models, connect, clear, preview, previewCreate, previewCreateBatch, inspectPlan, submit, submitCreate, submitCreateRemote, list, refresh, cancel, output, markImported,
+  return { status, models, balance, connect, clear, preview, previewCreate, previewCreateBatch, inspectPlan, submit, submitCreate, submitCreateRemote, list, refresh, cancel, output, markImported,
     cancelPending: stop, dispose: () => { stop(); disposed = true; plans.clear(); credential = ''; credentialId = ''; for (const controller of background) controller.abort() } }
 }
 

@@ -507,3 +507,31 @@ test('the preload forwards Generate only during a live click, and the bridge reg
   await bridge.comfyRouter.submitCreate({ planId: 'p' })
   assert.deepEqual(invoked.map(i => i[0]), ['comfy-router:previewCreate', 'comfy-router:models', 'comfy-router:submitCreate'])
 })
+
+test('the credit balance is read with the key inside the main process and handed out only as a number', async t => {
+  const answers = { value: () => response({ amount_micros: 30000, effective_balance_micros: 30056, currency: 'usd' }) }
+  const f = await fixture(t, { transport: async (url, options) => url === 'https://api.comfy.org/customers/balance' ? answers.value(url, options) : response({ id: 'ok' }) })
+  const seen = await f.manager.balance({})
+  // 300.56 dollars at 211 credits a dollar. The fields are named "micros" but hold cents.
+  assert.deepEqual(seen, { success: true, connected: true, known: true, credits: 63418.16, usd: 300.56 })
+  const asked = f.requests.at(-1)
+  assert.deepEqual([asked.url, asked.method, asked.body], ['https://api.comfy.org/customers/balance', 'GET', undefined])
+  assert.equal(asked.headers['X-API-Key'], KEY)
+  assert.equal(JSON.stringify(seen).includes(KEY), false)
+  assert.equal(posts(f).length, 0) // Nothing is sent that could cost anything.
+  // Without the "effective" figure the plain amount is used.
+  answers.value = () => response({ amount_micros: 211 })
+  assert.deepEqual(await f.manager.balance({}), { success: true, connected: true, known: true, credits: 445.21, usd: 2.11 })
+  // Every way of not knowing is the same quiet answer, never a guess.
+  for (const unknown of [() => response({ balance: 'lots' }), () => response({ amount_micros: -5 }), () => response({ amount_micros: 100, currency: 'eur' }),
+    () => response({ error: 'no' }, 401), () => response({ error: 'no' }, 403), () => response({ error: 'no' }, 500)]) {
+    answers.value = unknown
+    assert.deepEqual(await f.manager.balance({}), { success: true, connected: true, known: false })
+  }
+  assert.equal((await f.manager.balance({ jobId: 'x' })).success, false) // No choices are taken.
+  // With no key there is nothing to ask with, and nothing is asked.
+  assert.equal((await f.manager.clear({})).success, true)
+  f.requests.length = 0
+  assert.deepEqual(await f.manager.balance({}), { success: true, connected: false, known: false })
+  assert.equal(f.requests.length, 0)
+})

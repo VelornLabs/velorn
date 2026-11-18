@@ -20,10 +20,13 @@ const PIECE = 192 * 1024
 const OUTPUT_MAX = 96 * 1024 * 1024
 const VIDEO_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm'])
 // What a finished job may be: a clip, or the PNG picture a picture workflow makes.
-const RESULT_EXTENSION = Object.freeze({ 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'image/png': 'png' })
+const AUDIO_TYPES = new Set(['audio/mpeg', 'audio/flac', 'audio/ogg'])
+const RESULT_EXTENSION = Object.freeze({ 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'image/png': 'png', 'audio/mpeg': 'mp3', 'audio/flac': 'flac', 'audio/ogg': 'opus' })
+// MP3 (a tag or a frame header), FLAC or Ogg, judged from the first bytes.
+const soundFile = data => data.toString('latin1', 0, 3) === 'ID3' || (data[0] === 0xff && (data[1] & 0xe0) === 0xe0) || data.toString('latin1', 0, 4) === 'fLaC' || data.toString('latin1', 0, 4) === 'OggS'
 const PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
-const wholeResult = (mimeType, data) => mimeType === 'image/png' ? data.subarray(0, 8).equals(PNG) : mimeType === 'video/webm' || data.toString('ascii', 4, 8) === 'ftyp'
-const resultFits = (entry, mimeType) => entry.kind === 'image' ? mimeType === 'image/png' : VIDEO_TYPES.has(mimeType)
+const wholeResult = (mimeType, data) => mimeType === 'image/png' ? data.subarray(0, 8).equals(PNG) : AUDIO_TYPES.has(mimeType) ? soundFile(data) : mimeType === 'video/webm' || data.toString('ascii', 4, 8) === 'ftyp'
+const resultFits = (entry, mimeType) => entry.kind === 'image' ? mimeType === 'image/png' : entry.kind === 'audio' ? AUDIO_TYPES.has(mimeType) : VIDEO_TYPES.has(mimeType)
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const fault = (code, message) => Object.assign(new Error(message), { code, publicMessage: message })
 // What the queue's refusals mean, in the person's words.
@@ -38,16 +41,19 @@ const pieceCount = bytes => Math.ceil(bytes / PIECE)
 
 const OWN_ID = /^own-[a-f0-9]{16}$/
 const OWN_SHAPES = Object.freeze({ 'text-to-picture': { kind: 'image', needsImage: false }, 'picture-edit': { kind: 'image', needsImage: true },
-  'picture-to-video': { kind: 'video', needsImage: true }, 'text-to-video': { kind: 'video', needsImage: false } })
-// What a sender may put in a job for someone's own workflow: a description and a seed. Nothing else exists to choose.
-function ownChoices(input) {
+  'picture-to-video': { kind: 'video', needsImage: true }, 'text-to-video': { kind: 'video', needsImage: false }, 'text-to-music': { kind: 'audio', needsImage: false, lyrics: true } })
+const LYRICS_MAX = 3000
+// What a sender may put in a job for someone's own workflow: a description and a seed, and for music the words to sing. Nothing else exists to choose.
+function ownChoices(input, { lyrics: takesLyrics = false } = {}) {
   if (!plain(input)) throw fault('GPU_SHARE_INVALID', 'Missing choices for this job.')
-  for (const key of Object.keys(input)) if (!['prompt', 'seed'].includes(key)) throw fault('GPU_SHARE_INVALID', `"${String(key).slice(0, 40)}" is not a choice this workflow takes.`)
+  for (const key of Object.keys(input)) if (!['prompt', 'seed', ...(takesLyrics ? ['lyrics'] : [])].includes(key)) throw fault('GPU_SHARE_INVALID', `"${String(key).slice(0, 40)}" is not a choice this workflow takes.`)
+  const lyrics = input.lyrics === undefined ? '' : input.lyrics
+  if (typeof lyrics !== 'string' || lyrics.length > LYRICS_MAX || /\u0000/.test(lyrics)) throw fault('GPU_SHARE_INVALID', `Write lyrics of up to ${LYRICS_MAX} characters.`)
   const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : ''
   if (!prompt || prompt.length > 2000 || /\u0000/.test(prompt)) throw fault('GPU_SHARE_INVALID', 'Write a description of up to 2000 characters.')
   const seed = input.seed === undefined ? null : input.seed
   if (seed !== null && (!Number.isSafeInteger(seed) || seed < 0)) throw fault('GPU_SHARE_INVALID', 'The seed must be a whole number.')
-  return { prompt, seed }
+  return { prompt, seed, ...(lyrics.trim() ? { lyrics: lyrics.trim() } : {}) }
 }
 
 function createGpuShareClient({ host, runner, getNetwork, jobLog = null, confirmJob = async () => false, getComputerName = () => 'A Velorn computer', getOwn = () => null,
@@ -95,8 +101,8 @@ function createGpuShareClient({ host, runner, getNetwork, jobLog = null, confirm
       if (!entry) return await decline('That workflow is not allowed here.')
       let choices
       try { choices = entry.normalize(job.choices) } catch { return await decline('The job was not in the form this workflow takes.') }
-      const verdict = checkPrompt(choices.prompt)
-      if (!verdict.ok) return await decline(verdict.reason)
+      // The host's own check decides, for the description and for any words to sing.
+      for (const words of [choices.prompt, choices.lyrics]) { const verdict = words ? checkPrompt(words) : { ok: true }; if (!verdict.ok) return await decline(verdict.reason) }
       // A workflow that starts from a picture must come with one; one that does not must come without.
       if (entry.needsImage ? !plain(job.image) || !Object.hasOwn(IMAGE_TYPES, job.image.mimeType) || !Number.isInteger(job.image.bytes) || job.image.bytes < 16 || job.image.bytes > 10 * 1024 * 1024
         || job.image.pieces !== pieceCount(job.image.bytes) : job.image != null) return await decline('The job\'s picture was not acceptable.')
@@ -245,11 +251,11 @@ function createGpuShareClient({ host, runner, getNetwork, jobLog = null, confirm
   async function submit({ hostId, workflowId, choices, image } = {}) {
     // Velorn's own list, or a workflow that computer's owner listed as their own the last time this account looked.
     const listed = getApproved(workflowId) ? null : (seenOwn.get(hostId) || []).find(item => item.id === workflowId)
-    const entry = getApproved(workflowId) || (listed ? { needsImage: listed.needsImage, normalize: ownChoices } : null)
+    const entry = getApproved(workflowId) || (listed ? { needsImage: listed.needsImage, normalize: input => ownChoices(input, listed) } : null)
     if (!entry) throw fault('GPU_SHARE_WORKFLOW_UNKNOWN', 'That workflow is not offered on the Velorn network.')
     const checked = entry.normalize(choices)
-    const verdict = checkPrompt(checked.prompt)
-    if (!verdict.ok) throw fault(verdict.code, verdict.reason)
+    // The words to sing are held to the same rules as the description.
+    for (const words of [checked.prompt, checked.lyrics]) { const verdict = words ? checkPrompt(words) : { ok: true }; if (!verdict.ok) throw fault(verdict.code, verdict.reason) }
     if (entry.needsImage) checkImage(image)
     else if (image != null) throw fault('GPU_SHARE_INVALID', 'This workflow does not take a picture.')
     if (typeof hostId !== 'string' || !/^[a-f0-9]{32}$/.test(hostId)) throw fault('GPU_SHARE_INVALID', 'Choose a computer on the Velorn network.')
@@ -290,7 +296,7 @@ function createGpuShareClient({ host, runner, getNetwork, jobLog = null, confirm
       parts.push(Buffer.from(String(reply.data || ''), 'base64'))
     }
     const data = Buffer.concat(parts)
-    if (data.length !== bytes || !wholeResult(mimeType, data)) throw fault('GPU_NETWORK_INVALID', mimeType === 'image/png' ? 'The picture that came back was not a picture.' : 'The clip that came back was not a video.')
+    if (data.length !== bytes || !wholeResult(mimeType, data)) throw fault('GPU_NETWORK_INVALID', mimeType === 'image/png' ? 'The picture that came back was not a picture.' : AUDIO_TYPES.has(mimeType) ? 'The music that came back was not a sound file.' : 'The clip that came back was not a video.')
     if (!keep) { try { await call('job/done', { jobId }) } catch { /* It is forgotten after a while anyway. */ } }
     const extension = RESULT_EXTENSION[mimeType]
     return { bytes: data, mimeType, filename: `velorn-network-${jobId.slice(0, 10)}.${extension}` }
@@ -308,7 +314,7 @@ function createGpuShareClient({ host, runner, getNetwork, jobLog = null, confirm
   // ---------------- Open to everyone: review ----------------
   const SID = /^[a-f0-9]{24}$/
   const line = (value, max) => String(value ?? '').replace(/[\u0000-\u001f\u007f<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
-  const sentAlong = value => plain(value) && typeof value.mimeType === 'string' && /^(?:image|video)\/[a-z0-9.+-]{2,20}$/.test(value.mimeType) && Number.isInteger(value.bytes) && value.bytes > 0 ? { mimeType: value.mimeType, bytes: value.bytes } : null
+  const sentAlong = value => plain(value) && typeof value.mimeType === 'string' && /^(?:image|video|audio)\/[a-z0-9.+-]{2,20}$/.test(value.mimeType) && Number.isInteger(value.bytes) && value.bytes > 0 ? { mimeType: value.mimeType, bytes: value.bytes } : null
   // The owner's side: ask for a review of one own workflow, take it back, see where each stands.
   async function ownSubmit(sent) { const reply = await must('own/submit', sent); return { status: reply.submission?.status || 'pending' } }
   async function ownWithdraw(id) { await must('own/withdraw', { id }); return { withdrawn: true } }

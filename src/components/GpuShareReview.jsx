@@ -8,7 +8,7 @@ const box = 'rounded-lg border border-sf-dark-700 bg-sf-dark-900 p-3 flex flex-c
 const heading = 'text-[11px] font-semibold uppercase tracking-wide text-sf-text-muted'
 const quiet = 'text-xs leading-relaxed text-sf-text-muted'
 const button = 'flex-none rounded-md border border-sf-dark-600 bg-sf-dark-800 px-2.5 py-1 text-xs text-sf-text-primary hover:bg-sf-dark-700 disabled:opacity-45 disabled:cursor-default transition-colors'
-const SHAPE = { 'text-to-picture': 'Text to picture', 'picture-edit': 'Picture edit', 'picture-to-video': 'Picture to video', 'text-to-video': 'Text to video' }
+const SHAPE = { 'text-to-picture': 'Text to picture', 'picture-edit': 'Picture edit', 'picture-to-video': 'Picture to video', 'text-to-video': 'Text to video', 'text-to-music': 'Text to music' }
 const STATUS = { pending: 'Waiting for you', paused: 'Paused after reports', approved: 'Open to everyone', declined: 'Declined' }
 
 export default function GpuShareReview() {

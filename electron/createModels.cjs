@@ -8,7 +8,7 @@ const data = require('./createModels.json')
 const KINDS = ['image', 'video', 'voice', 'sound', 'music']
 const AUDIO_KINDS = ['voice', 'sound', 'music']
 // Which kind each audio request format makes.
-const AUDIO_FORMATS = { 'eleven-dialogue': 'voice', 'eleven-sfx': 'sound' }
+const AUDIO_FORMATS = { 'eleven-dialogue': 'voice', 'eleven-sfx': 'sound', 'pika-music': 'music' }
 const FORMATS = ['seedance', 'gemini-image', 'seedream', 'gpt-image', 'flux', ...Object.keys(AUDIO_FORMATS)]
 const REFUSAL = ['yes', 'no', 'unknown']
 const QUOTES = ['firm', 'range']
@@ -20,7 +20,9 @@ const MODEL_PATH = /^[a-z0-9-]+\/[a-z0-9._-]+$/
 function fail(message) { throw new Error(`createModels.json: ${message}`) }
 const price = value => typeof value === 'number' && Number.isFinite(value) && value > 0
 
+let voiceIds = new Set()
 function validate(catalog) {
+  voiceIds = new Set()
   if (!catalog || catalog.version !== 1) fail('unsupported version')
   if (!/^\d{4}-\d{2}-\d{2}$/.test(catalog.pricesAsOf)) fail('pricesAsOf must be a date')
   if (!price(catalog.creditsPerUsd)) fail('creditsPerUsd must be a positive number')
@@ -50,11 +52,15 @@ function validate(catalog) {
     if (m.kind === 'voice') {
       if (!m.characters || !Number.isInteger(m.characters.max) || m.characters.max < 1 || m.characters.max > 5000) fail(`${at} has a bad character limit`)
       if (!price(m.usdPer1kCharacters)) fail(`${at} needs a price per 1,000 characters`)
+      // A model with voices of its own (a different provider than the shared list) names them here.
+      if (m.voices !== undefined) checkVoices(m.voices, `${at} voice`)
     } else if (m.kind === 'sound' || m.kind === 'music') {
       const s = m.seconds
       if (!s || !Number.isInteger(s.min) || !Number.isInteger(s.max) || s.min < 1 || s.max < s.min) fail(`${at} has bad seconds limits`)
       if (!Array.isArray(s.offered) || !s.offered.length || s.offered.some(n => !Number.isInteger(n) || n < s.min || n > s.max)) fail(`${at} offers a length outside its limits`)
       if (!price(m.usdPerAudioSecond)) fail(`${at} needs a price per second`)
+      // Music that can be sung says how long the lyrics may be.
+      if (!(m.lyrics === undefined || m.kind === 'music' && Number.isInteger(m.lyrics?.max) && m.lyrics.max >= 1 && m.lyrics.max <= 5000)) fail(`${at} has a bad lyrics limit`)
     } else if (m.kind === 'video') {
       const s = m.seconds
       if (!s || !Number.isInteger(s.min) || !Number.isInteger(s.max) || s.min < 1 || s.max < s.min) fail(`${at} has bad seconds limits`)
@@ -78,18 +84,20 @@ function validate(catalog) {
     // Music has no cloud model: it is made on the person's own computer, outside this list.
     if (defaults.length !== 1 && catalog.models.some(m => m.kind === kind)) fail(`there must be exactly one default ${kind} model`)
   }
-  const voices = catalog.voices
-  if (!Array.isArray(voices) || !voices.length) fail('voices must be a non-empty list')
-  const voiceIds = new Set()
-  for (const v of voices) {
-    if (!v || typeof v.id !== 'string' || !/^[a-z0-9-]+$/.test(v.id) || voiceIds.has(v.id)) fail('every voice needs its own lowercase id')
-    voiceIds.add(v.id)
-    if (typeof v.name !== 'string' || !v.name.trim() || typeof v.note !== 'string' || !v.note.trim()) fail(`voice "${v.id}" needs a name and a note`)
-    if (typeof v.voiceId !== 'string' || !/^[A-Za-z0-9]{10,40}$/.test(v.voiceId)) fail(`voice "${v.id}" has a malformed provider id`)
-    if (typeof v.verified !== 'boolean') fail(`voice "${v.id}" must say whether it is verified`)
-  }
-  if (!voices.some(v => v.verified)) fail('at least one voice must be verified')
+  checkVoices(catalog.voices, 'voice')
+  if (!catalog.voices.some(v => v.verified)) fail('at least one voice must be verified')
   return catalog
+}
+// One id space for every voice, the shared list and each model's own, so a choice never means two voices.
+function checkVoices(voices, label) {
+  if (!Array.isArray(voices) || !voices.length) fail(`${label}s must be a non-empty list`)
+  for (const v of voices) {
+    if (!v || typeof v.id !== 'string' || !/^[a-z0-9-]+$/.test(v.id) || voiceIds.has(v.id)) fail(`every ${label} needs its own lowercase id`)
+    voiceIds.add(v.id)
+    if (typeof v.name !== 'string' || !v.name.trim() || typeof v.note !== 'string' || !v.note.trim()) fail(`${label} "${v.id}" needs a name and a note`)
+    if (typeof v.voiceId !== 'string' || !/^[A-Za-z0-9]{10,40}$/.test(v.voiceId)) fail(`${label} "${v.id}" has a malformed provider id`)
+    if (typeof v.verified !== 'boolean') fail(`${label} "${v.id}" must say whether it is verified`)
+  }
 }
 
 function freeze(value) {
@@ -110,8 +118,10 @@ function defaultModel(kind) {
   return catalog.models.find(m => m.kind === kind && m.default === true)
 }
 // Voices that have been heard working on a real request. The rest stay off the screen.
-function listVoices({ unverified = false } = {}) { return catalog.voices.filter(v => unverified || v.verified) }
-function getVoice(id) { return catalog.voices.find(v => v.id === id) || null }
+// A model with voices of its own offers only those; every other voice model shares the catalog's list.
+const voicesOf = model => (model && Array.isArray(model.voices) ? model.voices : catalog.voices)
+function listVoices({ unverified = false, model = null } = {}) { return voicesOf(model).filter(v => unverified || v.verified) }
+function getVoice(id, model = null) { return voicesOf(model).find(v => v.id === id) || null }
 function sizesFor(model) { return model.kind === 'image' ? SIZES.filter(size => size in model.usdPerImage) : [] }
 function resolutionsFor(model) { return model.kind === 'video' ? RESOLUTIONS.filter(r => r in model.usdPerSecond) : [] }
 

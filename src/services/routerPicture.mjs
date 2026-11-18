@@ -10,7 +10,7 @@ export const ROUTER_PICTURE_SIZE = '2K'
 const NOT_CONNECTED = new Set(['COMFY_ROUTER_KEY_REQUIRED', 'COMFY_ROUTER_AUTH'])
 
 export function routerPictureProblem(answer) {
-  if (NOT_CONNECTED.has(answer?.code)) return 'Connect your Comfy account first. Open the Create tab and follow the steps there, then come back.'
+  if (NOT_CONNECTED.has(answer?.code)) return 'Connect your Comfy account first. Open the Visuals tab and follow the steps there, then come back.'
   if (answer?.code === 'COMFY_ROUTER_CREDITS' || /credit/i.test(String(answer?.error || ''))) return 'Your Comfy account is out of credits.'
   return answer?.error || 'Comfy could not make this picture.'
 }

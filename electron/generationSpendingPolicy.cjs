@@ -43,6 +43,9 @@ const localGroups = {
   'comfy_extras.nodes_minimax_h3': `EmptyMiniMaxH3LatentAV MiniMaxH3ImageToVideo MiniMaxH3AddGuide
     MiniMaxH3ReferenceToVideo MiniMaxH3SigmaShift MiniMaxH3FunControlNetApply
     MiniMaxH3LatentUpscaleWithModel PH3ImageConditioning MiniMaxH3ImageConditioning`,
+  // MiniMax Music 3 is a model that runs on the person's own graphics card (ComfyUI v0.45, checked 2026-11-18:
+  // the module imports only torch and ComfyUI's own code; no network, no process, no file access). Exact pairs only.
+  'comfy_extras.nodes_minimax_music': 'MiniMaxMusic3TextEncode EmptyMiniMaxMusic3LatentAudio',
   'comfy_extras.nodes_custom_sampler': 'BasicScheduler KarrasScheduler ExponentialScheduler KSamplerSelect SamplerCustom BasicGuider CFGGuider RandomNoise DisableNoise SamplerCustomAdvanced ManualSigmas',
   'comfy_extras.nodes_model_advanced': 'ModelSamplingAuraFlow ModelSamplingSD3 ModelAttentionBackend',
   'comfy_extras.nodes_primitive': 'PrimitiveString PrimitiveStringMultiline PrimitiveInt PrimitiveFloat PrimitiveBoolean',
@@ -73,7 +76,7 @@ const localGroups = {
 // and temp folders. Same exact class/module match as above. Deliberately NOT here: training and dataset-folder
 // parts, parts that write model files (CheckpointSave, ModelSave, LoraSave...), GLSLShader (runs code written in
 // the workflow), the loop parts (they run more than the graph shows), WebcamCapture and RecordAudio. Core parts
-// whose names look like a paid provider (Ideogram4Scheduler, TripoSplat*, MiniMaxMusic3*) still count as paid.
+// whose names look like a paid provider (Ideogram4Scheduler, TripoSplat*) still count as paid. MiniMaxMusic3* is listed above with H3.
 // Re-check this block when ComfyUI is updated: a class that moves to another module stops matching by itself.
 const coreGroups = {
   'comfy_extras.nodes_advanced_samplers': `SamplerEulerCFGpp SamplerLCM SamplerLCMUpscale`,
@@ -317,7 +320,7 @@ function classifyGenerationGraph(workflow, objectInfo = {}) {
     // MiniMax H3 has local custom-node implementations as well as a familiar
     // provider name. Its name alone is not evidence of paid cloud execution.
     // Explicit provider/API/pricing evidence below still takes precedence.
-    const localH3Name = value => typeof value === 'string' && /minimax[\w. -]*h3|h3[\w. -]*minimax/i.test(value)
+    const localH3Name = value => typeof value === 'string' && /minimax[\w. -]*h3|h3[\w. -]*minimax|minimax[\w. -]*music3?/i.test(value)
     const namedProviders = value => providersFor(value).filter(provider => provider !== 'MiniMax' || !localH3Name(value))
     const nodeProviders = new Set([
       ...namedProviders(classType), ...namedProviders(module),

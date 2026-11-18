@@ -149,3 +149,13 @@ test('a creator\'s own workflow is its own line with the maker\'s name, and live
   assert.equal(networkModels([{ hostId: 'h1', maker: 'Sam', idle: true, workflows: [], own: [cats], remainingToday: 0 }])[0].state, 'unavailable')
   assert.deepEqual([jobKind({ workflowId: cats.id, kind: 'image' }), jobKind({ workflowId: cats.id, kind: 'video' }), jobKind({ workflowId: 'h3-edit' }), jobKind({ workflowId: 'ltx23-i2v' })], ['image', 'video', 'image', 'video'])
 })
+
+test('a creator\'s music workflow is a music card that takes lyrics, and its job speaks of a song', async () => {
+  const songs = { id: 'own-0123456789abcdef', name: 'Stadium songs', shape: 'text-to-music' }
+  const [card] = networkModels([{ hostId: 'h1', name: 'Studio', idle: true, workflows: [], own: [songs], maker: 'Sam' }])
+  assert.deepEqual([card.kind, card.needsImage, card.lyrics, card.sizes, card.seconds, card.ownId], ['music', false, { max: 3000 }, undefined, undefined, songs.id])
+  assert.match(card.note, /By Sam\. Makes music from your description\. Add lyrics to have them sung\./)
+  const { jobKind } = await import('../src/services/velornNetworkJob.mjs')
+  assert.equal(jobKind({ kind: 'music', workflowId: songs.id }), 'music')
+  assert.equal(jobKind({ workflowId: songs.id }), 'video') // An older record without a kind keeps its old meaning.
+})

@@ -62,7 +62,7 @@ export default function GpuShareOwnWorkflows() {
       const url = URL.createObjectURL(new Blob([got.bytes], { type: got.mimeType }))
       if (urls.current[id]) URL.revokeObjectURL(urls.current[id])
       urls.current[id] = url
-      setExamples(all => ({ ...all, [id]: { url, video: got.mimeType.startsWith('video/') } }))
+      setExamples(all => ({ ...all, [id]: { url, video: got.mimeType.startsWith('video/'), sound: got.mimeType.startsWith('audio/') } }))
     } catch { /* The list still works without its picture. */ }
   }, [api])
   const load = useCallback(async () => {
@@ -130,7 +130,10 @@ export default function GpuShareOwnWorkflows() {
         onBlur={() => void saveMaker(maker)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void saveMaker(maker) } }} />
     </label>}
     {workflows?.length > 0 && <ul className="flex flex-col gap-2 min-w-0">{workflows.map(item => <li key={item.id} className="rounded-md bg-sf-dark-800 px-2.5 py-2 flex gap-2.5 min-w-0">
-      {examples[item.id] && (examples[item.id].video
+      {examples[item.id] && (examples[item.id].sound
+        // A music workflow's example is something to hear. A plain player, started by the person, never by itself.
+        ? <audio src={examples[item.id].url} controls preload="none" className="h-9 w-44 flex-none" aria-label={`Example made by ${item.name}`} />
+        : examples[item.id].video
         ? <video src={examples[item.id].url} muted loop autoPlay playsInline className="h-16 w-16 flex-none rounded object-cover bg-sf-dark-950" aria-label={`Example made by ${item.name}`} />
         : <img src={examples[item.id].url} alt={`Example made by ${item.name}`} className="h-16 w-16 flex-none rounded object-cover bg-sf-dark-950" />)}
       <div className="min-w-0 flex-1 flex flex-col gap-1">

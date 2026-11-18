@@ -72,6 +72,18 @@ function CreditsChip({ className = '', size = 'sm' }) {
         }
       }
 
+      // No ComfyUI on this computer, or nobody signed in there: ask with the Comfy key
+      // the person pasted in Create. The key stays in the main process; only the number comes back.
+      const routerLookup = typeof window !== 'undefined' ? window?.electronAPI?.comfyRouter?.balance : null
+      if (typeof routerLookup === 'function') {
+        const routerResult = await routerLookup({}).catch(() => null)
+        if (!mountedRef.current) return
+        if (routerResult?.success && routerResult.known && Number.isFinite(routerResult.credits)) {
+          setBalance({ status: 'ok', credits: routerResult.credits })
+          return
+        }
+      }
+
       const key = await getComfyPartnerApiKey()
       if (!key) {
         if (!mountedRef.current) return

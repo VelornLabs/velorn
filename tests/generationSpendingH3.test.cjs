@@ -154,3 +154,20 @@ test('ComfyUI\'s own helper parts count as local, the risky ones and look-alikes
     ['LoadImageDataSetFromFolder', 'comfy_extras.nodes_dataset']]) assert.equal(risk(name, module), 'unknown', name)
   assert.equal(risk('Ideogram4Scheduler', 'comfy_extras.nodes_ideogram4'), 'paid')
 })
+
+// MiniMax Music 3: the two core parts of the local music model, by exact class and module.
+test('the MiniMax Music 3 core parts classify local only by their real implementation, never by name', () => {
+  const musicModule = 'comfy_extras.nodes_minimax_music'
+  for (const name of ['MiniMaxMusic3TextEncode', 'EmptyMiniMaxMusic3LatentAudio']) {
+    const local = classifyGenerationGraph({ x: node(name, { caption: 'calm piano', lyrics: '' }) }, { [name]: info(name, musicModule) })
+    assert.deepEqual([local.risk, local.paidNodes, local.unknownNodes, local.providers], ['local', [], [], []])
+    for (const entry of [undefined, {}, info(name, 'custom_nodes.minimax_music'), info(name, 'nodes'), info(name, `${musicModule}.custom`)]) {
+      assert.equal(classifyGenerationGraph({ x: node(name) }, { [name]: entry }).risk, 'unknown')
+    }
+    for (const extra of [{ api_node: true }, { price_badge: 0 }, { provider: 'MiniMax' }, { python_module: 'comfy_api_nodes.nodes_minimax_music' }]) {
+      assert.equal(classifyGenerationGraph({ x: node(name) }, { [name]: info(name, musicModule, extra) }).risk, 'paid')
+    }
+  }
+  // A paid MiniMax part with "music" nowhere in its real module is still paid.
+  assert.equal(classifyGenerationGraph({ x: node('MinimaxTextToVideoNode') }, { MinimaxTextToVideoNode: info('MinimaxTextToVideoNode', 'comfy_api_nodes.nodes_minimax', { api_node: true }) }).risk, 'paid')
+})

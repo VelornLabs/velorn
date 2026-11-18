@@ -1,6 +1,6 @@
 {
   "name": "velorn",
-  "version": "0.4.0-rc.2",
+  "version": "0.4.0-rc.3",
   "description": "AI-native video editing built around real creative timelines, generative workflows, and local agent control.",
   "main": "electron/main.js",
   "scripts": {
@@ -135,7 +135,7 @@
     "test:preview-video-seeking": "node --test ./src/utils/previewVideoSeeking.test.js",
     "test:optical-flow-cache": "node --test ./tests/opticalFlowCache.test.js",
     "test:rife-interpolation": "node --test ./tests/rifeRuntime.test.js ./tests/rifeInterpolation.test.js ./tests/runtimePackageGate.test.js",
-    "test:rife-hardening": "node --test ./tests/rifeRuntime.test.js ./tests/rifeInterpolation.test.js ./tests/runtimePackageGate.test.js ./tests/rifeRuntimeSourceBuild.test.js",
+    "test:rife-hardening": "node --test ./tests/rifeRuntime.test.js ./tests/rifeInterpolation.test.js ./tests/runtimePackageGate.test.js ./tests/rifeRuntimeSourceBuild.test.js ./tests/windowsVcRuntime.test.cjs",
     "test:alpha-media": "node --test ./tests/mediaAlpha.test.js ./tests/imageSequenceTranscode.test.js ./src/utils/alphaMedia.test.mjs",
     "test:mcp-h3": "node --test ./tests/mcpH3ReferenceVideo.test.js",
     "test:mcp-my-workflows": "node --test ./tests/myWorkflowCatalog.test.js"

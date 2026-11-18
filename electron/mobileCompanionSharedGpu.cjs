@@ -111,6 +111,8 @@ function createPhoneSharedGpu({ jobs, cacheDir, now = Date.now, local = null, on
     const cards = []
     for (const item of Array.isArray(list) ? list : []) {
       if (!/^own-[a-f0-9]{16}$/.test(item?.id || '')) continue
+      // The phone page shows pictures and clips only. Music workflows are used on the computer for now.
+      if (item.kind === 'audio' || item.shape === 'text-to-music') continue
       const entry = { id: item.id, name: text(item.name, 60) || 'A workflow', kind: item.kind === 'video' ? 'video' : 'image', needsImage: item.needsImage === true }
       mine.set(item.id, entry)
       cards.push({ cardId: `local.${item.id}`, name: entry.name, kind: entry.kind, needsImage: entry.needsImage, shape: item.shape, maker: 'Yours', makerId: 'local', local: true, yours: true, ready: !running, waiting: 0 })
@@ -170,6 +172,7 @@ function createPhoneSharedGpu({ jobs, cacheDir, now = Date.now, local = null, on
       for (const own of Array.isArray(host.own) ? host.own : []) {
         const cardId = `${host.hostId}.${own.id}`
         if (!CARD.test(cardId)) continue
+        if (own.kind === 'audio' || own.shape === 'text-to-music') continue // Not on the phone page yet.
         const maker = text(host.maker, 40) || 'A Velorn creator'
         const card = { cardId, name: text(own.name, 60), kind: own.kind === 'video' ? 'video' : 'image', needsImage: own.needsImage === true, shape: own.shape, maker, makerId: host.hostId,
           ready: host.idle === true && !(host.waiting > 0), waiting: Number.isInteger(host.waiting) ? host.waiting : 0, yours: host.sameAccount === true,

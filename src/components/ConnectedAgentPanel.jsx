@@ -639,7 +639,7 @@ function Conversation({ projectKey, provider, onProviderChange, settingsOpen, se
       setApprovals(previous => [...previous, approval].slice(-30))
     }
     if (event.type === 'tool' && requestToolsEnabled.current && activityId(event.callId)
-      && ['running', 'completed', 'denied', 'failed'].includes(event.status)) {
+      && ['running', 'completed', 'denied', 'failed', 'stopped'].includes(event.status)) {
       const activity = { id: `tool:${event.callId}`, kind: 'tool', toolName: activityText(event.toolName, 120),
         status: event.status, summary: activityText(event.summary, 600),
         ...(connectedAgentDurationMs(event.durationMs) !== undefined ? { durationMs: event.durationMs } : {}),

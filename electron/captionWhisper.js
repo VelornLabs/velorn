@@ -74,6 +74,12 @@ function engineBinDir(app) {
   return path.join(engineRoot(app), 'bin')
 }
 
+// A second, optional speech program that uses the graphics card (whisper.cpp built with Vulkan). It lives beside
+// the plain one and is only ever tried first; the plain one stays the fall-back. See songMapWorker.cjs.
+function engineGpuBinDir(app) {
+  return path.join(engineRoot(app), 'bin-gpu')
+}
+
 function engineModelsDir(app) {
   return path.join(engineRoot(app), 'models')
 }
@@ -151,6 +157,7 @@ function buildEngineStatus(app) {
     platformSupported,
     releaseTag: WHISPER_RELEASE_TAG,
     binaryPath: binaryPath || null,
+    gpuBinaryPath: findBinaryIn(engineGpuBinDir(app)) || null,
     vadModelInstalled: fs.existsSync(vadModelPath(app)),
     modelsDir: engineModelsDir(app),
     models,

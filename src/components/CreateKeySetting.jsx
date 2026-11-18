@@ -26,7 +26,7 @@ export default function CreateKeySetting() {
   return (
     <div className="flex items-center justify-between rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-3 py-3">
       <div className="pr-4">
-        <label className="text-sm text-sf-text-primary">Comfy key for the Create tab</label>
+        <label className="text-sm text-sf-text-primary">Comfy key for Visuals and Sound</label>
         <p className="text-[10px] text-sf-text-muted">
           {!held ? 'No key is held. Create asks for one the first time you generate.'
             : status.remembered ? 'A key is remembered on this computer, encrypted by the system password store.'

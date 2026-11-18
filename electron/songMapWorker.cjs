@@ -25,6 +25,41 @@ const progress = (step, fraction) => send({ type: 'progress', step, percent: Mat
 // (it is fine on plain Node). Found the hard way; do not remove.
 const sessionOptions = (threads) => ({ intraOpNumThreads: threads, enableMemPattern: false })
 
+// The two models (voice separator, word aligner) run on the graphics card when the engine's own
+// built-in route for that (WebGPU, part of onnxruntime-node, nothing to download) works on this
+// computer, and on the processor otherwise. Every way the card can let us down ends on the processor:
+//   - no usable card or driver: the card session cannot be made;
+//   - a card that cannot run the model: the run throws, and that same piece is run again on the processor;
+//   - a "card" that is really slower than the processor: its second piece is timed against the processor once.
+// `request.useCard === false` (set after a failed attempt) skips the card altogether.
+const ranOn = {}
+async function openModel(modelPath, threads, name) {
+  const onProcessor = () => ort.InferenceSession.create(modelPath, sessionOptions(threads))
+  const state = { on: 'processor', sess: null }
+  ranOn[name] = state
+  if (request.useCard !== false) {
+    try { state.sess = await ort.InferenceSession.create(modelPath, { ...sessionOptions(threads), executionProviders: ['webgpu'] }); state.on = 'card' }
+    catch { state.problem = 'unavailable' }
+  }
+  if (!state.sess) state.sess = await onProcessor()
+  let runs = 0
+  state.run = async (feeds) => {
+    if (state.on !== 'card') return state.sess.run(feeds)
+    const started = performance.now()
+    let out
+    try { out = await state.sess.run(feeds) }
+    catch { state.on = 'processor'; state.problem = 'failed'; state.sess = await onProcessor(); return state.sess.run(feeds) }
+    runs++
+    const cardMs = performance.now() - started
+    if (runs === 2 && cardMs > 1000) {
+      const plain = await onProcessor(), again = performance.now(), same = await plain.run(feeds)
+      if (performance.now() - again < cardMs) { state.on = 'processor'; state.problem = 'slower'; state.sess = plain; return same }
+    }
+    return out
+  }
+  return state
+}
+
 function ffmpeg(args, input) {
   const r = spawnSync(request.ffmpegPath, ['-loglevel', 'error', ...args], { input, maxBuffer: 1 << 30, windowsHide: true })
   if (r.status !== 0) throw new Error('The song could not be read: ' + String(r.stderr || r.error || '').slice(-300))
@@ -33,19 +68,41 @@ function ffmpeg(args, input) {
 const f32 = (buf) => new Float32Array(buf.buffer, buf.byteOffset, buf.length >> 2).slice()
 const i16 = (buf) => new Int16Array(buf.buffer, buf.byteOffset, buf.length >> 1).slice()
 
-function runWhisper(args, onPercent) {
+// `binary` is the speech program to run. With `needsCard`, it is the graphics-card version: it must find a real
+// card. If it says it found none (it would then quietly work on the processor, which the plain version does
+// better), it is stopped at once and the caller falls back.
+function runWhisper(args, onPercent, { binary = request.whisperCliPath, needsCard = false } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(request.whisperCliPath, args, { cwd: path.dirname(request.whisperCliPath), windowsHide: true })
-    let tail = ''
+    const child = spawn(binary, args, { cwd: path.dirname(binary), windowsHide: true })
+    let tail = '', noCard = false
     child.stderr.on('data', (chunk) => {
       tail = (tail + chunk.toString()).slice(-2000)
+      if (needsCard && !noCard && /no GPU found|No devices found/i.test(tail)) { noCard = true; try { child.kill() } catch { /* Already gone. */ } }
       const match = tail.match(/progress\s*=\s*(\d+)%(?![\s\S]*progress\s*=)/i)
       if (match) onPercent(Number(match[1]) / 100)
     })
     child.stdout.on('data', () => {})
     child.on('error', reject)
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error('The speech engine stopped: ' + tail.slice(-300)))))
+    child.on('close', (code) => (noCard ? reject(Object.assign(new Error('no graphics card'), { noCard: true }))
+      : code === 0 ? resolve() : reject(new Error('The speech engine stopped: ' + tail.slice(-300)))))
   })
+}
+// Hears the words on the graphics card when Velorn has that version of the speech program, and on the processor
+// otherwise or when the card version fails for any reason. What happened is reported with the result.
+const speech = { used: 'processor' }
+async function hearWords(args, onPercent, resultFile) {
+  const card = request.whisperGpuCliPath
+  if (card) {
+    try {
+      // The quiet flag is left out here so the program says which card it uses.
+      await runWhisper(args.filter(item => item !== '-np'), onPercent, { binary: card, needsCard: true })
+      if (fs.existsSync(resultFile)) { speech.used = 'card'; return }
+      speech.cardProblem = 'failed'
+    } catch (error) { speech.cardProblem = error?.noCard ? 'no-card' : 'failed' }
+    try { fs.rmSync(resultFile, { force: true }) } catch { /* Nothing was written. */ }
+    onPercent(0)
+  }
+  await runWhisper(args, onPercent)
 }
 
 const DICT = JSON.parse(fs.readFileSync(request.alignerDictPath, 'utf8'))
@@ -87,7 +144,7 @@ const win = new Float64Array(NFFT); for (let i = 0; i < NFFT; i++) win[i] = 0.5 
 
 // ---------- vocal separation (MDX-Net model, UVR chunking) ----------
 async function separate(stereo, n, modelPath, threads, onProgress) {
-  const sess = await ort.InferenceSession.create(modelPath, sessionOptions(threads))
+  const model = await openModel(modelPath, threads, 'voice')
   const TRIM = NFFT / 2, CHUNK = HOP * (DIMT - 1), GEN = CHUNK - 2 * TRIM
   const padEnd = GEN + TRIM - (n % GEN), total = TRIM + n + padEnd
   const ch = [new Float32Array(total), new Float32Array(total)]
@@ -112,7 +169,7 @@ async function separate(stereo, n, modelPath, threads, onProgress) {
         for (let f = 0; f < DIMF; f++) { x[(2 * c) * plane + f * DIMT + t] = fRe[f]; x[(2 * c + 1) * plane + f * DIMT + t] = fIm[f] }
       }
     }
-    const res = await sess.run({ input: new ort.Tensor('float32', x, [1, 4, DIMF, DIMT]) })
+    const res = await model.run({ input: new ort.Tensor('float32', x, [1, 4, DIMF, DIMT]) })
     const y = res.output.data
     for (let c = 0; c < 2; c++) {
       ola.fill(0)
@@ -204,7 +261,7 @@ const cutFile = path.join(work, 'cut.wav'); writeWav16(cutFile, cut)
 // words
 const ob = path.join(work, 'w')
 progress('words', 0)
-await runWhisper(['-m', request.whisperModelPath, '-f', cutFile, '-l', request.language || 'en', '-oj', '-of', ob, '-np', '-pp', '-t', String(THREADS), '-mc', '0'], (f) => progress('words', f))
+await hearWords(['-m', request.whisperModelPath, '-f', cutFile, '-l', request.language || 'en', '-oj', '-of', ob, '-np', '-pp', '-t', String(THREADS), '-mc', '0'], (f) => progress('words', f), ob + '.json')
 T.words = (tick() - t0) / 1000; t0 = tick()
 const segs = []; let dropped = 0
 for (const s of JSON.parse(fs.readFileSync(ob + '.json', 'utf8')).transcription) {
@@ -221,12 +278,12 @@ for (const s of segs) for (const w of norm(s[2])) words.push(w)
 let rows = []
 if (words.length) {
   progress('timing', 0)
-  const sess = await ort.InferenceSession.create(request.alignerModelPath, sessionOptions(THREADS))
+  const model = await openModel(request.alignerModelPath, THREADS, 'timing'), sess = model.sess
   const C = 29, chunks = []; let Tn = 0
   for (let i = 0; i < voc.length; i += 16000 * 30) {
     if (voc.length - i < 400) break
     const a = voc.subarray(i, Math.min(voc.length, i + 16000 * 30))
-    const r = await sess.run({ [sess.inputNames[0]]: new ort.Tensor('float32', a, [1, a.length]) })
+    const r = await model.run({ [sess.inputNames[0]]: new ort.Tensor('float32', a, [1, a.length]) })
     const o = r[sess.outputNames[0]]; chunks.push(o.data); Tn += o.dims[1]
     progress('timing', Math.min(0.95, (i + 16000 * 30) / voc.length))
   }
@@ -272,7 +329,7 @@ rows = rows.filter((r) => !(r.conf < 0.1 && r.voice < 0.2))
 T.align = (tick() - t0) / 1000
 
 const voice = merged.map(([a, b]) => [+a.toFixed(2), +b.toFixed(2)])
-send({ type: 'result', duration: +(n / 44100).toFixed(2), rows, voice, droppedStutters: dropped, droppedGhosts: ghosts, seconds: Object.fromEntries(Object.entries(T).map(([k, v]) => [k, +v.toFixed(1)])) })
+send({ type: 'result', speech, models: Object.fromEntries(Object.entries(ranOn).map(([name, state]) => [name, { on: state.on, ...(state.problem ? { problem: state.problem } : {}) }])), duration: +(n / 44100).toFixed(2), rows, voice, droppedStutters: dropped, droppedGhosts: ghosts, seconds: Object.fromEntries(Object.entries(T).map(([k, v]) => [k, +v.toFixed(1)])) })
 fs.rmSync(work, { recursive: true, force: true })
 }
 

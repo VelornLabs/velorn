@@ -4,8 +4,8 @@
 // A person picks one of the workflows saved in Velorn's library. Velorn looks
 // inside it and finds, by plain rules, where the description goes in, where a
 // picture goes in (if any) and which node saves the result. That makes it one
-// of four shapes: text to picture, picture edit, picture to video, text to
-// video. Anything else is turned down with the reason.
+// of five shapes: text to picture, picture edit, picture to video, text to
+// video, text to music. Anything else is turned down with the reason.
 //
 // What is kept here is small: which saved workflow, its name, the three spots,
 // and the fingerprint of the graph they were found in. The workflow itself
@@ -21,14 +21,18 @@ const { createHash, randomBytes } = require('node:crypto')
 const { refuse, PROMPT_MAX } = require('./gpuShareWorkflows.cjs')
 
 const LIMITS = Object.freeze({ entries: 24, shared: 12, name: 60, exampleBytes: 64 * 1024 * 1024, storeBytes: 256 * 1024 })
-const SHAPES = Object.freeze({ 'text-to-picture': 'Text to picture', 'picture-edit': 'Picture edit', 'picture-to-video': 'Picture to video', 'text-to-video': 'Text to video' })
+const SHAPES = Object.freeze({ 'text-to-picture': 'Text to picture', 'picture-edit': 'Picture edit', 'picture-to-video': 'Picture to video', 'text-to-video': 'Text to video', 'text-to-music': 'Text to music' })
 const ID = /^own-[a-f0-9]{16}$/
 const SAVE_PICTURE = /^SaveImage$/
 const SAVE_VIDEO = /^(?:SaveVideo|SaveWEBM|SaveAnimatedWEBP|VHS_VideoCombine)$/
-const SAVE_OTHER = /SaveAudio|Save3D|SaveGLB|SaveLatent|SaveSVG/i
+// ComfyUI's own four ways to save a sound file.
+const SAVE_AUDIO = /^(?:SaveAudio|SaveAudioMP3|SaveAudioOpus|SaveAudioAdvanced)$/
+const SAVE_OTHER = /Save3D|SaveGLB|SaveLatent|SaveSVG/i
+const LYRICS_MAX = 3000
 const LOAD_OTHER = /^(?:LoadVideo|VHS_LoadVideo|VHS_LoadVideoPath|LoadAudio|VHS_LoadAudio|Load3D|LoadLatent)$/
 const TEXT_KEYS = ['text', 'prompt', 'model.prompt', 'positive_prompt', 'caption', 'value', 'string']
 const TEST_PROMPT = 'A red apple on a wooden table, soft morning light.'
+const TEST_MUSIC_PROMPT = 'Calm piano with soft strings, slow and warm, instrumental.'
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const spot = value => plain(value) && typeof value.nodeId === 'string' && value.nodeId.length <= 64 && typeof value.inputKey === 'string' && value.inputKey.length <= 160
 const titleOf = (graph, nodeId) => String(graph[nodeId]?._meta?.title || graph[nodeId]?.class_type || '').slice(0, 80)
@@ -52,21 +56,28 @@ function describeGraph(graph, bindings) {
   const problems = []
   const nodes = Object.entries(graph)
   const saves = kind => nodes.filter(([, node]) => kind.test(node.class_type)).map(([nodeId]) => nodeId)
-  const pictures = saves(SAVE_PICTURE), videos = saves(SAVE_VIDEO)
-  if (nodes.some(([, node]) => SAVE_OTHER.test(node.class_type))) problems.push('It saves something other than a picture or a video. Velorn can only share picture and video workflows.')
-  if (pictures.length + videos.length === 0) problems.push('Velorn could not find where the result is saved. It looks for a Save Image or Save Video node.')
-  else if (pictures.length + videos.length > 1) problems.push(`It saves ${pictures.length + videos.length} results. Velorn can share a workflow that saves one.`)
-  const outputId = videos[0] || pictures[0] || null
+  const pictures = saves(SAVE_PICTURE), videos = saves(SAVE_VIDEO), sounds = saves(SAVE_AUDIO)
+  const results = pictures.length + videos.length + sounds.length
+  if (nodes.some(([, node]) => SAVE_OTHER.test(node.class_type))) problems.push('It saves something other than a picture, a video or a sound. Velorn can only share picture, video and music workflows.')
+  if (results === 0) problems.push('Velorn could not find where the result is saved. It looks for a Save Image, Save Video or Save Audio node.')
+  else if (results > 1) problems.push(`It saves ${results} results. Velorn can share a workflow that saves one.`)
+  const music = sounds.length === 1 && results === 1
+  const outputId = videos[0] || pictures[0] || sounds[0] || null
   if (outputId && typeof graph[outputId].inputs.filename_prefix !== 'string') problems.push('The node that saves the result has no file name setting, so Velorn cannot tell its result apart.')
   const loaders = (bindings?.assets || []).filter(item => item.assetType === 'image')
   if (nodes.some(([, node]) => LOAD_OTHER.test(node.class_type))) problems.push('It starts from a video, a sound or another file. Velorn can only share workflows that start from a description or one picture.')
   if (loaders.length > 1) problems.push(`It starts from ${loaders.length} pictures. Velorn can share a workflow that starts from one, or from none.`)
+  if (music && loaders.length) problems.push('It makes a sound but starts from a picture. Velorn can share a music workflow that starts from a description.')
+  // Words to sing: a text box named "lyrics". Its neighbour on the same part is the natural place for the description.
+  const lyricsAt = music ? nodes.find(([, node]) => typeof node.inputs.lyrics === 'string') : null
+  const lyrics = lyricsAt ? { nodeId: lyricsAt[0], inputKey: 'lyrics' } : null
   const choices = textSpots(graph)
-  const guess = spot(bindings?.prompt) && choices.find(item => item.nodeId === bindings.prompt.nodeId && item.inputKey === bindings.prompt.inputKey)
+  const guess = (lyrics && choices.find(item => item.nodeId === lyrics.nodeId))
+    || (spot(bindings?.prompt) && choices.find(item => item.nodeId === bindings.prompt.nodeId && item.inputKey === bindings.prompt.inputKey))
   if (!choices.length) problems.push('Velorn could not find a place for the description. It looks for a text box that holds the prompt.')
   const video = Boolean(videos.length), picture = loaders.length === 1 ? loaders[0] : null
-  const shape = video ? (picture ? 'picture-to-video' : 'text-to-video') : picture ? 'picture-edit' : 'text-to-picture'
-  return { shape, kind: video ? 'video' : 'image', problems,
+  const shape = music ? 'text-to-music' : video ? (picture ? 'picture-to-video' : 'text-to-video') : picture ? 'picture-edit' : 'text-to-picture'
+  return { shape, kind: music ? 'audio' : video ? 'video' : 'image', problems, lyrics,
     prompt: guess ? { nodeId: guess.nodeId, inputKey: guess.inputKey } : choices[0] ? { nodeId: choices[0].nodeId, inputKey: choices[0].inputKey } : null, promptChoices: choices,
     image: picture ? { nodeId: picture.nodeId, inputKey: picture.inputKey, label: titleOf(graph, picture.nodeId), holds: String(graph[picture.nodeId].inputs[picture.inputKey] || '').slice(0, 120) } : null,
     output: outputId ? { nodeId: outputId, classType: graph[outputId].class_type, label: titleOf(graph, outputId) } : null,
@@ -79,12 +90,15 @@ function entryFor(record, { keepPicture = false } = {}) {
     id: record.id, name: record.name, kind: record.kind, own: true, needsImage: Boolean(record.image) && !keepPicture, minimumVramGb: 0, shapes: [],
     normalize(input) {
       if (!plain(input)) throw refuse('Missing choices for this job.')
-      for (const key of Object.keys(input)) if (!['prompt', 'seed'].includes(key)) throw refuse(`"${String(key).slice(0, 40)}" is not a choice this workflow takes.`)
+      for (const key of Object.keys(input)) if (!['prompt', 'seed', ...(record.kind === 'audio' ? ['lyrics'] : [])].includes(key)) throw refuse(`"${String(key).slice(0, 40)}" is not a choice this workflow takes.`)
+      // Words to sing, for a music workflow. One without a place for them takes the choice and makes its music without singing.
+      const lyrics = input.lyrics === undefined ? '' : input.lyrics
+      if (typeof lyrics !== 'string' || lyrics.length > LYRICS_MAX || /\u0000/.test(lyrics)) throw refuse(`Write lyrics of up to ${LYRICS_MAX} characters.`)
       const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : ''
       if (!prompt || prompt.length > PROMPT_MAX || /\u0000/.test(prompt)) throw refuse(`Write a description of up to ${PROMPT_MAX} characters.`)
       const seed = input.seed === undefined ? null : input.seed
       if (seed !== null && (!Number.isSafeInteger(seed) || seed < 0)) throw refuse('The seed must be a whole number.')
-      return { prompt, seed }
+      return { prompt, seed, ...(record.lyrics ? { lyrics: lyrics.trim() } : {}) }
     },
     bind(workflow, choices, { imageName, prefix, randomSeed }) {
       const changed = () => refuse('This workflow changed since it was added. Add it again.', 'GPU_SHARE_WORKFLOW_CHANGED')
@@ -97,6 +111,8 @@ function entryFor(record, { keepPicture = false } = {}) {
       }
       const seed = choices.seed === null ? randomSeed() : choices.seed
       set(record.prompt, choices.prompt, 'string')
+      // The owner's own lyrics never go out with someone else's song: the sender's words, or none.
+      if (record.lyrics) set(record.lyrics, choices.lyrics || '', 'string')
       if (record.image && !keepPicture) set(record.image, imageName, 'string')
       for (const place of record.seeds) set(place, seed, 'number')
       if (bound[record.output.nodeId]?.class_type !== record.output.classType) throw changed()
@@ -108,7 +124,8 @@ function entryFor(record, { keepPicture = false } = {}) {
 
 function validRecord(value) {
   return plain(value) && ID.test(value.id || '') && typeof value.workflowId === 'string' && value.workflowId.length <= 200 && typeof value.name === 'string' && value.name && value.name.length <= LIMITS.name
-    && Object.hasOwn(SHAPES, value.shape) && ['image', 'video'].includes(value.kind) && /^[a-f0-9]{64}$/.test(value.graphFingerprint || '')
+    && Object.hasOwn(SHAPES, value.shape) && ['image', 'video', 'audio'].includes(value.kind) && (value.kind === 'audio') === (value.shape === 'text-to-music')
+    && (value.lyrics === undefined || value.lyrics === null || value.kind === 'audio' && spot(value.lyrics)) && /^[a-f0-9]{64}$/.test(value.graphFingerprint || '')
     && spot(value.prompt) && (value.image === null || spot(value.image)) && plain(value.output) && typeof value.output.nodeId === 'string' && typeof value.output.classType === 'string'
     && Array.isArray(value.seeds) && value.seeds.length <= 16 && value.seeds.every(spot) && Number.isFinite(value.addedAt)
     && (value.shared === undefined || typeof value.shared === 'boolean') && (value.everyone === undefined || typeof value.everyone === 'boolean')
@@ -141,7 +158,7 @@ function createGpuShareOwnWorkflows({ dir, library, runner, now = Date.now, make
     writing = run.catch(() => {})
     return run
   }
-  const shown = record => ({ id: record.id, name: record.name, shape: record.shape, shapeLabel: SHAPES[record.shape], kind: record.kind, needsImage: Boolean(record.image), addedAt: record.addedAt,
+  const shown = record => ({ id: record.id, name: record.name, shape: record.shape, shapeLabel: SHAPES[record.shape], kind: record.kind, needsImage: Boolean(record.image), ...(record.lyrics ? { takesLyrics: true } : {}), addedAt: record.addedAt,
     testedAt: record.testedAt || null, testSeconds: record.testSeconds || null, hasExample: Boolean(record.example), shared: record.shared === true, everyone: record.shared === true && record.everyone === true, fingerprint: record.graphFingerprint, ...(record.trouble ? { trouble: record.trouble } : {}) })
 
   // The saved workflow as the library prepares it, or a plain reason why not.
@@ -172,7 +189,7 @@ function createGpuShareOwnWorkflows({ dir, library, runner, now = Date.now, make
     const problems = [...found.problems]
     if (!problems.length) {
       // Bound exactly as a job would be, then judged like every network job: local parts only, every model file here.
-      const draft = { id: 'own-0000000000000000', name: 'check', kind: found.kind, prompt: found.prompt, image: found.image && { nodeId: found.image.nodeId, inputKey: found.image.inputKey }, output: found.output, seeds: found.seeds }
+      const draft = { id: 'own-0000000000000000', name: 'check', kind: found.kind, lyrics: found.lyrics, prompt: found.prompt, image: found.image && { nodeId: found.image.nodeId, inputKey: found.image.inputKey }, output: found.output, seeds: found.seeds }
       const entry = entryFor(draft)
       let verdict
       try { verdict = await runner.check(entry.bind(ready.workflow, entry.normalize({ prompt: 'check' }), { imageName: 'check.png', prefix: 'velorn_network/check', randomSeed: () => 1 }).workflow) }
@@ -182,7 +199,7 @@ function createGpuShareOwnWorkflows({ dir, library, runner, now = Date.now, make
         : `${verdict.reason}${verdict.missingModels?.length ? ` Missing: ${verdict.missingModels.slice(0, 8).join(', ')}.` : ''}`)
     }
     return { workflowId, title: String(ready.title || '').slice(0, 120), shape: found.shape, shapeLabel: SHAPES[found.shape], kind: found.kind, canAdd: problems.length === 0, problems,
-      prompt: found.prompt, promptChoices: found.promptChoices, image: found.image, output: found.output }
+      prompt: found.prompt, promptChoices: found.promptChoices, image: found.image, output: found.output, lyrics: found.lyrics || null }
   }
 
   async function add({ workflowId, name, prompt } = {}) {
@@ -199,7 +216,7 @@ function createGpuShareOwnWorkflows({ dir, library, runner, now = Date.now, make
     if (!chosen) throw refuse('Choose one of the listed places for the description.')
     const ready = await prepared(workflowId)
     const record = { id: `own-${createHash('sha256').update(`${workflowId}\0${ready.graphFingerprint}\0${randomBytes(8).toString('hex')}`).digest('hex').slice(0, 16)}`,
-      workflowId, name: title, shape: found.shape, kind: found.kind, graphFingerprint: ready.graphFingerprint, prompt: { nodeId: chosen.nodeId, inputKey: chosen.inputKey },
+      workflowId, name: title, shape: found.shape, kind: found.kind, ...(found.lyrics ? { lyrics: found.lyrics } : {}), graphFingerprint: ready.graphFingerprint, prompt: { nodeId: chosen.nodeId, inputKey: chosen.inputKey },
       image: found.image ? { nodeId: found.image.nodeId, inputKey: found.image.inputKey } : null, output: { nodeId: found.output.nodeId, classType: found.output.classType },
       seeds: describeGraph(ready.workflow, ready.bindings).seeds, addedAt: now(), testedAt: null, testSeconds: null, example: null }
     await save([...records, record])
@@ -245,7 +262,7 @@ function createGpuShareOwnWorkflows({ dir, library, runner, now = Date.now, make
     const started = now()
     testing = (async () => {
       const own = await resolve(id, { keepPicture: true })
-      return runner.run({ jobId: `owntest-${randomBytes(9).toString('hex')}`, workflowId: id, own, choices: { prompt: TEST_PROMPT } })
+      return runner.run({ jobId: `owntest-${randomBytes(9).toString('hex')}`, workflowId: id, own, choices: { prompt: own.entry.kind === 'audio' ? TEST_MUSIC_PROMPT : TEST_PROMPT } })
     })()
     let result, trouble = ''
     try { result = await testing } catch (error) { trouble = error?.publicMessage || 'The test could not be finished.' } finally { testing = null }
@@ -253,7 +270,7 @@ function createGpuShareOwnWorkflows({ dir, library, runner, now = Date.now, make
     if (at < 0) throw refuse('That workflow was removed while it was being tested.')
     let next
     if (result && Buffer.isBuffer(result.bytes) && result.bytes.length <= LIMITS.exampleBytes) {
-      const extension = { 'image/png': 'png', 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm' }[result.mimeType]
+      const extension = { 'image/png': 'png', 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'audio/mpeg': 'mp3', 'audio/flac': 'flac', 'audio/ogg': 'opus' }[result.mimeType]
       const file = `${id}.${extension}`
       await fs.mkdir(dir, { recursive: true, mode: 0o700 })
       await fs.writeFile(path.join(dir, file), result.bytes, { mode: 0o600 })
@@ -318,7 +335,7 @@ function createGpuShareOwnWorkflows({ dir, library, runner, now = Date.now, make
 
   async function example({ id } = {}) {
     const record = (await load()).find(item => item.id === id)
-    if (!record?.example || !/^own-[a-f0-9]{16}\.(?:png|mp4|mov|webm)$/.test(record.example.file)) throw refuse('There is no example for this workflow yet.')
+    if (!record?.example || !/^own-[a-f0-9]{16}\.(?:png|mp4|mov|webm|mp3|flac|opus)$/.test(record.example.file)) throw refuse('There is no example for this workflow yet.')
     const bytes = await fs.readFile(path.join(dir, record.example.file))
     if (bytes.length > LIMITS.exampleBytes) throw refuse('The example is too large to show.')
     return { mimeType: record.example.mimeType, bytes: new Uint8Array(bytes) }
@@ -388,4 +405,4 @@ function registerGpuShareOwnIpc({ ipcMain, getMainWindow, own, onChanged = () =>
   return { dispose() { for (const channel of [...CHANNELS, ...REVIEW_CHANNELS]) ipcMain.removeHandler?.(channel) } }
 }
 
-module.exports = { createGpuShareOwnWorkflows, registerGpuShareOwnIpc, describeGraph, entryFor, SHAPES, LIMITS, CHANNELS, TEST_PROMPT }
+module.exports = { createGpuShareOwnWorkflows, registerGpuShareOwnIpc, describeGraph, entryFor, SHAPES, LIMITS, CHANNELS, TEST_PROMPT, TEST_MUSIC_PROMPT, LYRICS_MAX }

@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     preview: payload => ipcRenderer.invoke('comfy-router:preview', payload),
     models: payload => ipcRenderer.invoke('comfy-router:models', payload),
+    balance: payload => ipcRenderer.invoke('comfy-router:balance', payload),
     previewCreate: payload => ipcRenderer.invoke('comfy-router:previewCreate', payload),
     // Many different pictures under one price and one approval (the Director's keyframes).
     previewCreateBatch: payload => ipcRenderer.invoke('comfy-router:previewCreateBatch', payload),

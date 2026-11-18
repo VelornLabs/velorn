@@ -171,7 +171,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
     let active = true
     ;(async () => {
       if (!api?.models) return
-      try { const listed = await api.models({}); if (active && listed?.success) { setModels([...listed.models, ...COMFY_CLOUD, ...LOCAL_MUSIC, ...LOCAL_SOUND, ...LOCAL_VOICE]); setRate(listed.creditsPerUsd || null); setVoices(Array.isArray(listed.voices) ? listed.voices : []) } } catch { /* shown as unavailable below */ }
+      try { const listed = await api.models({}); if (active && listed?.success) { setModels(listed.models); setRate(listed.creditsPerUsd || null); setVoices(Array.isArray(listed.voices) ? listed.voices : []) } } catch { /* shown as unavailable below */ }
       if (active) refreshStatus()
     })()
     return () => { active = false; run.current++ }
@@ -189,7 +189,8 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
   // Create offers pictures and clips. Voice, effects and music are built and
   // tested underneath, but wait for their own Sound tab before they are shown.
   // The Sound tab always offers its three kinds; a kind with no model on this side says so.
-  const kinds = sound ? SOUND_KINDS : CREATE_KINDS.filter(id => models.some(m => m.kind === id))
+  // Sound shows a kind only when there is a model for it (Jaime, 2026-11-18): Music stays hidden until one works.
+  const kinds = (sound ? SOUND_KINDS : CREATE_KINDS).filter(id => models.some(m => m.kind === id) || (sound && models.length === 0))
   const loop = kind === 'sound' && place === 'cloud' && wanted.sound.loop === true
   const withLyrics = kind === 'music' && wanted.music.vocals === true
   const shared = useMemo(() => (sharedOnly ? networkModels(netHosts, { known: netKnown }) : []), [sharedOnly, netHosts, netKnown])
@@ -221,7 +222,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
   const count = kind === 'image' && !model?.network && [2, 4].includes(wanted.image.count) ? wanted.image.count : 1
   const prompt = prompts[kind]
   const connected = Boolean(status?.configured)
-  const signature = JSON.stringify([model?.id, options, count, loop, prompt.trim(), picture ? [picture.name, picture.base64.length, video ? pictureUse : ''] : null])
+  const signature = JSON.stringify([model?.id, options, count, loop, prompt.trim(), withLyrics ? lyrics.trim() : '', bpm, picture ? [picture.name, picture.base64.length, video ? pictureUse : ''] : null])
   // A sung Sonilo song has its own rate.
   const priced = model?.usdPerAudioSecondSung && withLyrics ? { ...model, usdPerAudioSecond: model.usdPerAudioSecondSung } : model
   const each = recordedPrice(priced, options, { hasPicture: Boolean(picture), characters: prompt.trim().length })
@@ -283,7 +284,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
           if (++misses < 4 * started.length && !['COMFY_ROUTER_AUTH', 'COMFY_ROUTER_KEY_REQUIRED', 'COMFY_ROUTER_UNCERTAIN'].includes(answer?.code)) continue
           failures.push(answer?.code ? problemFor(answer, context) : { screen: 'trouble', kind: 'lost', title: 'We lost touch with Comfy',
             body: `Your ${nounOf} may still be on its way. Check your Comfy usage page before generating again, or you could pay twice for the same thing.`,
-            note: "Velorn won't send this request again on its own.", primary: 'Back to Create' })
+            note: "Velorn won't send this request again on its own.", primary: 'Go back' })
           waiting.delete(current.jobId); continue
         }
         misses = 0
@@ -385,7 +386,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
   // A clip or a picture made on a shared GPU. The follower outside this tab sends
   // it, watches it and saves the result; the effect below shows where it stands.
   const generateNetwork = async ({ agreed = false } = {}) => {
-    const pictureJob = model.kind === 'image'
+    const pictureJob = model.kind === 'image', musicJob = model.kind === 'music'
     // A creator's own workflow says what it starts from; Velorn's own are known.
     if (model.own && model.needsImage && !picture) { setNotice(`Add a picture first. ${model.name} starts from it.`); return }
     if (model.own && !model.needsImage && picture) { setNotice(`${model.name} starts from the description only. Remove the picture, or choose another model.`); return }
@@ -397,14 +398,15 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
     const workflowId = model.own ? model.ownId : !pictureJob ? (picture ? NETWORK_WORKFLOW : NETWORK_VIDEO_TEXT) : picture ? NETWORK_PICTURE.edit : NETWORK_PICTURE.make
     const computers = networkCandidates(model, workflowId)
     if (!computers.length) { setNotice('No shared computer can take this right now. Try again later.'); void loadNetHosts(); return }
-    if (!projectPath) { setNotice(`Open or save a project first, so the ${pictureJob ? 'picture' : 'clip'} has somewhere to go.`); return }
+    if (!projectPath) { setNotice(`Open or save a project first, so the ${pictureJob ? 'picture' : musicJob ? 'song' : 'clip'} has somewhere to go.`); return }
     // Someone else's computer: the rules are shown once on this computer before the first job goes.
     if (computers.some(computer => !computer.ownComputer) && !agreed && !networkRulesSeen()) { setNotice(''); setStep('rules'); return }
     if (agreed) { try { window.localStorage.setItem(NETWORK_RULES_KEY, String(Date.now())) } catch { /* Shown again next time. */ } }
     run.current++
     setStep('sending')
     // An edit keeps its picture's own shape, so only a new picture is given one.
-    const choices = model.own ? { prompt: prompt.trim() } : !pictureJob ? { prompt: prompt.trim(), shape: options.shape, size: options.resolution, seconds: options.seconds }
+    // A music workflow may be given words to sing; without them it makes music with no singing.
+    const choices = model.own ? { prompt: prompt.trim(), ...(musicJob && lyrics.trim() ? { lyrics: lyrics.trim() } : {}) } : !pictureJob ? { prompt: prompt.trim(), shape: options.shape, size: options.resolution, seconds: options.seconds }
       : picture ? { prompt: prompt.trim() } : { prompt: prompt.trim(), shape: options.shape }
     const image = picture ? { mimeType: picture.mimeType, bytes: Uint8Array.from(atob(picture.base64), char => char.charCodeAt(0)) } : null
     // The best computer first; the next one only when a computer turns the job away.
@@ -432,14 +434,14 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
     } else if (netState.phase === 'done') {
       const asset = useAssetsStore.getState().assets.find(item => item.id === netState.assetId)
       velornNetwork.clear(); void loadNetHosts()
-      if (asset) { setResults([{ jobId: netState.job.jobId, assetId: asset.id, url: asset.url, type: made, modelLabel: label, network: true, madeOn: netState.job.hostName,
+      if (asset) { setResults([{ jobId: netState.job.jobId, assetId: asset.id, url: asset.url, type: made === 'music' ? 'audio' : made, made, modelLabel: label, network: true, madeOn: netState.job.hostName,
         // A creator's own workflow can be reported by the person who just used it.
         ...(/^own-[a-f0-9]{16}$/.test(netState.job.workflowId || '') && netState.job.hostId ? { reportable: { hostId: netState.job.hostId, workflowId: netState.job.workflowId } } : {}) }]); setNotice(''); setStep('result') }
-      else { setNotice(`Your ${made === 'image' ? 'picture' : 'clip'} is in the project’s assets.`); setStep('compose') }
+      else { setNotice(`Your ${made === 'image' ? 'picture' : made === 'music' ? 'song' : 'clip'} is in the project’s assets.`); setStep('compose') }
     } else if (netState.phase === 'failed') {
       velornNetwork.clear(); void loadNetHosts()
       if (netState.cancelled) { setNotice('Stopped. Nothing was saved.'); setStep('compose') }
-      else { setTrouble({ kind: 'network', title: `The ${made === 'image' ? 'picture' : 'video'} wasn't made`, body: netState.error, note: 'Nothing was charged: the Velorn network is free.', primary: 'Back' }); setStep('trouble') }
+      else { setTrouble({ kind: 'network', title: `The ${made === 'image' ? 'picture' : made === 'music' ? 'song' : 'video'} wasn't made`, body: netState.error, note: 'Nothing was charged: the Velorn network is free.', primary: 'Back' }); setStep('trouble') }
     }
   }, [sharedOnly, netState, step, jobs, loadNetHosts])
 
@@ -448,6 +450,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
     setPop(null); setNotice('')
     if (!prompt.trim()) { setNotice(editing ? 'Describe what should change first.' : kind === 'voice' ? 'Write what the voice should say first.' : 'Write a description first.'); return }
     if (kind === 'voice' && !options.voice) { setNotice('No voice is available yet.'); return }
+    if (withLyrics && model.lyrics && !lyrics.trim()) { setNotice('Write the lyrics, or choose Instrumental.'); return }
     if (model.network) return generateNetwork()
     if (model.local || model.via === 'comfyui') return generateLocal()
     if (!connected) { setKeyError(''); setStep('connect'); return }
@@ -456,7 +459,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
     try {
       let planId = pending.current?.signature === signature ? pending.current.planId : null
       if (!planId) {
-        const choices = { prompt: prompt.trim(), ...options, ...(loop ? { loop: true } : {}), ...(picture ? { picture: { mimeType: picture.mimeType, base64: picture.base64 }, ...(video ? { pictureUse } : {}) } : {}) }
+        const choices = { prompt: kind === 'music' ? withTempo(prompt, bpm) : prompt.trim(), ...options, ...(loop ? { loop: true } : {}), ...(withLyrics && model.lyrics ? { lyrics: lyrics.trim() } : {}), ...(picture ? { picture: { mimeType: picture.mimeType, base64: picture.base64 }, ...(video ? { pictureUse } : {}) } : {}) }
         const plan = await api.previewCreate({ modelId: model.id, choices, ...(count > 1 ? { count } : {}) })
         if (token !== run.current) return
         if (!plan?.success) return apply(problemFor(plan, { model, kind }))
@@ -562,9 +565,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
   const emptySide = sound && !model && models.length > 0
   const waitingOnLocal = Boolean(model?.local) && localReady[model.id] === false
   const soundStrips = sound && <>
-        {emptySide && <p className="vc-empty-side" role="status">{place === 'local'
-          ? 'There is no local model for this in Velorn yet. It is made in the Cloud for now.'
-          : 'There is no cloud model for this yet.'} <button type="button" className="vc-quiet" onClick={() => setPlace(place === 'local' ? 'cloud' : 'local')}>Switch to {place === 'local' ? 'Cloud' : 'Local'}</button></p>}
+        {emptySide && <p className="vc-empty-side" role="status">There is no model for this yet.</p>}
         {model?.via === 'builtin' && <LocalVoiceSetup key={model.id} model={model}
           onReady={ready => setLocalReady(all => (all[model.id] === ready ? all : { ...all, [model.id]: ready }))} onUseCloud={() => setPlace('cloud')} />}
         {model?.local && model.workflowId && <SoundModelSetup key={model.id} model={model} what={kind === 'music' ? 'Songs' : 'Effects'}
@@ -608,7 +609,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
       {sharedOnly ? <header className="vc-shared-head">
         <div><h1 className="vc-shared-title">GPU sharing</h1><p className="vc-muted">Free. Made on other creators’ computers when they are not using them.</p></div>
         {onShare && <button type="button" className="vc-line" onClick={onShare}><Monitor aria-hidden="true" size={16} />Share my GPU</button>}
-      </header> : <h1 className="vc-title">What do you want to <span className="vc-title-glow">{sound ? 'hear' : 'make'}</span>?</h1>}
+      </header> : <h1 className="vc-title">What do you want to <span className="vc-title-glow">{sound ? 'hear' : 'see'}</span>?</h1>}
       {sharedOnly && !docked && (shared.length === 0
         ? <p className="vc-muted vc-shared-empty" role="status">{!netLoaded ? 'Looking for shared GPUs…' : netProblem || 'Nothing is shared with this account yet. When a creator invites you, or opens a workflow to everyone, it shows here.'}</p>
         : sharedGroups.map(group => <section key={group.id} className="vc-shared-group" aria-label={`Workflows shared by ${group.name}`}>
@@ -622,10 +623,8 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
               <span className="vc-shared-state"><span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 4, background: NETWORK_DOT[m.state] }} />{NETWORK_STATE[m.state]}</span>
             </button>)}</div>
           </section>))}
-      {sound && <div className="vc-place" role="group" aria-label="Where it is made">
-        <button type="button" aria-pressed={place === 'cloud'} disabled={busy} onClick={() => { setPlace('cloud'); setPop(null); setNotice('') }}><Cloud aria-hidden="true" size={16} />Cloud<small>Comfy credits</small></button>
-        <button type="button" aria-pressed={place === 'local'} disabled={busy} onClick={() => { setPlace('local'); setPop(null); setNotice('') }}><Monitor aria-hidden="true" size={16} />Local<small>free, this computer</small></button>
-      </div>}
+      {/* Create and Sound only use Comfy Router. Said plainly, so nobody takes this for something running on their own computer. */}
+      {!sharedOnly && !docked && <p className="vc-router-note" data-router-note><Cloud aria-hidden="true" size={15} /><span><strong>Runs on Comfy Router and uses your Comfy credits.</strong> You see each model’s cost when you pick it. Nothing here runs on this computer: for local models, use the ComfyUI tab.</span></p>}
       {!docked && sound && <>
         <div className="vc-swave" aria-hidden="true"><span className="vc-swave-glow" /><span className="vc-swave-bars" data-kind={kind} /></div>
         {soundStrips}
@@ -738,9 +737,9 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
               placeholder={editing ? 'Describe what should change…' : PLACEHOLDERS[kind]}
               onChange={event => setPrompts(all => ({ ...all, [kind]: event.target.value }))} />
           </label>
-          {sound && withLyrics && <label style={{ display: 'block' }}>
+          {(sound ? withLyrics : sharedOnly && model?.kind === 'music') && <label style={{ display: 'block' }}>
             <span className="vc-hidden">Lyrics</span>
-            <textarea className="vc-prompt vc-lyrics" rows={3} maxLength={3000} value={lyrics} disabled={busy} placeholder="Write the lyrics…" onChange={event => setLyrics(event.target.value)} />
+            <textarea className="vc-prompt vc-lyrics" rows={sharedOnly ? 5 : 3} maxLength={3000} value={lyrics} disabled={busy} placeholder={sharedOnly ? 'Lyrics to sing, if you want singing. Leave this empty for music without words.' : 'Write the lyrics…'} onChange={event => setLyrics(event.target.value)} />
           </label>}
           {sound && kind !== 'voice' && step !== 'connect' && step !== 'nocredits' && <div className="vc-inline">
             {kind === 'music' && <div className="vc-inline-group" role="group" aria-label="Vocals"><span>Vocals</span>
