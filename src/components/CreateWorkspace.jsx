@@ -406,7 +406,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
     setStep('sending')
     // An edit keeps its picture's own shape, so only a new picture is given one.
     // A music workflow may be given words to sing; without them it makes music with no singing.
-    const choices = model.own ? { prompt: prompt.trim(), ...(musicJob && lyrics.trim() ? { lyrics: lyrics.trim() } : {}) } : !pictureJob ? { prompt: prompt.trim(), shape: options.shape, size: options.resolution, seconds: options.seconds }
+    const choices = model.own ? { prompt: prompt.trim(), ...(musicJob && lyrics.trim() ? { lyrics: lyrics.trim() } : {}), ...(musicJob && Number.isInteger(options.seconds) ? { seconds: options.seconds } : {}) } : !pictureJob ? { prompt: prompt.trim(), shape: options.shape, size: options.resolution, seconds: options.seconds }
       : picture ? { prompt: prompt.trim() } : { prompt: prompt.trim(), shape: options.shape }
     const image = picture ? { mimeType: picture.mimeType, bytes: Uint8Array.from(atob(picture.base64), char => char.charCodeAt(0)) } : null
     // The best computer first; the next one only when a computer turns the job away.
@@ -741,6 +741,12 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
             <span className="vc-hidden">Lyrics</span>
             <textarea className="vc-prompt vc-lyrics" rows={sharedOnly ? 5 : 3} maxLength={3000} value={lyrics} disabled={busy} placeholder={sharedOnly ? 'Lyrics to sing, if you want singing. Leave this empty for music without words.' : 'Write the lyrics…'} onChange={event => setLyrics(event.target.value)} />
           </label>}
+          {/* A shared song's length: a short list, half a minute to four minutes. "Up to", because the model may end a song a little early
+              and the owner's computer may be set to a shorter limit. */}
+          {sharedOnly && model?.kind === 'music' && <div className="vc-inline"><label className="vc-inline-group"><span>Length</span>
+            <select className="vc-select" value={options.seconds} disabled={busy} onChange={event => setOption('seconds', Number(event.target.value))} aria-label="Song length">
+              {(model.seconds?.offered || []).map(n => <option key={n} value={n}>Up to {lengthLabel(n)}</option>)}
+            </select></label></div>}
           {sound && kind !== 'voice' && step !== 'connect' && step !== 'nocredits' && <div className="vc-inline">
             {kind === 'music' && <div className="vc-inline-group" role="group" aria-label="Vocals"><span>Vocals</span>
               <button type="button" className="vc-opt" aria-pressed={!withLyrics} disabled={busy} onClick={() => setOption('vocals', false)}>Instrumental</button>

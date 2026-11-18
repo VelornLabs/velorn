@@ -46,14 +46,17 @@ const LYRICS_MAX = 3000
 // What a sender may put in a job for someone's own workflow: a description and a seed, and for music the words to sing. Nothing else exists to choose.
 function ownChoices(input, { lyrics: takesLyrics = false } = {}) {
   if (!plain(input)) throw fault('GPU_SHARE_INVALID', 'Missing choices for this job.')
-  for (const key of Object.keys(input)) if (!['prompt', 'seed', ...(takesLyrics ? ['lyrics'] : [])].includes(key)) throw fault('GPU_SHARE_INVALID', `"${String(key).slice(0, 40)}" is not a choice this workflow takes.`)
+  for (const key of Object.keys(input)) if (!['prompt', 'seed', ...(takesLyrics ? ['lyrics', 'seconds'] : [])].includes(key)) throw fault('GPU_SHARE_INVALID', `"${String(key).slice(0, 40)}" is not a choice this workflow takes.`)
   const lyrics = input.lyrics === undefined ? '' : input.lyrics
   if (typeof lyrics !== 'string' || lyrics.length > LYRICS_MAX || /\u0000/.test(lyrics)) throw fault('GPU_SHARE_INVALID', `Write lyrics of up to ${LYRICS_MAX} characters.`)
   const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : ''
   if (!prompt || prompt.length > 2000 || /\u0000/.test(prompt)) throw fault('GPU_SHARE_INVALID', 'Write a description of up to 2000 characters.')
   const seed = input.seed === undefined ? null : input.seed
   if (seed !== null && (!Number.isSafeInteger(seed) || seed < 0)) throw fault('GPU_SHARE_INVALID', 'The seed must be a whole number.')
-  return { prompt, seed, ...(lyrics.trim() ? { lyrics: lyrics.trim() } : {}) }
+  // A song's length: 10 seconds to 4 minutes. The owner's computer may make it shorter, never longer.
+  const given = Object.hasOwn(input, 'seconds'), seconds = given ? input.seconds : null
+  if (given && (!takesLyrics || !Number.isInteger(seconds) || seconds < 10 || seconds > 240)) throw fault('GPU_SHARE_INVALID', 'A song can be 10 seconds to 4 minutes long.')
+  return { prompt, seed, ...(lyrics.trim() ? { lyrics: lyrics.trim() } : {}), ...(seconds !== null ? { seconds } : {}) }
 }
 
 function createGpuShareClient({ host, runner, getNetwork, jobLog = null, confirmJob = async () => false, getComputerName = () => 'A Velorn computer', getOwn = () => null,

@@ -29,6 +29,17 @@ const SAVE_VIDEO = /^(?:SaveVideo|SaveWEBM|SaveAnimatedWEBP|VHS_VideoCombine)$/
 const SAVE_AUDIO = /^(?:SaveAudio|SaveAudioMP3|SaveAudioOpus|SaveAudioAdvanced)$/
 const SAVE_OTHER = /Save3D|SaveGLB|SaveLatent|SaveSVG/i
 const LYRICS_MAX = 3000
+// How long a shared song may be. A sender picks a length up to this; an owner whose workflow is set shorter keeps that shorter limit.
+const MUSIC_SECONDS = Object.freeze({ min: 10, max: 240 })
+const LENGTH_KEYS = ['max_duration', 'duration', 'seconds', 'duration_seconds']
+// Where a music workflow holds its length: a plain number box with one of the usual names, on the part that holds
+// the lyrics or the description first, then anywhere. Found fresh each time, so a workflow added before this existed has it too.
+function lengthSpot(graph, record) {
+  const numberBox = (nodeId) => { const inputs = plain(graph[nodeId]?.inputs) ? graph[nodeId].inputs : {}; const key = LENGTH_KEYS.find(name => typeof inputs[name] === 'number' && Number.isFinite(inputs[name]) && inputs[name] > 0); return key ? { nodeId, inputKey: key } : null }
+  for (const nodeId of [record.lyrics?.nodeId, record.prompt?.nodeId]) { const found = typeof nodeId === 'string' ? numberBox(nodeId) : null; if (found) return found }
+  for (const nodeId of Object.keys(graph)) { const found = numberBox(nodeId); if (found) return found }
+  return null
+}
 const LOAD_OTHER = /^(?:LoadVideo|VHS_LoadVideo|VHS_LoadVideoPath|LoadAudio|VHS_LoadAudio|Load3D|LoadLatent)$/
 const TEXT_KEYS = ['text', 'prompt', 'model.prompt', 'positive_prompt', 'caption', 'value', 'string']
 const TEST_PROMPT = 'A red apple on a wooden table, soft morning light.'
@@ -90,7 +101,7 @@ function entryFor(record, { keepPicture = false } = {}) {
     id: record.id, name: record.name, kind: record.kind, own: true, needsImage: Boolean(record.image) && !keepPicture, minimumVramGb: 0, shapes: [],
     normalize(input) {
       if (!plain(input)) throw refuse('Missing choices for this job.')
-      for (const key of Object.keys(input)) if (!['prompt', 'seed', ...(record.kind === 'audio' ? ['lyrics'] : [])].includes(key)) throw refuse(`"${String(key).slice(0, 40)}" is not a choice this workflow takes.`)
+      for (const key of Object.keys(input)) if (!['prompt', 'seed', ...(record.kind === 'audio' ? ['lyrics', 'seconds'] : [])].includes(key)) throw refuse(`"${String(key).slice(0, 40)}" is not a choice this workflow takes.`)
       // Words to sing, for a music workflow. One without a place for them takes the choice and makes its music without singing.
       const lyrics = input.lyrics === undefined ? '' : input.lyrics
       if (typeof lyrics !== 'string' || lyrics.length > LYRICS_MAX || /\u0000/.test(lyrics)) throw refuse(`Write lyrics of up to ${LYRICS_MAX} characters.`)
@@ -98,7 +109,10 @@ function entryFor(record, { keepPicture = false } = {}) {
       if (!prompt || prompt.length > PROMPT_MAX || /\u0000/.test(prompt)) throw refuse(`Write a description of up to ${PROMPT_MAX} characters.`)
       const seed = input.seed === undefined ? null : input.seed
       if (seed !== null && (!Number.isSafeInteger(seed) || seed < 0)) throw refuse('The seed must be a whole number.')
-      return { prompt, seed, ...(record.lyrics ? { lyrics: lyrics.trim() } : {}) }
+      // How long the song may be, for a music workflow. Left out, the owner's own setting stands.
+      const given = Object.hasOwn(input, 'seconds'), seconds = given ? input.seconds : null
+      if (given && (!Number.isInteger(seconds) || seconds < MUSIC_SECONDS.min || seconds > MUSIC_SECONDS.max)) throw refuse(`A song can be ${MUSIC_SECONDS.min} seconds to ${MUSIC_SECONDS.max / 60} minutes long.`)
+      return { prompt, seed, ...(record.lyrics ? { lyrics: lyrics.trim() } : {}), ...(record.kind === 'audio' && seconds !== null ? { seconds } : {}) }
     },
     bind(workflow, choices, { imageName, prefix, randomSeed }) {
       const changed = () => refuse('This workflow changed since it was added. Add it again.', 'GPU_SHARE_WORKFLOW_CHANGED')
@@ -113,11 +127,21 @@ function entryFor(record, { keepPicture = false } = {}) {
       set(record.prompt, choices.prompt, 'string')
       // The owner's own lyrics never go out with someone else's song: the sender's words, or none.
       if (record.lyrics) set(record.lyrics, choices.lyrics || '', 'string')
+      // The sender's length, never above what the owner set in the workflow nor above the limit for everyone.
+      let seconds
+      if (record.kind === 'audio') {
+        const place = lengthSpot(bound, record)
+        if (place) {
+          const owners = bound[place.nodeId].inputs[place.inputKey], most = Math.min(MUSIC_SECONDS.max, owners)
+          seconds = Math.max(1, Math.min(most, choices.seconds ?? most))
+          set(place, seconds, 'number')
+        }
+      }
       if (record.image && !keepPicture) set(record.image, imageName, 'string')
       for (const place of record.seeds) set(place, seed, 'number')
       if (bound[record.output.nodeId]?.class_type !== record.output.classType) throw changed()
       set({ nodeId: record.output.nodeId, inputKey: 'filename_prefix' }, prefix, 'string')
-      return { workflow: bound, seed }
+      return { workflow: bound, seed, ...(seconds ? { seconds } : {}) }
     },
   }
 }
@@ -405,4 +429,4 @@ function registerGpuShareOwnIpc({ ipcMain, getMainWindow, own, onChanged = () =>
   return { dispose() { for (const channel of [...CHANNELS, ...REVIEW_CHANNELS]) ipcMain.removeHandler?.(channel) } }
 }
 
-module.exports = { createGpuShareOwnWorkflows, registerGpuShareOwnIpc, describeGraph, entryFor, SHAPES, LIMITS, CHANNELS, TEST_PROMPT, TEST_MUSIC_PROMPT, LYRICS_MAX }
+module.exports = { createGpuShareOwnWorkflows, registerGpuShareOwnIpc, describeGraph, entryFor, lengthSpot, SHAPES, LIMITS, CHANNELS, TEST_PROMPT, TEST_MUSIC_PROMPT, LYRICS_MAX, MUSIC_SECONDS }

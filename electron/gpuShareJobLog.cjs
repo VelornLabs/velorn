@@ -10,7 +10,9 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 
 const JOB_ID = /^[A-Za-z0-9_-]{8,64}$/
-const EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm' }
+const EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm',
+  // A music workflow's result, kept like a clip so View and Report have the song.
+  'audio/mpeg': 'mp3', 'audio/flac': 'flac', 'audio/ogg': 'opus' }
 const OUTCOMES = new Set(['done', 'declined', 'stopped', 'failed'])
 const text = (value, max) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, max)
 

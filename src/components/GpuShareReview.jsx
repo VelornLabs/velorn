@@ -33,7 +33,7 @@ export default function GpuShareReview() {
       const got = await api.evidence({ jobId: report.jobId, kind }).catch(() => null)
       if (!got?.success) return null
       const url = URL.createObjectURL(new Blob([got.bytes], { type: got.mimeType })); sentUrls.current.push(url)
-      return { url, video: got.mimeType.startsWith('video/') }
+      return { url, video: got.mimeType.startsWith('video/'), sound: got.mimeType.startsWith('audio/') }
     }
     // Both are asked for inside the one click; the second call would otherwise have no click to stand on.
     const [result, picture] = await Promise.all([report.result ? fetchOne('output') : null, report.picture ? fetchOne('image') : null])
@@ -52,7 +52,7 @@ export default function GpuShareReview() {
     try { got = await api.try({ sid, prompt, image: image ? { mimeType: image.mimeType, bytes: image.bytes } : null }) } catch { got = null }
     if (tried.current) { URL.revokeObjectURL(tried.current); tried.current = '' }
     if (got?.success) { tried.current = URL.createObjectURL(new Blob([got.bytes], { type: got.mimeType })) }
-    setTrying(now => now?.sid !== sid ? now : { ...now, running: false, result: got?.success ? { url: tried.current, video: got.mimeType.startsWith('video/') } : null,
+    setTrying(now => now?.sid !== sid ? now : { ...now, running: false, result: got?.success ? { url: tried.current, video: got.mimeType.startsWith('video/'), sound: got.mimeType.startsWith('audio/') } : null,
       problem: got?.success ? '' : got?.error || `The test could not be finished. ${item.name} only runs while its owner’s computer is on and free.` })
   }
   // Opening one: the copy its owner sent for this review, shown in the ComfyUI tab. Nothing runs.
@@ -125,7 +125,8 @@ export default function GpuShareReview() {
             {trying.running && <span className={quiet} role="status">Running on the owner’s computer. This can take a few minutes.</span>}
           </div>
           {trying.problem && <p className="text-xs text-sf-error break-words" role="status">{trying.problem}</p>}
-          {trying.result && (trying.result.video ? <video src={trying.result.url} controls loop className="max-h-72 w-full rounded bg-sf-dark-950" aria-label="What the test made" />
+          {trying.result && (trying.result.sound ? <audio src={trying.result.url} controls className="w-full" aria-label="What the test made" />
+            : trying.result.video ? <video src={trying.result.url} controls loop className="max-h-72 w-full rounded bg-sf-dark-950" aria-label="What the test made" />
             : <img src={trying.result.url} alt="What the test made" className="max-h-72 w-full rounded object-contain bg-sf-dark-950" />)}
         </div>}
         {asking?.id === item.sid ? <div className="flex flex-col gap-1.5 min-w-0">
@@ -159,6 +160,7 @@ export default function GpuShareReview() {
           {report.reporterReports > 1 ? ` · ${report.reporterReports} reports so far, ${report.reporterDismissed} dismissed` : ' · their first report'}</p>
         {sent[report.jobId]?.result && (sent[report.jobId].result.video
           ? <video src={sent[report.jobId].result.url} controls className="max-h-72 w-full rounded-md bg-black" aria-label="What the job made" />
+          : sent[report.jobId].result.sound ? <audio src={sent[report.jobId].result.url} controls className="w-full" aria-label="What the job made" />
           : <img src={sent[report.jobId].result.url} alt="What the job made" className="max-h-72 w-full rounded-md object-contain bg-black" />)}
         {sent[report.jobId]?.picture && <div className="flex flex-col gap-1"><span className="text-[11px] text-sf-text-muted">The picture they sent in:</span>
           <img src={sent[report.jobId].picture.url} alt="The picture the job started from" className="max-h-40 w-full rounded-md object-contain bg-black" /></div>}

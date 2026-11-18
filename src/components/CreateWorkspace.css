@@ -27,6 +27,8 @@
 /* The fan of cards under the heading: starter pictures, or the person's own recent results. */
 /* Sound tab: Cloud or Local. The whole tab changes colour so it is clear which side you are on:
    violet and gold for Cloud, green and teal for Local. */
+.vc-select{min-height:40px;padding:0 12px;border-radius:10px;border:1px solid #2E2E35;background:#19191C;color:#F4F4F5;font:inherit;font-size:14px}
+.vc-select:disabled{opacity:.6}
 .vc-router-note{display:flex;align-items:flex-start;gap:9px;max-width:680px;margin:0;padding:9px 14px;border-radius:12px;background:#19191C;border:1px solid #26262B;color:#A1A1AA;font-size:12.5px;line-height:1.5;text-align:left}
 .vc-router-note svg{flex:none;margin-top:2px;color:#8B7CF6}
 .vc-router-note strong{color:#E4E4E7;font-weight:600}

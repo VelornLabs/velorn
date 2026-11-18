@@ -247,7 +247,8 @@ export function fitOptions(model, options = {}, { voices = [] } = {}) {
   if (model.kind === 'voice') return { voice: voices.some(v => v.id === options.voice) ? options.voice : voices[0]?.id || '' }
   if (isAudioKind(model.kind)) {
     const offered = model.seconds?.offered || [5]
-    return { seconds: offered.includes(options.seconds) ? options.seconds : offered[0] }
+    // A model may name the length to start on; otherwise it is the first one offered.
+    return { seconds: offered.includes(options.seconds) ? options.seconds : offered.includes(model.seconds?.initial) ? model.seconds.initial : offered[0] }
   }
   if (model.kind === 'video') {
     const offered = model.seconds?.offered || [5]
@@ -315,7 +316,7 @@ export function sameDeal(shown, quoted) {
 }
 
 export function footnote({ connected, remembered, model, price }) {
-  if (model?.network) return 'Made on a computer that shares its GPU with you, free. The description and picture travel through Velorn’s service to that computer, and its owner can see them. Nothing sexually explicit.'
+  if (model?.network) return `Made on a computer that shares its GPU with you, free. The description and ${model.kind === 'music' ? 'lyrics' : 'picture'} travel through Velorn’s service to that computer, and its owner can see them. Nothing sexually explicit.`
   if (model?.via === 'builtin') return 'Made on this computer, inside Velorn. Nothing is sent anywhere and nothing is charged.'
   if (model?.local) return 'Made on this computer with ComfyUI. Nothing is sent to Comfy and nothing is charged.'
   if (model?.via === 'comfyui') return 'Runs through ComfyUI and uses credits from your Comfy account. Pressing the button approves the price shown.'
@@ -338,8 +339,13 @@ const GO = { image: 'image', video: 'video', voice: 'voice', sound: 'effect', mu
 export function problemFor(result, { model = null, kind = 'image' } = {}) {
   const code = result?.code || '', type = result?.diagnostics?.errorType || result?.job?.diagnostics?.errorType || '', http = result?.diagnostics?.httpStatus
   const jobError = result?.job?.errorType || result?.errorType || ''
-  if (result?.queueNotEnabled || type === 'not_enabled') return { screen: 'connect',
-    keyError: "This is an older kind of Comfy key that can't make images or videos here. Make a new key in your Comfy workspace and paste it in." }
+  // Comfy says "not enabled" in two cases. While a key is being connected it is about the key. While
+  // making something with a key that is already connected, it is about that one model: the person's
+  // account has not been given it. Sending them to make a new key would be wrong then.
+  if (result?.queueNotEnabled || type === 'not_enabled') return model
+    ? { screen: 'compose', notice: `Comfy has not switched on ${model.name} for your account yet. Choose another model. If none of them work, make a new key in your Comfy workspace and paste it in.` }
+    : { screen: 'connect',
+      keyError: "This is an older kind of Comfy key that can't make images or videos here. Make a new key in your Comfy workspace and paste it in." }
   if (code === 'COMFY_ROUTER_AUTH' || type === 'unauthorized' || http === 401) return { screen: 'connect',
     keyError: "Comfy didn't accept that key. Check that you copied all of it, or make a new one and paste it here." }
   if (code === 'COMFY_ROUTER_KEY_REQUIRED') return { screen: 'connect', keyError: '' }

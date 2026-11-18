@@ -222,6 +222,12 @@ test('each Comfy answer leads to the right screen', () => {
   const context = { model: by('nano-banana-2-1'), kind: 'image' }
   assert.match(problemFor({ code: 'COMFY_ROUTER_AUTH' }).keyError, /didn't accept that key/)
   assert.match(problemFor({ code: 'COMFY_ROUTER_ACCESS', queueNotEnabled: true, diagnostics: { httpStatus: 403, errorType: 'not_enabled' } }).keyError, /older kind of Comfy key/)
+  // The same answer while making something with a connected key is about that one model, and nobody is sent to make a new key.
+  const refusedModel = problemFor({ code: 'COMFY_ROUTER_ACCESS', queueNotEnabled: true, diagnostics: { httpStatus: 403, errorType: 'not_enabled' } }, { model: { name: 'Pika Music' }, kind: 'music' })
+  assert.deepEqual([refusedModel.screen, refusedModel.keyError], ['compose', undefined])
+  assert.match(refusedModel.notice, /Comfy has not switched on Pika Music for your account yet\. Choose another model\./)
+  const refusedJob = problemForJob({ status: 'FAILED', errorType: 'REQUEST_REJECTED', diagnostics: { httpStatus: 403, errorType: 'not_enabled' } }, { model: { name: 'Pika Music' }, kind: 'music' })
+  assert.equal(refusedJob.screen, 'compose')
   assert.deepEqual(problemFor({ code: 'COMFY_ROUTER_KEY_REQUIRED' }), { screen: 'connect', keyError: '' })
   assert.equal(problemFor({ code: 'COMFY_ROUTER_ACCESS', diagnostics: { httpStatus: 402, errorType: 'insufficient_credits' } }).screen, 'nocredits')
   assert.deepEqual(problemFor({ code: 'COMFY_ROUTER_DECLINED' }), { screen: 'compose' })

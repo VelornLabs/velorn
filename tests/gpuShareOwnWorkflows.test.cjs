@@ -260,3 +260,28 @@ test('offering to everyone sends a reviewer the facts about a workflow, never th
   await own.share({ id: workflow.id, shared: false })
   assert.deepEqual([(await own.list()).workflows[0].everyone, (await own.offered()).length], [false, 0])
 })
+
+test('a song\'s length is the sender\'s choice, up to 4 minutes and never above what the owner set', () => {
+  const { lengthSpot, MUSIC_SECONDS } = require('../electron/gpuShareOwnWorkflows.cjs')
+  const record = { id: 'own-0123456789abcdef', name: 'Songs', kind: 'audio', prompt: { nodeId: '2', inputKey: 'caption' }, lyrics: { nodeId: '2', inputKey: 'lyrics' }, image: null,
+    output: { nodeId: '6', classType: 'SaveAudioAdvanced' }, seeds: [{ nodeId: '2', inputKey: 'seed' }] }
+  assert.deepEqual(MUSIC_SECONDS, { min: 10, max: 240 })
+  assert.deepEqual(lengthSpot(MUSIC, record), { nodeId: '2', inputKey: 'max_duration' })
+  const entry = entryFor(record)
+  const made = (graph, choices) => { const bound = entry.bind(graph, entry.normalize({ prompt: 'x', ...choices }), { imageName: null, prefix: 'p', randomSeed: () => 1 }); return [bound.workflow[2].inputs.max_duration, bound.seconds] }
+  const set = seconds => ({ ...MUSIC, 2: { ...MUSIC[2], inputs: { ...MUSIC[2].inputs, max_duration: seconds } } })
+  // The owner allows up to 4 minutes: the sender gets what they picked.
+  assert.deepEqual(made(set(240), { seconds: 90 }), [90, 90])
+  assert.deepEqual(made(set(240), { seconds: 240 }), [240, 240])
+  // No choice: the owner's setting stands, held to 4 minutes.
+  assert.deepEqual(made(set(120), {}), [120, 120])
+  assert.deepEqual(made(set(300), {}), [240, 240])
+  // The owner set a shorter limit: a longer request is cut to it.
+  assert.deepEqual(made(set(60), { seconds: 180 }), [60, 60])
+  for (const bad of [9, 241, 90.5, '120', -1, null]) assert.throws(() => entry.normalize({ prompt: 'x', seconds: bad }), error => error.code === 'GPU_SHARE_INVALID', String(bad))
+  // A music workflow with no length box is simply made at its own length; pictures and clips take no length at all.
+  const noBox = { ...MUSIC, 2: { ...MUSIC[2], inputs: { caption: 'a', lyrics: '', seed: 1, clip: ['1', 0] } } }
+  assert.equal(lengthSpot(noBox, record), null)
+  assert.equal(entry.bind(noBox, entry.normalize({ prompt: 'x', seconds: 60 }), { imageName: null, prefix: 'p', randomSeed: () => 1 }).seconds, undefined)
+  assert.throws(() => entryFor({ ...record, kind: 'image', lyrics: undefined }).normalize({ prompt: 'x', seconds: 60 }), error => error.code === 'GPU_SHARE_INVALID')
+})
