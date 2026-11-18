@@ -103,7 +103,17 @@ function createSongMapEngine({
         if (missing.includes('speech engine') || missing.includes('speech model')) {
           if (typeof captionService?.install !== 'function') return failure('SONG_MAP_INSTALL_FAILED', 'The speech model cannot be downloaded on this computer.')
           notify({ step: 'speech', doneBytes: 0, totalBytes: 0 })
-          const speech = await captionService.install({ modelId: SPEECH_MODEL_TO_INSTALL })
+          // The captions installer reports its own byte counts; pass them on so
+          // the 1.6 GB speech model shows a moving bar instead of only a spinner.
+          const stopProgress = typeof captionService.onProgress === 'function'
+            ? captionService.onProgress((update) => {
+              const totalBytes = Number(update?.totalBytes) || 0
+              if (totalBytes > 0) notify({ step: 'speech', doneBytes: Math.min(totalBytes, Number(update?.receivedBytes) || 0), totalBytes })
+            })
+            : null
+          let speech
+          try { speech = await captionService.install({ modelId: SPEECH_MODEL_TO_INSTALL }) }
+          finally { if (typeof stopProgress === 'function') stopProgress() }
           if (!speech?.success) return failure('SONG_MAP_INSTALL_FAILED', speech?.error || 'The speech model did not download.')
         }
         const songModels = createSongEngineModels({ dir: modelsDir(), fetchImpl, notify: progress => notify({ step: 'song', ...progress }) })

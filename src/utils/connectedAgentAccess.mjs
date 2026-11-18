@@ -22,3 +22,11 @@ export function activeAccessMode({ fullAccessEnabled, toolsEnabled, researchEnab
   if (!toolsEnabled) return 'chat'
   return researchEnabled ? 'work' : 'custom'
 }
+
+// Velo's Full access runs commands on the computer. That part exists for
+// Linux, macOS and Windows; on any other system the card is shown greyed out
+// as "coming soon". The native side refuses unsupported systems on its own;
+// this only shapes the UI.
+export function veloComputerAccessSupported(platform) {
+  return platform === 'linux' || platform === 'darwin' || platform === 'win32'
+}

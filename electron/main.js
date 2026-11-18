@@ -356,7 +356,9 @@ const generationSpending = registerGenerationSpendingIpc({
   }),
   beforeSubmit: request => getGenerationRuns().beforeSubmit(request),
   afterSubmit: receipt => getGenerationRuns().afterSubmit(receipt),
-  readPolicy: async () => (await readSettingsRaw())?.[GENERATION_SPENDING_SETTING_KEY],
+  // There is no "Local only" switch any more (decided 2026-11-17): Velorn always shows the
+  // price and asks before anything is spent, whatever an older settings file says.
+  readPolicy: async () => 'ask-cloud',
   writePolicy: async (policy, { signal, isCurrent }) => writeSettingsRaw(settings => {
     if (signal?.aborted || isCurrent?.() !== true) throw new Error('The spending-policy change was cancelled.')
     return { ...settings, [GENERATION_SPENDING_SETTING_KEY]: policy }

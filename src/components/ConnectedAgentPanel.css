@@ -57,6 +57,8 @@
 .connected-agent-panel .ca-access-options button[aria-pressed=true] { border-color:#b69449; background:#b6944919; }
 .connected-agent-panel .ca-access-options .ca-full-mode { border-color:#746447; background:#b694490c; }
 .connected-agent-panel .ca-access-options .ca-full-mode[aria-pressed=true] { border-color:#b69449; background:#b6944919; opacity:1; }
+.connected-agent-panel .ca-access-options .ca-full-mode[data-coming-soon] { border-color:#3a4152; background:transparent; opacity:.55; cursor:default; }
+.ca-access-options .ca-coming-soon { margin-left:6px; padding:1px 6px; border:1px solid #566078; border-radius:8px; font-size:9px; font-style:normal; font-weight:500; color:var(--ca-muted); }
 .ca-access-risk { color:#f6b6bf; font-size:10px; overflow-wrap:anywhere; }
 .ca-advanced-permissions { margin:0; border:1px solid var(--ca-line); border-radius:6px; }
 .ca-advanced-permissions > summary { cursor:pointer; padding:11px; font-size:11px; color:#c9d2e4; }

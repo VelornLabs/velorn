@@ -22,6 +22,7 @@ const { reasoningEffort } = require('./connectedAgentReasoning.cjs')
 const { invalidateContinuity } = require('./connectedAgentContinuity.cjs')
 const { VELO_CONSENT, LOCAL_CONSENT } = require('./connectedAgentAccessPreference.cjs')
 const { createVeloComputerSession } = require('./veloComputerSession.cjs')
+const { SUPPORTED: VELO_COMPUTER_PLATFORMS } = require('./veloComputerProcesses.cjs')
 const { getLocalModelSupport } = require('./agentModelSupport.cjs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
@@ -588,10 +589,11 @@ function registerConnectedAgentIpc({ ipcMain, getMainWindow, app, fetchImpl = gl
           if (payload.restoreOnly && !remembered) return { success: true, enabled: false, remembered: false }
           await assertFullAccessAvailable?.()
           assertCurrentConsent()
-          // Linux-first desktop computer access. Phone clients keep their
-          // previously disclosed Velorn-tool scope until their own migration.
+          // Desktop computer access runs on Linux, macOS and Windows. Phone
+          // clients keep their previously disclosed Velorn-tool scope until
+          // their own migration.
           const computerAccess = provider === 'luna' && payload.fromPhone !== true
-          if (computerAccess && platform !== 'linux') throw fault('UNSUPPORTED_PLATFORM', 'Velo computer access is available in the Linux preview; other desktop platforms have not been validated yet.')
+          if (computerAccess && !VELO_COMPUTER_PLATFORMS.includes(platform)) throw fault('UNSUPPORTED_PLATFORM', 'Full access for Velo is not available on this system yet. Nothing was changed.')
           const owner = await fullAccessOwner(provider, computerAccess)
           assertCurrentConsent()
           if (payload.expectedContext?.session !== owner.session || payload.expectedContext?.projectKey !== owner.projectKey) throw fault('STALE_APPROVAL', 'The project changed. Enable full computer access again from the current project.')

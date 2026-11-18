@@ -1,10 +1,10 @@
 {
   "name": "velorn",
-  "version": "0.4.0-rc.1",
+  "version": "0.4.0-rc.2",
   "description": "AI-native video editing built around real creative timelines, generative workflows, and local agent control.",
   "main": "electron/main.js",
   "scripts": {
-    "test:velo-computer": "node --test tests/veloComputerTools.test.cjs tests/veloComputerAuthority.test.cjs tests/connectedAgentLuna.test.cjs tests/connectedAgentAccessPreference.test.cjs tests/connectedAgentAccessDialog.test.cjs",
+    "test:velo-computer": "node --test tests/veloComputerTools.test.cjs tests/veloComputerToolsPs.test.cjs tests/veloComputerToolsWindows.test.cjs tests/veloComputerAuthority.test.cjs tests/connectedAgentLuna.test.cjs tests/connectedAgentAccessPreference.test.cjs tests/connectedAgentAccessDialog.test.cjs",
     "test:velo-continuation": "node --test tests/fundedLunaTransport.test.cjs tests/fundedLunaRecovery.test.cjs tests/veloContinuationIntegration.test.cjs tests/veloComputerTools.test.cjs tests/veloComputerAuthority.test.cjs tests/connectedAgentLuna.test.cjs",
     "test:velo-maintenance": "node --test tests/veloInstallationInspection.test.cjs tests/veloMaintenanceGuidance.test.cjs tests/veloMaintenanceIntegration.test.cjs tests/veloComputerTools.test.cjs tests/veloComputerAuthority.test.cjs tests/connectedAgentLuna.test.cjs",
     "test:velo-resume": "node --test tests/veloContextBudget.test.cjs tests/veloContextIntegration.test.cjs tests/fundedLunaFailureIntegration.test.cjs tests/fundedLunaTransport.test.cjs tests/fundedLunaRecovery.test.cjs tests/veloContinuationIntegration.test.cjs tests/localAgentToolResults.test.cjs tests/veloMaintenanceGuidance.test.cjs",

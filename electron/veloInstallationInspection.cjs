@@ -21,7 +21,23 @@ const lines = value => String(value || '').split('\n').filter(Boolean)
 const refName = value => typeof value === 'string' && value.length <= 4096 && /^refs\/[^\x00-\x20\x7f~^:?*\[\\]+$/u.test(value) ? value : null
 const objectId = value => /^[a-f0-9]{40,64}$/.test(value || '') ? value : null
 
-async function inspectInstallation({ path: requestedPath, signal, assertCurrent, fsImpl = fs, spawnImpl = spawn, limits: overrides = {} }) {
+// On macOS /usr/bin/git is only a placeholder until Apple's developer tools
+// are installed, and running it opens an "install developer tools" window.
+// Use a real Git program there, or report Git as unavailable without a popup.
+const MAC_GITS = Object.freeze(['/Library/Developer/CommandLineTools/usr/bin/git',
+  '/Applications/Xcode.app/Contents/Developer/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git'])
+async function gitProgram(platform, fsImpl) {
+  // Windows: Git details are not read yet (its Git lives in other places and
+  // needs its own safe settings). Folder, version and Python facts still are.
+  if (platform === 'win32') return null
+  if (platform !== 'darwin') return '/usr/bin/git'
+  for (const candidate of MAC_GITS) {
+    try { await fsImpl.access(candidate, constants.X_OK); return candidate } catch { /* Try the next known location. */ }
+  }
+  return null
+}
+
+async function inspectInstallation({ path: requestedPath, signal, assertCurrent, fsImpl = fs, spawnImpl = spawn, platform = process.platform, limits: overrides = {} }) {
   if (typeof requestedPath !== 'string' || !path.isAbsolute(requestedPath) || requestedPath.includes('\0')) {
     throw fault('INVALID_ARGUMENTS', 'Inspect an absolute installation directory obtained from setup or the user; do not guess a path.')
   }
@@ -51,8 +67,10 @@ async function inspectInstallation({ path: requestedPath, signal, assertCurrent,
   const env = { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C', LC_ALL: 'C',
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0',
     GIT_OPTIONAL_LOCKS: '0', GIT_PAGER: 'cat', GIT_ATTR_NOSYSTEM: '1' }
+  let gitPath
   const git = async args => {
     await authorize()
+    if (gitPath === undefined) gitPath = await gitProgram(platform, fsImpl)
     const result = await new Promise((resolve, reject) => {
       let child, timer, output = Buffer.alloc(0), truncated = false, timedOut = false, unavailable = false, stopped = false
       const abort = () => { stopped = true; child?.kill('SIGKILL') }
@@ -62,7 +80,8 @@ async function inspectInstallation({ path: requestedPath, signal, assertCurrent,
         resolve({ code, stdout: output.toString('utf8'), truncated, timedOut, unavailable })
       }
       try {
-        child = spawnImpl('/usr/bin/git', ['--no-optional-locks', '--no-pager', '-c', 'core.fsmonitor=false',
+        if (!gitPath) throw Error('No Git program is installed.')
+        child = spawnImpl(gitPath, ['--no-optional-locks', '--no-pager', '-c', 'core.fsmonitor=false',
           '-c', 'core.hooksPath=/dev/null', '-c', 'core.untrackedCache=false', '-c', 'core.preloadIndex=false',
           '-c', 'core.attributesFile=/dev/null', '-c', 'color.ui=false', '-C', root, ...args],
         { env, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, shell: false })
@@ -205,4 +224,4 @@ async function inspectInstallation({ path: requestedPath, signal, assertCurrent,
   return result
 }
 
-module.exports = { LIMITS, MARKERS, PYTHONS, inspectInstallation }
+module.exports = { MAC_GITS, LIMITS, MARKERS, PYTHONS, inspectInstallation }

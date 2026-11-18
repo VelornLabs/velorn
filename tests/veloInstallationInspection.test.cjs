@@ -7,10 +7,10 @@ const os = require('node:os')
 const { execFileSync } = require('node:child_process')
 const { createHash } = require('node:crypto')
 const { EventEmitter } = require('node:events')
-const { inspectInstallation } = require('../electron/veloInstallationInspection.cjs')
+const { inspectInstallation, MAC_GITS } = require('../electron/veloInstallationInspection.cjs')
 
 async function temp(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'velorn-install-inspect-'))
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'velorn-install-inspect-'))) // macOS: /var is a link to /private/var
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   return root
 }
@@ -218,4 +218,24 @@ for (const kind of ['timeout', 'abort']) test(`${kind} kills the owned inspectio
   if (kind === 'abort') await assert.rejects(pending)
   else assert.equal((await pending).git.state, 'inspection-incomplete')
   assert.equal(kills, 1); assert.equal(closed, true)
+})
+
+test('macOS never runs the /usr/bin/git placeholder that opens an install window', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'velorn-inspection-mac-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  await fs.mkdir(path.join(root, '.git'))
+  const spawned = []
+  const spawnImpl = file => { spawned.push(file); throw Error('synthetic: stop before running anything') }
+  const fsFor = present => ({ ...fs, access: async (target, mode) => MAC_GITS.includes(target)
+    ? (target === present ? undefined : Promise.reject(Object.assign(Error('absent'), { code: 'ENOENT' }))) : fs.access(target, mode) })
+  const none = await inspect(root, { platform: 'darwin', spawnImpl, fsImpl: fsFor(null) })
+  assert.equal(none.success, true); assert.deepEqual(spawned, [], 'With no real Git installed, nothing is started')
+  await inspect(root, { platform: 'darwin', spawnImpl, fsImpl: fsFor('/opt/homebrew/bin/git') })
+  assert.ok(spawned.length > 0); assert.ok(spawned.every(file => file === '/opt/homebrew/bin/git'))
+  spawned.length = 0
+  const windows = await inspect(root, { platform: 'win32', spawnImpl })
+  assert.equal(windows.success, true); assert.deepEqual(spawned, [], 'Windows reads no Git details yet and starts nothing')
+  spawned.length = 0
+  await inspect(root, { platform: 'linux', spawnImpl })
+  assert.ok(spawned.length > 0); assert.ok(spawned.every(file => file === '/usr/bin/git'), 'Linux is unchanged')
 })

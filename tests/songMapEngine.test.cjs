@@ -83,3 +83,30 @@ test('a worker error and a stop are both reported plainly', async () => {
   assert.equal((await running).code, 'SONG_MAP_CANCELLED')
   assert.deepEqual(stopped.engine.cancel(), { success: true, cancelled: false })
 })
+
+test('the speech model download passes its byte counts on, and stops listening afterwards', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'song-engine-test-'))
+  const ffmpegPath = path.join(root, 'ffmpeg'); fs.writeFileSync(ffmpegPath, 'x')
+  let listener = null, unsubscribed = 0
+  const captionService = {
+    getStatus: () => ({ binaryPath: null, models: [] }),
+    onProgress: (callback) => { listener = callback; return () => { unsubscribed += 1; listener = null } },
+    install: async () => {
+      listener({ phase: 'download-model', percent: 0 })
+      listener({ phase: 'download-model', receivedBytes: 400, totalBytes: 1000 })
+      listener({ phase: 'download-model', receivedBytes: 1200, totalBytes: 1000 })
+      return { success: false, error: 'stopped for the test' }
+    },
+  }
+  const engine = createSongMapEngine({ app: { getPath: () => root }, ffmpegPath, captionService, execPath: '/app/electron', workerPath: '/app/worker.cjs' })
+  const seen = []
+  const result = await engine.install((update) => seen.push(update))
+  assert.equal(result.success, false)
+  assert.deepEqual(seen, [
+    { step: 'speech', doneBytes: 0, totalBytes: 0 },
+    { step: 'speech', doneBytes: 400, totalBytes: 1000 },
+    { step: 'speech', doneBytes: 1000, totalBytes: 1000 },
+  ])
+  assert.equal(unsubscribed, 1)
+  fs.rmSync(root, { recursive: true, force: true })
+})

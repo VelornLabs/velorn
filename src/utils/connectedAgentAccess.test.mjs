@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readAccessSetup, accessSetupPreferences, activeAccessMode } from './connectedAgentAccess.mjs'
+import { readAccessSetup, accessSetupPreferences, activeAccessMode, veloComputerAccessSupported } from './connectedAgentAccess.mjs'
 
 test('setup hints are strict, provider-scoped and never carry credentials or authority', () => {
   for (const value of [null, undefined, {}, { accessSetups: 'full' }]) {
@@ -36,4 +36,9 @@ test('active mode depends only on live flags, never a remembered full-access set
   assert.equal(activeAccessMode({ toolsEnabled: true }), 'custom')
   assert.equal(activeAccessMode({ toolsEnabled: true, researchEnabled: true }), 'work')
   assert.equal(activeAccessMode({ toolsEnabled: true, researchEnabled: true, fullAccessEnabled: true }), 'full')
+})
+
+test('Velo computer access is offered on Linux, macOS and Windows; anything else shows coming soon', () => {
+  for (const platform of ['linux', 'darwin', 'win32']) assert.equal(veloComputerAccessSupported(platform), true)
+  for (const platform of ['freebsd', '', undefined]) assert.equal(veloComputerAccessSupported(platform), false)
 })

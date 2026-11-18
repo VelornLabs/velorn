@@ -13,7 +13,7 @@ import {
 } from '../utils/connectedAgentContext.mjs'
 import { createConnectedAgentConversationStore, getConnectedAgentChatSelection } from '../utils/connectedAgentConversations.mjs'
 import { CONNECTED_AGENT_PROVIDERS, FUNDED_LUNA_REASONING, FUNDED_LUNA_DISCLOSURE, VELO_DESCRIPTION, fundedLunaModels, connectedAgentProviderLabel, connectedAgentModelSelection, fundedLunaAvailability } from '../utils/connectedAgentProviders.mjs'
-import { readAccessSetup, accessSetupPreferences, activeAccessMode } from '../utils/connectedAgentAccess.mjs'
+import { readAccessSetup, accessSetupPreferences, activeAccessMode, veloComputerAccessSupported } from '../utils/connectedAgentAccess.mjs'
 import { readChatAttachment, checkAttachmentBatch } from '../utils/connectedAgentAttachments.mjs'
 import { AgentMessageContent } from './AgentMessageContent'
 import { AgentReviewGallery, AgentRecoveredReviewGallery, reviewThumbnail, useAgentReviewMedia } from './AgentReviewGallery'
@@ -265,6 +265,11 @@ function Conversation({ projectKey, provider, onProviderChange, settingsOpen, se
       .map(chat => ({ ...chat, provider: value }))), [history, projectKey, provider, conversations])
   const fundedLuna = provider === 'luna'
   const computerAccessProvider = provider === 'codex' || fundedLuna
+  // Velo's own computer tools exist for Linux and macOS. On Windows the Full
+  // access card is shown greyed out as "coming soon" instead of failing.
+  const hostPlatform = typeof window !== 'undefined' ? window.electronAPI?.platform : undefined
+  const veloFullAccessComingSoon = fundedLuna && typeof hostPlatform === 'string' && !veloComputerAccessSupported(hostPlatform)
+  const comingSoonText = `Full access for Velo is coming soon${hostPlatform === 'win32' ? ' on Windows' : ' on this system'}.`
   const savedSelection = getConnectedAgentChatSelection(activeChat)
   const draftCacheKey = `${projectKey}:${provider}`
   const cachedDraft = mobileDraftCache.get(draftCacheKey)
@@ -781,6 +786,7 @@ function Conversation({ projectKey, provider, onProviderChange, settingsOpen, se
   async function changeFullAccess(enabled, bundle = false, { restoreOnly = false, fromPhone = false } = {}) {
     if (busy || loading || fullAccessPending.current || executableMutation.current || spendingMutation.current || isExportBusy()) return
     if (!enabled) return revokeFullAccess({ forget: true })
+    if (veloFullAccessComingSoon && !fromPhone) { setFullAccessError(''); return { success: false, error: comingSoonText } }
     if (!toolsEnabled && !bundle) { setFullAccessError('Enable Velorn tools first, or use Full access.'); return }
     if (!api?.setFullAccess) { setFullAccessError('Fully quit and reopen Velorn to enable Full access.'); return }
     const epoch = ++fullAccessEpoch.current, conversationId = conversations.activeId
@@ -827,7 +833,8 @@ function Conversation({ projectKey, provider, onProviderChange, settingsOpen, se
       return { success: true, status: 'completed' }
     } catch (failure) {
       if (stillCurrent()) {
-        setFullAccessError(failure.message || 'Full access could not be enabled.')
+        if (failure.code === 'UNSUPPORTED_PLATFORM') { setFullAccessError(''); setAccessNotice(failure.message || comingSoonText) }
+        else setFullAccessError(failure.message || 'Full access could not be enabled.')
         // Native context may still be hydrating during startup. Retry only the
         // remembered setup, never a tool action or a declined confirmation.
         if (restoreOnly && fullAccessRestoreRetry < 3 && ['BUSY','STALE_APPROVAL','TOOLS_UNAVAILABLE'].includes(failure.code)) {
@@ -1908,8 +1915,8 @@ function Conversation({ projectKey, provider, onProviderChange, settingsOpen, se
               <strong>Chat only</strong><span>Discuss your project without running tools.</span></button>
             <button ref={accessStart} type="button" aria-label="Work in Velorn" aria-pressed={toolsEnabled && !fullAccessEnabled} disabled={accessBusy} onClick={() => applyAccessMode('work')}>
               <strong>Work in Velorn</strong><span>Chat, edit and create with Velorn tools.</span></button>
-            {<button type="button" className="ca-full-mode" aria-label={fullSetupLabel} aria-pressed={accessMode === 'full'} disabled={accessBusy || fullSetupComplete || !api?.setFullAccess} onClick={() => applyAccessMode('full')}>
-              <strong>{fullSetupLabel}</strong><span>{computerAccessProvider ? 'Velorn tools, files, commands, network and images.' : 'All Velorn tools, files and shared previews.'} Actions run automatically.</span></button>}
+            {<button type="button" className="ca-full-mode" aria-label={fullSetupLabel} aria-pressed={accessMode === 'full'} disabled={accessBusy || fullSetupComplete || !api?.setFullAccess || veloFullAccessComingSoon} data-coming-soon={veloFullAccessComingSoon || undefined} onClick={() => applyAccessMode('full')}>
+              <strong>{fullSetupLabel}{veloFullAccessComingSoon && <em className="ca-coming-soon">Coming soon</em>}</strong><span>{veloFullAccessComingSoon ? `${comingSoonText} Chat and Work in Velorn work today.` : computerAccessProvider ? 'Velorn tools, files, commands, network and images.' : 'All Velorn tools, files and shared previews.'} Actions run automatically.</span></button>}
           </div>
           {!fullAccessEnabled && <div className="ca-access-summary">
             <div>
@@ -1968,11 +1975,11 @@ function Conversation({ projectKey, provider, onProviderChange, settingsOpen, se
         </section>
         {<section className="ca-settings-section ca-full-access-consent" aria-labelledby={`${settingsId}-full-access-title`}>
           <h3 id={`${settingsId}-full-access-title`}>Full access</h3>
-          <label className="ca-check"><input type="checkbox" checked={computerAccessProvider ? fullComputerAccessEnabled : fullAccessEnabled} disabled={accessBusy || !toolsEnabled} aria-describedby={`${settingsId}-full-access-details`} onChange={event => void changeFullAccess(event.target.checked)} />{computerAccessProvider ? 'Full computer access (experimental)' : 'Full Velorn access'}</label>
+          <label className="ca-check"><input type="checkbox" checked={computerAccessProvider ? fullComputerAccessEnabled : fullAccessEnabled} disabled={accessBusy || !toolsEnabled || veloFullAccessComingSoon} aria-describedby={`${settingsId}-full-access-details`} onChange={event => void changeFullAccess(event.target.checked)} />{computerAccessProvider ? 'Full computer access (experimental)' : 'Full Velorn access'}</label>
           <div id={`${settingsId}-full-access-details`}>
             <p>Giving an agent full access can be dangerous. It may change or delete files.</p>
             <button type="button" onClick={openFullAccessDetails}>Learn more about Full access</button>
-            {!toolsEnabled ? <p>Enable Velorn tools first, or use Full access above.</p> : !api?.setFullAccess && <p>Fully quit and reopen Velorn to enable Full access.</p>}
+            {veloFullAccessComingSoon ? <p>{comingSoonText}</p> : !toolsEnabled ? <p>Enable Velorn tools first, or use Full access above.</p> : !api?.setFullAccess && <p>Fully quit and reopen Velorn to enable Full access.</p>}
           </div>
           {fullAccessEnabled && <p className="ca-full-access-active">Full access · automatic{fullAccessRemembered ? ' · Remembered on this desktop' : ' for this chat session'}.</p>}
           {busy && fullAccessEnabled && <p>Stop the response before changing this permission.</p>}
@@ -2028,15 +2035,9 @@ function Conversation({ projectKey, provider, onProviderChange, settingsOpen, se
         <section className="ca-settings-section ca-generation-spending" aria-labelledby={`${settingsId}-spending-title`}>
           <h3 id={`${settingsId}-spending-title`}>Generation spending</h3>
           <p className="ca-note">Image, video and audio generation — separate from Velo’s chat allowance and your Codex account.</p>
-          <select aria-label="Generation spending" aria-describedby={`${settingsId}-spending-details`} value={spendingPolicy || ''}
-            disabled={!spendingAvailable || !spendingPolicy || spendingReading || spendingChanging || busy || loading || fullAccessChanging || executableChanging || exportBusy}
-            onChange={event => void changeSpendingPolicy(event.target.value)}>
-            {!spendingPolicy && <option value="">{spendingReading ? 'Checking protection…' : 'Protection unavailable'}</option>}
-            <option value="local-only">Local only (default)</option><option value="ask-cloud">Ask before cloud</option>
-          </select>
-          <p className="ca-note">{!spendingPolicy ? 'Spending protection is unverified; restart before generating.' : spendingPolicy === 'local-only' ? 'Local workflows, including those you explicitly trust. Known cloud workflows stay blocked.' : 'Paid or unverified generation requires approval.'} Direct computer commands are outside these controls.</p>
+          <p className="ca-note">{!spendingPolicy ? 'Spending protection is unverified; restart before generating.' : 'Velorn shows the price and asks before anything is spent.'} Direct computer commands are outside these controls.</p>
           <details className="ca-settings-disclosure" id={`${settingsId}-spending-details`}><summary>Spending details</summary>
-            <p>Local only blocks known cloud/API workflows. If a saved workflow has unfamiliar nodes, Velorn shows which ones and lets you explicitly trust that workflow as local without enabling cloud spending. Unrecognized does not mean paid, but custom nodes can contact services using their own credentials. Ask before cloud also offers one-submission approval for paid or unverified workflows. One submission can include multiple billable operations; an unknown price has no guaranteed upper bound.</p>
+            <p>Paid or unverified generation always needs your approval first. If a saved workflow has unfamiliar nodes, Velorn shows which ones before it runs. Unrecognized does not mean paid.</p>
             <p>Saved on this device across chats and providers. Applies to all Velorn-managed generation in all projects, not Codex chat billing. Does not change chat-model billing. This is not a global spending cap; unrestricted shell, network and direct ComfyUI calls can bypass it.</p>
           </details>
           {spendingChanging && <p role="status">Waiting for native confirmation…</p>}
@@ -2055,7 +2056,7 @@ function Conversation({ projectKey, provider, onProviderChange, settingsOpen, se
     </div>
     <div className="ca-chat" data-awaiting-approval={Boolean(pendingApprovalId)} hidden={settingsOpen} inert={deleteChatId ? '' : undefined}>
     <MobileCompanionRequest mobile={mobile} disabled={busy || loading || exportBusy || !visible || Boolean(deleteChatId)} />
-    {!fullAccessEnabled && (preferredSetup.mode === 'full' || fullAccessPreferencePending || fullAccessError) && <div className="ca-restore-access">
+    {!fullAccessEnabled && !veloFullAccessComingSoon && (preferredSetup.mode === 'full' || fullAccessPreferencePending || fullAccessError) && <div className="ca-restore-access">
       <span>{fullAccessPreferencePending ? 'Checking remembered access…' : 'Full access is off'}</span>
       {!fullAccessPreferencePending && !(busy && requestFromPhone) && <button type="button" disabled={accessBusy || !api?.setFullAccess || Boolean(deleteChatId)} onClick={() => applyAccessMode('full')}>Full access</button>}
       {fullAccessChanging && <span role="status">{fullAccessRemembered ? 'Restoring remembered Full access…' : 'Waiting for native confirmation…'}</span>}

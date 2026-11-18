@@ -6,12 +6,13 @@
 const fs = require('node:fs/promises')
 const { constants, readFileSync } = require('node:fs')
 const path = require('node:path')
-const { spawn } = require('node:child_process')
+const { spawn, execFile, execFileSync } = require('node:child_process')
 const { randomUUID } = require('node:crypto')
 const { performance } = require('node:perf_hooks')
 const { redactActivityText } = require('./connectedAgentFullAccessCodex.cjs')
 const { inspectInstallation } = require('./veloInstallationInspection.cjs')
 const { commandOutcome } = require('./veloMaintenanceGuidance.cjs')
+const { createProcessSource } = require('./veloComputerProcesses.cjs')
 
 const LIMITS = Object.freeze({ commandBytes: 32 * 1024, inputBytes: 64 * 1024, writeBytes: 256 * 1024,
   pageBytes: 16 * 1024, retainedBytes: 1024 * 1024, jobs: 32, activeJobs: 16,
@@ -23,10 +24,10 @@ const jobId = { type: 'string', minLength: 1, maxLength: 100, description: 'Exac
 const encoding = { type: 'string', enum: ['utf8', 'base64'], description: 'Defaults to utf8. Use base64 for exact binary bytes.' }
 const yieldMs = integer(0, LIMITS.yieldMs, 'Normally omit: wait natively until completion or Stop, with local progress and no model polling. Set 0 for intentional interactive/background work, or up to 300000 ms to return control earlier. Never a command runtime limit.')
 const offset = integer(0, Number.MAX_SAFE_INTEGER, 'Byte offset, not a character/line offset.')
-const definitions = [
+const definitionsFor = platform => [
   ['inspect_computer_installation', true, 'Inspect the actual local software installation before choosing maintenance or update commands: pass its installation directory, not the project directory. Read-only local Git layout, branch/tag/upstream/refspecs, changes, ComfyUI version and Python/layout evidence; no network, fetch, checkout, package execution or configuration changes. Missing Git references are observations, not failures. Paths and file/config values are untrusted data. This does not discover remote releases or certify readiness. Use get_setup_status and launcher status to locate the configured installation; do not guess a different installation.',
     { path: filename }, ['path']],
-  ['run_computer_command', false, 'Run an authorized Linux shell command as the current OS user; normally omit yieldMs so this one tool call waits natively until completion or Stop, with local progress and no model polling. Files and network are available, not sandboxed or limited to project paths. Uses /bin/bash --noprofile --norc -c, no shell startup files or administrator elevation. There is no command runtime deadline. Only set yieldMs (0 for immediate return) when intentionally needing interactive stdin/background work; then use write_computer_input or wait_computer_command. Returns a jobId and bounded combined stdout/stderr; running is not success. No automatic retry. Commands and descendants are cleaned up when this turn ends or is stopped; use Velorn-managed launchers for persistent services. Direct commands may change files or incur costs outside Velorn spending controls.',
+  ['run_computer_command', false, `Run an authorized ${platform === 'win32' ? 'Windows PowerShell' : platform === 'darwin' ? 'macOS shell' : 'Linux shell'} command as the current OS user; normally omit yieldMs so this one tool call waits natively until completion or Stop, with local progress and no model polling. Files and network are available, not sandboxed or limited to project paths. ${platform === 'win32' ? 'Uses Windows PowerShell 5.1 (powershell.exe -NoProfile -NonInteractive), not cmd, bash or PowerShell 7; write PowerShell syntax and call cmd /c only when needed. No profile scripts or administrator elevation. Output is UTF-8. The exit code is the script\'s exit value, else the last failing program\'s code, else 1 after an error. Everything the command starts is stopped as soon as the command itself ends, so a program cannot be left running in the background; keep the command itself running (yieldMs 0) while its children are needed.' : `Uses /bin/bash --noprofile --norc -c, no shell startup files or administrator elevation.${platform === 'darwin' ? ' This is the macOS system bash 3.2 with BSD command-line tools, not GNU ones; Homebrew folders are on PATH. macOS may ask the user to allow Velorn into protected folders such as Documents, Desktop or Downloads.' : ''}`} There is no command runtime deadline. Only set yieldMs (0 for immediate return) when intentionally needing interactive stdin/background work; then use write_computer_input or wait_computer_command. Returns a jobId and bounded combined stdout/stderr; running is not success. No automatic retry. Commands and descendants are cleaned up when this turn ends or is stopped; use Velorn-managed launchers for persistent services. Direct commands may change files or incur costs outside Velorn spending controls.`,
     { command: { type: 'string', minLength: 1, maxLength: LIMITS.commandBytes }, cwd: filename, yieldMs }, ['command']],
   ['wait_computer_command', true, 'Wait natively for an existing command to complete or be stopped; normally omit yieldMs to avoid repeated model polling. Set yieldMs only to return control intentionally (0 reads the current page immediately; up to 300000 ms is allowed). This never reruns or imposes a runtime deadline on the command. Local progress continues while waiting. Output is a bounded rolling byte buffer; outputLostBytes identifies discarded earlier bytes. Omit offset to continue from the previous page, or pass an explicit byte offset. Completed jobs return their output page immediately. Nonzero exit, signals and an exited shell with open descendant pipes are reported separately.',
     { jobId, yieldMs, offset }, ['jobId']],
@@ -38,17 +39,19 @@ const definitions = [
     { path: filename, content: { type: 'string', maxLength: Math.ceil(LIMITS.writeBytes / 3) * 4 }, encoding,
       mode: { type: 'string', enum: ['create', 'replace', 'append'] } }, ['path', 'content', 'mode']],
 ]
-const TOOLS = Object.freeze(definitions.map(([name, readOnlyHint, description, properties, required]) => Object.freeze({ name, description,
+const toolsFor = platform => Object.freeze(definitionsFor(platform).map(([name, readOnlyHint, description, properties, required]) => Object.freeze({ name, description,
   inputSchema: { type: 'object', properties, required, additionalProperties: false },
   annotations: { readOnlyHint, destructiveHint: !readOnlyHint, idempotentHint: readOnlyHint, openWorldHint: !readOnlyHint },
 })))
+// Names and argument schemas are the same on every platform; only wording differs.
+const TOOLS = toolsFor('linux'), MAC_TOOLS = toolsFor('darwin'), WINDOWS_TOOLS = toolsFor('win32')
 const names = new Set(TOOLS.map(tool => tool.name))
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
   && [Object.prototype, null].includes(Object.getPrototypeOf(value))
 const fault = (code, message, extra = {}) => Object.assign(new Error(message), { code, publicMessage: message, ...extra })
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-function commandEnvironment(source = process.env) {
+function commandEnvironment(source = process.env, platform = process.platform) {
   // Keep ordinary OS setup, not the Electron/relay/provider credentials or
   // runtime injection knobs (BASH_ENV, ENV, NODE_OPTIONS, LD_PRELOAD, ...).
   // Full access can still read user-accessible files; this is not secret isolation.
@@ -57,11 +60,44 @@ function commandEnvironment(source = process.env) {
     'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'TERM', 'COLORTERM',
     'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
     'SSL_CERT_FILE', 'SSL_CERT_DIR'])
+  if (platform === 'win32') return windowsCommandEnvironment(source)
   const env = {}
   for (const [key, value] of Object.entries(source)) {
     if ((allowed.has(key) || /^LC_[A-Z_]+$/.test(key)) && typeof value === 'string' && !value.includes('\0')) env[key] = value
   }
+  if (platform === 'darwin') {
+    if (typeof source.__CF_USER_TEXT_ENCODING === 'string' && !source.__CF_USER_TEXT_ENCODING.includes('\0')) env.__CF_USER_TEXT_ENCODING = source.__CF_USER_TEXT_ENCODING
+    // An app opened from Finder or the Dock gets only the bare system PATH,
+    // and no shell startup file runs here. Add the usual tool folders at the
+    // end, so anything the user already had on PATH keeps winning.
+    const folders = (env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin').split(':').filter(Boolean)
+    for (const folder of ['/usr/local/bin', '/opt/homebrew/bin', '/opt/homebrew/sbin']) if (!folders.includes(folder)) folders.push(folder)
+    env.PATH = folders.join(':')
+  }
   env.PATH ||= '/usr/local/bin:/usr/bin:/bin'
+  return env
+}
+
+// Windows names are case-insensitive ("Path", "PATH"). Same rule as above:
+// ordinary OS setup only, never application keys or runtime injection knobs.
+// PSModulePath is left out so a PowerShell 7 parent cannot confuse 5.1.
+const WINDOWS_ENVIRONMENT = new Set(['path', 'pathext', 'systemroot', 'systemdrive', 'windir', 'comspec', 'temp', 'tmp',
+  'userprofile', 'username', 'userdomain', 'homedrive', 'homepath', 'home', 'appdata', 'localappdata', 'programdata',
+  'programfiles', 'programfiles(x86)', 'programw6432', 'commonprogramfiles', 'commonprogramfiles(x86)', 'commonprogramw6432',
+  'public', 'allusersprofile', 'computername', 'os', 'driverdata', 'processor_architecture', 'processor_identifier',
+  'processor_level', 'processor_revision', 'number_of_processors', 'lang', 'tz', 'term', 'psmoduleanalysiscachepath',
+  'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy', 'ssl_cert_file', 'ssl_cert_dir'])
+function windowsCommandEnvironment(source) {
+  const env = {}, seen = new Set()
+  for (const [key, value] of Object.entries(source)) {
+    const name = key.toLowerCase()
+    if (!WINDOWS_ENVIRONMENT.has(name) || seen.has(name) || typeof value !== 'string' || value.includes('\0')) continue
+    seen.add(name); env[key] = value
+  }
+  if (!seen.has('path')) {
+    const root = Object.entries(env).find(([key]) => key.toLowerCase() === 'systemroot')?.[1] || 'C:\\Windows'
+    env.Path = [`${root}\\System32`, root, `${root}\\System32\\WindowsPowerShell\\v1.0`].join(';')
+  }
   return env
 }
 
@@ -99,40 +135,18 @@ function validate(name, args, limits) {
   }
 }
 
-// Linux proc metadata only: never command lines, environments or other users'
-// file contents. Start-time identity prevents killing a recycled child PID.
-function processIdentity(pid, stat) {
-  if (typeof stat !== 'string' || stat.lastIndexOf(')') < 0) return null
-  const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)
-  if (fields.length < 20 || !/^[A-Za-z]$/.test(fields[0]) || !/^\d+$/.test(fields[19])
-    || !Number.isSafeInteger(Number(fields[1])) || Number(fields[1]) < 0
-    || !Number.isSafeInteger(Number(fields[2])) || Number(fields[2]) <= 0) return null
-  return { pid, state: fields[0], parent: Number(fields[1]), group: Number(fields[2]), start: fields[19] }
-}
-async function processTable(fsImpl) {
-  const table = new Map()
-  table.available = false; table.unreadable = new Set()
-  let entries
-  try { entries = await fsImpl.readdir('/proc') } catch { return table }
-  table.available = true
-  await Promise.all(entries.filter(value => /^\d+$/.test(value)).map(async value => {
-    try {
-      const stat = await fsImpl.readFile(`/proc/${value}/stat`, 'utf8')
-      const identity = processIdentity(Number(value), stat)
-      if (identity) table.set(Number(value), identity)
-      else table.unreadable.add(Number(value))
-    } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error?.code)) table.unreadable.add(Number(value)) }
-  }))
-  return table
-}
-
 function createVeloComputerTools({ cwd, signal, assertCurrent, onEvent = () => {}, environment = process.env,
   fsImpl = fs, readFileSyncImpl = readFileSync, spawnImpl = spawn, processKillImpl = process.kill, platform = process.platform,
+  execFileImpl = execFile, execFileSyncImpl = execFileSync,
   now = () => performance.now(), limits: overrides = {} } = {}) {
-  if (platform !== 'linux') throw fault('UNSUPPORTED_PLATFORM', 'Velo computer tools currently support Linux only.')
+  // Linux reads /proc, macOS asks ps, Windows uses a job object. Any other
+  // system is refused before use.
+  const processes = createProcessSource(platform, { fsImpl, readFileSyncImpl, execFileImpl, execFileSyncImpl })
+  if (!processes) throw fault('UNSUPPORTED_PLATFORM', 'Velo computer tools support Linux, macOS and Windows.')
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0')) throw new TypeError('A native absolute working directory is required.')
   if (typeof assertCurrent !== 'function' || !signal || typeof signal.addEventListener !== 'function') throw new TypeError('A native authority check and cancellation signal are required.')
-  const limits = { ...LIMITS, ...overrides }, env = commandEnvironment(environment), jobs = new Map()
+  const limits = { ...LIMITS, ...processes.limits, ...overrides }, env = commandEnvironment(environment, platform), jobs = new Map()
+  const tools = platform === 'win32' ? WINDOWS_TOOLS : platform === 'darwin' ? MAC_TOOLS : TOOLS
   const lifetime = new AbortController()
   let closed = false, closing, tracking = false, tracker
   const emit = value => { try { onEvent(value) } catch { /* Observers cannot replay or prevent an action. */ } }
@@ -205,7 +219,14 @@ function createVeloComputerTools({ cwd, signal, assertCurrent, onEvent = () => {
     if (tracking) return
     tracking = true
     try {
-      const table = await processTable(fsImpl)
+      const table = await processes.table()
+      if (processes.contained) {
+        // Windows: the job object ends everything with the shell, so a job is
+        // clean once its shell has exited and its output pipes have closed.
+        for (const job of jobs.values()) if (job.pid && job.done && job.exited) job.cleaned = true
+        if (tracker && [...jobs.values()].every(job => job.cleaned)) { clearInterval(tracker); tracker = null }
+        return table
+      }
       if (!table.available) return table
       for (const job of jobs.values()) {
         if (!job.pid || job.cleaned) continue
@@ -317,13 +338,14 @@ function createVeloComputerTools({ cwd, signal, assertCurrent, onEvent = () => {
     try {
       // Fixed shell invocation; the command is intentionally unrestricted. No
       // shell init, caller env injection, credentials, uid change or escalation.
-      job.child = spawnImpl('/bin/bash', ['--noprofile', '--norc', '-c', args.command], {
-        cwd: resolved, env: { ...env, PWD: resolved }, detached: true, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+      const shell = processes.shell(args.command, { ...env, PWD: resolved })
+      job.child = spawnImpl(shell.file, shell.args, {
+        cwd: resolved, env: shell.env, detached: shell.detached, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
       })
       job.pid = Number.isSafeInteger(job.child.pid) && job.child.pid > 0 ? job.child.pid : null
-      if (job.pid) {
+      if (job.pid && !processes.contained) {
         try {
-          const identity = processIdentity(job.pid, readFileSyncImpl(`/proc/${job.pid}/stat`, 'utf8'))
+          const identity = processes.identitiesSync([job.pid]).get(job.pid)
           // A detached child's PID/start is already ours even if this read
           // races its setsid call. Never authorize signalling the parent group.
           if (identity) { job.rootStart = identity.start; job.members.set(job.pid, job.rootStart) }
@@ -421,7 +443,7 @@ function createVeloComputerTools({ cwd, signal, assertCurrent, onEvent = () => {
       const buffer = validate(name, args, limits)
       await authorize()
       if (name === 'inspect_computer_installation') {
-        const result = await inspectInstallation({ path: absolute(args.path),
+        const result = await inspectInstallation({ path: absolute(args.path), platform,
           signal: AbortSignal.any([signal, lifetime.signal]), assertCurrent: authorize })
         await authorize()
         return receipt(result, result.success === false)
@@ -435,8 +457,13 @@ function createVeloComputerTools({ cwd, signal, assertCurrent, onEvent = () => {
       return await write(args, buffer)
     } catch (error) { return failure(error) }
   }
+  // Windows: end the shell through the handle Node holds for it. The process
+  // number cannot be reused while that handle is open, and the job object
+  // then ends everything the shell started.
+  const killContained = job => { if (job.pid && !job.exited) { try { job.child.kill('SIGKILL') } catch { /* Already gone. */ } } }
   async function killOwned(job, killSignal, table) {
     if (!job.pid || job.cleaned) return
+    if (processes.contained) { killContained(job); return }
     if (!job.groupGone && [...table.values()].some(item => item.group === job.pid && job.members.get(item.pid) === item.start)) {
       try { processKillImpl(-job.pid, killSignal) } catch { /* Verification reports survivors. */ }
     }
@@ -450,17 +477,20 @@ function createVeloComputerTools({ cwd, signal, assertCurrent, onEvent = () => {
     // Electron can exit before asynchronous before-quit cleanup drains. Groups
     // are native-created and never supplied by the model. The exit hook remains
     // installed until close has finished its normal reap/verification sequence.
-    for (const job of jobs.values()) {
-      if (!job.pid || job.cleaned) continue
+    const owned = [...jobs.values()].filter(job => job.pid && !job.cleaned)
+    if (!owned.length) return
+    if (processes.contained) { owned.forEach(killContained); return }
+    // One synchronous read for every owned process (a single ps run on macOS).
+    let current = new Map()
+    try { current = processes.identitiesSync(owned.flatMap(job => [...job.members.keys()])) } catch { /* Nothing can be confirmed as ours. */ }
+    for (const job of owned) {
       let currentGroup = false
       const currentMembers = []
       for (const [pid, start] of job.members) {
-        try {
-          const identity = processIdentity(pid, readFileSyncImpl(`/proc/${pid}/stat`, 'utf8'))
-          if (!identity || identity.start !== start) continue
-          if (identity.group === job.pid) currentGroup = true
-          if (identity.state !== 'Z') currentMembers.push(pid)
-        } catch { /* Process already exited or the OS denied the operation. */ }
+        const identity = current.get(pid)
+        if (!identity || identity.start !== start) continue
+        if (identity.group === job.pid) currentGroup = true
+        if (identity.state !== 'Z') currentMembers.push(pid)
       }
       if (currentGroup) { try { processKillImpl(-job.pid, killSignal) } catch {} }
       for (const pid of currentMembers) { try { processKillImpl(pid, killSignal) } catch {} }
@@ -476,17 +506,26 @@ function createVeloComputerTools({ cwd, signal, assertCurrent, onEvent = () => {
       // Await a pending metadata scan before doing our final ownership scan.
       const freshScan = async () => { while (tracking) await delay(5); return track() }
       let table = await freshScan() || new Map()
-      for (const job of jobs.values()) await killOwned(job, 'SIGTERM', table)
-      if ([...jobs.values()].some(job => job.pid)) await delay(limits.termMs)
-      table = await freshScan() || new Map()
-      for (const job of jobs.values()) await killOwned(job, 'SIGKILL', table)
-      if ([...jobs.values()].some(job => job.pid)) await delay(limits.killMs)
+      if (processes.contained) {
+        // Windows has no polite stop signal. End each shell, then wait for the
+        // operating system to report that it has gone.
+        for (const job of jobs.values()) killContained(job)
+        const deadline = Date.now() + limits.termMs + limits.killMs * 6
+        while ([...jobs.values()].some(job => job.pid && !job.exited) && Date.now() < deadline) await delay(20)
+      } else {
+        for (const job of jobs.values()) await killOwned(job, 'SIGTERM', table)
+        if ([...jobs.values()].some(job => job.pid)) await delay(limits.termMs)
+        table = await freshScan() || new Map()
+        for (const job of jobs.values()) await killOwned(job, 'SIGKILL', table)
+        if ([...jobs.values()].some(job => job.pid)) await delay(limits.killMs)
+      }
       table = await freshScan() || new Map()
       const survivors = []
       const cleanupConfirmed = table.available === true && ![...jobs.values()].some(job =>
         job.unconfirmedGroup || [...job.members.keys()].some(pid => table.unreadable?.has(pid)))
       for (const job of jobs.values()) {
         for (const [pid, start] of job.members) if (table.get(pid)?.start === start && table.get(pid)?.state !== 'Z') survivors.push(pid)
+        if (processes.contained && job.pid && !job.exited) survivors.push(job.pid)
         job.cleaned = true; job.inputClosed = true
         job.child?.stdin?.destroy(); job.child?.stdout?.destroy(); job.child?.stderr?.destroy()
         wake(job)
@@ -502,7 +541,7 @@ function createVeloComputerTools({ cwd, signal, assertCurrent, onEvent = () => {
   process.on('exit', onExit)
   signal.addEventListener('abort', onAbort, { once: true })
   if (signal.aborted) onAbort()
-  return { tools: TOOLS, has: name => names.has(name), callTool, close }
+  return { tools, has: name => names.has(name), callTool, close }
 }
 
-module.exports = { createVeloComputerTools, TOOLS, LIMITS, commandEnvironment }
+module.exports = { createVeloComputerTools, TOOLS, MAC_TOOLS, WINDOWS_TOOLS, LIMITS, commandEnvironment }

@@ -108,7 +108,7 @@ test('candidate recovery approval cannot cross a changed native project or rende
 })
 
 async function fixture(t, options = {}) {
-  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'velorn-computer-authority-'))
+  const folder = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'velorn-computer-authority-'))) // macOS: /var is a link to /private/var
   const context = { session: 'synthetic-session', projectKey: folder, revision: 1 }
   const handlers = new Map(), requests = [], events = [], confirmations = [], sessions = [], computerCalls = [], editorCalls = []
   const replies = [], account = new AbortController()
@@ -309,14 +309,24 @@ test('new computer confirmation cannot run in an unsaved project or a foreign re
   assert.equal(f.requests.length, 0); assert.equal(f.sessions.length, 0)
 })
 
-test('unvalidated platforms cannot silently acquire new desktop computer authority', async t => {
-  for (const platform of ['darwin', 'win32']) await t.test(platform, async t => {
+test('unported platforms cannot silently acquire new desktop computer authority', async t => {
+  for (const platform of ['freebsd', 'aix']) await t.test(platform, async t => {
     const f = await fixture(t, { platform })
     const result = await f.enable()
     assert.equal(result.success, false); assert.equal(result.code, 'UNSUPPORTED_PLATFORM')
+    assert.match(result.error, /not available on this system yet/)
     assert.equal(f.confirmations.length, 0); assert.equal(f.requests.length, 0); assert.equal(f.sessions.length, 0)
     f.setConfirmation(phoneApproval())
     assert.equal((await f.enable({ fromPhone: true })).enabled, true, 'Existing phone tools-only scope stays compatible')
+  })
+})
+
+test('macOS and Windows get the same native-confirmed desktop computer authority as Linux', async t => {
+  for (const platform of ['darwin', 'win32']) await t.test(platform, async t => {
+    const f = await fixture(t, { platform })
+    const grant = await f.enable()
+    assert.equal(grant.success, true); assert.equal(grant.enabled, true)
+    assert.equal(f.confirmations.length, 1, 'The native confirmation is still required')
   })
 })
 
