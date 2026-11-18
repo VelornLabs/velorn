@@ -21,6 +21,11 @@ concurrency:
 env:
   NODE_VERSION: "20"
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  # onnxruntime-node's install step downloads optional CUDA files on Linux x64.
+  # Velorn runs it on the CPU, and the archive the older nested copy asks for
+  # (onnxruntime v1.21.0) no longer exists, which fails `npm ci`.
+  ONNXRUNTIME_NODE_INSTALL: skip
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
 jobs:
   preflight:
