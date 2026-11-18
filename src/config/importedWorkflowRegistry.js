@@ -153,7 +153,9 @@ async function loadFromDiskOnce() {
 
   for (const item of listing.items) {
     const name = typeof item === 'string' ? item : item?.name
-    if (!name) continue
+    // Native API imports stage/retain recoverable backups beside active entries.
+    // Hidden directories are never active library entries.
+    if (!name || name.startsWith('.')) continue
     try {
       const dir = await api.pathJoin(baseDir, name)
       const entryFile = await api.pathJoin(dir, ENTRY_FILE_NAME)

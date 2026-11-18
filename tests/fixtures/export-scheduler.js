@@ -19,6 +19,7 @@ const validate = path => {
 const calls = { frames: 0, starts: 0, finishes: 0, aborts: 0, correctColorFrames: 0 }
 let cancelAfterFrame = null, failAfterFrame = null, controller = null
 let frameColors = null
+let cancelDuringBackpressure = false
 window.electronAPI = {
   pathJoin: async (...parts) => validate(parts.join('/')),
   createDirectory: async path => { validate(path); return { success: true } },
@@ -35,6 +36,11 @@ window.electronAPI = {
     if ([220, 80, 100, 255].every((value, index) => Math.abs(pixels[index] - value) <= 1)) calls.correctColorFrames++
     if (calls.frames === cancelAfterFrame) setTimeout(() => controller.abort(), 0)
     if (calls.frames === failAfterFrame) return { success: false, error: 'Synthetic pipe failure' }
+    if (cancelDuringBackpressure && calls.frames === 1) {
+      return new Promise(resolve => setTimeout(() => {
+        controller.abort(); resolve({ success: true })
+      }, 100))
+    }
     return { success: true }
   },
   finishFramePipe: async () => { calls.finishes++; return { success: true, encoderUsed: 'memory-test-sink' } },
@@ -94,6 +100,13 @@ async function main() {
   assert(calls.finishes === 2 && calls.frames === 96 && calls.correctColorFrames === 96,
     'A fresh export after failure did not recover')
   assert(rafRequests === 0, 'A terminal/retry path waited for hidden RAF')
+  controller = new AbortController(); cancelDuringBackpressure = true
+  try {
+    await exportTimeline({ ...options, signal: controller.signal }, () => {}, { offscreen: true })
+    throw new Error('Backpressure cancellation was ignored')
+  } catch (error) { assert(error.message === 'Export cancelled', error.message) }
+  finally { cancelDuringBackpressure = false }
+  assert(calls.frames <= 3, 'An extra frame was submitted after cancellation during pipe backpressure')
 
   // Exercise normal GPU readback across distinct one-frame shots: validating
   // the actual RGBA bytes catches dropped, repeated, or reordered frames.
@@ -103,8 +116,13 @@ async function main() {
     source.getContext('2d').fillStyle = color; source.getContext('2d').fillRect(0, 0, 160, 90)
     return { id: `color-${index}`, type: 'image', url: source.toDataURL('image/png'), width: 160, height: 90 }
   })
-  frameColors = []
+  const savedGlWait = WebGL2RenderingContext.prototype.clientWaitSync
+  const forceFenceTimeout = function () { return this.TIMEOUT_EXPIRED }
   let orderedFrameColors
+  let recovery
+  const readbackDrainEdges = []
+  let finalDrainCancellationRecovered = false
+  frameColors = []
   try {
     useAssetsStore.setState({ assets: colorAssets })
     useTimelineStore.setState({ clips: colorAssets.map((asset, index) => ({ ...clip, id: asset.id, assetId: asset.id,
@@ -114,7 +132,72 @@ async function main() {
     assert(JSON.stringify(frameColors) === JSON.stringify(expectedColors),
       'GPU readback duplicated, skipped, or reordered a frame: ' + JSON.stringify(frameColors))
     orderedFrameColors = frameColors
+
+    // The driver can keep timing out even though a blocking PBO read succeeds.
+    // Exercise the real exporter queue across fallback, not just the compositor:
+    // every one-frame shot must survive in order, including both queued tickets.
+    frameColors = []
+    WebGL2RenderingContext.prototype.clientWaitSync = forceFenceTimeout
+    recovery = await exportTimeline({ ...options, rangeEnd: 5 / 24 }, () => {}, { offscreen: true })
+    assert(calls.frames === 5 && recovery.perf.frames === 5, 'Readback recovery lost a frame')
+    assert(JSON.stringify(frameColors) === JSON.stringify(expectedColors),
+      'Readback recovery duplicated, skipped, or reordered a frame: ' + JSON.stringify(frameColors))
+    assert(recovery.perf.gpuReadback.fenceWaitFallbacks === 1, 'Stalled GPU fence did not activate one fallback')
+    assert(recovery.perf.gpuReadback.syncFrameReads > 0, 'Exporter did not leave the stalled async path')
+
+    // One frame first polls only in the final drain. With two frames the
+    // fallback starts on the last render, then the final queued ticket must
+    // drain without any later synchronous-render iteration to rescue it.
+    const queuedColors = [[255, 0, 0, 255], [0, 0, 255, 255]]
+    for (const frameCount of [1, 2]) {
+      frameColors = []
+      const edge = await exportTimeline({ ...options, rangeEnd: frameCount / 24 }, () => {}, { offscreen: true })
+      const stats = edge.perf.gpuReadback
+      assert(calls.frames === frameCount && edge.perf.frames === frameCount, `${frameCount}-frame final drain lost a frame`)
+      assert(JSON.stringify(frameColors) === JSON.stringify(queuedColors.slice(0, frameCount)),
+        `${frameCount}-frame final drain changed queued pixels or order: ${JSON.stringify(frameColors)}`)
+      assert(stats.asyncSubmitted === frameCount && stats.asyncResolved === frameCount,
+        `${frameCount}-frame final drain did not resolve every queued ticket`)
+      assert(stats.fenceWaitFallbacks === 1 && stats.forcedPboReadbacks === frameCount,
+        `${frameCount}-frame final drain did not use one bounded fallback`)
+      assert(stats.syncFrameReads === 0, 'Final drain reread the current stage instead of the queued PBO')
+      readbackDrainEdges.push({ frames: frameCount, stats })
+    }
+
+    // Abort from an actual timer while the single final ticket is polling:
+    // there is no subsequent loop iteration to notice this cancellation.
+    const finalDrainController = new AbortController()
+    const abortsBeforeDrain = calls.aborts, finishesBeforeDrain = calls.finishes
+    let cancellationScheduled = false
+    frameColors = []
+    WebGL2RenderingContext.prototype.clientWaitSync = function () {
+      if (!cancellationScheduled) {
+        cancellationScheduled = true
+        setTimeout(() => finalDrainController.abort(), 0)
+      }
+      return this.TIMEOUT_EXPIRED
+    }
+    try {
+      await exportTimeline({ ...options, rangeEnd: 1 / 24, signal: finalDrainController.signal }, () => {}, { offscreen: true })
+      throw new Error('Cancellation during final GPU drain was ignored')
+    } catch (error) { assert(error.message === 'Export cancelled', error.message) }
+    assert(cancellationScheduled, 'Final-drain cancellation never reached fence polling')
+    assert(calls.frames === 0 && frameColors.length === 0, 'Cancelled final ticket was sent to the pipe')
+    assert(calls.aborts === abortsBeforeDrain + 1 && calls.finishes === finishesBeforeDrain,
+      'Final-drain cancellation did not abort exactly once without finalizing')
+
+    WebGL2RenderingContext.prototype.clientWaitSync = forceFenceTimeout
+    frameColors = []
+    const retry = await exportTimeline({ ...options, rangeEnd: 1 / 24 }, () => {}, { offscreen: true })
+    assert(calls.frames === 1 && JSON.stringify(frameColors) === JSON.stringify(queuedColors.slice(0, 1)),
+      'Export after final-drain cancellation did not recover the correct frame')
+    assert(retry.perf.gpuReadback.asyncSubmitted === 1 && retry.perf.gpuReadback.forcedPboReadbacks === 1,
+      'Final-drain cancellation leaked readback state into the next export')
+    assert(calls.finishes === finishesBeforeDrain + 1 && calls.aborts === abortsBeforeDrain + 1,
+      'Retry after final-drain cancellation did not finish cleanly')
+    finalDrainCancellationRecovered = true
   } finally {
+    WebGL2RenderingContext.prototype.clientWaitSync = savedGlWait
     frameColors = null
     useAssetsStore.setState({ assets: [{ id: 'image', type: 'image', url, width: 160, height: 90 }] })
     useTimelineStore.setState({ clips: [clip] })
@@ -137,6 +220,8 @@ async function main() {
   window.exportSchedulerFixture.report({ success: true, sandboxed: true, visibilityState: document.visibilityState,
     elapsedMs: Math.round(elapsedMs), syntheticFrames: 96, rafRequests, rafDeliberatelySuspended: true,
     timerAndIpcResponsive: true, orderedFrameColors,
+    readbackRecovery: recovery.perf.gpuReadback,
+    readbackDrainEdges, finalDrainCancellationRecovered,
     cancellationAndFailureRecovered: true, perf: result.perf, nativeEncode })
 }
 main().catch(error => window.exportSchedulerFixture.report({ success: false, error: error.stack || error.message }))

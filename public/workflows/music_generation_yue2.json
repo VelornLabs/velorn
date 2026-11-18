@@ -1,0 +1,119 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "104",
+        0
+      ],
+      "positive": [
+        "95",
+        0
+      ],
+      "negative": [
+        "47",
+        0
+      ],
+      "latent_image": [
+        "98",
+        0
+      ],
+      "seed": 31,
+      "steps": 32,
+      "cfg": 1,
+      "sampler_name": "dpm_2",
+      "scheduler": "sgm_uniform",
+      "denoise": 1
+    }
+  },
+  "18": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "104",
+        2
+      ]
+    }
+  },
+  "47": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "95",
+        0
+      ]
+    }
+  },
+  "94": {
+    "class_type": "YuE2GenerateABC",
+    "inputs": {
+      "clip": [
+        "104",
+        1
+      ],
+      "style": "Instrumental music only, no vocals or singing. Cinematic ambient instrumental, warm piano, gentle strings, 90 BPM",
+      "lyrics": "",
+      "seed": 31,
+      "mode": "full",
+      "max_abc_tokens": 8192,
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "top_k": 30,
+      "repetition_penalty": 1.005,
+      "penalty_window": 100
+    }
+  },
+  "95": {
+    "class_type": "YuE2GenerateMusic",
+    "inputs": {
+      "clip": [
+        "104",
+        1
+      ],
+      "style": "Instrumental music only, no vocals or singing. Cinematic ambient instrumental, warm piano, gentle strings, 90 BPM",
+      "lyrics": "",
+      "abc": [
+        "94",
+        0
+      ],
+      "seed": 31,
+      "mode": "full",
+      "max_duration": 360,
+      "temperature": 1,
+      "top_p": 0.95,
+      "top_k": 100,
+      "repetition_penalty": 1.2
+    }
+  },
+  "98": {
+    "class_type": "EmptyYuE2LatentAudio",
+    "inputs": {
+      "seconds": [
+        "95",
+        1
+      ],
+      "batch_size": 1
+    }
+  },
+  "104": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "yue2_3b_int8_convrot.safetensors"
+    }
+  },
+  "107": {
+    "class_type": "SaveAudioAdvanced",
+    "inputs": {
+      "filename_prefix": "audio/velorn_music_yue2",
+      "format": "flac",
+      "audio": [
+        "18",
+        0
+      ]
+    }
+  }
+}

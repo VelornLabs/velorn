@@ -13,6 +13,8 @@ import {
   notifyComfyPartnerCreditsLow,
 } from './comfyPartnerAuth'
 import { extractCreditCountFromText } from '../utils/comfyCredits'
+import { buildYue2Workflow } from './musicGenerationModels.mjs'
+import { submitManagedGeneration } from './generationSpending'
 import {
   MUSIC_VIDEO_SHOT_DEFAULTS,
   getMusicVideoShotTypeOption,
@@ -35,6 +37,8 @@ export const CUSTOM_KEYFRAME_ENDPOINTS = Object.freeze({
   height: 'VELORN_HEIGHT',
   referenceImage1: 'VELORN_REFERENCE_IMAGE_1',
   referenceImage2: 'VELORN_REFERENCE_IMAGE_2',
+  // The place a shot is filmed in (see customKeyframePlace.mjs).
+  placeImage: 'VELORN_PLACE_IMAGE',
   outputImage: 'VELORN_OUTPUT_IMAGE',
 })
 export const CUSTOM_VIDEO_ENDPOINTS = Object.freeze({
@@ -147,7 +151,9 @@ function findCustomVideoEndpointNodes(workflow) {
   return findCustomEndpointNodes(workflow, CUSTOM_VIDEO_ENDPOINTS)
 }
 
-const REQUIRED_CUSTOM_KEYFRAME_ENDPOINT_KEYS = ['inputImage', 'prompt', 'outputImage']
+// A keyframe can be made from the description alone, so a starting picture
+// input is optional: the same rule the workflow is checked with once loaded.
+const REQUIRED_CUSTOM_KEYFRAME_ENDPOINT_KEYS = ['prompt', 'outputImage']
 const REQUIRED_CUSTOM_VIDEO_ENDPOINT_KEYS = ['inputImage', 'prompt', 'outputVideo']
 
 /**
@@ -952,26 +958,11 @@ class ComfyUIService {
   /**
    * Queue a prompt for execution
    */
-  async queuePrompt(workflow) {
+  async queuePrompt(workflow, { priced = false, batchCount = 0 } = {}) {
     try {
       const resolvedWorkflow = await this.resolveSubfolderModelPaths(workflow)
-      const apiKey = await this.getComfyOrgApiKey();
-      const payload = {
-        prompt: resolvedWorkflow,
-        client_id: this.clientId
-      };
-      if (apiKey) {
-        payload.extra_data = {
-          api_key_comfy_org: apiKey
-        };
-      }
-      const response = await fetch(`${this.getHttpBase()}/prompt`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
+      const response = await submitManagedGeneration({ workflow: resolvedWorkflow,
+        endpoint: this.getHttpBase(), clientId: this.clientId, priced, batchCount });
 
       if (!response.ok) {
         // Try to pull a structured body for better error messages. Some
@@ -1728,6 +1719,7 @@ export function modifyLTX23IA2VWorkflow(workflow, options = {}) {
     negativePrompt = '',
     inputImage = '',
     inputAudio = '',
+    audioStartSeconds = 0,
     width = 1280,
     height = 720,
     duration = 9,
@@ -1743,6 +1735,13 @@ export function modifyLTX23IA2VWorkflow(workflow, options = {}) {
   const numericFps = Math.max(1, Math.round(Number(fps) || 24))
   const numericSeed = Math.round(Number(seed) || Math.floor(Math.random() * 1000000000000))
   const effectiveNegativePrompt = String(negativePrompt || '')
+  const numericAudioStart = Number(audioStartSeconds)
+  if (!Number.isFinite(numericAudioStart) || numericAudioStart < 0) throw new Error('Conditioning-audio start must be a finite non-negative source time.')
+  const audioTrim = modified['340:332']
+  const hasAudioRangeControl = audioTrim?.class_type === 'TrimAudioDuration' && audioTrim.inputs
+    && Object.prototype.hasOwnProperty.call(audioTrim.inputs, 'start_index')
+  if (numericAudioStart > 0 && !hasAudioRangeControl) throw new Error('This IA2V graph has no verified conditioning-audio range control; the requested source offset was not applied.')
+  if (hasAudioRangeControl) audioTrim.inputs.start_index = numericAudioStart
 
   for (const imageNodeId of ['269', '345']) {
     if (modified[imageNodeId]?.inputs && inputImage) {
@@ -1941,7 +1940,7 @@ export function modifyMultipleAnglesWorkflow(workflow, options = {}) {
  *   VELORN_PROMPT, VELORN_OUTPUT_IMAGE
  * - Optional node titles:
  *   VELORN_INPUT_IMAGE, VELORN_SEED, VELORN_WIDTH, VELORN_HEIGHT,
- *   VELORN_REFERENCE_IMAGE_1, VELORN_REFERENCE_IMAGE_2
+ *   VELORN_REFERENCE_IMAGE_1, VELORN_REFERENCE_IMAGE_2, VELORN_PLACE_IMAGE
  */
 export function modifyCustomKeyframeWorkflow(workflow, options = {}) {
   const {
@@ -1951,6 +1950,7 @@ export function modifyCustomKeyframeWorkflow(workflow, options = {}) {
     width = null,
     height = null,
     referenceImages = [],
+    placeImage = '',
     filenamePrefix = 'image/custom_keyframe',
     requireInputImage = true,
     requirePrompt = true,
@@ -1984,6 +1984,7 @@ export function modifyCustomKeyframeWorkflow(workflow, options = {}) {
   const ref2 = Array.isArray(referenceImages) ? referenceImages[1] : null
   if (ref1 && endpoints.referenceImage1) setEndpointValue(endpoints.referenceImage1.node, ref1, ['image'])
   if (ref2 && endpoints.referenceImage2) setEndpointValue(endpoints.referenceImage2.node, ref2, ['image'])
+  if (placeImage && endpoints.placeImage) setEndpointValue(endpoints.placeImage.node, placeImage, ['image'])
 
   if (endpoints.outputImage?.node?.inputs && 'filename_prefix' in endpoints.outputImage.node.inputs) {
     endpoints.outputImage.node.inputs.filename_prefix = filenamePrefix || endpoints.outputImage.node.inputs.filename_prefix || 'image/custom_keyframe'
@@ -3484,6 +3485,23 @@ export function modifyMusicWorkflow(workflow, options = {}) {
     modified['107'].inputs.filename_prefix = 'audio/Velorn'
   }
 
+  return modified
+}
+
+/** YuE2 stays a separate workflow so saved ACE-Step jobs resume unchanged. */
+export function modifyYue2MusicWorkflow(workflow, options = {}) {
+  const lyrics = String(options.lyrics || '').trim()
+  const modified = buildYue2Workflow({
+    tags: options.tags,
+    lyrics,
+    instrumental: options.instrumental ?? !lyrics,
+    durationSeconds: options.duration,
+    lengthMode: options.lengthMode,
+    seed: options.seed ?? 0,
+  })
+  const checkpoint = Object.values(workflow || {}).find((node) => node?.class_type === 'CheckpointLoaderSimple')
+  if (checkpoint?.inputs?.ckpt_name) modified['104'].inputs.ckpt_name = checkpoint.inputs.ckpt_name
+  if (options.filenamePrefix) modified['107'].inputs.filename_prefix = options.filenamePrefix
   return modified
 }
 

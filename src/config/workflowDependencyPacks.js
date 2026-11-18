@@ -384,6 +384,18 @@ export const WORKFLOW_DEPENDENCY_PACKS = Object.freeze({
     docsUrl: COMFY_REGISTRY_URL,
   }),
 
+  'minimax-h3-lip-sync': Object.freeze({
+    id: 'minimax-h3-lip-sync',
+    displayName: 'MiniMax H3 Max Lip Sync',
+    requiredNodes: Object.freeze([
+      { classType: 'MinimaxHailuo03MaxLipSyncNode' },
+      { classType: 'SaveVideo' },
+    ]),
+    requiredModels: Object.freeze([]),
+    requiresComfyOrgApiKey: true,
+    docsUrl: COMFY_REGISTRY_URL,
+  }),
+
   'kling-o3-i2v': Object.freeze({
     id: 'kling-o3-i2v',
     displayName: 'Kling O3 Omni Image-to-Video',
@@ -494,6 +506,35 @@ export const WORKFLOW_DEPENDENCY_PACKS = Object.freeze({
     ]),
     requiredModels: Object.freeze([]),
     requiresComfyOrgApiKey: true,
+    docsUrl: COMFY_REGISTRY_URL,
+  }),
+
+  'minimax-h3-local-music': Object.freeze({
+    id: 'minimax-h3-local-music',
+    displayName: 'MiniMax H3 (local)',
+    requiredNodes: Object.freeze([
+      { classType: 'UNETLoader' },
+      { classType: 'CLIPLoader' },
+      { classType: 'VAELoader' },
+      { classType: 'LoraLoaderModelOnly' },
+      { classType: 'MiniMaxH3ImageToVideo' },
+      { classType: 'TrimAudioDuration' },
+      { classType: 'VAEEncodeAudio' },
+      { classType: 'SetLatentNoiseMask' },
+      { classType: 'LTXVConcatAVLatent' },
+      { classType: 'SamplerCustomAdvanced' },
+      { classType: 'CreateVideo' },
+      { classType: 'SaveVideo' },
+    ]),
+    // The Fast add-on is listed too: it is small next to the rest, and one
+    // download then covers both quality levels.
+    requiredModels: Object.freeze([
+      { classType: 'UNETLoader', inputKey: 'unet_name', filename: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors', targetSubdir: 'diffusion_models' },
+      { classType: 'CLIPLoader', inputKey: 'clip_name', filename: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors', targetSubdir: 'text_encoders' },
+      { classType: 'VAELoader', inputKey: 'vae_name', filename: 'minimax_h3_video_vae_fp16.safetensors', targetSubdir: 'vae' },
+      { classType: 'VAELoader', inputKey: 'vae_name', filename: 'minimax_h3_audio_vae_fp32.safetensors', targetSubdir: 'vae' },
+      { classType: 'LoraLoaderModelOnly', inputKey: 'lora_name', filename: 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors', targetSubdir: 'loras' },
+    ]),
     docsUrl: COMFY_REGISTRY_URL,
   }),
 
@@ -753,6 +794,42 @@ export const WORKFLOW_DEPENDENCY_PACKS = Object.freeze({
     ]),
     requiredModels: Object.freeze([]),
     requiresComfyOrgApiKey: true,
+    docsUrl: COMFY_REGISTRY_URL,
+  }),
+
+  'flux2-klein': Object.freeze({
+    id: 'flux2-klein',
+    displayName: 'FLUX.2 klein',
+    requiredNodes: Object.freeze([
+      { classType: 'CLIPLoader' },
+      { classType: 'VAELoader' },
+      { classType: 'UNETLoader' },
+      { classType: 'Flux2Scheduler' },
+      { classType: 'EmptyFlux2LatentImage' },
+      { classType: 'ReferenceLatent' },
+      { classType: 'SamplerCustomAdvanced' },
+      { classType: 'SaveImage' },
+    ]),
+    requiredModels: Object.freeze([
+      {
+        classType: 'CLIPLoader',
+        inputKey: 'clip_name',
+        filename: 'qwen_3_4b.safetensors',
+        targetSubdir: 'text_encoders',
+      },
+      {
+        classType: 'VAELoader',
+        inputKey: 'vae_name',
+        filename: 'flux2-vae.safetensors',
+        targetSubdir: 'vae',
+      },
+      {
+        classType: 'UNETLoader',
+        inputKey: 'unet_name',
+        filename: 'flux-2-klein-4b-fp8.safetensors',
+        targetSubdir: 'diffusion_models',
+      },
+    ]),
     docsUrl: COMFY_REGISTRY_URL,
   }),
 
@@ -1038,6 +1115,51 @@ export const WORKFLOW_DEPENDENCY_PACKS = Object.freeze({
       },
     ]),
     docsUrl: COMFY_REGISTRY_URL,
+  }),
+
+  // Sound tab: local sound effects. A plain text-to-audio graph of core nodes;
+  // the template's optional prompt helper (a third, 4 GB file) is not used.
+  'sound-stable-audio-3': Object.freeze({
+    id: 'sound-stable-audio-3',
+    displayName: 'Stable Audio 3.0 Sound Effects',
+    requiredNodes: Object.freeze([
+      { classType: 'CheckpointLoaderSimple' },
+      { classType: 'CLIPLoader' },
+      { classType: 'CLIPTextEncode' },
+      { classType: 'EmptyLatentAudio' },
+      { classType: 'KSampler' },
+      { classType: 'VAEDecodeAudio' },
+      { classType: 'SaveAudioMP3' },
+    ]),
+    requiredModels: Object.freeze([
+      { classType: 'CheckpointLoaderSimple', inputKey: 'ckpt_name', filename: 'stable_audio_3_medium.safetensors', targetSubdir: 'checkpoints' },
+      { classType: 'CLIPLoader', inputKey: 'clip_name', filename: 't5gemma_b_b_ul2.safetensors', targetSubdir: 'text_encoders' },
+    ]),
+    docsUrl: 'https://huggingface.co/Comfy-Org/stable-audio-3',
+  }),
+
+  'music-gen-yue2': Object.freeze({
+    id: 'music-gen-yue2',
+    displayName: 'YuE2 Music Generation',
+    requiredNodes: Object.freeze([
+      { classType: 'CheckpointLoaderSimple' },
+      { classType: 'YuE2GenerateABC' },
+      { classType: 'YuE2GenerateMusic' },
+      { classType: 'EmptyYuE2LatentAudio' },
+      { classType: 'ConditioningZeroOut' },
+      { classType: 'KSampler' },
+      { classType: 'VAEDecodeAudio' },
+      { classType: 'SaveAudioAdvanced' },
+    ]),
+    requiredModels: Object.freeze([
+      {
+        classType: 'CheckpointLoaderSimple',
+        inputKey: 'ckpt_name',
+        filename: 'yue2_3b_int8_convrot.safetensors',
+        targetSubdir: 'checkpoints',
+      },
+    ]),
+    docsUrl: 'https://github.com/multimodal-art-projection/YuE',
   }),
 
   'music-gen': Object.freeze({

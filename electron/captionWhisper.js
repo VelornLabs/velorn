@@ -377,8 +377,10 @@ function parseWhisperJson(raw) {
 function createCaptionWhisperService({ app, ffmpegPath, getMainWindow }) {
   let installInFlight = false
   let transcribeInFlight = false
+  const progressListeners = new Set()
 
   const sendProgress = (payload) => {
+    for (const listener of progressListeners) { try { listener(payload) } catch { /* observer only */ } }
     try {
       const win = typeof getMainWindow === 'function' ? getMainWindow() : null
       if (win && !win.isDestroyed()) {
@@ -477,7 +479,7 @@ function createCaptionWhisperService({ app, ffmpegPath, getMainWindow }) {
         return { success: false, error: 'The local caption engine is not installed.' }
       }
       const modelId = WHISPER_MODELS[options.modelId] ? options.modelId : DEFAULT_MODEL_ID
-      const model = status.models.find((m) => m.id === modelId) || status.models[0]
+      const model = status.models.find((m) => m.id === modelId) || (options.strictModel ? null : status.models[0])
       if (!model) {
         return { success: false, error: 'No caption model is installed.' }
       }
@@ -598,7 +600,8 @@ function createCaptionWhisperService({ app, ffmpegPath, getMainWindow }) {
   }
 
   return {
-    getStatus: () => buildEngineStatus(app),
+    getStatus: () => ({ ...buildEngineStatus(app), installInFlight, transcribeInFlight }),
+    onProgress: listener => { progressListeners.add(listener); return () => progressListeners.delete(listener) },
     install,
     transcribe,
     removeModel,
@@ -629,4 +632,7 @@ module.exports = {
   parseWhisperJson,
   WHISPER_MODELS,
   WHISPER_RELEASE_TAG,
+  ENGINE_BINARY_DOWNLOADS,
+  MODEL_BASE_URL,
+  VAD_MODEL_URL,
 }

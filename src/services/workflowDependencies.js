@@ -16,8 +16,13 @@ function extractChoiceListFromSpec(inputSpec) {
   if (!inputSpec) return []
 
   if (Array.isArray(inputSpec)) {
-    const [first] = inputSpec
+    const [first, configuration] = inputSpec
     if (Array.isArray(first)) return asStringList(first)
+    // Current ComfyUI schemas use ["COMBO", { options: [...] }], while
+    // older nodes place the choices directly in the first tuple item.
+    if (first === 'COMBO' && configuration && typeof configuration === 'object') {
+      return asStringList(configuration.options || configuration.choices || configuration.values || configuration.enum)
+    }
     if (first && typeof first === 'object') {
       return asStringList(first.values || first.choices || first.options || first.enum)
     }
@@ -43,6 +48,35 @@ function modelChoiceBasename(value) {
   if (!normalized) return ''
   const parts = normalized.split(/[\\/]+/)
   return parts[parts.length - 1] || ''
+}
+
+// Tool reports retain the actual diagnosis, without forwarding large schemas,
+// download URLs or arbitrary pack metadata across the renderer boundary.
+export function buildWorkflowDependencyReport(result) {
+  if (!result) return null
+  let truncated = false
+  const text = (value, limit = 96) => {
+    const normalized = String(value || '')
+    if (normalized.length > limit) truncated = true
+    return normalized.slice(0, limit)
+  }
+  const nodes = Array.isArray(result.missingNodes) ? result.missingNodes : []
+  const models = Array.isArray(result.missingModels) ? result.missingModels : []
+  const unresolved = Array.isArray(result.unresolvedModels) ? result.unresolvedModels : []
+  const model = entry => ({ classType: text(entry?.classType), inputKey: text(entry?.inputKey, 64),
+    filename: text(entry?.filename, 256), targetSubdir: text(entry?.targetSubdir),
+    ...(entry?.reason ? { reason: text(entry.reason) } : {}),
+    ...(entry?.verifiedMissingOnDisk ? { verifiedMissingOnDisk: true } : {}) })
+  const report = {
+    workflowId: text(result.workflowId, 256), status: text(result.status, 32),
+    hasPack: result.hasPack === true, hasBlockingIssues: result.hasBlockingIssues === true,
+    missingNodes: nodes.slice(0, 64).map(entry => ({ classType: text(entry?.classType) })),
+    missingModels: models.slice(0, 64).map(model), unresolvedModels: unresolved.slice(0, 32).map(model),
+    missingAuth: result.missingAuth === true,
+    counts: { missingNodes: nodes.length, missingModels: models.length, unresolvedModels: unresolved.length },
+    ...(result.error ? { error: text(result.error, 256) } : {}),
+  }
+  return { ...report, truncated: truncated || nodes.length > 64 || models.length > 64 || unresolved.length > 32 }
 }
 
 function collectPriceBadgesFromSchema(nodeSchema, out = []) {

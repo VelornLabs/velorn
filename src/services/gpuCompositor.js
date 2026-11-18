@@ -523,7 +523,7 @@ const compileShader = (gl, type, source) => {
   return shader
 }
 
-const createProgram = (gl, vsSource, fsSource, attribBindings = null) => {
+const linkProgramOnce = (gl, vsSource, fsSource, attribBindings) => {
   const vs = compileShader(gl, gl.VERTEX_SHADER, vsSource)
   const fs = compileShader(gl, gl.FRAGMENT_SHADER, fsSource)
   const program = gl.createProgram()
@@ -544,6 +544,24 @@ const createProgram = (gl, vsSource, fsSource, attribBindings = null) => {
     throw new Error(`GPU compositor program link failed: ${info}`)
   }
   return program
+}
+
+// The browser keeps linked programs on disk. After a graphics driver update a
+// saved one can stop loading, and the link then fails every time for that
+// exact source, which used to push every export onto the slow 2D path. A
+// trailing comment makes the source new to that cache, so the second try is
+// linked from scratch.
+const createProgram = (gl, vsSource, fsSource, attribBindings = null) => {
+  try {
+    return linkProgramOnce(gl, vsSource, fsSource, attribBindings)
+  } catch (firstError) {
+    if (!/link failed/.test(String(firstError?.message))) throw firstError
+    try {
+      return linkProgramOnce(gl, `${vsSource}\n// relink\n`, `${fsSource}\n// relink\n`, attribBindings)
+    } catch (_) {
+      throw firstError
+    }
+  }
 }
 
 const getUniforms = (gl, program, names) => {
@@ -610,6 +628,7 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
   if (!gl) return null
 
   let contextLost = false
+  let disposed = false
   canvas.addEventListener('webglcontextlost', (event) => {
     event.preventDefault()
     contextLost = true
@@ -740,6 +759,74 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
   // never overwritten by the next frame's readPixels.
   const readbackBuffers = [new Uint8Array(width * height * 4), new Uint8Array(width * height * 4)]
   let readbackIndex = 0
+
+  // Constant-size cumulative diagnostics: no per-frame samples, GPU timer
+  // queries, or console traffic. These are CPU wall times, not GPU execution
+  // times; in particular fenceYieldMs includes task scheduling latency.
+  const readbackStats = {
+    asyncSubmitted: 0,
+    asyncResolved: 0,
+    asyncSubmitMs: 0,
+    asyncResolveMs: 0,
+    asyncFinalPassMs: 0,
+    asyncReadPixelsMs: 0,
+    asyncFlushMs: 0,
+    fenceWaitMs: 0,
+    fencePollMs: 0,
+    fenceYieldMs: 0,
+    fencePolls: 0,
+    fenceTimeouts: 0,
+    fenceWaitFailures: 0,
+    missingFences: 0,
+    forcedPboReadbacks: 0,
+    fenceWaitFallbacks: 0,
+    fallbackReason: null,
+    bufferCopyMs: 0,
+    syncFrameReads: 0,
+    syncStageReads: 0,
+    syncReadPixelsMs: 0,
+    syncFinalPassMs: 0,
+    maxFenceWaitMs: 0,
+    maxBufferCopyMs: 0,
+    maxAsyncReadPixelsMs: 0,
+  }
+  let readbackRendererInfo = null
+  const getReadbackRendererInfo = () => {
+    if (!readbackRendererInfo) {
+      const parameter = (name) => {
+        try {
+          return name == null ? null : gl.getParameter(name)
+        } catch (_) {
+          return null
+        }
+      }
+      let debugInfo = null
+      try {
+        debugInfo = gl.getExtension('WEBGL_debug_renderer_info')
+      } catch (_) { /* Optional diagnostic extension can be unavailable. */ }
+      readbackRendererInfo = {
+        vendor: parameter(gl.VENDOR),
+        renderer: parameter(gl.RENDERER),
+        unmaskedVendor: parameter(debugInfo?.UNMASKED_VENDOR_WEBGL),
+        unmaskedRenderer: parameter(debugInfo?.UNMASKED_RENDERER_WEBGL),
+      }
+    }
+    return { ...readbackRendererInfo }
+  }
+
+  // A fence can remain unsignaled in a hidden Chromium worker long after a
+  // synchronous read would finish. Bound cooperative polling, then collect
+  // the original PBO (never the newer stage) and use synchronous reads for
+  // the rest of this compositor's lifetime. This bounds polling delay, not
+  // the GPU driver's synchronous getBufferSubData call itself.
+  const ASYNC_FENCE_WAIT_BUDGET_MS = 50
+  let asyncReadbackEnabled = true
+  const assertReadbackAvailable = (signal = null) => {
+    if (signal?.aborted) throw new Error('Export cancelled')
+    if (disposed || contextLost || gl.isContextLost()) {
+      throw new Error('GPU context lost during frame readback.')
+    }
+  }
 
   // Async export readback ring: readPixels lands in a PBO and is collected
   // later behind a fence, so the CPU never stalls on the GPU finishing the
@@ -1356,6 +1443,13 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
 
     isContextLost: () => contextLost || gl.isContextLost(),
 
+    canUseAsyncReadback: () => asyncReadbackEnabled && !disposed && !contextLost,
+
+    /** Detached cumulative snapshot; renderer identification is queried once. */
+    getReadbackStats() {
+      return { width, height, rendererInfo: getReadbackRendererInfo(), ...readbackStats, contextLost }
+    },
+
     beginFrame() {
       stageIndex = 0
       bindTarget(stages[0])
@@ -1493,15 +1587,26 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
     /**
      * Read the finished frame as straight-alpha, top-down RGBA — the exact
      * layout getImageData fed the FFmpeg pipe. Alternates between two
-     * buffers so the previous frame's in-flight pipe write stays valid.
+     * buffers so the previous frame's in-flight pipe write stays valid,
+     * unless the caller supplies a full-frame `target` to read into.
      */
-    readFramePixels() {
+    readFramePixels(target = null) {
+      assertReadbackAvailable()
+      const finalPassStarted = performance.now()
       renderFinalToScratchB()
-      const buffer = readbackBuffers[readbackIndex]
-      readbackIndex = 1 - readbackIndex
+      readbackStats.syncFinalPassMs += performance.now() - finalPassStarted
+      // A caller that hands the frame to another thread passes its own
+      // buffer, so the pixels land there directly with no extra copy.
+      const useTarget = target instanceof Uint8Array && target.length === width * height * 4
+      const buffer = useTarget ? target : readbackBuffers[readbackIndex]
+      if (!useTarget) readbackIndex = 1 - readbackIndex
       gl.bindFramebuffer(gl.FRAMEBUFFER, scratchB.fbo)
+      const readPixelsStarted = performance.now()
       gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, buffer)
+      readbackStats.syncReadPixelsMs += performance.now() - readPixelsStarted
+      readbackStats.syncFrameReads++
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      assertReadbackAvailable()
       return buffer
     },
 
@@ -1512,23 +1617,52 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
      * immediately without disturbing this one.
      */
     beginFrameReadback() {
+      assertReadbackAvailable()
+      if (!asyncReadbackEnabled) {
+        throw new Error('Asynchronous GPU readback disabled; resolve pending tickets before synchronous reads.')
+      }
+      const submitStarted = performance.now()
       const slots = getAsyncReadbackSlots()
       const ticket = slots.findIndex((slot) => !slot.busy)
       if (ticket === -1) {
         throw new Error('GPU readback ring exhausted; resolve pending readbacks first.')
       }
       const slot = slots[ticket]
-      renderFinalToScratchB()
-      gl.bindFramebuffer(gl.FRAMEBUFFER, scratchB.fbo)
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, slot.pbo)
-      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, 0)
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-      slot.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
-      slot.busy = true
-      // Fences are not guaranteed to signal until the commands are flushed.
-      gl.flush()
-      return ticket
+      try {
+        const finalPassStarted = performance.now()
+        renderFinalToScratchB()
+        readbackStats.asyncFinalPassMs += performance.now() - finalPassStarted
+        gl.bindFramebuffer(gl.FRAMEBUFFER, scratchB.fbo)
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, slot.pbo)
+        const readPixelsStarted = performance.now()
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, 0)
+        const readPixelsMs = performance.now() - readPixelsStarted
+        readbackStats.asyncReadPixelsMs += readPixelsMs
+        readbackStats.maxAsyncReadPixelsMs = Math.max(readbackStats.maxAsyncReadPixelsMs, readPixelsMs)
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+        slot.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+        if (!slot.fence) {
+          readbackStats.missingFences++
+          throw new Error('GPU readback fence could not be created.')
+        }
+        // Fences are not guaranteed to signal until the commands are flushed.
+        const flushStarted = performance.now()
+        gl.flush()
+        readbackStats.asyncFlushMs += performance.now() - flushStarted
+        assertReadbackAvailable()
+        slot.busy = true
+        readbackStats.asyncSubmitted++
+        return ticket
+      } finally {
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+        if (!slot.busy && slot.fence) {
+          gl.deleteSync(slot.fence)
+          slot.fence = null
+        }
+        readbackStats.asyncSubmitMs += performance.now() - submitStarted
+      }
     },
 
     /**
@@ -1538,25 +1672,82 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
      * is only rewritten after the slot is next acquired and resolved, so
      * the caller has a full ring cycle to consume it.
      */
-    async resolveFrameReadback(ticket) {
+    async resolveFrameReadback(ticket, { signal = null } = {}) {
+      const resolveStarted = performance.now()
       const slot = asyncReadbackSlots?.[ticket]
       if (!slot?.busy) {
         throw new Error('Unknown GPU readback ticket.')
       }
-      if (slot.fence) {
-        for (;;) {
-          const status = gl.clientWaitSync(slot.fence, 0, 0)
-          if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED || status === gl.WAIT_FAILED) break
-          await new Promise((resolve) => setTimeout(resolve, 0))
+      let fenceWaitStarted = null
+      let fenceWaitEnded = null
+      let forcePboReadback = !asyncReadbackEnabled
+      try {
+        assertReadbackAvailable(signal)
+        if (!slot.fence) throw new Error('GPU readback fence is missing.')
+        if (!forcePboReadback) {
+          fenceWaitStarted = performance.now()
+          for (;;) {
+            assertReadbackAvailable(signal)
+            if (performance.now() - fenceWaitStarted >= ASYNC_FENCE_WAIT_BUDGET_MS) {
+              forcePboReadback = true
+              break
+            }
+            const pollStarted = performance.now()
+            const status = gl.clientWaitSync(slot.fence, 0, 0)
+            readbackStats.fencePollMs += performance.now() - pollStarted
+            readbackStats.fencePolls++
+            if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED) break
+            if (status === gl.WAIT_FAILED) {
+              readbackStats.fenceWaitFailures++
+              throw new Error('GPU readback fence wait failed.')
+            }
+            if (status !== gl.TIMEOUT_EXPIRED) throw new Error('GPU readback returned an invalid fence status.')
+            readbackStats.fenceTimeouts++
+            if (performance.now() - fenceWaitStarted >= ASYNC_FENCE_WAIT_BUDGET_MS) {
+              forcePboReadback = true
+              break
+            }
+            const yieldStarted = performance.now()
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            readbackStats.fenceYieldMs += performance.now() - yieldStarted
+          }
+          fenceWaitEnded = performance.now()
+          if (forcePboReadback) {
+            asyncReadbackEnabled = false
+            readbackStats.fenceWaitFallbacks++
+            readbackStats.fallbackReason = 'fence-timeout'
+          }
         }
-        gl.deleteSync(slot.fence)
+        // The PBO owns the requested frame even if newer frames have already
+        // replaced scratchB. getBufferSubData synchronizes this original copy.
+        assertReadbackAvailable(signal)
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, slot.pbo)
+        const copyStarted = performance.now()
+        try {
+          gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, slot.cpu)
+        } finally {
+          const copyMs = performance.now() - copyStarted
+          readbackStats.bufferCopyMs += copyMs
+          readbackStats.maxBufferCopyMs = Math.max(readbackStats.maxBufferCopyMs, copyMs)
+        }
+        assertReadbackAvailable(signal)
+        if (forcePboReadback) readbackStats.forcedPboReadbacks++
+        readbackStats.asyncResolved++
+        return slot.cpu
+      } finally {
+        if (fenceWaitStarted !== null) {
+          // Exclude CPU buffer collection from the cooperative fence wait.
+          // Poll and yield totals also retain incomplete/error waits.
+          const fenceWaitMs = (fenceWaitEnded ?? performance.now()) - fenceWaitStarted
+          readbackStats.fenceWaitMs += fenceWaitMs
+          readbackStats.maxFenceWaitMs = Math.max(readbackStats.maxFenceWaitMs, fenceWaitMs)
+        }
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+        if (slot.fence) gl.deleteSync(slot.fence)
         slot.fence = null
+        slot.busy = false
+        readbackStats.asyncResolveMs += performance.now() - resolveStarted
       }
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, slot.pbo)
-      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, slot.cpu)
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
-      slot.busy = false
-      return slot.cpu
     },
 
     /**
@@ -1586,16 +1777,22 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
      * pixel effects).
      */
     readStageIntoContext(ctx2d) {
+      const finalPassStarted = performance.now()
       renderFinalToScratchB()
+      readbackStats.syncFinalPassMs += performance.now() - finalPassStarted
       const buffer = readbackBuffers[readbackIndex]
       gl.bindFramebuffer(gl.FRAMEBUFFER, scratchB.fbo)
+      const readPixelsStarted = performance.now()
       gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, buffer)
+      readbackStats.syncReadPixelsMs += performance.now() - readPixelsStarted
+      readbackStats.syncStageReads++
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
       const imageData = new ImageData(new Uint8ClampedArray(buffer.buffer.slice(0, width * height * 4)), width, height)
       ctx2d.putImageData(imageData, 0, 0)
     },
 
     dispose() {
+      disposed = true
       for (const entry of sourceTextures.values()) {
         gl.deleteTexture(entry.texture)
       }
@@ -1611,6 +1808,8 @@ export const createGpuCompositor = ({ width, height, transparent = false } = {})
       if (asyncReadbackSlots) {
         for (const slot of asyncReadbackSlots) {
           if (slot.fence) gl.deleteSync(slot.fence)
+          slot.fence = null
+          slot.busy = false
           gl.deleteBuffer(slot.pbo)
         }
         asyncReadbackSlots = null

@@ -7,6 +7,8 @@ import TimelineSwitcher from './TimelineSwitcher'
 import { isNativeTransportActivation, isSpaceKey, isTransportKeyboardBlocked } from '../utils/transportKeyboardGuards.mjs'
 import { getShuttleKeyAction } from '../utils/shuttlePlayback'
 import { formatTimecode, getSafeTimelineFps, stepTimeByFrames } from '../utils/timelineFrames'
+import { useTimelineFields } from '../hooks/useTimelineFields'
+import TimecodeField from './TimecodeField'
 import { DEFAULT_EDITOR_HOTKEYS, EDITOR_HOTKEY_IDS, EDITOR_HOTKEYS_CHANGED_EVENT, getEditorHotkeys, matchEditorHotkey, formatEditorHotkey } from '../services/editorHotkeys'
 
 const SPACE_MODIFIER_USED_EVENT = 'comfystudio-space-modifier-used'
@@ -19,6 +21,12 @@ const PLAYBACK_MODES = [
   { id: 'loop-selection', label: 'Selection', description: 'Loop selected clip range', icon: Film },
   { id: 'ping-pong', label: 'Back and Forth', description: 'Play forward then reverse', icon: ArrowLeftRight },
 ]
+
+const TRANSPORT_TIMELINE_FIELDS = ['isPlaying', 'setPlayheadPosition', 'togglePlay', 'getTimelineEndTime', 'clips',
+  'selectedClipIds', 'playbackRate', 'shuttleMode', 'shuttleForward', 'shuttleReverse', 'shuttlePause', 'shuttleSlow',
+  'inPoint', 'outPoint', 'setInPoint', 'setOutPoint', 'clearInOutPoints', 'goToInPoint', 'goToOutPoint', 'loopMode', 'setLoopMode']
+
+const BIG_FRAME_STEP = 10
 
 function TransportControls() {
   // Track if K is held for slow shuttle
@@ -68,9 +76,10 @@ function TransportControls() {
   } = useAssetsStore()
   
   // Timeline store (for timeline playback)
+  // The playhead is deliberately absent: it is written every animation frame
+  // during playback. Handlers read it live; the timecode is its own child.
   const {
     isPlaying: timelineIsPlaying,
-    playheadPosition,
     setPlayheadPosition,
     togglePlay: timelineTogglePlay,
     getTimelineEndTime,
@@ -91,7 +100,7 @@ function TransportControls() {
     goToOutPoint,
     loopMode,
     setLoopMode
-  } = useTimelineStore()
+  } = useTimelineFields(TRANSPORT_TIMELINE_FIELDS)
 
   // Project store (for timeline FPS)
   const { getCurrentTimelineSettings } = useProjectStore()
@@ -104,7 +113,7 @@ function TransportControls() {
   
   // Unified values based on current preview mode
   const isPlaying = timelineMode ? timelineIsPlaying : assetIsPlaying
-  const currentTime = timelineMode ? playheadPosition : assetCurrentTime
+  const getCurrentTime = () => (timelineMode ? useTimelineStore.getState().playheadPosition : assetCurrentTime)
   const duration = timelineMode ? (endTime || 60) : assetDuration
   const hasContent = timelineMode ? clips.length > 0 : currentPreview !== null
   const playDisabled = !hasContent || Boolean(mediaPreparation?.critical)
@@ -186,18 +195,16 @@ function TransportControls() {
   const goToStart = () => seekTo(0)
   const goToEnd = () => seekTo(duration)
   
-  const frameBack = () => {
-    seekTo(stepTimeByFrames(currentTime, -1, fps, { min: 0, max: duration }), { intent: 'frame-step' })
+  const stepFrames = (count) => {
+    seekTo(stepTimeByFrames(getCurrentTime(), count, fps, { min: 0, max: duration }), { intent: 'frame-step' })
   }
-  
-  const frameForward = () => {
-    seekTo(stepTimeByFrames(currentTime, 1, fps, { min: 0, max: duration }), { intent: 'frame-step' })
-  }
+  const frameBack = () => stepFrames(-1)
+  const frameForward = () => stepFrames(1)
   
   const previousClip = () => {
     if (!timelineMode) return goToStart()
     const sortedClips = [...clips].sort((a, b) => a.startTime - b.startTime)
-    const prevClip = sortedClips.reverse().find(c => c.startTime < currentTime - 0.01)
+    const prevClip = sortedClips.reverse().find(c => c.startTime < getCurrentTime() - 0.01)
     if (prevClip) {
       seekTo(prevClip.startTime)
     } else {
@@ -208,7 +215,7 @@ function TransportControls() {
   const nextClip = () => {
     if (!timelineMode) return goToEnd()
     const sortedClips = [...clips].sort((a, b) => a.startTime - b.startTime)
-    const nextClipItem = sortedClips.find(c => c.startTime > currentTime + 0.01)
+    const nextClipItem = sortedClips.find(c => c.startTime > getCurrentTime() + 0.01)
     if (nextClipItem) {
       seekTo(nextClipItem.startTime)
     } else {
@@ -265,14 +272,21 @@ function TransportControls() {
       if (!isSpaceKey(e)) pendingSpaceToggleRef.current = false
 
       // Native form controls retain their own arrows (guarded above).
+      // Shift makes the step ten frames.
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
-        frameBack()
+        stepFrames(e.shiftKey ? -BIG_FRAME_STEP : -1)
         return
       }
       if (e.key === 'ArrowRight') {
         e.preventDefault()
-        frameForward()
+        stepFrames(e.shiftKey ? BIG_FRAME_STEP : 1)
+        return
+      }
+      if (e.key === 'Home' || e.key === 'End') {
+        if (e.shiftKey) return
+        e.preventDefault()
+        if (!e.repeat) (e.key === 'Home' ? goToStart : goToEnd)()
         return
       }
 
@@ -546,7 +560,7 @@ function TransportControls() {
           onClick={frameBack}
           className="p-1.5 hover:bg-sf-dark-700 rounded transition-colors"
           disabled={!hasContent}
-          title="Frame Back"
+          title="Frame Back (←, Shift+← for 10 frames)"
         >
           <ChevronLeft className="w-4 h-4 text-sf-text-secondary" />
         </button>
@@ -654,7 +668,7 @@ function TransportControls() {
           onClick={frameForward}
           className="p-1.5 hover:bg-sf-dark-700 rounded transition-colors"
           disabled={!hasContent}
-          title="Frame Forward"
+          title="Frame Forward (→, Shift+→ for 10 frames)"
         >
           <ChevronRight className="w-4 h-4 text-sf-text-secondary" />
         </button>
@@ -681,7 +695,7 @@ function TransportControls() {
         
         {/* Timecode Display */}
         <div className="ml-3 px-2 py-0.5 bg-sf-dark-950 rounded font-mono text-xs text-sf-text-primary">
-          {formatTimecode(currentTime, fps)}
+          {timelineMode ? <TimecodeField fps={fps} maxTime={duration} /> : formatTimecode(assetCurrentTime, fps)}
         </div>
         <span className="text-sf-text-muted text-xs mx-1">/</span>
         <div className="px-2 py-0.5 bg-sf-dark-950/50 rounded font-mono text-xs text-sf-text-muted">

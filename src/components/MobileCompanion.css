@@ -1,0 +1,15 @@
+.ca-mobile-settings p { font-size:12px; line-height:1.5; color:var(--text-secondary,#adb7c5); }
+.ca-mobile-addresses { display:flex; flex-direction:column; gap:5px; overflow-wrap:anywhere; }
+.ca-mobile-addresses code,.ca-mobile-code { user-select:text; font-size:14px; }
+.ca-mobile-settings small { display:block; margin-top:6px; }
+.ca-mobile-settings-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.ca-mobile-request,.ca-mobile-notice { flex:none; padding:10px 14px; border-bottom:1px solid #434152; background:#171e28; font-size:12px; }
+.ca-mobile-request > div { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.ca-mobile-request small { display:block; color:#b8c0cf; margin:7px 0; }
+.ca-mobile-request [role=alert] { color:#f6b6bf; overflow-wrap:anywhere; }
+.ca-mobile-request .ca-mobile-message { max-height:100px; overflow:auto; white-space:pre-wrap; user-select:text; }
+.ca-mobile-request button,.ca-mobile-settings button { border:1px solid #555166; border-radius:4px; padding:5px 8px; color:#e6e6ed; background:#252b39; cursor:pointer; }
+.ca-mobile-request button:disabled { opacity:.5; cursor:default; }
+.ca-mobile-native-approval { border: 1px solid #c9757e; background: #301b25; padding: 12px; margin-top: 12px; border-radius: 8px; }
+.ca-mobile-native-approval p { max-height: 280px; overflow: auto; line-height: 1.5; }
+.ca-mobile-native-approval label { display: flex; align-items: center; gap: 8px; margin: 12px 0; }

@@ -160,6 +160,9 @@ const INPUT_KEY_TARGET_SUBDIRS = new Map([
   ['lora_name', 'loras'],
   ['vae_name', 'vae'],
   ['clip_name', 'text_encoders'],
+  ['text_encoder', 'text_encoders'],
+  ['audio_vae', 'vae'],
+  ['upscale_model', 'upscale_models'],
   ['unet_name', 'diffusion_models'],
   ['control_net_name', 'controlnet'],
   ['style_model_name', 'style_models'],
@@ -179,6 +182,9 @@ const CLASS_HINT_TARGET_SUBDIRS = [
 
 function guessModelTargetSubdir(classType = '', inputKey = '') {
   const lowerClass = String(classType || '').toLowerCase()
+  // Latent upscalers are not pixel-space upscale_models, including widget scans.
+  if (['', 'model_name', 'upscale_model'].includes(String(inputKey || '').trim())
+    && lowerClass.replace(/[^a-z0-9]/g, '').includes('latentupscalemodelloader')) return 'latent_upscale_models'
   // CLIPVisionLoader also uses clip_name but stores under clip_vision.
   if (lowerClass.includes('clipvision') || lowerClass.includes('clip_vision')) return 'clip_vision'
   const byKey = INPUT_KEY_TARGET_SUBDIRS.get(String(inputKey || '').trim())
@@ -707,6 +713,20 @@ export async function importComfyTemplate(template, { onProgress, uiWorkflow: pr
 export async function reimportImportedWorkflow(workflowId, options = {}) {
   const entry = getImportedWorkflowEntry(workflowId)
   if (!entry) throw new Error('This workflow is not an imported template.')
+  if (entry.source?.format === 'api') {
+    // No UI conversion exists for a managed API graph. Revalidation never
+    // changes its saved JSON/bindings and never fetches a remote template.
+    const api = typeof window !== 'undefined' ? window.electronAPI : null
+    const read = await api?.readFile?.(entry.workflowPath, { encoding: 'utf8' })
+    if (!read?.success) throw new Error('The managed API workflow could not be read. Inspect or re-import it before queueing.')
+    const { validateApiWorkflow } = await import('../../electron/workflowApiGraph.mjs')
+    const graph = validateApiWorkflow(JSON.parse(read.data))
+    const objectInfo = await comfyui.getObjectInfo()
+    const missing = [...new Set(Object.values(graph).map(node => node.class_type))].filter(type => !Object.hasOwn(objectInfo || {}, type))
+    if (missing.length) throw new Error(`Managed API workflow is missing node classes: ${missing.join(', ')}. Install/recheck them separately.`)
+    const registered = registerImportedWorkflow({ ...entry, manifest: { ...entry.manifest, runnable: true, unknownNodeTypes: [] }, uncoveredNodeTypes: [] })
+    return { success: true, entry: registered }
+  }
   if (!entry.template) {
     throw new Error('This import predates re-import support — use Re-import on the template in the ComfyUI tab.')
   }

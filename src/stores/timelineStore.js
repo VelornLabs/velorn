@@ -4,6 +4,7 @@ import { createPlaybackJump, getCurrentPlaybackJump } from '../utils/playbackJum
 import { createPlayAround, getCurrentPlayAround, stopPlayAroundPatch } from '../utils/playAround.mjs'
 import { planMultiClipInspectorEdit, planMultiClipInspectorUpdates } from '../utils/multiClipInspector'
 import { planMultiClipEffectsEdit } from '../utils/multiClipEffects'
+import { planMcpEditing } from '../utils/mcpEditingPlan'
 import { getPasteAttributesAvailability, planPasteAttributes } from '../utils/pasteAttributes'
 import { getEffectTypeDefinition } from '../utils/effects'
 import { planSourceTimelineEdit } from '../utils/sourceTimelineEdit.mjs'
@@ -837,6 +838,7 @@ const createDefaultClipTransform = () => ({
 // short-lived tokens bind the displayed destinations/range to that exact
 // timeline snapshot; neither previews nor rejected clicks create history.
 const sourceEditTokens = new WeakMap()
+const mcpEditingTokens = new WeakMap()
 const smartReplaceTokens = new WeakMap()
 const compoundCreateTokens = new WeakMap()
 const uncompoundTokens = new WeakMap()
@@ -877,7 +879,7 @@ const SOURCE_EDIT_STATE_KEYS = [
 ]
 const sourceEditRequestKey = (request) => JSON.stringify([
   request.mode, request.inPoint ?? null, request.outPoint ?? null,
-  request.sourceDuration ?? null, request.asset,
+  request.sourceDuration ?? null, request.asset, request.trackId, request.audioTrackId, request.startSeconds,
 ])
 
 const buildSourceEditPlan = (state, request = {}) => {
@@ -893,12 +895,16 @@ const buildSourceEditPlan = (state, request = {}) => {
   const isAudio = asset.type === 'audio'
   const compatible = track => track.type === (isAudio ? 'audio' : 'video')
     && track.locked !== true && !isCaptionsTrack(track)
-  const target = state.tracks.find(track => track.id === state.activeTrackId && compatible(track))
+  const explicitTarget = request.trackId == null ? null : state.tracks.find(track => track.id === request.trackId)
+  if (request.trackId != null && (!explicitTarget || !compatible(explicitTarget) || isCompoundLocked(explicitTarget))) return fail('Choose one unlocked compatible destination track.')
+  const target = explicitTarget || state.tracks.find(track => track.id === state.activeTrackId && compatible(track))
     || state.tracks.find(compatible)
   if (!target) return fail(`No unlocked ${isAudio ? 'audio' : 'video'} destination is available. Add or unlock a track.`)
   const needsAudio = !isAudio && asset.hasAudio !== false && asset.audioEnabled !== false
+  const explicitAudio = request.audioTrackId == null ? null : state.tracks.find(track => track.id === request.audioTrackId)
+  if (request.audioTrackId != null && (!explicitAudio || explicitAudio.type !== 'audio' || isCompoundLocked(explicitAudio) || explicitAudio.visible === false || isCaptionsTrack(explicitAudio))) return fail('Choose one unlocked audio destination track.')
   const audioTrack = isAudio ? target : needsAudio
-    ? state.tracks.find(track => track.type === 'audio' && track.locked !== true && track.visible !== false)
+    ? explicitAudio || state.tracks.find(track => track.type === 'audio' && track.locked !== true && track.visible !== false)
     : null
   info.videoTrackName = isAudio ? null : target.name || target.id
   info.audioTrackName = audioTrack ? audioTrack.name || audioTrack.id : null
@@ -927,9 +933,10 @@ const buildSourceEditPlan = (state, request = {}) => {
   const destinationIds = new Set(destinations.map(track => track.id))
   const destinationEnd = state.clips.filter(clip => destinationIds.has(clip.trackId))
     .reduce((end, clip) => Math.max(end, Number(clip.startTime) + Number(clip.duration)), 0)
+  if (request.startSeconds !== undefined && (typeof request.startSeconds !== 'number' || !Number.isFinite(request.startSeconds) || request.startSeconds < 0)) return fail('Destination time must be finite and non-negative.')
   const startTime = mode === 'append'
     ? Math.ceil(destinationEnd * fps - 1e-7) / fps
-    : roundToFrame(Math.max(0, Number(state.playheadPosition) || 0), fps)
+    : roundToFrame(request.startSeconds ?? Math.max(0, Number(state.playheadPosition) || 0), fps)
   Object.assign(info, { startTime, duration })
   if (!Number.isFinite(startTime)) return fail('The destination contains invalid clip timing. Fix it before adding a source.')
   if (resolveClipSyncLock({ asset, startTime, duration, fps })) {
@@ -978,6 +985,11 @@ const buildSourceEditPlan = (state, request = {}) => {
       || retained.trimEnd !== compound.trimEnd || plan.clips.some(clip => isCompoundClip(clip) && !state.clips.some(old => old.id === clip.id))) {
       return fail('Source edits cannot cut or overwrite a compound yet. Move the compound or open it to edit its layers.')
     }
+  }
+  if (state.compoundEditContext) {
+    const valid = validateCompoundDocument({ ...getLiveChildDocument(state), clips: plan.clips,
+      transitions: plan.transitions, markers: plan.markers })
+    if (!valid.ok) return fail(valid.reason)
   }
   return {
     ...info, ok: true, plan, clipIds: newClips.map(clip => clip.id),
@@ -2044,6 +2056,39 @@ export const useTimelineStore = create(
     get().saveToHistory()
     set({ clips: state.clips.map(item => item === clip ? { ...clip, name: name.trim() } : item) })
     return { ok: true, changed: true }
+  },
+
+  // MCP editing uses the same pure editorial planners as the UI. Explicit
+  // targets never change UI selection, and only this store owns the atomic
+  // document/history commit. Opaque one-use tokens cannot carry caller patches.
+  previewMcpEditing: (request = {}) => {
+    const state = get()
+    const plan = planMcpEditing(state, request, { getDefinition: getEffectTypeDefinition,
+      makeId: () => `effect-${globalThis.crypto.randomUUID()}`, applyClipTrimUpdate,
+      buildTransitionSettings: state.buildTransitionSettings,
+      getMaxEdgeTransitionDuration: state.getMaxEdgeTransitionDuration,
+      getMaxTransitionDurationForAlignment: state.getMaxTransitionDurationForAlignment,
+      getTransitionContributions })
+    if (!plan.ok) return plan
+    const token = {}
+    mcpEditingTokens.set(token, { plan, requestKey: JSON.stringify(request), snapshot: pickFields(state, RIPPLE_TRIM_STATE_KEYS) })
+    return { ok: true, changed: plan.changed, summary: structuredClone(plan.summary), token }
+  },
+
+  applyMcpEditing: (request = {}, token = null) => {
+    const state = get(), record = token && mcpEditingTokens.get(token)
+    if (!record || RIPPLE_TRIM_STATE_KEYS.some(key => state[key] !== record.snapshot[key]) || JSON.stringify(request) !== record.requestKey) {
+      return { ok: false, changed: false, reason: 'The timeline changed. Preview this edit again.' }
+    }
+    mcpEditingTokens.delete(token)
+    const { plan } = record
+    if (!plan.changed) return { ok: true, changed: false, summary: structuredClone(plan.summary) }
+    let snapshot
+    try { snapshot = createHistorySnapshot(state) } catch (_) { return { ok: false, changed: false, reason: 'This edit cannot be checkpointed safely.' } }
+    let history = state.historyIndex >= 0 ? state.history.slice(0, state.historyIndex + 1) : [...state.history]
+    if (!history.length || !areHistorySnapshotsEqual(history[history.length - 1], snapshot)) history.push(snapshot)
+    set({ ...plan.patch, history: history.slice(-MAX_HISTORY_SIZE), historyIndex: -1, historyLastChangedAt: Date.now() })
+    return { ok: true, changed: true, summary: structuredClone(plan.summary) }
   },
 
   previewSmartReplace: (request = {}) => {

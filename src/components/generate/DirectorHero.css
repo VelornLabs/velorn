@@ -1,0 +1,37 @@
+/* The Director's opening heading and picture fan. Same look as the Create
+   tab's (CreateWorkspace.css), kept separate so neither tab depends on the other. */
+.dh{display:flex;flex-direction:column;align-items:center;gap:22px;padding:8px 0 16px}
+.dh-title{font-size:52px;font-weight:600;line-height:1.1;letter-spacing:-.025em;text-align:center;color:#F4F4F5}
+.dh-glow{background:linear-gradient(100deg,#9D86FF 0%,#5EA2FF 30%,#FF7FBE 60%,#FFD59A 80%,#9D86FF 100%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:dh-drift 9s ease-in-out infinite alternate;padding-bottom:.08em}
+@keyframes dh-drift{from{background-position:0% 50%}to{background-position:100% 50%}}
+.dh-fan{display:flex;align-items:center;justify-content:center;padding:6px 30px 0}
+.dh-card{flex:0 0 auto;margin:0 -16px;border:1px solid rgba(255,255,255,.14);border-radius:16px;overflow:hidden;background:#0F0F10;box-shadow:0 18px 40px rgba(0,0,0,.55);transition:transform .2s ease,filter .2s ease,width .25s ease,height .25s ease,margin .25s ease}
+.dh-card img{display:block;width:100%;height:100%;object-fit:cover}
+.dh-card:nth-child(1){width:116px;height:148px;z-index:1;transform:rotate(-7deg) translateY(12px);filter:brightness(.8)}
+.dh-card:nth-child(2){width:144px;height:182px;z-index:2;transform:rotate(-3deg) translateY(4px);filter:brightness(.9)}
+.dh-card:nth-child(3){width:184px;height:232px;z-index:3}
+.dh-card:nth-child(4){width:144px;height:182px;z-index:2;transform:rotate(3deg) translateY(4px);filter:brightness(.9)}
+.dh-card:nth-child(5){width:116px;height:148px;z-index:1;transform:rotate(7deg) translateY(12px);filter:brightness(.8)}
+.dh-card:hover{z-index:4;filter:none;transform:translateY(-6px) scale(1.04)}
+@media (prefers-reduced-motion:reduce){.dh-glow{animation:none}.dh-card{transition:none}}
+@media (max-height:720px){.dh-fan{display:none}}
+/* The step bar under the heading, in the heading's colours. */
+.dh-step-now{border-color:transparent;background:linear-gradient(120deg,#9D86FF 0%,#5EA2FF 50%,#FF7FBE 100%);color:#fff}
+.dh-step-done{border-color:rgba(157,134,255,.6);background:rgba(157,134,255,.14);color:#BBAEFF}
+.group:hover .dh-step-done{background:rgba(157,134,255,.26)}
+.dh-step-line-done{background:linear-gradient(90deg,#9D86FF,#5EA2FF)}
+/* Inside the Director, buttons and highlights use the heading's violet
+   instead of the theme's accent. A little deeper than the heading so white
+   text on a button stays readable. Remove this rule to get the theme colour back. */
+.dh-colours{display:contents;--sf-accent:124 102 232;--sf-accent-hover:142 121 245;--sf-accent-muted:98 80 190}
+/* Scrolled down: the same heading and pictures, much smaller. */
+.dh{transition:gap .25s ease,padding .25s ease}
+.dh-title{transition:font-size .25s ease}
+.dh-small{gap:8px;padding:0 0 4px}
+.dh-small .dh-title{font-size:30px}
+.dh-small .dh-fan{padding:0 20px}
+.dh-small .dh-card{margin:0 -8px;border-radius:8px;box-shadow:0 6px 14px rgba(0,0,0,.5)}
+.dh-small .dh-card:nth-child(1),.dh-small .dh-card:nth-child(5){width:54px;height:68px}
+.dh-small .dh-card:nth-child(2),.dh-small .dh-card:nth-child(4){width:66px;height:84px}
+.dh-small .dh-card:nth-child(3){width:86px;height:108px}
+@media (prefers-reduced-motion:reduce){.dh,.dh-title,.dh-card{transition:none}}

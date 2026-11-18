@@ -228,6 +228,24 @@ const audioFields = Object.freeze([
   field('musicDuration', { label: 'Duration', type: 'musicDuration' }),
 ])
 
+const yue2AudioFields = Object.freeze([
+  field('musicTags', {
+    label: 'Music style', type: 'textarea', rows: 3,
+    placeholder: 'Indie rock, English vocals, warm guitars, 110 BPM, energetic chorus',
+    helper: 'Describe genre, vocals, instruments and tempo here. YuE2 treats these as creative direction, not fixed BPM or key controls.',
+  }),
+  field('lyrics', {
+    label: 'Lyrics (optional)', type: 'textarea', rows: 5,
+    placeholder: '[Verse]\nYour first line here\n\n[Chorus]\nYour chorus here',
+    helper: 'Use [Verse] and [Chorus] sections. Empty lyrics requests an instrumental; vocals are not guaranteed to be absent.',
+  }),
+  field('musicLengthMode', {
+    label: 'Song length', type: 'yue2Length',
+    helper: 'Automatic lets YuE2 choose the ending, with a 6-minute safety limit. A custom maximum can end earlier; reaching either limit may cut off the song. Editing uses the generated audio’s actual length.',
+  }),
+  field('seed', { label: 'Seed', type: 'seed' }),
+])
+
 const videoToAudioFields = Object.freeze([
   field('asset', { label: 'Input video', type: 'asset', assetType: 'video' }),
   field('prompt', { label: 'Music direction', type: 'textarea', rows: 3 }),
@@ -517,7 +535,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
   {
     id: 'music-gen',
     workflowId: 'music-gen',
-    title: 'Music Generation',
+    title: 'Music Generation (ACE-Step)',
     description: 'Generate music from style tags and optional lyrics.',
     subtitle: 'Local music generation',
     mode: 'generate',
@@ -532,6 +550,28 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     fields: audioFields,
     runnable: true,
     tags: ['music', 'audio', 'lyrics'],
+  },
+  {
+    id: 'music-gen-yue2',
+    workflowId: 'music-gen-yue2',
+    title: 'Music Generation (YuE2)',
+    description: 'Create local songs with YuE2 from a music style and optional lyrics. Maximum duration is a ceiling; songs can finish earlier.',
+    subtitle: 'Local songs · YuE2',
+    mode: 'generate',
+    route: 'local',
+    category: 'audio',
+    provider: 'Local',
+    cover: cover('music-gen.webp'),
+    badge: 'YuE2',
+    runtimeLabel: 'Local · GPU compatibility varies',
+    runtimeNote: 'Requires current ComfyUI and the YuE2 INT8 checkpoint. Apple GPU compatibility is not yet verified; the ComfyUI host runs generation, not this editor.',
+    licenseNotice: 'YuE2 model terms include individual creator permission to monetize music. Company commercial model use requires separate permission; review the current terms for your use.',
+    licenseUrl: 'https://github.com/multimodal-art-projection/YuE/blob/main/MODEL_LICENSE',
+    needsImage: false,
+    outputType: 'audio',
+    fields: yue2AudioFields,
+    runnable: true,
+    tags: ['music', 'audio', 'lyrics', 'yue2', 'local'],
   },
   {
     id: 'kling-o3-i2v',
@@ -903,6 +943,25 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     tags: ['custom', 'comfyui', 'video', 'image to video', 'text to video', 'audio'],
   },
   {
+    id: 'music-video-template',
+    title: 'Music Video Creation',
+    description: 'Guided music video planning and generation.',
+    subtitle: 'Lyrics to shots',
+    mode: 'create',
+    route: 'local',
+    category: 'create',
+    provider: 'Velorn',
+    cover: cover('create-music-video.jpg'),
+    coverPosition: '58% center',
+    badge: 'Easy',
+    runtimeLabel: 'Lyrics + LTX',
+    needsImage: false,
+    outputType: 'video',
+    fields: audioFields,
+    runnable: false,
+    tags: ['music video', 'create', 'lyrics', 'easy mode'],
+  },
+  {
     id: 'ugc-ad-creator',
     title: 'UGC Creator',
     description: 'Creator-style social ads with hooks, dialogue, product demos, unboxings, try-ons, and editable shot clips.',
@@ -919,6 +978,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     outputType: 'video',
     fields: utilityFields,
     runnable: false,
+    comingSoon: true,
     tags: ['ugc', 'ad', 'creator', 'testimonial', 'unboxing', 'try on', 'demo', 'create', 'easy mode'],
   },
   {
@@ -938,6 +998,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     outputType: 'video',
     fields: utilityFields,
     runnable: false,
+    comingSoon: true,
     tags: ['ad', 'business', 'local business', 'ecommerce', 'offer', 'create', 'easy mode'],
   },
   {
@@ -961,25 +1022,6 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     tags: ['ad', 'product', 'create', 'easy mode'],
   },
   {
-    id: 'music-video-template',
-    title: 'Music Video Creation',
-    description: 'Guided music video planning and generation.',
-    subtitle: 'Lyrics to shots',
-    mode: 'create',
-    route: 'local',
-    category: 'create',
-    provider: 'Velorn',
-    cover: cover('create-music-video.jpg'),
-    coverPosition: '58% center',
-    badge: 'Easy',
-    runtimeLabel: 'Lyrics + LTX',
-    needsImage: false,
-    outputType: 'video',
-    fields: audioFields,
-    runnable: false,
-    tags: ['music video', 'create', 'lyrics', 'easy mode'],
-  },
-  {
     id: 'short-film-easy-mode',
     title: 'Short Film Creation',
     description: 'Guided short film planning with characters, locations, voices, shot coverage, keyframes, and timeline assembly.',
@@ -996,6 +1038,7 @@ export const GENERATE_WORKFLOW_CATALOG = Object.freeze([
     outputType: 'video',
     fields: utilityFields,
     runnable: false,
+    comingSoon: true,
     tags: ['short film', 'film', 'dialogue', 'voices', 'create', 'easy mode'],
   },
   {

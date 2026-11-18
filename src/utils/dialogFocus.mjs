@@ -8,11 +8,26 @@ const DIALOG_FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+function isInClosedDetails(element, container) {
+  let child = element
+  for (let ancestor = element.parentElement; ancestor && ancestor !== container; ancestor = ancestor.parentElement) {
+    if (ancestor.tagName === 'DETAILS' && !ancestor.open) {
+      const summary = [...ancestor.children].find((entry) => entry.tagName === 'SUMMARY')
+      // Closed details can still report child layout rectangles in Chromium.
+      // Only the first direct summary (and its descendants) remains exposed.
+      if (child !== summary) return true
+    }
+    child = ancestor
+  }
+  return false
+}
+
 function getFocusableElements(container) {
   if (!container?.querySelectorAll) return []
   return [...container.querySelectorAll(DIALOG_FOCUSABLE_SELECTOR)].filter((element) => (
     element.getAttribute('aria-hidden') !== 'true'
     && element.getClientRects().length > 0
+    && !isInClosedDetails(element, container)
   ))
 }
 

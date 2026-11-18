@@ -167,27 +167,27 @@ function CreditsChip({ className = '', size = 'sm' }) {
   const labelPieces = useMemo(() => {
     if (balance.status === 'low') {
       return {
-        label: 'Out of credits',
+        label: 'Comfy credits empty',
         tooltip: 'A recent job failed because your Comfy.org credit balance is exhausted.',
       }
     }
     if (balance.status === 'ok' && Number.isFinite(balance.credits)) {
       return {
-        label: `${formatCreditCount(balance.credits)} credits`,
+        label: `${formatCreditCount(balance.credits)} Comfy credits`,
         tooltip: isRefreshing
           ? 'Refreshing your Comfy.org credit balance...'
-          : 'Click to refresh your Comfy.org credit balance.',
+          : 'Comfy.org generation credits — separate from Velo’s allowance. Click to refresh.',
       }
     }
     if (balance.status === 'loading') {
       return {
-        label: 'Credits',
+        label: 'Comfy credits',
         tooltip: 'Checking your Comfy.org credit balance...',
       }
     }
     return {
-      label: 'Credits',
-      tooltip: 'Log in through the embedded ComfyUI account settings to show your live balance.',
+      label: 'Comfy credits',
+      tooltip: 'Generation credits, not Velo’s allowance. Sign in through ComfyUI account settings to show the balance.',
     }
   }, [balance, isRefreshing])
 

@@ -1,12 +1,14 @@
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
 import useProjectStore from '../stores/projectStore'
-import { transcribeAsset, transcribeTimelineAudio } from './captionTranscription'
+import { transcribeAsset, transcribeTimelineAudio, getLocalCaptionEngineStatus } from './captionTranscription'
 import { buildCaptionAssetName, ensureCaptionsFolder, saveCaptionSidecar } from './captionProject'
 import { isElectron, writeGeneratedOverlayToProject } from './fileSystem'
 import { generateCaptionVideoBlob } from '../utils/captionRenderer'
 import { buildKineticStyleWithColors } from '../utils/kineticCaptionRenderer'
 import { CAPTION_PRESETS, DEFAULT_CAPTION_PRESET_ID } from '../config/captionPresets'
+import { addCaptionCue, splitCaptionCueAtCaret, retimeCaptionCue } from '../utils/captionCueEditing'
+import { captureMcpContext, assertMcpContext } from './mcpContext'
 
 // MCP-driven caption flow. Transcription and overlay rendering both outlive the
 // 60s MCP action bridge timeout, so they run here as background jobs that MCP
@@ -25,6 +27,26 @@ const captionJobs = new Map()
 let lastCaptionJobId = null
 let captionJobCounter = 0
 let captionDraft = null
+let captionDraftRevision = 0
+
+function ownsCaptionContext(context) {
+  if (!context) return false
+  const current = captureMcpContext()
+  return ['session', 'projectKey', 'timelineId', 'timelineSessionId', 'compoundClipId']
+    .every(key => context[key] === current[key])
+}
+
+function assertCaptionDraft(payload = {}) {
+  if (captionDraft && !ownsCaptionContext(captionDraft.owner)) throw new Error('The agent caption draft belongs to another timeline. Reopen that timeline or explicitly replace the draft here.')
+  if (payload.expectedDraftRevision !== undefined && payload.expectedDraftRevision !== captionDraftRevision) {
+    throw new Error('The caption draft changed after inspection. Read it again before editing or generating.')
+  }
+}
+
+function assertCaptionJobCurrent(job) {
+  assertMcpContext(job.context, 'caption job')
+  if (job.draftRevision !== captionDraftRevision) throw new Error('The agent caption draft changed while this job ran. Its result was not applied.')
+}
 
 function clampNumber(value, min, max, fallback) {
   const numeric = Number(value)
@@ -113,6 +135,8 @@ function createCaptionJob(kind, detail = {}) {
     result: null,
     startedAt: new Date().toISOString(),
     finishedAt: null,
+    context: captureMcpContext(),
+    draftRevision: captionDraftRevision,
   }
   captionJobs.set(job.id, job)
   lastCaptionJobId = job.id
@@ -153,6 +177,8 @@ function summarizeCaptionJob(job) {
     result: job.result,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
+    context: job.context,
+    belongsToCurrentTimeline: ownsCaptionContext(job.context),
   }
 }
 
@@ -160,6 +186,10 @@ function summarizeCaptionDraft(includeCues = true) {
   if (!captionDraft) return null
   return {
     scope: captionDraft.scope,
+    source: 'agent-session',
+    draftRevision: captionDraftRevision,
+    owner: captionDraft.owner,
+    belongsToCurrentTimeline: ownsCaptionContext(captionDraft.owner),
     language: captionDraft.language || 'Auto',
     sourceAssetId: captionDraft.sourceAssetId || null,
     sourceAssetName: captionDraft.sourceAssetName || null,
@@ -173,7 +203,7 @@ function summarizeCaptionDraft(includeCues = true) {
   }
 }
 
-async function runTranscribeCaptionJob(job, { scope, language, sourceAsset, vocabularyHint }) {
+async function runTranscribeCaptionJob(job, { scope, language, sourceAsset, vocabularyHint, modelId }) {
   // transcribeTimeline reports (message, percent) from the audio mix and
   // { stage, message, progress } from the ASR leg — accept both shapes.
   const onProgress = (update, maybeProgress) => {
@@ -191,9 +221,18 @@ async function runTranscribeCaptionJob(job, { scope, language, sourceAsset, voca
     // vocabularyHint: undefined lets the seam auto-derive from the project;
     // an explicit string (including '') from the MCP caller wins.
     const hintOption = vocabularyHint !== undefined ? { vocabularyHint } : {}
+    if (modelId) {
+      const status = await getLocalCaptionEngineStatus()
+      assertCaptionJobCurrent(job)
+      if (!status?.binaryPath || !status.models?.some(model => model.id === modelId)) {
+        throw new Error('The requested local caption model is not installed. Use get_caption_engine_status and install_caption_engine, then retry after setup completes.')
+      }
+      Object.assign(hintOption, { modelId, strictModel: true, engine: 'local' })
+    }
     const result = scope === 'asset'
       ? await transcribeAsset(sourceAsset, { onProgress, language, ...hintOption })
       : await transcribeTimelineAudio({ onProgress, ...hintOption })
+    assertCaptionJobCurrent(job)
 
     const audioDuration = Number(result?.audioDuration) || 0
     const cues = normalizeCueOrder(result?.cues || [], audioDuration)
@@ -203,6 +242,7 @@ async function runTranscribeCaptionJob(job, { scope, language, sourceAsset, voca
 
     const timestamp = new Date().toISOString()
     captionDraft = {
+      owner: job.context,
       scope,
       language,
       sourceAssetId: sourceAsset?.id || null,
@@ -215,6 +255,7 @@ async function runTranscribeCaptionJob(job, { scope, language, sourceAsset, voca
       createdAt: timestamp,
       updatedAt: timestamp,
     }
+    captionDraftRevision += 1
 
     finishCaptionJob(job, {
       cueCount: cues.length,
@@ -228,8 +269,12 @@ async function runTranscribeCaptionJob(job, { scope, language, sourceAsset, voca
 }
 
 export function handleTranscribeCaptions(payload = {}) {
+  assertMcpContext(payload.expectedContext, 'caption transcription')
+  if (payload.expectedDraftRevision !== undefined && payload.expectedDraftRevision !== captionDraftRevision) throw new Error('The caption draft changed after preview. Preview transcription again before replacing it.')
   const scope = payload.scope === 'asset' ? 'asset' : 'timeline'
   const language = String(payload.language || 'Auto').trim() || 'Auto'
+  const modelId = payload.modelId
+  if (modelId !== undefined && !['tiny', 'base', 'small', 'large-v3-turbo'].includes(modelId)) throw new Error('Unknown local caption modelId.')
 
   // Optional caption vocabulary (brand names, people, jargon). String or
   // array; when omitted the engine auto-derives hints from the project.
@@ -261,6 +306,7 @@ export function handleTranscribeCaptions(payload = {}) {
       : { note: 'Timeline scope mixes the program audio (mute/enabled respected) before transcribing.' }),
     engine: 'Local whisper engine (ComfyUI Qwen3-ASR only as configured fallback)',
     pollWith: 'get_caption_status',
+    ...(modelId ? { modelId, engine: 'Local whisper engine (explicit model)' } : {}),
   }
 
   if (payload.previewOnly !== false) {
@@ -269,6 +315,7 @@ export function handleTranscribeCaptions(payload = {}) {
       action: 'transcribe_captions',
       message: 'Transcription plan only. No job was started.',
       plan,
+      suggestedApplyPayload: { ...payload, previewOnly: false, expectedContext: captureMcpContext(), expectedDraftRevision: captionDraftRevision },
       ...(running ? { warning: `Caption job ${running.id} is still running and must finish first.` } : {}),
     }
   }
@@ -278,7 +325,7 @@ export function handleTranscribeCaptions(payload = {}) {
   }
 
   const job = createCaptionJob('transcribe', { scope, language, assetId: sourceAsset?.id || null })
-  runTranscribeCaptionJob(job, { scope, language, sourceAsset, vocabularyHint })
+  runTranscribeCaptionJob(job, { scope, language, sourceAsset, vocabularyHint, modelId })
 
   return {
     success: true,
@@ -296,10 +343,20 @@ export function handleGetCaptionStatus(payload = {}) {
     : (lastCaptionJobId ? captionJobs.get(lastCaptionJobId) : null)
   if (jobId && !job) throw new Error(`No caption job found with id "${jobId}".`)
 
+  const liveClips = (useTimelineStore.getState().clips || []).filter(clip => clip.type === 'captions'
+    && (!payload.clipId || clip.id === payload.clipId))
+  if (payload.clipId && !liveClips.length) throw new Error(`No live captions clip found with id "${payload.clipId}".`)
   return {
     action: 'get_caption_status',
     job: summarizeCaptionJob(job),
     draft: summarizeCaptionDraft(payload.includeCues !== false),
+    draftSource: 'agent-session',
+    draftRevision: captionDraftRevision,
+    note: 'The agent-session draft is separate from an open Caption workspace draft. Live clips are shared project state.',
+    liveClips: liveClips.map(clip => ({ clipId: clip.id, startTime: clip.startTime, duration: clip.duration,
+      cueCount: clip.captions?.cues?.length || 0,
+      ...(payload.includeCues !== false ? { cues: clip.captions?.cues || [] } : {}) })),
+    context: captureMcpContext(),
     ...(job ? {} : { message: 'No caption job has run in this app session yet.' }),
   }
 }
@@ -312,25 +369,40 @@ function applyCueEditsToList(baseCues, payload, fallbackDuration) {
     nextCues = normalizeCueOrder(payload.cues, fallbackDuration)
   } else {
     nextCues = baseCues.map((cue) => ({ ...cue }))
-    const edits = Array.isArray(payload.edits) ? payload.edits : []
-    for (const edit of edits) {
-      const id = String(edit?.id || '').trim()
-      const target = nextCues.find((cue) => cue.id === id)
-      if (!target) throw new Error(`No cue found with id "${id}".`)
-      if (typeof edit.text === 'string') target.text = edit.text
-      const start = edit.startSeconds ?? edit.start
-      const end = edit.endSeconds ?? edit.end
-      if (Number.isFinite(Number(start))) target.start = Math.max(0, Number(start))
-      if (Number.isFinite(Number(end))) target.end = Number(end)
+  }
+  const ids = new Set()
+  for (const cue of nextCues) {
+    if (ids.has(cue.id)) throw new Error(`Duplicate caption cue ID "${cue.id}".`)
+    ids.add(cue.id)
+  }
+  for (const edit of Array.isArray(payload.edits) ? payload.edits : []) {
+    const id = String(edit?.id || '').trim()
+    const target = nextCues.find(cue => cue.id === id)
+    if (!target) throw new Error(`No cue found with id "${id}".`)
+    if (typeof edit.text === 'string') target.text = edit.text
+    const start = edit.startSeconds ?? edit.start
+    const end = edit.endSeconds ?? edit.end
+    if (end !== undefined && edit.durationSeconds !== undefined) throw new Error('Provide endSeconds or durationSeconds, not both.')
+    if (start !== undefined || end !== undefined || edit.durationSeconds !== undefined) {
+      const duration = end !== undefined ? Number(end) - Number(start ?? target.start) : edit.durationSeconds
+      nextCues = retimeCaptionCue(nextCues, id, { start, duration, maxEnd: fallbackDuration || null }).cues
     }
-    const removeIds = new Set((Array.isArray(payload.removeIds) ? payload.removeIds : []).map((id) => String(id)))
-    if (removeIds.size) nextCues = nextCues.filter((cue) => !removeIds.has(cue.id))
-    nextCues = normalizeCueOrder(nextCues, fallbackDuration)
   }
-  if (!nextCues.length) {
-    throw new Error('The update would leave zero cues. Keep at least one cue, or re-run transcribe_captions.')
+  const removeIds = new Set((Array.isArray(payload.removeIds) ? payload.removeIds : []).map(String))
+  if (removeIds.size) nextCues = nextCues.filter(cue => !removeIds.has(cue.id))
+  for (const add of Array.isArray(payload.add) ? payload.add : []) {
+    if (add.id && nextCues.some(cue => cue.id === add.id)) throw new Error(`Duplicate caption cue ID "${add.id}".`)
+    const result = addCaptionCue(nextCues, { atTime: add.atTimeSeconds, audioDuration: fallbackDuration || null,
+      defaultDuration: add.durationSeconds, ...(add.id ? { idFactory: () => add.id } : {}) })
+    nextCues = result.cues
+    result.cue.text = String(add.text || '')
   }
-  return nextCues
+  for (const split of Array.isArray(payload.split) ? payload.split : []) {
+    if (split.rightId && nextCues.some(cue => cue.id === split.rightId)) throw new Error(`Duplicate caption cue ID "${split.rightId}".`)
+    nextCues = splitCaptionCueAtCaret(nextCues, split.id, split.caretOffset,
+      split.rightId ? { idFactory: () => split.rightId } : {}).cues
+  }
+  return normalizeCueOrder(nextCues, fallbackDuration)
 }
 
 function findLiveCaptionsClip(clipId) {
@@ -350,16 +422,22 @@ function findLiveCaptionsClip(clipId) {
 // globalOverrides are preserved by cue id (new cues inherit the first cue's),
 // so text/timing edits never disturb the styling baked in at generate time.
 function updateLiveCaptionsClipCues(clip, payload) {
+  const track = useTimelineStore.getState().tracks.find(item => item.id === clip.trackId)
+  const locked = item => item?.locked || item?.syncLocked || item?.lockMode === 'sync' || item?.syncLock?.mode === 'sync'
+  if (!track || locked(track) || locked(clip)) throw new Error('Unlock the captions clip and its track before editing cues.')
   const renderCues = clip.captions.cues
-  const baseCues = renderCues.map(({ globalOverrides, ...cue }) => cue)
+  // Shared split helpers copy the originating cue, including its styling. A
+  // newly split right half must not inherit an unrelated first cue's style.
+  const baseCues = renderCues.map(cue => ({ ...cue }))
   const fallbackDuration = Math.max(Number(clip.sourceDuration) || 0, Number(clip.duration) || 0)
   const nextCues = applyCueEditsToList(baseCues, payload, fallbackDuration)
+  if (!nextCues.length) throw new Error('Keep at least one live cue, or delete the captions clip. An agent draft may be cleared with cues: [].')
 
   const overridesById = new Map(renderCues.map((cue) => [cue.id, cue.globalOverrides]))
   const fallbackOverrides = renderCues[0]?.globalOverrides || {}
   const nextRenderCues = nextCues.map((cue) => ({
     ...cue,
-    globalOverrides: overridesById.get(cue.id) || fallbackOverrides,
+    globalOverrides: overridesById.get(cue.id) || cue.globalOverrides || fallbackOverrides,
   }))
 
   const maxCueEnd = Math.max(...nextCues.map((cue) => Number(cue.end) || 0), 0.4)
@@ -370,7 +448,7 @@ function updateLiveCaptionsClipCues(clip, payload) {
   const untrimmed = (Number(clip.trimStart) || 0) === 0
     && Math.abs((Number(clip.trimEnd) || 0) - prevSourceDuration) < 1e-6
 
-  if (payload.previewOnly === true) {
+  if (payload.previewOnly !== false) {
     return {
       previewOnly: true,
       action: 'update_caption_cues',
@@ -380,8 +458,12 @@ function updateLiveCaptionsClipCues(clip, payload) {
       cueCount: nextCues.length,
       cues: nextCues,
       durationSeconds: untrimmed ? nextSourceDuration : Number(clip.duration) || 0,
+      suggestedApplyPayload: { ...payload, target: 'clip', clipId: clip.id, previewOnly: false, expectedContext: captureMcpContext() },
     }
   }
+
+  if (JSON.stringify(nextRenderCues) === JSON.stringify(renderCues)) return { success: true, changed: false,
+    action: 'update_caption_cues', target: 'clip', clipId: clip.id, cueCount: nextCues.length, cues: nextCues }
 
   const store = useTimelineStore.getState()
   store.saveToHistory?.()
@@ -401,7 +483,8 @@ function updateLiveCaptionsClipCues(clip, payload) {
 
   // Keep a timeline-scope draft in sync so a later generate_captions doesn't
   // resurrect the pre-edit text.
-  if (captionDraft && captionDraft.scope === 'timeline') {
+  if (captionDraft && captionDraft.scope === 'timeline' && ownsCaptionContext(captionDraft.owner)
+    && captionDraft.liveClipId === clip.id) {
     const timestamp = new Date().toISOString()
     captionDraft = {
       ...captionDraft,
@@ -410,6 +493,7 @@ function updateLiveCaptionsClipCues(clip, payload) {
       audioDuration: Math.max(Number(captionDraft.audioDuration) || 0, maxCueEnd),
       updatedAt: timestamp,
     }
+    captionDraftRevision += 1
   }
 
   return {
@@ -424,6 +508,7 @@ function updateLiveCaptionsClipCues(clip, payload) {
 }
 
 export function handleUpdateCaptionCues(payload = {}) {
+  assertMcpContext(payload.expectedContext, 'caption cue edit')
   const replacingAll = Array.isArray(payload.cues)
   const explicitClipId = String(payload.clipId || '').trim() || null
   const requested = typeof payload.target === 'string' ? payload.target.trim().toLowerCase() : null
@@ -435,7 +520,7 @@ export function handleUpdateCaptionCues(payload = {}) {
   if (requested === 'clip' || requested === 'live' || requested === 'timeline-clip') target = 'clip'
   else if (requested === 'draft') target = 'draft'
   else if (explicitClipId) target = 'clip'
-  else if (captionDraft) target = 'draft'
+  else if (captionDraft && ownsCaptionContext(captionDraft.owner)) target = 'draft'
   else if (findLiveCaptionsClip(null)) target = 'clip'
   else if (replacingAll) target = 'draft'
   else {
@@ -450,14 +535,19 @@ export function handleUpdateCaptionCues(payload = {}) {
     return updateLiveCaptionsClipCues(clip, payload)
   }
 
+  if (!replacingAll) assertCaptionDraft(payload)
+  else if (payload.expectedDraftRevision !== undefined && payload.expectedDraftRevision !== captionDraftRevision) throw new Error('The caption draft changed. Read it again before replacing it.')
+
   if (!captionDraft && !replacingAll) {
     throw new Error('No caption draft exists yet. Run transcribe_captions first, or pass a full "cues" array to create a draft manually.')
   }
 
-  const fallbackDuration = Number(captionDraft?.audioDuration) || 0
-  const nextCues = applyCueEditsToList(captionDraft?.cues || [], payload, fallbackDuration)
+  const ownedDraft = captionDraft && ownsCaptionContext(captionDraft.owner) ? captionDraft : null
+  if (payload.audioDuration !== undefined && (typeof payload.audioDuration !== 'number' || !Number.isFinite(payload.audioDuration) || payload.audioDuration <= 0)) throw new Error('audioDuration must be a positive finite number.')
+  const fallbackDuration = Math.max(Number(ownedDraft?.audioDuration) || 0, payload.audioDuration || 0)
+  const nextCues = applyCueEditsToList(ownedDraft?.cues || [], payload, fallbackDuration)
 
-  if (payload.previewOnly === true) {
+  if (payload.previewOnly !== false) {
     return {
       previewOnly: true,
       action: 'update_caption_cues',
@@ -465,13 +555,17 @@ export function handleUpdateCaptionCues(payload = {}) {
       message: 'Cue update plan only. The draft was not changed.',
       cueCount: nextCues.length,
       cues: nextCues,
+      draftRevision: captionDraftRevision,
+      draftSource: 'agent-session',
+      suggestedApplyPayload: { ...payload, target: 'draft', previewOnly: false, expectedContext: captureMcpContext(), expectedDraftRevision: captionDraftRevision },
     }
   }
 
   const timestamp = new Date().toISOString()
   const maxCueEnd = Math.max(...nextCues.map((cue) => cue.end), 0)
-  if (!captionDraft) {
+  if (!ownedDraft) {
     captionDraft = {
+      owner: captureMcpContext(),
       scope: 'timeline',
       language: 'Auto',
       sourceAssetId: null,
@@ -488,6 +582,7 @@ export function handleUpdateCaptionCues(payload = {}) {
     audioDuration: Math.max(fallbackDuration, maxCueEnd),
     updatedAt: timestamp,
   }
+  captionDraftRevision += 1
 
   return {
     success: true,
@@ -496,6 +591,8 @@ export function handleUpdateCaptionCues(payload = {}) {
     message: `Caption draft updated (${nextCues.length} cue${nextCues.length === 1 ? '' : 's'}).`,
     cueCount: nextCues.length,
     cues: nextCues,
+    draftRevision: captionDraftRevision,
+    draftSource: 'agent-session',
   }
 }
 
@@ -601,6 +698,7 @@ async function runGenerateCaptionJob(job, ctx) {
       // Sidecar parity with CaptionWorkspace (cold-start restore fallback);
       // non-fatal, and web mode has no sidecars.
       try {
+        assertCaptionJobCurrent(job)
         await saveCaptionSidecar(useProjectStore.getState().currentProjectHandle, { name: 'timeline' }, {
           version: 1,
           scope: 'timeline',
@@ -627,6 +725,8 @@ async function runGenerateCaptionJob(job, ctx) {
         console.warn('Could not save the MCP caption sidecar:', sidecarError)
       }
 
+      assertCaptionJobCurrent(job)
+
       const liveClip = useTimelineStore.getState().placeLiveCaptions?.({
         cues: renderCues,
         preset: renderPreset,
@@ -651,6 +751,7 @@ async function runGenerateCaptionJob(job, ctx) {
         },
       })
       if (!liveClip) throw new Error('Could not place the live captions clip on the timeline.')
+      if (captionDraft && ownsCaptionContext(captionDraft.owner)) captionDraft.liveClipId = liveClip.id
 
       finishCaptionJob(job, {
         live: true,
@@ -677,11 +778,11 @@ async function runGenerateCaptionJob(job, ctx) {
       duration: ctx.duration,
       fps: ctx.fps,
     })
+    assertCaptionJobCurrent(job)
 
     job.stage = 'save'
     job.message = 'Saving caption overlay asset...'
     const assetsState = useAssetsStore.getState()
-    const folderId = ensureCaptionsFolder(assetsState.folders || [], assetsState.addFolder)
     const sourceForName = ctx.scope === 'asset' && ctx.sourceAssetId
       ? (assetsState.getAssetById?.(ctx.sourceAssetId) || { name: 'source_video' })
       : { name: 'timeline' }
@@ -720,6 +821,7 @@ async function runGenerateCaptionJob(job, ctx) {
     } catch (sidecarError) {
       console.warn('Could not save the MCP caption sidecar:', sidecarError)
     }
+    assertCaptionJobCurrent(job)
 
     const captionSettings = {
       width: ctx.width,
@@ -746,12 +848,15 @@ async function runGenerateCaptionJob(job, ctx) {
         'video',
         captionSettings
       )
+      assertCaptionJobCurrent(job)
+      const folderId = ensureCaptionsFolder(useAssetsStore.getState().folders || [], useAssetsStore.getState().addFolder)
       createdAsset = assetsState.addAsset?.({
         ...persisted,
         folderId,
         settings: { ...(persisted.settings || {}), ...captionSettings },
       })
     } else {
+      const folderId = ensureCaptionsFolder(useAssetsStore.getState().folders || [], useAssetsStore.getState().addFolder)
       createdAsset = assetsState.addAsset?.({
         name: assetName,
         type: 'video',
@@ -791,10 +896,12 @@ async function runGenerateCaptionJob(job, ctx) {
 }
 
 export function handleGenerateCaptions(payload = {}) {
-  const inlineCues = Array.isArray(payload.cues) && payload.cues.length
-    ? normalizeCueOrder(payload.cues, 0)
-    : null
-  const cues = inlineCues || (captionDraft?.cues?.length ? captionDraft.cues.map((cue) => ({ ...cue })) : null)
+  assertMcpContext(payload.expectedContext, 'caption generation')
+  const hasInlineCues = Array.isArray(payload.cues)
+  if (!hasInlineCues) assertCaptionDraft(payload)
+  const draftForGeneration = hasInlineCues ? null : captionDraft
+  const inlineCues = hasInlineCues ? normalizeCueOrder(payload.cues, 0) : null
+  const cues = hasInlineCues ? inlineCues : (draftForGeneration?.cues?.length ? draftForGeneration.cues.map((cue) => ({ ...cue })) : null)
   if (!cues || !cues.length) {
     throw new Error('No caption cues available. Run transcribe_captions first (optionally update_caption_cues), or pass "cues" inline.')
   }
@@ -821,16 +928,16 @@ export function handleGenerateCaptions(payload = {}) {
 
   const settings = resolveRenderSettings()
   const maxCueEnd = Math.max(...cues.map((cue) => Number(cue.end) || 0), 0)
-  const duration = Math.max(1, Math.max(maxCueEnd, Number(captionDraft?.audioDuration) || 0))
-  const scope = captionDraft?.scope === 'asset' && !inlineCues ? 'asset' : 'timeline'
+  const duration = Math.max(1, Math.max(maxCueEnd, Number(draftForGeneration?.audioDuration) || 0))
+  const scope = draftForGeneration?.scope === 'asset' ? 'asset' : 'timeline'
 
   const ctx = {
     cues,
     preset,
     scope,
-    sourceAssetId: scope === 'asset' ? captionDraft?.sourceAssetId || null : null,
-    modelId: captionDraft?.modelId || '',
-    words: !inlineCues && Array.isArray(captionDraft?.words) ? captionDraft.words : [],
+    sourceAssetId: scope === 'asset' ? draftForGeneration?.sourceAssetId || null : null,
+    modelId: draftForGeneration?.modelId || '',
+    words: Array.isArray(draftForGeneration?.words) ? draftForGeneration.words : [],
     accentColor: typeof payload.accentColor === 'string' && payload.accentColor.trim() ? payload.accentColor.trim() : null,
     textColor: typeof payload.textColor === 'string' && payload.textColor.trim() ? payload.textColor.trim() : null,
     fontFamily: typeof payload.fontFamily === 'string' && payload.fontFamily.trim() ? payload.fontFamily.trim() : null,
@@ -871,6 +978,8 @@ export function handleGenerateCaptions(payload = {}) {
       action: 'generate_captions',
       message: 'Caption render plan only. No job was started.',
       plan,
+      suggestedApplyPayload: { ...payload, previewOnly: false, expectedContext: captureMcpContext(),
+        ...(!hasInlineCues ? { expectedDraftRevision: captionDraftRevision } : {}) },
       ...(running ? { warning: `Caption job ${running.id} is still running and must finish first.` } : {}),
     }
   }

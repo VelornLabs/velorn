@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isComposingKeyEvent, isNativeTransportActivation, isTransportKeyboardBlocked } from './transportKeyboardGuards.mjs'
+import { isComposingKeyEvent, isNativeTransportActivation, isTransportKeyboardBlocked, isNativeTextKeyboardEvent } from './transportKeyboardGuards.mjs'
 import { attachSourceTransportKeyboard } from './sourceTransportKeyboard.mjs'
 import { attachPreviewPopoutKeyboard } from './previewPopoutKeyboard.mjs'
 
@@ -17,6 +17,33 @@ class Target {
 }
 const element = (tagName, attrs = {}, parentElement = null) => ({ tagName, parentElement, getAttribute: name => attrs[name] ?? null,
   getClientRects: () => [{}], style: { display: 'block', visibility: 'visible' } })
+
+test('Agent text surfaces own keys through target, active focus and composed path', () => {
+  const panel = element('ASIDE', { 'data-editor-keyboard-scope': 'text' }), child = element('SPAN', {}, panel), body = element('BODY')
+  const documentTarget = { activeElement: body }
+  for (const event of [{ target: child }, { target: body, composedPath: () => [child] }]) {
+    assert.equal(isNativeTextKeyboardEvent(event, { documentTarget }), true)
+    assert.equal(isTransportKeyboardBlocked(event, { documentTarget }), true)
+  }
+  documentTarget.activeElement = child
+  assert.equal(isNativeTextKeyboardEvent({ target: body, key: 'v', ctrlKey: true }, { documentTarget }), true)
+  documentTarget.activeElement = body
+  assert.equal(isNativeTextKeyboardEvent({ target: body, key: 'v', ctrlKey: true }, { documentTarget }), false)
+})
+
+test('real text selection reserves Copy/Cut before clip/custom shortcuts when key target remains elsewhere', () => {
+  const selection = { isCollapsed: false, toString: () => 'Agent reply 日本語' }, documentTarget = { getSelection: () => selection }
+  for (const event of [{ key: 'c', ctrlKey: true }, { key: 'C', metaKey: true }, { key: 'x', ctrlKey: true },
+    { key: 'Insert', ctrlKey: true }, { key: 'Delete', shiftKey: true }]) {
+    assert.equal(isNativeTextKeyboardEvent(event, { documentTarget }), true)
+    assert.equal(isTransportKeyboardBlocked(event, { documentTarget }), true)
+  }
+  for (const event of [{ key: 'c' }, { key: 'v', ctrlKey: true }, { key: 'c', ctrlKey: true, altKey: true }, { key: ' ' }]) {
+    assert.equal(isNativeTextKeyboardEvent(event, { documentTarget }), false)
+  }
+  selection.isCollapsed = true
+  assert.equal(isNativeTextKeyboardEvent({ key: 'c', ctrlKey: true }, { documentTarget }), false)
+})
 function fixture() {
   const win = new Target(), doc = new Target(), actions = [], body = element('BODY')
   doc.activeElement = body; doc.hidden = false; doc.modals = []; doc.querySelectorAll = () => doc.modals

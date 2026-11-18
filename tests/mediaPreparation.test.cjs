@@ -77,7 +77,7 @@ function fixture(options = {}) {
       probes.push([encoder, binary]); return options.hardware === false ? { ok: false, error: 'No supported driver' } : { ok: true }
     },
     probeVideoInfo: async (file) => {
-      if (!file.endsWith('.tmp.mp4')) return { ...inputProbe, ...options.input }
+      if (!file.endsWith('.tmp.mp4')) return options.inputProbe ? options.inputProbe(file) : { ...inputProbe, ...options.input }
       const call = calls.find((entry) => entry.output === file)
       const filters = call.args[call.args.indexOf('-vf') + 1]
       const height = Number(filters.match(/scale=-2:(\d+)/)?.[1]) || 1080
@@ -435,6 +435,108 @@ test('cancelAll settles shared and queued owners without launching new work', as
   assert.equal(service.cancelAll().cancelledCount, 3)
   assert.ok((await Promise.all(requests)).every((result) => result.cancelled))
   assert.equal(calls.length, 1)
+})
+
+test('exclusive idle file work refuses queued microtasks and does not cancel preparation', async () => {
+  const { service, calls } = fixture({ manual: true })
+  const preparation = service.enqueue(request('queued-before-drain'))
+  let invoked = false
+  const exclusive = service.runExclusiveWhenIdle(() => { invoked = true })
+  assert.equal(calls.length, 0, 'The queued job has not started its drain microtask yet')
+  await assert.rejects(exclusive, { code: 'MEDIA_PREPARATION_BUSY' })
+  assert.equal(invoked, false)
+  await until(() => calls.length === 1)
+  assert.equal(calls[0].child.kills.length, 0)
+  calls[0].finish()
+  assert.equal((await preparation).success, true)
+  assert.equal(await service.runExclusiveWhenIdle(() => 'idle now'), 'idle now')
+})
+
+test('exclusive idle file work refuses every asynchronous preparation phase, including cancellation cleanup', async () => {
+  for (const phase of ['source probe', 'hardware selection', 'output validation']) {
+    let resume
+    const pause = () => new Promise(resolve => { resume = resolve })
+    const harness = fixture(phase === 'source probe' ? { inputProbe: pause }
+      : phase === 'hardware selection' ? { service: { resolveHardwareFfmpeg: pause } }
+        : { outputProbe: pause })
+    const preparation = harness.service.enqueue(request(`awaiting-${phase}`))
+    await until(() => resume)
+    await assert.rejects(harness.service.runExclusiveWhenIdle(() => assert.fail('Must not touch files')), { code: 'MEDIA_PREPARATION_BUSY' })
+    harness.service.cancelOwner(1)
+    await assert.rejects(harness.service.runExclusiveWhenIdle(() => assert.fail('Must wait for cleanup')), { code: 'MEDIA_PREPARATION_BUSY' })
+    resume(phase === 'hardware selection' ? { path: '/hardware/ffmpeg' } : inputProbe)
+    assert.equal((await preparation).cancelled, true)
+    assert.equal(await harness.service.runExclusiveWhenIdle(() => true), true)
+    assert.equal(harness.renamed.length, 0)
+  }
+})
+
+test('exclusive idle file work respects other owners and shared work after one owner cancels', async () => {
+  const { service, calls } = fixture({ manual: true })
+  const first = service.enqueue(request('shared-idle-check'))
+  const second = service.enqueue(request('shared-idle-check', { ownerId: 2 }))
+  const third = service.enqueue(request('another-owner', { ownerId: 3 }))
+  await until(() => calls.length === 1)
+  service.cancelOwner(1)
+  assert.equal((await first).cancelled, true)
+  await assert.rejects(service.runExclusiveWhenIdle(() => assert.fail('Other owners remain busy')), { code: 'MEDIA_PREPARATION_BUSY' })
+  assert.equal(calls[0].child.kills.length, 0)
+  calls[0].finish()
+  assert.equal((await second).success, true)
+  await assert.rejects(service.runExclusiveWhenIdle(() => assert.fail('Queued owner remains busy')), { code: 'MEDIA_PREPARATION_BUSY' })
+  await until(() => calls.length === 2)
+  calls[1].finish()
+  assert.equal((await third).success, true)
+  assert.equal(await service.runExclusiveWhenIdle(() => true), true)
+})
+
+test('exclusive idle lease blocks synchronous, microtask and other-owner enqueues until success', async () => {
+  const { service, calls } = fixture()
+  let finish
+  let reentrant
+  const exclusive = service.runExclusiveWhenIdle(() => {
+    reentrant = service.enqueue(request('inside-callback'))
+    return new Promise(resolve => { finish = resolve })
+  })
+  for (const result of [await reentrant, await service.enqueue(request('outside', { ownerId: 2 })),
+    await Promise.resolve().then(() => service.enqueue(request('microtask', { ownerId: 3 })))]) {
+    assert.equal(result.success, false)
+    assert.match(result.error, /retry media preparation after removal finishes/i)
+  }
+  await assert.rejects(service.runExclusiveWhenIdle(() => assert.fail('No overlapping removal')), { code: 'MEDIA_FILE_OPERATION_BUSY' })
+  assert.equal(service.getStatus().total, 0, 'Refused requests do not join the queue or history')
+  assert.equal(calls.length, 0)
+  service.cancelAll()
+  assert.equal((await service.enqueue(request('still-exclusive'))).success, false)
+  finish({ success: true })
+  assert.deepEqual(await exclusive, { success: true })
+  assert.equal((await service.enqueue(request('after-removal'))).success, true)
+})
+
+test('exclusive idle lease releases after thrown, rejected and unsuccessful file operations', async () => {
+  const { service } = fixture()
+  for (const operation of [() => { throw new Error('Synchronous Trash failure') },
+    () => Promise.reject(new Error('Asynchronous Trash failure'))]) {
+    await assert.rejects(service.runExclusiveWhenIdle(operation), /Trash failure/)
+    assert.equal((await service.enqueue(request('after-failure'))).success, true)
+  }
+  assert.deepEqual(await service.runExclusiveWhenIdle(() => ({ success: false, results: [] })), { success: false, results: [] })
+  assert.equal((await service.enqueue(request('after-partial'))).success, true)
+})
+
+test('a cancelled queued drain microtask cannot enter an exclusive idle lease', async () => {
+  const { service, calls } = fixture()
+  const preparation = service.enqueue(request('cancelled-before-drain'))
+  service.cancelOwner(1)
+  let finish
+  const exclusive = service.runExclusiveWhenIdle(() => new Promise(resolve => { finish = resolve }))
+  assert.equal((await preparation).cancelled, true)
+  await new Promise(setImmediate)
+  assert.equal(calls.length, 0)
+  assert.equal((await service.enqueue(request('blocked-by-lease'))).success, false)
+  finish(true)
+  await exclusive
+  assert.equal((await service.enqueue(request('after-stale-drain'))).success, true)
 })
 
 test('validation detects contract changes but accepts display rotation', () => {

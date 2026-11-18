@@ -57,16 +57,18 @@ export const COMFY_PARTNER_KEY_CHANGED_EVENT = 'comfystudio-partner-key-changed'
  */
 export const COMFY_PARTNER_CREDITS_LOW_EVENT = 'comfystudio-partner-credits-low'
 
-export async function getComfyPartnerApiKey() {
+export async function getComfyPartnerApiKey({ nativeOnly = false } = {}) {
   try {
     if (typeof window !== 'undefined' && window?.electronAPI?.getSetting) {
       const stored = await window.electronAPI.getSetting(SETTING_KEY)
       const normalized = String(stored || '').trim()
-      if (normalized) return normalized
+      if (normalized || nativeOnly) return normalized
     }
   } catch (_) {
+    if (nativeOnly) throw new Error('Could not read the saved key from Velorn settings.')
     // Ignore and fall back to localStorage.
   }
+  if (nativeOnly) return ''
   try {
     if (typeof localStorage !== 'undefined') {
       return String(localStorage.getItem(LOCAL_KEY) || '').trim()
@@ -79,14 +81,15 @@ export async function getComfyPartnerApiKey() {
 
 export async function saveComfyPartnerApiKey(rawKey) {
   const normalized = String(rawKey || '').trim()
-  try {
-    if (typeof window !== 'undefined' && window?.electronAPI?.setSetting) {
-      await window.electronAPI.setSetting(SETTING_KEY, normalized)
-    }
-  } catch (err) {
-    console.error('[comfyPartnerAuth] electron setSetting failed:', err)
+  const native = typeof window !== 'undefined' && typeof window?.electronAPI?.setSetting === 'function'
+  if (native) {
+    let result
+    try { result = await window.electronAPI.setSetting(SETTING_KEY, normalized) }
+    catch { throw new Error('Could not save the key in Velorn settings. Nothing was changed in the local fallback.') }
+    if (result?.success !== true) throw new Error('Could not save the key in Velorn settings. Nothing was changed in the local fallback.')
   }
   try {
+    if (!native && typeof localStorage === 'undefined') throw new Error('Browser storage unavailable')
     if (typeof localStorage !== 'undefined') {
       if (normalized) {
         localStorage.setItem(LOCAL_KEY, normalized)
@@ -94,19 +97,28 @@ export async function saveComfyPartnerApiKey(rawKey) {
         localStorage.removeItem(LOCAL_KEY)
       }
     }
-  } catch (err) {
-    console.error('[comfyPartnerAuth] localStorage write failed:', err)
+  } catch {
+    if (!native) throw new Error('Could not save the key in this browser.')
+  }
+  notifyComfyPartnerKeyChanged(Boolean(normalized))
+  return { success: true, hasKey: Boolean(normalized) }
+}
+
+// A native guided commit already saved the key. Announce only availability;
+// never mirror its raw value or perform a second, unguarded settings write.
+export function notifyComfyPartnerKeyChanged(hasKey, { clearLegacy = false } = {}) {
+  if (!hasKey || clearLegacy) {
+    try { if (typeof localStorage !== 'undefined') localStorage.removeItem(LOCAL_KEY) } catch { /* Native removal remains authoritative. */ }
   }
   try {
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
       window.dispatchEvent(new CustomEvent(COMFY_PARTNER_KEY_CHANGED_EVENT, {
-        detail: { hasKey: Boolean(normalized) },
+        detail: { hasKey: Boolean(hasKey) },
       }))
     }
   } catch (_) {
     // Ignore dispatch errors.
   }
-  return { success: true, hasKey: Boolean(normalized) }
 }
 
 export async function clearComfyPartnerApiKey() {
@@ -136,12 +148,12 @@ export async function validateComfyPartnerApiKey(rawKey, { signal } = {}) {
 
   const failures = []
   for (const url of endpoints) {
+    if (signal?.aborted) throw new DOMException('Validation cancelled.', 'AbortError')
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    const timeout = setTimeout(abort, 8000)
+    signal?.addEventListener('abort', abort, { once: true })
     try {
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 8000)
-      if (signal) {
-        signal.addEventListener('abort', () => controller.abort(), { once: true })
-      }
       const response = await fetch(url, {
         method: 'GET',
         headers: {
@@ -150,8 +162,10 @@ export async function validateComfyPartnerApiKey(rawKey, { signal } = {}) {
           'X-API-Key': key,
         },
         signal: controller.signal,
+        redirect: 'error',
+        credentials: 'omit',
       })
-      clearTimeout(timeout)
+      if (signal?.aborted) throw new DOMException('Validation cancelled.', 'AbortError')
 
       if (response.ok) {
         return { status: 'valid' }
@@ -166,11 +180,11 @@ export async function validateComfyPartnerApiKey(rawKey, { signal } = {}) {
       // but the key might still be valid for queue submission.
       failures.push({ url, status: response.status })
     } catch (error) {
-      failures.push({
-        url,
-        status: null,
-        message: error instanceof Error ? error.message : String(error),
-      })
+      if (signal?.aborted) throw new DOMException('Validation cancelled.', 'AbortError')
+      failures.push({ url, status: null })
+    } finally {
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', abort)
     }
   }
 

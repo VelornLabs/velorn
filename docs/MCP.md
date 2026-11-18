@@ -4,6 +4,18 @@ Velorn includes a local Model Context Protocol (MCP) server so AI agents can ins
 
 The MCP server is part of the desktop app. It exposes the current project, active timeline, assets, ComfyUI connection state, generation state, visual frame inspection, safe timeline edit actions, caption actions, export actions, and workflow setup helpers.
 
+## Local feature-parity update (unreleased)
+
+The isolated `codex/mcp-feature-parity` checkout adds or upgrades 40 definitions; its catalog has 157 tools. This is local review work, not a published version. The full coverage matrix and verification checklist are in [MCP_PARITY_REVIEW.md](MCP_PARITY_REVIEW.md).
+
+New coverage includes native batch Inspector/color/effects and Paste Attributes; source insert/overwrite/append and Smart Replace; compound lifecycle; normal/roll/slip/slide/ripple trims; guarded transitions; clip envelopes/EQ and ducking; frame sampling/RIFE jobs; caption add/split/retime with explicit draft ownership; installed fonts; live transport/Play Around and source-edge/two-up pictures; all UI export formats, built-in/custom presets, readiness, sequential delivery batches, native status/cancel, and packaged-ffprobe file inspection.
+
+New writes default to preview. Apply the returned `suggestedApplyCall` unchanged, including `expectedContext`, draft revisions and opaque plan tokens. Do not reconstruct an apply request from a human-readable summary: it can lose frozen operands or stale-write guards. A rejected stale plan requires another inspection/preview. Read operations and transient playback controls do not create document Undo entries.
+
+Snapshots use schema version 2 and include the authored audio/mask/bypass/caption/interpolation fields, generated-music provenance, In/Out, transport and compound editing context. `currentTimeline` is the active editable child when a compound is open; `editingContext.rootTimelineId` still identifies the parent. Inspect complete nested content with `inspect_compound`.
+
+An export/generation job ID means **accepted**, not finished. Poll the matching status tool. MCP export batches run targets sequentially from a frozen authored snapshot; native job records survive renderer reload, but pending batches do not. Only explicit MCP-owned export jobs may be cancelled by MCP. `run_mcp_action_plan` stops after starting asynchronous work, and checks document context before subsequent synchronous steps. Its preview validates tool names, not a simulation of future edits. Use `tools/list` for authoritative schemas; the detailed legacy examples below do not enumerate every newer field.
+
 ## Quick Start
 
 1. Launch the Velorn desktop app.
@@ -133,6 +145,10 @@ Tools that can work without an open project include:
 - `list_glsl_effects`
 
 Most timeline, asset, generation, caption, and export tools need an open project and an up-to-date project snapshot.
+
+Completed renderer actions carry a fresh snapshot in their response. Electron installs that snapshot before returning the tool result, so immediately following `get_project`, `get_assets`, `get_timeline`, and other snapshot reads see the completed action without an arbitrary sleep. Failed actions also publish their current state for inspection; failure is not a guarantee that every partial change was rolled back. If snapshot capture/install fails after an action completes, the error explicitly warns against automatically repeating the action.
+
+Ordinary UI/playback updates still use the throttled background publisher. An asynchronous job's `started` response is not completion: continue polling its status before relying on its final output. The immediate read-after-write guarantee does not turn background jobs into synchronous operations.
 
 ## Direct JSON-RPC Smoke Test
 
@@ -289,6 +305,22 @@ Velorn currently exposes 125 MCP tools.
 | `regenerate_music_video_video` | Preview or queue one Step 5 shot through the active Music Video video settings and native routing. |
 | `analyze_timeline` | Produce an AI-friendly timeline health report. |
 | `analyze_music_video_workflow` | Produce an AI-friendly music-video workflow health report. |
+
+### Timeline Music Generation
+
+| Tool | Purpose |
+| --- | --- |
+| `generate_music` | Preview or queue local ACE-Step or YuE 2 music from style tags and optional lyrics. Defaults to preview only. |
+| `get_music_generation_status` | Check music jobs, backend, duration mode, imported assets and measured output duration. |
+| `get_audio_analysis` | Inspect an audio/video asset or clip for beats, estimated BPM, loudness and silence. |
+
+Omitting `backend` preserves the existing `"ace-step"` behavior. Select `backend: "yue2"` explicitly to use YuE 2. Both run through the connected ComfyUI with local models and no cloud credits; they require the selected backend's nodes/models. Preview first, inspect setup in the timeline Music popover, and obtain approval before queueing with `previewOnly: false`. Queueing requires an open saved project.
+
+`durationSeconds` is 5–240 seconds: an **exact** duration for ACE-Step, but a **maximum** for YuE 2, which can stop earlier. Plans and jobs identify this with `durationMode: "exact"` or `"maximum"`. Poll `get_music_generation_status` and use the completed asset's measured duration when placing it with `add_asset_to_timeline`; do not assume a YuE 2 take fills its requested maximum.
+
+ACE-Step retains `bpm`, `keyScale` and `timeSignature`. YuE 2 has no native equivalents, so explicitly supplying these controls is rejected rather than silently ignored. Musical preferences can be written in `tags` as best-effort guidance. For YuE 2, `instrumental: true` empties lyrics and adds an instrumental style hint; it does **not** guarantee the absence of vocals. An explicit instrumental request also overrides supplied lyrics. New audio imports into the `Generated Music` asset folder; timeline placement remains a separate approved action.
+
+If only some variations are accepted before queueing fails, the result includes `partial: true`, a warning and the accepted `promptIds`; poll those jobs before retrying missing takes to avoid duplicates. Jobs retain their originating project. A status of `awaiting-project` with `belongsToCurrentProject: false` means reopen that project before completed audio can be imported.
 
 ### Agent-Guided Music Video Creation
 
@@ -595,6 +627,12 @@ Ask the agent to run:
 
 For square or vertical exports, make sure the agent previews `deliveryFraming` so you know whether the output will fit or crop the timeline frame.
 
+### Editing is temporarily paused during export
+
+Velorn gives export priority. While rendering, new timeline edits, Undo/Redo, transport, project switches, generation, installation and expensive media inspection are refused with an export-in-progress error. A `previewOnly` request is not automatically exempt: some previews decode or render media. Lightweight document/metadata inspection and `get_export_status` remain available. Wait for completion or use `cancel_export` / `control_export_batch` before starting more work. Do not retry blocked writes in a tight loop.
+
+The visible progress dialog can also cancel an agent-started export. For an MCP batch owned by the current renderer session, its Cancel button cancels pending targets as well as the active job. UI queues pause remaining targets on Cancel and retain Pause after current. A renderer restart loses pending MCP batch targets, as before; the native active job still exposes status and cancellation. These guards do not cancel generation or unrelated processes that were already running when export began.
+
 ## Notes For MCP Client Authors
 
 - Use `tools/list` to discover schemas at runtime. The catalog can grow over time.
@@ -604,3 +642,24 @@ For square or vertical exports, make sure the agent previews `deliveryFraming` s
 - Do not assume a write tool changed the project unless the returned result says it applied successfully.
 - Favor explicit IDs from read tools over natural-language targeting for write tools.
 - Queueing generation and running exports can take time. Poll status tools such as `get_generation_status`, `get_caption_status`, or inspect output files after completion.
+
+## Create and Sound tools
+
+These reach the models of the Create and Sound tabs. Added 2026-11-10.
+
+| Tool | What it does |
+| --- | --- |
+| `get_create_models` | Reads the Create model list kept in Velorn: picture, video, voice and sound-effect models with ids, choices, recorded prices and the voice list. No network, nothing spent. |
+| `generate_create_media` | Preview (default) returns a `planId` and estimated price for one request with a model from `get_create_models`. Apply takes only that `planId` with `previewOnly:false`. Every apply needs the person's own spending confirmation, on the computer or on their paired phone. |
+| `get_comfy_router_status` | Cached readiness and the list of Router requests, including Create ones. |
+| `control_comfy_router_image` | Refresh or cancel one known request by `jobId` (any Create kind). |
+| `import_comfy_router_image` | Add a finished result (picture, clip or sound) to the project by `jobId`. |
+| `generate_local_voice` | The built-in local voice (Kokoro): free, on this computer. Preview returns the plan and voices; apply starts one recording and returns a `promptId`. |
+| `get_local_voice_status` | Status of local voice recordings and their finished audio assets. |
+
+Recipe, a clip from a project picture: `get_create_models` -> `generate_create_media`
+with `modelId`, `prompt`, `seconds`, `resolution`, `inputImageAssetId` -> show the
+person the price -> `generate_create_media` with `planId` and `previewOnly:false`
+(the person confirms) -> `control_comfy_router_image` refresh until `COMPLETED` ->
+`import_comfy_router_image` -> `add_asset_to_timeline`.
+

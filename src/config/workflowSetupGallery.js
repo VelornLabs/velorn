@@ -135,6 +135,12 @@ const VISUAL_BY_WORKFLOW_ID = {
     extraBadges: ['Audio'],
     thumbnailSrc: coverPath('music-gen.webp'),
   },
+  'music-gen-yue2': {
+    gradient: 'from-teal-500/25 via-indigo-900/30 to-sf-dark-950',
+    icon: 'music',
+    extraBadges: ['YuE2', 'Audio'],
+    thumbnailSrc: coverPath('music-gen.webp'),
+  },
   'google-gemini-flash-lite': {
     gradient: 'from-sky-500/20 via-cyan-900/20 to-sf-dark-950',
     icon: 'cloud',
@@ -172,6 +178,7 @@ const LONG_DESCRIPTIONS = {
   'grok-text-to-image': 'Cloud text-to-image using xAI Grok Imagine (Beta). Strong stylistic range and text rendering. Requires a Grok / Comfy Partner API key.',
   'seedream-5-lite-image-edit': 'Cloud image edit using ByteDance Seedream 5.0 Lite. Lower cost per generation and a good fit for batch edits. Requires a Comfy Partner API key.',
   'music-gen': 'Local music generation with ACE-Step. Feed it a short tag list and optional lyrics and it produces a short musical clip you can drop straight into a timeline.',
+  'music-gen-yue2': 'Local music generation with YuE2. Describe the style and provide lyrics; the maximum duration is a ceiling, not a guaranteed song length. Requires an up-to-date ComfyUI and the YuE2 checkpoint. INT8 acceleration depends on the ComfyUI host; Apple GPU compatibility is not yet verified.',
   'google-gemini-flash-lite': 'Cloud prompt helper using Gemini 3.1 Flash Lite. Feed it a rough brief and optional image reference and it returns a cleaner, more descriptive prompt you can pass downstream into image or video generation. Requires a Comfy Partner API key.',
   'mask-gen': 'Text-prompted video/image masking using SAM 3 plus MatAnyone. Describe the subject you want isolated and it produces an alpha mask you can use for rotoscoping, replacement, or compositing.',
 }

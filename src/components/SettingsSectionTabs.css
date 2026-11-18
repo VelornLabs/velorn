@@ -1,0 +1,7 @@
+/* These themes use a lighter accent. Keep selected-tab text at least 4.5:1
+   without changing other buttons or the user's theme colors. */
+[data-theme="high-contrast"] .settings-section-tab[aria-selected="true"],
+[data-theme="arctic"] .settings-section-tab[aria-selected="true"],
+[data-theme="ember"] .settings-section-tab[aria-selected="true"] {
+  color: #080b12;
+}

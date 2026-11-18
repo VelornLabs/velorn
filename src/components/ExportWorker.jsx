@@ -22,13 +22,23 @@ export default function ExportWorker() {
         return
       }
 
+      const abortController = new AbortController()
+      window.electronAPI.onExportCancel?.(() => {
+        console.log('[ExportWorker] Cancel requested; aborting export')
+        abortController.abort()
+      })
+      const checkCancelled = () => {
+        if (abortController.signal.aborted) throw new Error('Export cancelled')
+      }
+
       try {
         const assetsWithUrls = []
         for (const asset of jobState.assets || []) {
+          checkCancelled()
           let url = asset.url
-          if (asset.path && window.electronAPI.pathJoin && window.electronAPI.getFileUrlDirect) {
+          if ((asset.absolutePath || asset.path) && window.electronAPI.pathJoin && window.electronAPI.getFileUrlDirect) {
             try {
-              const filePath = await window.electronAPI.pathJoin(projectPath, asset.path)
+              const filePath = asset.absolutePath || await window.electronAPI.pathJoin(projectPath, asset.path)
               url = await window.electronAPI.getFileUrlDirect(filePath)
             } catch (e) {
               console.warn('[ExportWorker] Could not resolve file URL for', asset.name, e)
@@ -44,6 +54,9 @@ export default function ExportWorker() {
           clips: jobState.timeline?.clips ?? prev.clips,
           tracks: jobState.timeline?.tracks ?? prev.tracks,
           transitions: jobState.timeline?.transitions ?? prev.transitions,
+          timelineFps: jobState.timeline?.timelineFps ?? prev.timelineFps,
+          masterAudioVolume: jobState.timeline?.masterAudioVolume ?? prev.masterAudioVolume,
+          masterAudioInserts: jobState.timeline?.masterAudioInserts ?? prev.masterAudioInserts,
         }))
         useAssetsStore.setState((prev) => ({
           ...prev,
@@ -51,11 +64,7 @@ export default function ExportWorker() {
         }))
 
         console.log('[ExportWorker] Starting exportTimeline', { outputPath, width: options?.width, height: options?.height, fps: options?.fps })
-        const abortController = new AbortController()
-        window.electronAPI.onExportCancel?.(() => {
-          console.log('[ExportWorker] Cancel requested; aborting export')
-          abortController.abort()
-        })
+        checkCancelled()
         const result = await exportTimeline(
           { ...options, outputPath, signal: abortController.signal },
           (progress) => {

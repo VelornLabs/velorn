@@ -16,6 +16,7 @@ Core product principles:
 - Keep local editing useful without ComfyUI. Only generation features and explicitly ComfyUI-backed utilities should require it.
 - Prefer visible review and iteration over one-shot automation for creative work.
 - Preserve user projects and existing behavior before optimizing architecture.
+- Keep creator-facing editing capabilities agent-accessible: when adding an authored operation, review its MCP schema, shared/native action, inspectable result, preview/apply guards and Undo/error tests. UI-only layout controls need not become agent configuration. See `docs/MCP_PARITY_REVIEW.md` for the current local coverage checklist.
 
 ## Technical Shape
 

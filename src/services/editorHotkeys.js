@@ -27,6 +27,12 @@ export const EDITOR_HOTKEY_IDS = {
   ADD_TRANSITION: 'timeline.addTransition',
   LINK_SELECTION: 'timeline.linkSelection',
   UNLINK_SELECTION: 'timeline.unlinkSelection',
+  TRIM_START_TO_PLAYHEAD: 'timeline.trimStartToPlayhead',
+  TRIM_END_TO_PLAYHEAD: 'timeline.trimEndToPlayhead',
+  NUDGE_LEFT: 'timeline.nudgeLeft',
+  NUDGE_RIGHT: 'timeline.nudgeRight',
+  NUDGE_LEFT_BIG: 'timeline.nudgeLeftBig',
+  NUDGE_RIGHT_BIG: 'timeline.nudgeRightBig',
 }
 
 export const EDITOR_HOTKEY_DEFINITIONS = [
@@ -160,7 +166,7 @@ export const EDITOR_HOTKEY_DEFINITIONS = [
     id: EDITOR_HOTKEY_IDS.ADD_TEXT_CLIP,
     label: 'Add text clip at playhead',
     description: 'Timeline text',
-    defaultBinding: 'T',
+    defaultBinding: 'Ctrl+T',
   },
   {
     id: EDITOR_HOTKEY_IDS.ADD_TRANSITION,
@@ -179,6 +185,42 @@ export const EDITOR_HOTKEY_DEFINITIONS = [
     label: 'Unlink selected clips',
     description: 'Timeline linking',
     defaultBinding: 'Ctrl+Shift+L',
+  },
+  {
+    id: EDITOR_HOTKEY_IDS.TRIM_START_TO_PLAYHEAD,
+    label: 'Trim clip start to playhead',
+    description: 'Timeline editing',
+    defaultBinding: 'Q',
+  },
+  {
+    id: EDITOR_HOTKEY_IDS.TRIM_END_TO_PLAYHEAD,
+    label: 'Trim clip end to playhead',
+    description: 'Timeline editing',
+    defaultBinding: 'W',
+  },
+  {
+    id: EDITOR_HOTKEY_IDS.NUDGE_LEFT,
+    label: 'Nudge selected clips 1 frame earlier',
+    description: 'Timeline editing',
+    defaultBinding: 'Alt+ArrowLeft',
+  },
+  {
+    id: EDITOR_HOTKEY_IDS.NUDGE_RIGHT,
+    label: 'Nudge selected clips 1 frame later',
+    description: 'Timeline editing',
+    defaultBinding: 'Alt+ArrowRight',
+  },
+  {
+    id: EDITOR_HOTKEY_IDS.NUDGE_LEFT_BIG,
+    label: 'Nudge selected clips 10 frames earlier',
+    description: 'Timeline editing',
+    defaultBinding: 'Alt+Shift+ArrowLeft',
+  },
+  {
+    id: EDITOR_HOTKEY_IDS.NUDGE_RIGHT_BIG,
+    label: 'Nudge selected clips 10 frames later',
+    description: 'Timeline editing',
+    defaultBinding: 'Alt+Shift+ArrowRight',
   },
 ]
 
@@ -248,6 +290,17 @@ const RESERVED_FIXED_BINDINGS = new Set([
   'I',
   'O',
   'Alt+X',
+  // Timeline tool keys are fixed, so a shortcut bound to one would never fire.
+  'A',
+  'V',
+  'T',
+  'B',
+  'Y',
+  'U',
+  'Shift+ArrowLeft',
+  'Shift+ArrowRight',
+  'Home',
+  'End',
 ])
 
 function normalizeKeyLabel(key) {
@@ -397,6 +450,10 @@ export function mergeEditorHotkeys(stored) {
   const explicitlyStoredIds = new Set()
   for (const definition of EDITOR_HOTKEY_DEFINITIONS) {
     const raw = stored[definition.id]
+    // Plain T always selected the Trim tool first, so "add text" stored on T
+    // never fired. Treat it as unset and let it take its working default.
+    if (definition.id === EDITOR_HOTKEY_IDS.ADD_TEXT_CLIP && typeof raw === 'string'
+      && normalizeEditorHotkeyBinding(raw) === 'T') continue
     if (typeof raw === 'string') {
       merged[definition.id] = normalizeEditorHotkeyBinding(raw)
       explicitlyStoredIds.add(definition.id)
@@ -458,7 +515,8 @@ export async function setEditorHotkeys(bindings) {
   const merged = mergeEditorHotkeys(bindings)
 
   if (typeof window !== 'undefined' && window.electronAPI?.setSetting) {
-    await window.electronAPI.setSetting('editorHotkeys', merged)
+    const result = await window.electronAPI.setSetting('editorHotkeys', merged)
+    if (result?.success === false) throw new Error(result.error || 'Could not save keyboard shortcuts.')
   } else if (typeof localStorage !== 'undefined') {
     localStorage.setItem(EDITOR_HOTKEYS_STORAGE_KEY, JSON.stringify(merged))
   }

@@ -159,14 +159,14 @@ function validatedSettings(settings, definition) {
  * the final effect follows the existing store's cache-clear contract (no file
  * deletion), so undo can restore the original cache reference.
  */
-export function planMultiClipEffectsEdit(state, request = {}, { getDefinition, makeId } = {}) {
+export function planMultiClipEffectsEdit(state, request = {}, { getDefinition, makeId, requireSelection = true } = {}) {
   const fail = error => ({ ok: false, clips: state.clips, changedCount: 0, error })
   if (!isObject(request)) return fail('Invalid effects request.')
   const { clipIds, action } = request
   if (!Array.isArray(clipIds) || clipIds.some(id => !validId(id))) return fail('Select at least two clips.')
   const ids = new Set(clipIds)
-  if (ids.size < 2 || ids.size !== clipIds.length) return fail('Select at least two distinct clips.')
-  if (Array.isArray(state.selectedClipIds)) {
+  if (ids.size < (requireSelection ? 2 : 1) || ids.size !== clipIds.length) return fail('Select distinct clips.')
+  if (requireSelection && Array.isArray(state.selectedClipIds)) {
     const currentIds = new Set(state.selectedClipIds)
     if (currentIds.size !== ids.size || [...ids].some(id => !currentIds.has(id))) return fail('The selection changed. Try the edit again.')
   }

@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
+const os = require('node:os')
 const path = require('node:path')
 
 const {
@@ -11,6 +12,10 @@ const {
   getRuntimeCandidates,
   normalizeQuality,
 } = require('../electron/rtxVideoUpscale')
+
+// Synthetic absolute paths only; these tests never create or read this folder.
+// The production helpers intentionally use the host's path implementation.
+const fixtureRoot = path.resolve(os.tmpdir(), 'velorn-rtx-test')
 
 test('pins and verifies every standalone RTX runtime wheel', () => {
   assert.deepEqual(RUNTIME_PACKAGES, [
@@ -34,46 +39,76 @@ test('normalizes supported RTX quality values', () => {
 })
 
 test('keeps the standalone runtime ahead of compatible local fallbacks', () => {
+  const userDataPath = path.join(fixtureRoot, 'VelornData')
+  const portableRoot = path.join(fixtureRoot, 'ComfyUI_windows_portable')
   const candidates = getRuntimeCandidates({
-    userDataPath: 'C:\\VelornData',
-    comfyRootPath: 'D:\\ComfyUI_windows_portable\\ComfyUI',
+    userDataPath,
+    comfyRootPath: path.join(portableRoot, 'ComfyUI'),
   })
   assert.equal(candidates[0].kind, 'managed')
-  assert.equal(candidates[0].pythonPath, path.join('C:\\VelornData', 'rtx-runtime-v1', 'python', 'python.exe'))
+  assert.equal(candidates[0].pythonPath, path.join(userDataPath, 'rtx-runtime-v1', 'python', 'python.exe'))
   assert.ok(candidates.some((entry) => (
-    entry.pythonPath === path.join('D:\\ComfyUI_windows_portable', 'python_embeded', 'python.exe')
+    entry.kind === 'compatible-local'
+      && entry.pythonPath === path.join(portableRoot, 'python_embeded', 'python.exe')
   )))
 })
 
 test('finds common portable ComfyUI Python layouts as compatibility fallbacks', () => {
-  const candidates = getComfyPythonCandidates('D:\\Apps\\ComfyUI_windows_portable\\ComfyUI')
-  assert.ok(candidates.includes(path.join('D:\\Apps\\ComfyUI_windows_portable', 'python_embeded', 'python.exe')))
-  assert.ok(candidates.includes(path.join('D:\\Apps\\ComfyUI_windows_portable', 'python_embedded', 'python.exe')))
-})
-
-test('builds a bounded direct helper command', () => {
-  const args = buildRtxHelperArgs({
-    helperPath: 'C:\\Velorn\\rtx_vsr_stream.py',
-    inputPath: 'C:\\Renders\\source.mp4',
-    outputPath: 'C:\\Renders\\final.mp4',
-    width: 2160,
-    height: 3840,
-    quality: 'medium',
-    ffmpegPath: 'C:\\Velorn\\ffmpeg.exe',
-    ffprobePath: 'C:\\Velorn\\ffprobe.exe',
-  })
-  assert.deepEqual(args.slice(0, 11), [
-    'C:\\Velorn\\rtx_vsr_stream.py',
-    '--input', 'C:\\Renders\\source.mp4',
-    '--output', 'C:\\Renders\\final.mp4',
-    '--width', '2160',
-    '--height', '3840',
-    '--quality', 'MEDIUM',
+  const appsRoot = path.join(fixtureRoot, 'Apps')
+  const portableRoot = path.join(appsRoot, 'ComfyUI_windows_portable')
+  const comfyRoot = path.join(portableRoot, 'ComfyUI')
+  const candidates = getComfyPythonCandidates(comfyRoot)
+  assert.deepEqual(candidates, [
+    path.join(comfyRoot, 'python_embeded', 'python.exe'),
+    path.join(comfyRoot, 'python_embedded', 'python.exe'),
+    path.join(portableRoot, 'python_embeded', 'python.exe'),
+    path.join(portableRoot, 'python_embedded', 'python.exe'),
+    path.join(appsRoot, 'python_embeded', 'python.exe'),
+    path.join(appsRoot, 'python_embedded', 'python.exe'),
   ])
 })
 
+test('builds a bounded direct helper command', () => {
+  const helperPath = path.join(fixtureRoot, 'Velorn app', 'rtx_vsr_stream.py')
+  const inputPath = path.join(fixtureRoot, 'Renders', 'source clip.mp4')
+  const outputPath = path.join(fixtureRoot, 'Renders', 'final clip.mp4')
+  const ffmpegPath = path.join(fixtureRoot, 'Velorn app', 'ffmpeg.exe')
+  const ffprobePath = path.join(fixtureRoot, 'Velorn app', 'ffprobe.exe')
+  const options = {
+    helperPath,
+    inputPath,
+    outputPath,
+    width: 2160,
+    height: 3840,
+    quality: 'medium',
+    ffmpegPath,
+    ffprobePath,
+  }
+  const args = buildRtxHelperArgs(options)
+  assert.deepEqual(args, [
+    helperPath,
+    '--input', inputPath,
+    '--output', outputPath,
+    '--width', '2160',
+    '--height', '3840',
+    '--quality', 'MEDIUM',
+    '--ffmpeg', ffmpegPath,
+    '--ffprobe', ffprobePath,
+    '--encoder', 'h264_nvenc',
+    '--cq', '18',
+  ])
+  assert.throws(() => buildRtxHelperArgs({ ...options, width: 8193 }), /cannot exceed 8192/)
+  assert.throws(() => buildRtxHelperArgs({ ...options, height: 8193 }), /cannot exceed 8192/)
+})
+
 test('returns stable managed runtime paths', () => {
-  const runtime = getManagedRuntimePaths('C:\\Users\\Editor\\AppData\\Roaming\\Velorn')
-  assert.equal(runtime.pythonPath, path.join(runtime.root, 'python', 'python.exe'))
-  assert.equal(runtime.manifestPath, path.join(runtime.root, 'runtime.json'))
+  const userDataPath = path.join(fixtureRoot, 'Users', 'Editor', 'AppData', 'Roaming', 'Velorn')
+  const runtime = getManagedRuntimePaths(userDataPath)
+  const expectedRoot = path.join(userDataPath, 'rtx-runtime-v1')
+  assert.deepEqual(runtime, {
+    root: expectedRoot,
+    pythonDir: path.join(expectedRoot, 'python'),
+    pythonPath: path.join(expectedRoot, 'python', 'python.exe'),
+    manifestPath: path.join(expectedRoot, 'runtime.json'),
+  })
 })

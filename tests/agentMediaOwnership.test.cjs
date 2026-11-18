@@ -1,0 +1,43 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const { ExportJobRegistry } = require('../electron/exportJobRegistry.cjs')
+const result = value => ({content:[{type:'text',text:JSON.stringify(value)}]})
+const origin = {chatId:'chat-one',turnId:'turn-one'}
+
+test('completion persistence observes final output and receives late-confirmed ownership',async()=>{
+  const saved=[],jobs=new ExportJobRegistry({onCompleted:job=>saved.push(job)})
+  jobs.begin({jobId:'completed',owner:'mcp',projectPath:'/project',outputPath:'/project/review.mp4'})
+  jobs.finish('completed')
+  jobs.associateAgentResult('export_timeline',result({result:{started:true,jobId:'completed'}}),origin)
+  assert.equal(saved.length,2);assert.equal(saved[0].status,'completed');assert.deepEqual(saved[1].origin,origin)
+  jobs.begin({jobId:'failed'});jobs.finish('failed',{error:'Failed'})
+  assert.equal(saved.length,2)
+})
+
+test('only a confirmed native agent export start links a job to its reply', () => {
+  const jobs = new ExportJobRegistry()
+  jobs.begin({jobId:'one',owner:'mcp'}); jobs.finish('one')
+  const started = result({success:true,previewOnly:false,result:{started:true,jobId:'one'}})
+  jobs.associateAgentResult('get_export_status',started,origin)
+  jobs.associateAgentResult('export_timeline',result({previewOnly:true,result:{started:true,jobId:'one'}}),origin)
+  jobs.associateAgentResult('export_timeline',result({success:false,result:{started:true,jobId:'one'}}),origin)
+  assert.equal(jobs.get('one').origin,undefined)
+  jobs.associateAgentResult('export_timeline',started,origin)
+  assert.deepEqual(jobs.get('one').origin,origin)
+  jobs.associateAgentResult('export_timeline',started,{chatId:'other',turnId:'other'})
+  assert.deepEqual(jobs.get('one').origin,origin,'Subsequent requests cannot re-home an export')
+  jobs.begin({jobId:'ui',owner:'ui'});jobs.finish('ui')
+  jobs.associateAgentResult('export_timeline',result({started:true,jobId:'ui'}),origin)
+  assert.equal(jobs.get('ui').origin,undefined)
+})
+
+test('batch exports keep the initiating reply, including jobs started after its response', () => {
+  const jobs = new ExportJobRegistry()
+  jobs.begin({jobId:'first',owner:'mcp',batchId:'batch-one'});jobs.finish('first')
+  jobs.associateAgentResult('export_delivery_batch',result({result:{started:true,batchId:'batch-one'}}),origin)
+  jobs.begin({jobId:'second',owner:'mcp',batchId:'batch-one'});jobs.finish('second')
+  assert.deepEqual(jobs.get('first').origin,origin)
+  assert.deepEqual(jobs.get('second').origin,origin)
+  jobs.begin({jobId:'unrelated',owner:'mcp',batchId:'different'})
+  assert.equal(jobs.get('unrelated').origin,undefined)
+})

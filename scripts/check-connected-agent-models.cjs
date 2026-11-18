@@ -1,0 +1,295 @@
+// Codex model-picker browser regression with deterministic catalog responses.
+// No Codex process, model service, native settings or project IO is invoked.
+const assert = require('node:assert/strict')
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path')
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE_PATH || 'playwright')
+const base = new URL(process.env.VELORN_TEST_URL || 'http://127.0.0.1:5199')
+if (base.protocol !== 'http:' || base.hostname !== '127.0.0.1' || base.username || base.password) throw new Error('Model fixture requires loopback HTTP')
+const output = fs.mkdtempSync(path.join(os.tmpdir(), 'velorn-connected-agent-models-'))
+
+async function main() {
+  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true })
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: 'en-US', serviceWorkers: 'block' })
+  const page = await context.newPage(), errors = [], blockedRequests = [], groups = []
+  page.setDefaultTimeout(12000)
+  page.on('pageerror', error => errors.push(error.message))
+  await page.route('**/*', route => {
+    const url = new URL(route.request().url())
+    const forbidden = /^\/(?:prompt|queue|interrupt|system_stats|history|upload|view|ws|v1|api)(?:\/|$)/.test(url.pathname)
+    if (url.origin === base.origin && !forbidden) return route.continue()
+    blockedRequests.push(url.href); return route.abort()
+  })
+  await page.routeWebSocket(() => true, socket => socket.close())
+  const button = name => page.getByRole('button', { name, exact: true })
+  const picker = () => page.locator('select[aria-label="Model"]')
+  const custom = () => page.getByRole('textbox', { name: 'Custom model ID', exact: true })
+  const composer = () => page.getByRole('textbox', { name: 'Message your agent', exact: true })
+  const provider = () => page.getByLabel('Assistant selection', { exact: true })
+  const snapshot = () => page.evaluate(() => window.connectedAgentTest.snapshot())
+  const frame = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  const pass = text => { groups.push(text); console.log(`PASS ${groups.length}: ${text}`) }
+  const openSettings = async () => { if (await button('Assistant settings').getAttribute('aria-expanded') !== 'true') await button('Assistant settings').click() }
+  const backToChat = async () => { if (await button('Back to chat').isVisible()) await button('Back to chat').click() }
+  const options = () => picker().locator('option').evaluateAll(entries => entries.map(entry => ({ value: entry.value, text: entry.textContent })))
+  const refresh = async () => {
+    await openSettings()
+    const count = (await snapshot()).calls.filter(call => call.method === 'inspect').length
+    await button('Check connection').click()
+    await page.waitForFunction(count => window.connectedAgentTest.snapshot().calls.filter(call => call.method === 'inspect').length > count, count)
+  }
+  const send = async text => {
+    if (await button('Use model').isVisible() && await button('Use model').isEnabled()) await button('Use model').click()
+    await backToChat()
+    const count = (await snapshot()).requests.length
+    await composer().fill(text); await button('Send message').click()
+    await page.waitForFunction(count => window.connectedAgentTest.snapshot().requests.length > count, count)
+    return (await snapshot()).requests.at(-1)
+  }
+  const settle = async (request, text = 'Synthetic model choice confirmed.') => {
+    await page.evaluate(({ requestId, text }) => window.connectedAgentTest.settle(requestId, { success: true, text }), { requestId: request.requestId, text })
+    await frame()
+  }
+  const reopen = async () => {
+    await button('Close assistant panel').click(); await button('Open agent').click(); await composer().waitFor()
+  }
+  try {
+    await page.goto(new URL('/tests/fixtures/connected-agent.html?strict=1', base).href)
+    await page.waitForFunction(() => window.connectedAgentTest?.ready)
+    const baseline = (await snapshot()).authored
+    assert.equal((await snapshot()).calls.filter(call => call.method === 'inspect').length, 0)
+    await composer().fill('Keep the model-picker draft.')
+    await openSettings()
+    await picker().locator('option[value="fixture-codex-fast"]').waitFor({ state: 'attached' })
+    assert.equal(await picker().inputValue(), '')
+    const initialOptions = await options()
+    assert.equal(initialOptions[0].value, '')
+    assert.equal(initialOptions[0].text, 'Codex default')
+    assert.ok(initialOptions.some(option => option.value === 'fixture-codex-default' && option.text.includes('Fixture Codex One')))
+    assert.ok(initialOptions.some(option => option.value === 'fixture-codex-fast' && option.text.includes('Fixture Codex Quick')))
+    assert.equal(initialOptions.at(-1).value, '__custom__')
+    assert.equal((await snapshot()).calls.filter(call => call.method === 'inspect').length, 1)
+    assert.equal((await snapshot()).requests.length, 0, 'Catalog loading sends no prompt')
+    await backToChat(); assert.equal(await composer().inputValue(), 'Keep the model-picker draft.')
+    await openSettings(); await frame()
+    assert.equal((await snapshot()).calls.filter(call => call.method === 'inspect').length, 1, 'Reopening settings does not repeatedly reload the catalog')
+    await page.screenshot({ path: path.join(output, '01-catalog.png'), fullPage: true })
+    pass('First settings open loads the native catalog once; chat mount stays idle, friendly options appear and default remains blank')
+
+    await picker().selectOption('fixture-codex-fast')
+    await openSettings()
+    await page.getByText('Synthetic faster model.', { exact: true }).waitFor()
+    await refresh(); await button('Check connection').waitFor(); await frame()
+    assert.equal(await picker().inputValue(), 'fixture-codex-fast')
+    const selected = await send('Use the explicitly selected catalog model.')
+    assert.equal(selected.model, 'fixture-codex-fast')
+    await settle(selected)
+    await reopen(); await openSettings()
+    await picker().locator('option[value="fixture-codex-fast"]').waitFor({ state: 'attached' })
+    assert.equal(await picker().inputValue(), 'fixture-codex-fast', 'Known model preference survives a new conversation component')
+    pass('A catalog choice sends its exact ID, survives manual refresh and restores after reopening')
+
+    await picker().selectOption('')
+    await refresh(); await button('Check connection').waitFor(); await frame()
+    assert.equal(await picker().inputValue(), '', 'An advertised isDefault model does not replace the blank default choice')
+    const defaultRequest = await send('Use Codex default without inventing a model ID.')
+    assert.equal(defaultRequest.model, '')
+    await settle(defaultRequest)
+    pass('Codex default sends an empty model ID and remains empty after catalog refresh')
+
+    const freshStorage = await page.evaluate(() => {
+      // A first-run global preference has no per-conversation selection to
+      // override it. Full reload also clears the history module's RAM cache.
+      const saved = Object.fromEntries(Object.entries(window.connectedAgentTest.snapshot().storage)
+        .filter(([key]) => !key.includes('.conversations.v1.')))
+      saved['velorn.connected-agent.settings.v1'] = JSON.stringify({ provider: 'codex', codexModel: 'saved-unknown-codex-id' })
+      return saved
+    })
+    await page.addInitScript(storage => { window.__connectedAgentFixtureStorage = storage }, freshStorage)
+    await page.reload(); await page.waitForFunction(() => window.connectedAgentTest?.ready); await openSettings()
+    await picker().locator('option[value="fixture-codex-fast"]').waitFor({ state: 'attached' })
+    assert.equal(await picker().inputValue(), '__custom__')
+    assert.equal(await custom().inputValue(), 'saved-unknown-codex-id')
+    await refresh(); await button('Check connection').waitFor(); await frame()
+    assert.equal(await custom().inputValue(), 'saved-unknown-codex-id')
+    const unknown = await send('Preserve my existing model override.')
+    assert.equal(unknown.model, 'saved-unknown-codex-id')
+    await settle(unknown)
+    pass('A saved model absent from the catalog remains an explicit custom ID, including after refresh and Send')
+
+    await openSettings(); await custom().fill('fixture-manual-override')
+    const busy = await send('Keep this custom model fixed while a response is running.')
+    assert.equal(busy.model, 'fixture-manual-override')
+    await openSettings()
+    assert.equal(await picker().isDisabled(), true)
+    assert.equal(await custom().isDisabled(), true)
+    assert.equal(await button('Check connection').isDisabled(), true)
+    await backToChat(); await settle(busy)
+    pass('Custom IDs pass through unchanged and model/custom/refresh controls are disabled during a request')
+
+    await page.evaluate(() => window.connectedAgentTest.setHoldInspect(true))
+    await refresh()
+    const unavailableCatalog = (await snapshot()).pendingInspects.at(-1).inspectId
+    await page.evaluate(inspectId => {
+      window.connectedAgentTest.setHoldInspect(false)
+      window.connectedAgentTest.releaseInspect(inspectId, { success: true, available: true, provider: 'codex', models: [],
+        modelCatalogStatus: 'unavailable', modelCatalogError: 'Synthetic model list is unavailable.', message: 'Synthetic authentication remains ready.' })
+    }, unavailableCatalog)
+    await page.getByText('Synthetic model list is unavailable.', { exact: true }).waitFor()
+    assert.equal(await picker().locator('option[value="fixture-codex-fast"]').count(), 1)
+    assert.equal(await custom().inputValue(), 'fixture-manual-override')
+    pass('Catalog-unavailable metadata preserves the last usable choices and custom override independently of authentication success')
+
+    await page.evaluate(() => window.connectedAgentTest.setConnectionError('Synthetic catalog lookup failed.'))
+    await openSettings(); await refresh(); await button('Check connection').waitFor(); await frame()
+    assert.equal(await picker().count(), 0, 'A failed connection hides unusable model controls')
+    await reopen(); await openSettings()
+    await page.getByRole('region', { name: 'Codex setup', exact: true }).getByText('Synthetic catalog lookup failed.', { exact: true }).waitFor()
+    assert.equal(await picker().count(), 0)
+    await page.evaluate(() => window.connectedAgentTest.setConnectionError(''))
+    await refresh(); await button('Check connection').waitFor(); await frame()
+    assert.equal(await picker().inputValue(), '__custom__')
+    assert.equal(await custom().inputValue(), 'fixture-manual-override')
+    assert.equal(await picker().isEnabled(), true)
+    await picker().selectOption('')
+    await openSettings()
+    assert.equal(await picker().inputValue(), '')
+    await picker().selectOption('__custom__'); await custom().fill('custom-after-failed-discovery')
+    await button('Use model').click()
+    await refresh(); await button('Check connection').waitFor(); await frame()
+    assert.equal(await custom().inputValue(), 'custom-after-failed-discovery')
+    pass('Failed connections expose setup instead of model controls; recovery preserves the saved custom choice and supports explicit replacement')
+
+    await page.evaluate(() => {
+      window.connectedAgentTest.setCodexModels([{ id: 'stale-provider-catalog', displayName: 'Stale provider list' }])
+      window.connectedAgentTest.setHoldInspect(true)
+    })
+    await refresh()
+    const staleProvider = (await snapshot()).pendingInspects.at(-1).inspectId
+    assert.equal(await provider().isDisabled(), true, 'provider changes wait for an active connection check')
+    await page.evaluate(inspectId => { window.connectedAgentTest.setHoldInspect(false); window.connectedAgentTest.releaseInspect(inspectId) }, staleProvider)
+    await provider().selectOption('lmstudio')
+    await page.getByRole('group', { name: 'Confirm assistant switch' }).getByRole('button', { name: 'Start LM Studio chat', exact: true }).click()
+    await openSettings()
+    assert.equal(await page.getByLabel('Model', { exact: true }).evaluate(node => node.tagName), 'SELECT')
+    await frame()
+    assert.equal(await page.locator('option[value="stale-provider-catalog"]').count(), 0)
+    await page.waitForFunction(() => document.querySelector('select[aria-label="Model"]').value === 'fixture-model')
+    assert.equal(await picker().inputValue(), 'fixture-model', 'Opening local settings automatically discovers available models')
+    pass('Pending discovery locks provider changes; after completion the local dropdown loads only its own catalog')
+
+    const compatibility = page.getByLabel('Local model compatibility', { exact: true })
+    assert.equal(await compatibility.locator('summary').textContent(), 'Experimental in Velorn')
+    assert.equal(await compatibility.getAttribute('open'), null, 'Qualification details stay compact')
+    await compatibility.locator('summary').click()
+    assert.match(await compatibility.textContent(), /Connected does not mean validated for editing/)
+    assert.match(await picker().locator('option[value="fixture-model"]').textContent(), /Experimental in Velorn/)
+    await compatibility.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: path.join(output, '02-local-compatibility.png'), fullPage: true })
+    const requestCountBeforeQualification = (await snapshot()).requests.length
+    await picker().selectOption('__custom__'); await custom().fill('untested-custom-local-model')
+    assert.equal(await compatibility.locator('summary').textContent(), 'Experimental in Velorn')
+    assert.equal((await snapshot()).requests.length, requestCountBeforeQualification, 'Qualification labels never run a model or gate model choice')
+    const experimentalRequest = await send('Use my experimental local model for this synthetic test.')
+    assert.equal(experimentalRequest.model, 'untested-custom-local-model')
+    await settle(experimentalRequest)
+    await openSettings()
+    pass('Local qualification is separate from connection, compact by default, and does not block experimental/custom models')
+
+    await page.evaluate(() => window.connectedAgentTest.setLocalModels([
+      { id: 'loaded-small', modelKey: 'loaded-small', displayName: 'Loaded Small', loaded: true, contextLength: 32768 },
+      { id: 'loaded-small:2', modelKey: 'loaded-small', displayName: 'Loaded Small', loaded: true, contextLength: 8192 },
+      { id: 'untested-custom-local-model', loaded: false },
+    ]))
+    await refresh(); await frame()
+    assert.equal(await picker().inputValue(), 'untested-custom-local-model', 'Loading other models must not silently override Velorn’s requested model')
+    assert.match(await picker().locator('option[value="loaded-small"]').textContent(), /32,768 context/)
+    assert.match(await picker().locator('option[value="loaded-small:2"]').textContent(), /loaded-small:2.*8,192 context/)
+    await picker().scrollIntoViewIfNeeded()
+    await page.screenshot({ path: path.join(output, '03-loaded-model-selection.png'), fullPage: true })
+    await picker().selectOption('loaded-small')
+    await openSettings()
+    assert.equal(await page.getByLabel('Model', { exact: true }).inputValue(), 'loaded-small')
+    const loadedRequest = await send('Use the explicitly selected loaded model for this synthetic test.')
+    assert.equal(loadedRequest.model, 'loaded-small')
+    assert.match(await page.getByLabel('Selected model', { exact: true }).innerText(), /Requested model/)
+    await settle(loadedRequest); await openSettings()
+    pass('Loaded-instance choices show aliases and context sizes; only an explicit choice changes the next requested model')
+
+    await reopen(); await openSettings()
+    await picker().locator('option[value="loaded-small:2"]').waitFor({ state: 'attached' })
+    assert.equal(await picker().inputValue(), 'loaded-small', 'Restarting the panel preserves the saved local choice while automatically refreshing alternatives')
+    await page.evaluate(() => window.connectedAgentTest.setLocalModels([{ id: 'fallback-model' }], 'unavailable'))
+    await refresh(); await frame()
+    assert.equal(await picker().inputValue(), 'loaded-small')
+    assert.equal(await picker().locator('option[value="fallback-model"]').count(), 1, 'Model choices remain visible when optional loaded-state metadata is unavailable')
+    await page.evaluate(() => window.connectedAgentTest.setConnectionError('Synthetic local server offline.'))
+    await refresh(); await button('Check connection').waitFor(); await frame()
+    assert.equal(await picker().inputValue(), 'loaded-small', 'A failed refresh preserves the exact selected ID')
+    await picker().selectOption('__custom__'); await custom().fill('manual-local-model')
+    await page.evaluate(() => window.connectedAgentTest.setConnectionError(''))
+    pass('Local selector persists across remount and retains manual/last-known choices when metadata or connection is unavailable')
+
+    await custom().fill('manual-during-discovery')
+    await page.evaluate(() => window.connectedAgentTest.setHoldInspect(true))
+    await refresh()
+    const pendingLocal = (await snapshot()).pendingInspects.at(-1).inspectId
+    assert.equal(await custom().isDisabled(), true)
+    await page.evaluate(id => { window.connectedAgentTest.setHoldInspect(false); window.connectedAgentTest.releaseInspect(id) }, pendingLocal)
+    await button('Check connection').waitFor(); await frame()
+    assert.equal(await custom().inputValue(), 'manual-during-discovery')
+    pass('A typed model draft stays intact while pending discovery locks further edits')
+
+    await page.evaluate(() => {
+      window.connectedAgentTest.setCodexModels([{ id: 'stale-project-catalog', displayName: 'Stale project list' }])
+      window.connectedAgentTest.setHoldInspect(true)
+    })
+    await provider().selectOption('codex')
+    await page.getByRole('group', { name: 'Confirm assistant switch' }).getByRole('button', { name: 'Start Codex chat', exact: true }).click()
+    await openSettings()
+    await page.waitForFunction(() => window.connectedAgentTest.snapshot().pendingInspects.length > 0)
+    const staleProject = (await snapshot()).pendingInspects.at(-1).inspectId
+    const inspectCountBeforeProject = (await snapshot()).calls.filter(call => call.method === 'inspect').length
+    await page.evaluate(() => window.connectedAgentTest.switchProject('beta'))
+    await composer().waitFor()
+    assert.equal((await snapshot()).calls.filter(call => call.method === 'inspect').length, inspectCountBeforeProject, 'The new project does not inherit open settings or start a hidden catalog lookup')
+    await page.evaluate(() => {
+      window.connectedAgentTest.setHoldInspect(false)
+      window.connectedAgentTest.setCodexModels([{ id: 'fresh-project-catalog', displayName: 'Fresh project list', isDefault: true }])
+    })
+    await openSettings()
+    await picker().locator('option[value="fresh-project-catalog"]').waitFor({ state: 'attached' })
+    await page.evaluate(inspectId => window.connectedAgentTest.releaseInspect(inspectId), staleProject)
+    await frame()
+    assert.equal(await picker().locator('option[value="stale-project-catalog"]').count(), 0)
+    assert.equal(await picker().locator('option[value="fresh-project-catalog"]').count(), 1)
+    assert.equal(await picker().inputValue(), '__custom__')
+    assert.equal(await custom().inputValue(), 'custom-after-failed-discovery')
+    pass('A delayed old-project catalog cannot replace the new project response or silently change the chosen model')
+
+    await page.evaluate(() => window.connectedAgentTest.setCodexModels([]))
+    await refresh(); await button('Check connection').waitFor(); await frame()
+    assert.deepEqual((await options()).map(option => option.value), ['', '__custom__'])
+    assert.equal(await custom().inputValue(), 'custom-after-failed-discovery')
+    await picker().selectOption(''); await openSettings(); await picker().selectOption('__custom__'); await custom().fill('last-custom-model')
+    const emptyList = await send('Use my custom model despite an empty discovery list.')
+    assert.equal(emptyList.model, 'last-custom-model')
+    await settle(emptyList)
+    await page.evaluate(() => window.connectedAgentTest.switchProject('alpha'))
+    await composer().waitFor()
+    const final = await snapshot()
+    assert.deepEqual(final.authored, baseline)
+    assert.deepEqual(final.forbiddenCalls, [])
+    assert.deepEqual(errors, [])
+    assert.deepEqual(blockedRequests, [])
+    pass('An empty catalog retains default/custom options and exact custom sending without authored changes or external requests')
+    fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ success: true, groups, errors, blockedRequests }, null, 2))
+    console.log('CONNECTED_AGENT_MODELS_RESULT ' + JSON.stringify({ success: true, groups, output }))
+  } catch (error) {
+    await page.screenshot({ path: path.join(output, 'failure.png'), fullPage: true }).catch(() => {})
+    fs.writeFileSync(path.join(output, 'failure.json'), JSON.stringify({ error: error.stack, errors, blockedRequests,
+      snapshot: await snapshot().catch(() => null), body: await page.locator('body').innerText().catch(() => '') }, null, 2))
+    console.error(`Model fixture artifacts: ${output}`)
+    throw error
+  } finally { await browser.close() }
+}
+main().catch(error => { console.error(error); process.exitCode = 1 })

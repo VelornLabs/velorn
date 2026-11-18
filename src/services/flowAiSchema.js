@@ -52,7 +52,10 @@ const FLOW_VIDEO_WORKFLOWS = Object.freeze(
 )
 
 const FLOW_AUDIO_WORKFLOWS = Object.freeze(
-  (WORKFLOWS.audio || []).map((workflow) => ({
+  // YuE2 is available in the timeline and Generate. Flow AI still uses its
+  // legacy fixed-duration/BPM/key music contract, so do not advertise an
+  // unsupported workflow or silently change saved/default Flow AI nodes.
+  (WORKFLOWS.audio || []).filter((workflow) => workflow.id !== 'music-gen-yue2').map((workflow) => ({
     id: workflow.id,
     label: workflow.label,
     needsImage: Boolean(workflow.needsImage),
@@ -873,4 +876,3 @@ export function buildNodeStatusSummary(node) {
   if (status === 'blocked') return 'Blocked'
   return 'Idle'
 }
-

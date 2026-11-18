@@ -3,6 +3,18 @@ import useTimelineStore from '../stores/timelineStore'
 import { getCurrentPlaybackJump, PLAYBACK_JUMP_TIMEOUT_MS } from '../utils/playbackJump.mjs'
 import { getCurrentPlayAround } from '../utils/playAround.mjs'
 import { getPlaybackReviewRange } from '../utils/playbackReviewRange.mjs'
+import { selectFramePlayhead } from '../utils/framePlayhead.mjs'
+
+const selectIsPlaying = (state) => state.isPlaying
+const selectSetPlayheadPosition = (state) => state.setPlayheadPosition
+const selectTogglePlay = (state) => state.togglePlay
+const selectShuttlePause = (state) => state.shuttlePause
+const selectGetActiveClipAtTime = (state) => state.getActiveClipAtTime
+const selectGetTransitionAtTime = (state) => state.getTransitionAtTime
+const selectGetTimelineEndTime = (state) => state.getTimelineEndTime
+const selectClips = (state) => state.clips
+const selectTracks = (state) => state.tracks
+const selectTransitions = (state) => state.transitions
 
 const getSelectedLoopRange = (clips, selectedClipIds) => {
   if (!Array.isArray(clips) || clips.length === 0) return null
@@ -38,19 +50,23 @@ export function useTimelinePlayback({ playbackRange = null, cancelPlayAroundOnUn
   const optionsRef = useRef(null)
   optionsRef.current = { playbackRange, cancelPlayAroundOnUnmount }
   
-  const {
-    isPlaying,
-    playheadPosition,
-    playbackRate,
-    setPlayheadPosition,
-    togglePlay,
-    shuttlePause,
-    getActiveClipAtTime,
-    getTransitionAtTime,
-    getTimelineEndTime,
-    clips,
-    transitions,
-  } = useTimelineStore()
+  // The transport loop below reads the live store itself. What this hook
+  // returns for display follows playback one timeline frame at a time rather
+  // than on every animation-frame write, so its host is not re-rendered on
+  // each of those writes. Plain per-field selectors keep this file free of
+  // React-only helpers (its tests run it against a stub store).
+  const isPlaying = useTimelineStore(selectIsPlaying)
+  const setPlayheadPosition = useTimelineStore(selectSetPlayheadPosition)
+  const togglePlay = useTimelineStore(selectTogglePlay)
+  const shuttlePause = useTimelineStore(selectShuttlePause)
+  const getActiveClipAtTime = useTimelineStore(selectGetActiveClipAtTime)
+  const getTransitionAtTime = useTimelineStore(selectGetTransitionAtTime)
+  const getTimelineEndTime = useTimelineStore(selectGetTimelineEndTime)
+  const playheadPosition = useTimelineStore(selectFramePlayhead)
+  // Subscribed so the active clip returned below is recomputed after an edit.
+  useTimelineStore(selectClips)
+  useTimelineStore(selectTracks)
+  useTimelineStore(selectTransitions)
 
   // Get active clip info at current position
   const getPlaybackState = useCallback((time) => {

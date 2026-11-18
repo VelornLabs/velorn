@@ -36,6 +36,8 @@ import { getAllKeyframeTimes } from '../utils/keyframes'
 import { TRANSITION_TYPES, TRANSITION_DURATIONS, FRAME_RATE } from '../constants/transitions'
 import { getAudioClipFadeValues } from '../utils/audioClipFades'
 import { buildAudioClipSplitState } from '../utils/audioClipSplit'
+import { buildSplitLeftPieceUpdates, buildSplitRightPieceCarryOver } from '../utils/clipSplit.mjs'
+import { nudgeSelectedClips, trimToPlayhead } from '../utils/playheadEdits.mjs'
 import {
   createMultiClipTrimSession,
   getMultiClipTrimTargetIds,
@@ -44,7 +46,7 @@ import {
 import { getSpriteFramePosition } from '../services/thumbnailSprites'
 import { getEffectTypeDefinition } from '../utils/effects'
 import { isTextEditingElement } from '../utils/keyboardFocus'
-import { hasVisibleKeyboardModal } from '../utils/transportKeyboardGuards.mjs'
+import { hasVisibleKeyboardModal, isNativeTextKeyboardEvent } from '../utils/transportKeyboardGuards.mjs'
 import {
   formatSecondsFrames,
   formatTimecode as formatFrameTimecode,
@@ -2560,6 +2562,19 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
     }
   }
 
+  const handleTimelinePointerFocus = (event) => {
+    const target = event.target
+    // Scrub/drag handlers prevent the browser's normal focus transfer. Claim
+    // focus before those handlers run, or Space keeps typing into the Agent
+    // (or another previously focused field) after a timeline gesture.
+    // Portalled dialogs and inline controls keep their own keyboard ownership.
+    if (event.button !== 0 || event.isPrimary === false
+      || !event.currentTarget.contains(target) || hasVisibleKeyboardModal()
+      || isTextEditingElement(target)
+      || target.closest('input, textarea, select, summary, a[href], button:not([data-marker-handle]), [role="button"], [role="textbox"], [role="combobox"], [role="spinbutton"], [role="slider"], [role="separator"], [role="menu"], [role="menuitem"], [role="listbox"]')) return
+    timelineRef.current?.focus({ preventScroll: true })
+  }
+
   // Container clicks should only pan/marquee. Playhead scrubbing starts from the ruler or playhead handle.
   const handleTimelineMouseDown = (e) => {
     // Don't start scrubbing if clicking on a clip or trim handle
@@ -3176,7 +3191,28 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
     }
   }, [])
 
-  const splitClipAtTime = useCallback((clip, splitPosition, { saveHistory = false } = {}) => {
+  // The add-clip actions only know a few fields, so the right-hand piece is
+  // completed here with everything else authored on the uncut clip.
+  const finishSplitRightPiece = (clip, newClip, splitTime, remainder, rightLinkGroupId) => {
+    if (!newClip?.id) return newClip
+    const carryOver = buildSplitRightPieceCarryOver(clip, splitTime, { remainder, linkGroupId: rightLinkGroupId })
+    const leftUpdates = buildSplitLeftPieceUpdates(clip, splitTime, remainder)
+    let finished = newClip
+    useTimelineStore.setState((state) => ({
+      clips: state.clips.map((candidate) => {
+        if (candidate.id === newClip.id) {
+          const { linkGroupId: _unlinked, ...unlinkedCandidate } = candidate
+          finished = { ...unlinkedCandidate, ...carryOver }
+          return finished
+        }
+        if (leftUpdates && candidate.id === clip.id) return { ...candidate, ...leftUpdates }
+        return candidate
+      }),
+    }))
+    return finished
+  }
+
+  const splitClipAtTime = useCallback((clip, splitPosition, { saveHistory = false, rightLinkGroupId = null } = {}) => {
     const snappedSplitPosition = quantizeTimeToFrame(splitPosition, getSafeTimelineFps(timelineFps))
     if (!clip || clip.type === 'compound' || isSyncLockedClip(clip) || snappedSplitPosition <= clip.startTime || snappedSplitPosition >= clip.startTime + clip.duration) return null
 
@@ -3217,11 +3253,11 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
         effects: clip.effects,
         saveHistory: false,
       }
-      return addTextClip(clip.trackId, textOptions, snappedSplitPosition)
+      return finishSplitRightPiece(clip, addTextClip(clip.trackId, textOptions, snappedSplitPosition), splitTime, remainder, rightLinkGroupId)
     }
 
     if (clip.type === 'shape') {
-      return addShapeClip(clip.trackId, {
+      return finishSplitRightPiece(clip, addShapeClip(clip.trackId, {
         shapeProperties: clip.shapeProperties || {},
         duration: remainder,
         name: clip.name,
@@ -3229,11 +3265,11 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
         enabled: isClipEnabled(clip),
         effects: clip.effects,
         saveHistory: false,
-      }, snappedSplitPosition)
+      }, snappedSplitPosition), splitTime, remainder, rightLinkGroupId)
     }
 
     if (clip.type === 'adjustment') {
-      return addAdjustmentClip(clip.trackId, snappedSplitPosition, {
+      return finishSplitRightPiece(clip, addAdjustmentClip(clip.trackId, snappedSplitPosition, {
         duration: remainder,
         name: clip.name,
         adjustments: clip.adjustments || {},
@@ -3241,14 +3277,16 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
         enabled: isClipEnabled(clip),
         effects: clip.effects,
         saveHistory: false,
-      })
+      }), splitTime, remainder, rightLinkGroupId)
     }
 
     const timeScale = getTimeScale(clip)
     const sourceTimeAtCut = (clip.trimStart || 0) + splitTime * timeScale
     const sourceTrimEnd = sourceTimeAtCut + remainder * timeScale
 
-    return addClip(clip.trackId, audioSplitState?.asset || asset, snappedSplitPosition, timelineFps, {
+    // Retiming goes in with the add so the new piece is measured against
+    // its source at the right speed (a slowed clip would otherwise be cut short).
+    return finishSplitRightPiece(clip, addClip(clip.trackId, audioSplitState?.asset || asset, snappedSplitPosition, timelineFps, {
       duration: remainder,
       trimStart: sourceTimeAtCut,
       trimEnd: sourceTrimEnd,
@@ -3256,10 +3294,41 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
       transform: clip.transform,
       effects: clip.effects,
       frameSampling: clip.type === 'video' ? clip.frameSampling : undefined,
+      sourceTimeScale: clip.sourceTimeScale,
+      sourceFps: clip.sourceFps,
+      timelineFps: clip.timelineFps,
+      speed: clip.speed,
+      reverse: clip.reverse === true,
       ...(audioSplitState?.rightClipOptions || {}),
       saveHistory: false,
-    })
+    }), splitTime, remainder, rightLinkGroupId)
   }, [assets, tracks, saveToHistory, resizeClip, addTextClip, addShapeClip, addAdjustmentClip, addClip, timelineFps, isClipEnabled])
+
+  // Cut several clips at one time. Right-hand pieces that came from the same
+  // link stay linked to each other, under a link of their own, so the left
+  // and right sides of the cut select and move separately.
+  const splitClipsTogether = useCallback((clipsToSplit, time) => {
+    const linkCounts = new Map()
+    for (const clip of clipsToSplit) {
+      const linkId = typeof clip.linkGroupId === 'string' ? clip.linkGroupId.trim() : ''
+      if (linkId) linkCounts.set(linkId, (linkCounts.get(linkId) || 0) + 1)
+    }
+    const seed = `${useTimelineStore.getState().clipCounter || 0}-${Date.now().toString(36)}`
+    const rightLinkIds = new Map()
+    for (const [linkId, count] of linkCounts) {
+      if (count > 1) rightLinkIds.set(linkId, `link-split-${seed}-${rightLinkIds.size}`)
+    }
+    const created = []
+    for (const clip of clipsToSplit) {
+      const linkId = typeof clip.linkGroupId === 'string' ? clip.linkGroupId.trim() : ''
+      const newClip = splitClipAtTime(clip, time, {
+        saveHistory: false,
+        rightLinkGroupId: rightLinkIds.get(linkId) || null,
+      })
+      if (newClip?.id) created.push(newClip)
+    }
+    return created
+  }, [splitClipAtTime])
 
   const splitAllTracksAtPlayhead = useCallback(() => {
     const playheadPosition = getLivePlayhead()
@@ -3271,32 +3340,47 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
 
     saveToHistory()
 
-    const newClipIds = []
-    clipsToSplit.forEach((clip) => {
-      const newClip = splitClipAtTime(clip, playheadPosition, { saveHistory: false })
-      if (newClip?.id) {
-        newClipIds.push(newClip.id)
-      }
-    })
+    const newClipIds = splitClipsTogether(clipsToSplit, playheadPosition).map((newClip) => newClip.id)
 
     if (newClipIds.length > 0) {
       useTimelineStore.getState().selectClips(newClipIds)
       selectMarker(null)
     }
-  }, [clips, saveToHistory, splitClipAtTime, selectMarker])
+  }, [clips, saveToHistory, splitClipsTogether, selectMarker])
+
+  // Cutting one side of a linked picture-and-sound pair cuts the other too,
+  // as one undo step. Returns the new piece of the clip that was asked for.
+  const splitClipWithLinked = useCallback((clip, splitPosition) => {
+    if (!clip) return null
+    const state = useTimelineStore.getState()
+    const time = quantizeTimeToFrame(splitPosition, getSafeTimelineFps(state.timelineFps))
+    const linkId = typeof clip.linkGroupId === 'string' ? clip.linkGroupId.trim() : ''
+    const mates = linkId ? state.clips.filter((candidate) => (
+      candidate.id !== clip.id
+      && typeof candidate.linkGroupId === 'string' && candidate.linkGroupId.trim() === linkId
+      && candidate.type !== 'compound' && !isSyncLockedClip(candidate)
+      && time > candidate.startTime && time < candidate.startTime + candidate.duration
+      && state.tracks.find((track) => track.id === candidate.trackId)?.locked !== true
+    )) : []
+    if (mates.length === 0) return splitClipAtTime(clip, time, { saveHistory: true })
+    if (clip.type === 'compound' || isSyncLockedClip(clip) || time <= clip.startTime || time >= clip.startTime + clip.duration) return null
+    saveToHistory()
+    const created = splitClipsTogether([clip, ...mates], time)
+    return created[0] || null
+  }, [saveToHistory, splitClipAtTime, splitClipsTogether])
 
   const handleSplitClipAtPlayhead = useCallback((clip) => {
     if (!clip) return false
-    splitClipAtTime(clip, getLivePlayhead(), { saveHistory: true })
+    splitClipWithLinked(clip, getLivePlayhead())
     return true
-  }, [splitClipAtTime])
+  }, [splitClipWithLinked])
 
   const handleSplitActiveTrackAtPlayhead = useCallback(() => {
     const state = useTimelineStore.getState()
     const clip = getActiveTrackSplitTarget(state)
     if (!clip) return false
-    return Boolean(splitClipAtTime(clip, state.playheadPosition, { saveHistory: true }))
-  }, [splitClipAtTime])
+    return Boolean(splitClipWithLinked(clip, state.playheadPosition))
+  }, [splitClipWithLinked])
 
   const ensureTimelineTimeVisible = useCallback((time) => {
     if (!timelineRef.current || !Number.isFinite(Number(time))) return
@@ -3381,6 +3465,9 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e) => {
+      // Native text Copy owns the key even when selecting a reply left focus
+      // on the timeline. Check before custom bindings as well as clip Copy.
+      if (isNativeTextKeyboardEvent(e)) return
       // A modal owns authoring keys as well as transport, including Undo
       // before the ordinary non-dialog text/focus rules below.
       if (hasVisibleKeyboardModal()) return
@@ -3494,6 +3581,22 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
           applyZoomWithPlayheadPivot(zoom - 20)
           return
         }
+      }
+
+      // Keyboard edits at the playhead / on the selection. These read the
+      // live store, so they need nothing from this render's closure.
+      const playheadEdit = [
+        [EDITOR_HOTKEY_IDS.TRIM_START_TO_PLAYHEAD, () => trimToPlayhead(useTimelineStore, 'left')],
+        [EDITOR_HOTKEY_IDS.TRIM_END_TO_PLAYHEAD, () => trimToPlayhead(useTimelineStore, 'right')],
+        [EDITOR_HOTKEY_IDS.NUDGE_LEFT, () => nudgeSelectedClips(useTimelineStore, -1)],
+        [EDITOR_HOTKEY_IDS.NUDGE_RIGHT, () => nudgeSelectedClips(useTimelineStore, 1)],
+        [EDITOR_HOTKEY_IDS.NUDGE_LEFT_BIG, () => nudgeSelectedClips(useTimelineStore, -10)],
+        [EDITOR_HOTKEY_IDS.NUDGE_RIGHT_BIG, () => nudgeSelectedClips(useTimelineStore, 10)],
+      ].find(([hotkeyId]) => matchEditorHotkey(e, editorHotkeys[hotkeyId]))
+      if (playheadEdit) {
+        e.preventDefault()
+        if (!moveOffsetDialogOpen && !durationDeltaDialogOpen) playheadEdit[1]()
+        return
       }
 
       // Configurable editor actions
@@ -3696,6 +3799,7 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
     }
 
     const handleSpaceKeyDown = (e) => {
+      if (isNativeTextKeyboardEvent(e)) return
       if (hasVisibleKeyboardModal()) return
       if (pasteAttributesOpenRef.current) return
       if (e.target?.closest?.('[data-audio-envelope-editor]')) return
@@ -5208,7 +5312,7 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
 
     if (isRazorToolActive) {
       const splitTime = getTimeFromClientX(e.clientX)
-      const newClip = splitClipAtTime(clip, splitTime, { saveHistory: true })
+      const newClip = splitClipWithLinked(clip, splitTime)
       if (newClip) {
         selectClip(newClip.id)
         setPlayheadPosition(splitTime, { snap: true })
@@ -6191,7 +6295,8 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
   }, [duration, pixelsPerSecond, timecodeFps])
 
   return (
-    <div className="h-full bg-sf-dark-900 border-t border-sf-dark-700 flex flex-col">
+    <div className="h-full bg-sf-dark-900 border-t border-sf-dark-700 flex flex-col"
+      onPointerDownCapture={handleTimelinePointerFocus}>
       {compoundEditContext && <div data-testid="compound-breadcrumb" className="flex flex-shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-violet-400/20 bg-violet-400/10 px-3 py-1.5 text-xs text-sf-text-primary">
         <button type="button" data-testid="compound-back" onClick={backFromCompound} className="flex items-center gap-1 rounded px-1 py-0.5 text-violet-200 hover:bg-violet-400/15"><ArrowLeft className="h-3 w-3" />Back to Timeline</button>
         <span className="min-w-0 break-words">Editing: {compoundEditContext.compoundName || 'Compound Clip'}</span>
@@ -6518,7 +6623,7 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
                       setToolbarOverflowOpen(false)
                     }}
                     className={overflowMenuItemClass}
-                    title="Generate music with ACE-Step"
+                    title="Generate music"
                   >
                     <MusicIcon className="w-3 h-3" />
                     Generate Music
@@ -6828,7 +6933,7 @@ function Timeline({ onActiveToolChange, onStatusChange }) {
                 }
               }}
               className="ml-auto p-0.5 hover:bg-sf-dark-700 rounded"
-              title="Generate music with ACE-Step"
+              title="Generate music"
             >
               <MusicIcon className="w-3 h-3 text-sf-accent" />
             </button>

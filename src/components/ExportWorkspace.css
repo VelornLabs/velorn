@@ -24,21 +24,31 @@
 .export-field { display: flex; flex-direction: column; min-width: 0; gap: 5px; }
 .export-presets { container-type: inline-size; container-name: export-presets; }
 .export-presets__tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.export-preset-tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; padding: 9px;
-  text-align: left; border: 1px solid rgb(var(--sf-dark-600)); border-radius: 5px; background: rgb(var(--sf-dark-950)); color: rgb(var(--sf-text-secondary)); }
+/* A tile: where the video is going (or the file it becomes) on top, its name under it. */
+.export-preset-tile { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; min-height: 92px; padding: 10px 6px;
+  text-align: center; border: 1px solid rgb(var(--sf-dark-600)); border-radius: 6px; background: rgb(var(--sf-dark-950)); color: rgb(var(--sf-text-secondary)); }
 .export-preset-tile:hover { background: rgb(var(--sf-dark-800)); border-color: rgb(var(--sf-accent) / .6); }
-.export-preset-tile[aria-pressed="true"] { background: rgb(var(--sf-accent) / .1); border-color: rgb(var(--sf-accent)); color: rgb(var(--sf-text-primary)); }
-.export-preset-tile__icon { color: rgb(var(--sf-text-muted)); }
-.export-preset-tile[aria-pressed="true"] .export-preset-tile__icon, .export-preset-tile__check { color: rgb(var(--sf-accent)); }
-.export-preset-tile__check { position: absolute; top: 9px; right: 8px; }
-.export-preset-tile__name { display: block; font-size: 12px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
-.export-preset-tile__detail { display: block; margin-top: 2px; color: rgb(var(--sf-text-muted)); font-size: 10px; line-height: 1.4; }
-.export-preset-tile:last-child { grid-column: 1 / -1; flex-direction: row; align-items: center; padding-right: 24px; }
+.export-preset-tile[aria-pressed="true"], .export-preset-tile[data-active="true"] { background: rgb(var(--sf-accent) / .1); border-color: rgb(var(--sf-accent)); color: rgb(var(--sf-text-primary)); }
+.export-preset-tile__icon { color: rgb(var(--sf-text-muted)); margin-bottom: 2px; }
+.export-preset-tile__icon--youtube { color: #ff4e45; }
+.export-preset-tile[aria-pressed="true"] .export-preset-tile__icon:not(.export-preset-tile__icon--youtube), .export-preset-tile__check { color: rgb(var(--sf-accent)); }
+.export-preset-tile__check { position: absolute; top: 7px; right: 7px; }
+.export-preset-tile__name { display: block; font-size: 12px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.export-preset-tile__detail { display: block; color: rgb(var(--sf-text-muted)); font-size: 10px; line-height: 1.35; }
+.export-preset-tile__badge { margin-bottom: 4px; padding: 3px 7px; border-radius: 4px; font: 700 11px/1 ui-monospace, 'JetBrains Mono', 'DejaVu Sans Mono', monospace; letter-spacing: .04em;
+  color: rgb(var(--sf-accent)); background: rgb(var(--sf-accent) / .14); border: 1px solid rgb(var(--sf-accent) / .45); }
+.export-preset-tile__badge--mov { color: #c4a7ff; background: rgb(196 167 255 / .12); border-color: rgb(196 167 255 / .45); }
+/* The YouTube tile holds a button and, under it, the size switch. */
+.export-preset-tile--split { padding: 0; gap: 0; }
+.export-preset-tile__main { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 100%; padding: 9px 6px 5px; color: inherit; background: none; border: 0; border-radius: 6px 6px 0 0; }
+.export-preset-tile__sizes { display: flex; gap: 4px; padding: 0 6px 8px; }
+.export-preset-tile__sizes > button { padding: 2px 8px; border: 1px solid rgb(var(--sf-dark-600)); border-radius: 999px; background: none; color: rgb(var(--sf-text-muted)); font-size: 10px; font-weight: 600; line-height: 1.4; }
+.export-preset-tile__sizes > button:hover { color: rgb(var(--sf-text-primary)); border-color: rgb(var(--sf-accent) / .6); }
+.export-preset-tile__sizes > button[aria-pressed="true"] { color: rgb(var(--sf-dark-950)); background: rgb(var(--sf-accent)); border-color: rgb(var(--sf-accent)); }
 .export-presets__more > summary { cursor: pointer; font-size: 11px; color: rgb(var(--sf-text-muted)); }
 .export-presets__more > summary:hover { color: rgb(var(--sf-text-primary)); }
 @container export-presets (max-width: 210px) {
   .export-presets__tiles { grid-template-columns: minmax(0, 1fr); }
-  .export-preset-tile { flex-direction: row; align-items: center; padding-right: 24px; }
 }
 .export-field > label { color: rgb(var(--sf-text-muted)); font-size: 11px; }
 .export-field input, .export-field select {

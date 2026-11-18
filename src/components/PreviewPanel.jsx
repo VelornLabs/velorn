@@ -1,4 +1,4 @@
-import { Maximize2, Minimize2, Plus, X, Check, Home, ZoomIn, ZoomOut, Move, Play, Pause, SkipBack, SkipForward, Volume2, Film, Image as ImageIcon, ChevronDown, Grid3X3, Crosshair, Square, Frame, Eye, EyeOff, Layers, Wand2, Camera, Loader2, PictureInPicture2 } from 'lucide-react'
+import { Maximize2, Minimize2, Plus, X, Check, Home, ZoomIn, ZoomOut, Move, Hand, Play, Pause, SkipBack, SkipForward, Volume2, Film, Image as ImageIcon, ChevronDown, Grid3X3, Crosshair, Square, Frame, Eye, EyeOff, Layers, Wand2, Camera, Loader2, PictureInPicture2 } from 'lucide-react'
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import useAssetsStore from '../stores/assetsStore'
 import useTimelineStore from '../stores/timelineStore'
@@ -7,12 +7,17 @@ import { useFrameForAIStore } from '../stores/frameForAIStore'
 import { useTimelinePlayback } from '../hooks/useTimelinePlayback'
 import useViewportClampedPosition from '../hooks/useViewportClampedPosition'
 import usePreviewPopout from '../hooks/usePreviewPopout'
+import useViewerPresentation from '../hooks/useViewerPresentation'
+import { attachViewerPresentationKeyboard } from '../utils/viewerPresentationKeyboard.mjs'
+import { stepTimeByFrames } from '../utils/timelineFrames'
 import { captureTimelineFrameAt, getTopmostVideoOrImageClipAtTime } from '../utils/captureTimelineFrame'
 import { getAnimatedTransform, getAnimatedShapeMask } from '../utils/keyframes'
 import { insertSplinePointAfter, removeSplinePointAt } from '../utils/shapeMask'
 import VideoLayerRenderer from './VideoLayerRenderer'
 import CanvasPreviewRenderer from './CanvasPreviewRenderer'
 import AudioLayerRenderer from './AudioLayerRenderer'
+import { useTimelineFields } from '../hooks/useTimelineFields'
+import { useFramePlayhead } from '../hooks/useDisplayPlayhead'
 import PreviewTransformGizmo from './PreviewTransformGizmo'
 import MaskShapeGizmo from './MaskShapeGizmo'
 import MaskSplineDrawOverlay from './MaskSplineDrawOverlay'
@@ -33,12 +38,7 @@ import { landPlaybackJumpVideo } from '../utils/playbackJumpVideo.mjs'
 import { getPreviewFrameSnapshot } from '../services/previewFrameTap'
 import { useI18n } from '../i18n/I18nContext'
 
-const SPACE_MODIFIER_USED_EVENT = 'comfystudio-space-modifier-used'
 
-function notifySpaceModifierUsed() {
-  if (typeof window === 'undefined') return
-  window.dispatchEvent(new CustomEvent(SPACE_MODIFIER_USED_EVENT))
-}
 
 function firstPositiveMediaNumber(...values) {
   for (const value of values) {
@@ -298,6 +298,16 @@ function formatPreviewChunkRange(range) {
   return `${formatPreviewChunkTime(range?.rangeStart)}-${formatPreviewChunkTime(range?.rangeEnd)}`
 }
 
+const PREVIEW_PANEL_TIMELINE_FIELDS = [
+  'addClip', 'isPlaying', 'playheadSeekIntent', 'playbackJump', 'playbackJumpError', 'setPlayheadPosition',
+  'togglePlay', 'getActiveClipAtTime', 'getActiveClipsAtTime', 'getTransitionAtTime', 'getTimelineEndTime',
+  'clips', 'tracks', 'transitions', 'selectedClipIds', 'selectClip', 'requestTextEdit', 'saveToHistory',
+  'updateClipTransform', 'hasKeyframes', 'setKeyframe', 'duration', 'timelineFps',
+  'useProxyPlaybackForAssets', 'setUseProxyPlaybackForAssets', 'glslPreviewQuality', 'setGlslPreviewQuality',
+  'previewCompositorMode', 'setPreviewCompositorMode', 'inPoint', 'outPoint', 'rangeRenderState',
+  'maskEditActive', 'maskDrawActive',
+]
+
 function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
   const { t } = useI18n()
   const videoRefA = useRef(null) // Used for asset preview mode
@@ -358,11 +368,11 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
   // source tab, asset playhead, selection, or mask-edit state.
   const previewMode = reviewOnly ? 'timeline' : storedPreviewMode
   
-  // Timeline store for adding clips and playback
+  // Timeline store for adding clips and playback. The playhead is not in
+  // this slice (it is written every animation frame); see useFramePlayhead.
   const { 
     addClip, 
     isPlaying: timelineIsPlaying,
-    playheadPosition,
     playheadSeekIntent,
     playbackJump,
     playbackJumpError,
@@ -395,7 +405,8 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
     rangeRenderState,
     maskEditActive,
     maskDrawActive,
-  } = useTimelineStore()
+  } = useTimelineFields(PREVIEW_PANEL_TIMELINE_FIELDS)
+  const playheadPosition = useFramePlayhead()
 
   // Pen-draw mode ends when the selection changes or the panel unmounts.
   useEffect(() => {
@@ -541,20 +552,34 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
   const [justAdded, setJustAdded] = useState(false)
   const [justCapturedStill, setJustCapturedStill] = useState(false)
   
-  // Fullscreen state
-  const [isFullscreen, setIsFullscreen] = useState(false)
+  // HTML fullscreen isolates the existing viewer; desktop presentation owns
+  // native sizing separately, including macOS's same-desktop simple mode.
+  const { isFullscreen, fullscreenPending, fullscreenError, toggleFullscreen, exitFullscreen } = useViewerPresentation(panelRef)
   
   // Zoom and pan state
   const [zoom, setZoom] = useState('fit') // 'fit' or number (percentage)
   const [pan, setPan] = useState({ x: 0, y: 0 })
+  const presentationViewRef = useRef(null)
+  useEffect(() => {
+    if (isFullscreen) {
+      presentationViewRef.current = { zoom, pan }
+      setZoom('fit')
+      setPan({ x: 0, y: 0 })
+      setContextMenu(null)
+      setShowZoomDropdown(false)
+      setShowGuidesDropdown(false)
+    } else if (presentationViewRef.current) {
+      setZoom(presentationViewRef.current.zoom)
+      setPan(presentationViewRef.current.pan)
+      presentationViewRef.current = null
+    }
+    // Snapshot only when presentation toggles, not on viewer zoom changes.
+  }, [isFullscreen])
   const [isPanning, setIsPanning] = useState(false)
-  const [isZooming, setIsZooming] = useState(false)
-  const [isSpaceHeld, setIsSpaceHeld] = useState(false)
-  const [isCtrlHeld, setIsCtrlHeld] = useState(false)
-  const spaceHeldRef = useRef(false)
-  const ctrlHeldRef = useRef(false)
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
-  const [zoomStart, setZoomStart] = useState(100)
+
+  const [handTool, setHandTool] = useState(false)
+  const panGestureRef = useRef(null)
+
   const [showZoomDropdown, setShowZoomDropdown] = useState(false)
   
   // Safe guides state
@@ -1042,7 +1067,9 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
   useEffect(() => {
     if (!chunkVideoRef.current || !activePreviewChunk?.url) return
     const video = chunkVideoRef.current
-    const chunkTime = Math.max(0, playheadPosition - activePreviewChunk.rangeStart)
+    // playheadPosition (one step per timeline frame while playing) schedules
+    // this check; the drift comparison itself uses the exact live playhead.
+    const chunkTime = Math.max(0, useTimelineStore.getState().playheadPosition - activePreviewChunk.rangeStart)
     const jump = getCurrentPlaybackJump(useTimelineStore.getState())
     if (jump) {
       let cancelled = false, frame = 0
@@ -1121,7 +1148,14 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
       return indexB - indexA // Video 2 renders first (behind), Video 1 renders last (on top)
     })
     
-    setActiveLayerClips(sortedClips)
+    // Keep the previous array while the same clips are active, so advancing
+    // the playhead inside a clip does not cause a second render per frame.
+    setActiveLayerClips((previous) => (
+      previous.length === sortedClips.length
+        && previous.every((entry, index) => entry.clip === sortedClips[index].clip && entry.track === sortedClips[index].track)
+        ? previous
+        : sortedClips
+    ))
   }, [previewMode, playheadPosition, getActiveClipsAtTime, tracks, clips])
 
   const activeLayerClipById = useMemo(() => {
@@ -1426,31 +1460,6 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
     }
   }, [clips.length, previewMode, currentPreview, setPreviewMode, reviewOnly])
   
-  // Fullscreen toggle
-  const toggleFullscreen = useCallback(async () => {
-    if (!panelRef.current) return
-    
-    try {
-      if (!document.fullscreenElement) {
-        await panelRef.current.requestFullscreen()
-      } else {
-        await document.exitFullscreen()
-      }
-    } catch (err) {
-      console.error('Fullscreen error:', err)
-    }
-  }, [])
-  
-  // Listen for fullscreen changes (including ESC key)
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement)
-    }
-    
-    document.addEventListener('fullscreenchange', handleFullscreenChange)
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
-  }, [])
-  
   // Handle add to timeline
   const handleAddToTimeline = () => {
     if (currentPreview) {
@@ -1614,6 +1623,41 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
     ? (clips.length > 0)
     : (currentPreview !== null)
 
+  // Hidden editor listeners stay mounted during HTML fullscreen. Own viewer
+  // shortcuts explicitly so Delete/custom editing bindings cannot modify clips.
+  const presentationTransportRef = useRef(null)
+  presentationTransportRef.current = { togglePlay, seekTo, currentTime, duration, hasContent, previewMode,
+    fps: previewMode === 'asset' ? (currentPreview?.settings?.fps || currentPreview?.fps || 24) : (timelineSettings?.fps || timelineFps || 24) }
+  useEffect(() => {
+    if (!isFullscreen || reviewOnly) return undefined
+    return attachViewerPresentationKeyboard({ windowTarget: window, documentTarget: document,
+      canHandle: () => document.fullscreenElement === panelRef.current,
+      onExit: exitFullscreen,
+      onTogglePlay: () => { const state = presentationTransportRef.current; if (state.hasContent) state.togglePlay() },
+      onFrameStep: direction => {
+        const state = presentationTransportRef.current
+        if (!state.hasContent) return
+        if (state.previewMode === 'timeline') {
+          const timeline = useTimelineStore.getState()
+          timeline.shuttlePause()
+          timeline.setPlayheadPosition(stepTimeByFrames(timeline.playheadPosition, direction, state.fps,
+            { min: 0, max: state.duration }), { snap: true, intent: 'frame-step' })
+        } else state.seekTo(stepTimeByFrames(state.currentTime, direction, state.fps, { min: 0, max: state.duration }))
+      },
+      onShuttle: action => {
+        const state = presentationTransportRef.current
+        if (!state.hasContent || state.previewMode !== 'timeline') return
+        const timeline = useTimelineStore.getState()
+        if (action.type === 'pause') timeline.shuttlePause()
+        else if (action.type === 'hold-slow' || action.type === 'step-slow') timeline.shuttleSlow(action.direction, action.type === 'step-slow')
+        else if (action.direction === 'reverse') timeline.shuttleReverse()
+        else timeline.shuttleForward()
+      },
+      onStart: () => presentationTransportRef.current.seekTo(0),
+      onEnd: () => { const state = presentationTransportRef.current; state.seekTo(state.duration) },
+    })
+  }, [isFullscreen, reviewOnly, exitFullscreen])
+
   const previewFps = useMemo(() => {
     if (!currentPreview) return null
     const rawFps = currentPreview.settings?.fps ?? currentPreview.fps
@@ -1724,107 +1768,44 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
     })
   }, [])
   
-  // Handle keyboard events for spacebar and ctrl
-  useEffect(() => {
-    if (reviewOnly) return undefined
-    const handleKeyDown = (e) => {
-      // Don't capture when typing in inputs (use activeElement so prompt/search work)
-      const active = document.activeElement
-      if (active && (['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) || active.isContentEditable)) return
-      
-      if (e.code === 'Space' && !e.repeat) {
-        // Only track the pan modifier here. Transport owns a plain Space
-        // tap; pointer pan/zoom handlers consume an actual modified gesture.
-        spaceHeldRef.current = true
-        setIsSpaceHeld(true)
-      }
-      if (e.key === 'Control') {
-        ctrlHeldRef.current = true
-        setIsCtrlHeld(true)
-      }
-    }
-    
-    const handleKeyUp = (e) => {
-      if (e.code === 'Space') {
-        spaceHeldRef.current = false
-        setIsSpaceHeld(false)
-        setIsPanning(false)
-        setIsZooming(false)
-      }
-      if (e.key === 'Control') {
-        ctrlHeldRef.current = false
-        setIsCtrlHeld(false)
-        setIsZooming(false)
-      }
-    }
-
-    const resetModifiers = () => {
-      spaceHeldRef.current = false
-      ctrlHeldRef.current = false
-      setIsSpaceHeld(false)
-      setIsCtrlHeld(false)
-      setIsPanning(false)
-      setIsZooming(false)
-    }
-    const handleVisibility = () => { if (document.hidden) resetModifiers() }
-    
-    window.addEventListener('keydown', handleKeyDown)
-    window.addEventListener('keyup', handleKeyUp)
-    window.addEventListener('blur', resetModifiers)
-    document.addEventListener('visibilitychange', handleVisibility)
-    
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-      window.removeEventListener('keyup', handleKeyUp)
-      window.removeEventListener('blur', resetModifiers)
-      document.removeEventListener('visibilitychange', handleVisibility)
-      resetModifiers()
-    }
-  }, [reviewOnly])
-  
-  // Handle mouse events for panning and zooming
-  const handleMouseDown = useCallback((e) => {
-    const spaceHeld = isSpaceHeld || spaceHeldRef.current
-    const ctrlHeld = isCtrlHeld || ctrlHeldRef.current
-    if (spaceHeld && ctrlHeld) {
-      // Start zooming with mouse drag
-      e.preventDefault()
-      notifySpaceModifierUsed()
-      setIsZooming(true)
-      setDragStart({ x: e.clientX, y: e.clientY })
-      setZoomStart(zoom === 'fit' ? 100 : zoom)
-    } else if (spaceHeld) {
-      // Start panning
-      e.preventDefault()
-      notifySpaceModifierUsed()
-      setIsPanning(true)
-      setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y })
-    }
-  }, [isSpaceHeld, isCtrlHeld, pan, zoom])
-  
-  const handleMouseMove = useCallback((e) => {
-    if (isZooming) {
-      // Zoom based on horizontal mouse movement (right = zoom in, left = zoom out)
-      const deltaX = e.clientX - dragStart.x
-      const zoomChange = deltaX * 0.5 // Adjust sensitivity
-      const newZoom = Math.max(10, Math.min(400, zoomStart + zoomChange))
-      setZoom(Math.round(newZoom))
-    } else if (isPanning) {
-      setPan({
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y
-      })
-    }
-  }, [isZooming, isPanning, dragStart, zoomStart])
-  
-  const handleMouseUp = useCallback(() => {
+  // Navigation captures before clip controls, without borrowing Space.
+  const stopPan = useCallback(() => {
+    const gesture = panGestureRef.current
+    panGestureRef.current = null
+    if (gesture?.element.hasPointerCapture?.(gesture.pointerId)) gesture.element.releasePointerCapture(gesture.pointerId)
     setIsPanning(false)
-    setIsZooming(false)
   }, [])
-
+  useEffect(() => {
+    const onVisibility = () => { if (document.hidden) stopPan() }
+    window.addEventListener('blur', stopPan)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('blur', stopPan)
+      document.removeEventListener('visibilitychange', onVisibility)
+      stopPan()
+    }
+  }, [stopPan])
+  useEffect(() => { stopPan() }, [previewMode, isFullscreen, handTool, stopPan])
+  const handlePanDown = useCallback((e) => {
+    if (reviewOnly || isFullscreen || !(e.button === 1 || (handTool && e.button === 0))) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    panGestureRef.current = { element: e.currentTarget, pointerId: e.pointerId, button: e.button,
+      x: e.clientX - pan.x, y: e.clientY - pan.y }
+    setIsPanning(true)
+  }, [reviewOnly, isFullscreen, handTool, pan])
+  const handlePanMove = useCallback((e) => {
+    const gesture = panGestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId) return
+    if (!(e.buttons & (gesture.button === 1 ? 4 : 1))) { stopPan(); return }
+    e.preventDefault()
+    e.stopPropagation()
+    setPan({ x: e.clientX - gesture.x, y: e.clientY - gesture.y })
+  }, [stopPan])
   const handlePreviewClipPointerDown = useCallback((clip, e) => {
     if (!clip || previewMode !== 'timeline') return
-    if (isSpaceHeld || isPanning || isZooming) return
+    if (handTool || isPanning) return
     if (e.button !== 0) return
     e.stopPropagation()
     const isShiftHeld = e.shiftKey
@@ -1833,18 +1814,18 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
       addToSelection: isShiftHeld,
       toggleSelection: isCtrlHeld,
     })
-  }, [previewMode, isSpaceHeld, isPanning, isZooming, selectClip])
+  }, [previewMode, handTool, isPanning, selectClip])
 
   const handlePreviewTextDoubleClick = useCallback((clip, e) => {
     if (!clip || clip.type !== 'text' || previewMode !== 'timeline') return
-    if (isSpaceHeld || isPanning || isZooming) return
+    if (handTool || isPanning) return
     if (e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
 
     selectClip(clip.id)
     requestTextEdit(clip.id, { selectAll: true })
-  }, [previewMode, isSpaceHeld, isPanning, isZooming, requestTextEdit, selectClip])
+  }, [previewMode, handTool, isPanning, requestTextEdit, selectClip])
   
   // Handle mouse wheel for zooming
   const handleWheel = useCallback((e) => {
@@ -1966,6 +1947,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
   // Handle context menu on video
   const handleContextMenu = (e) => {
     e.preventDefault()
+    if (isFullscreen) return
     setContextMenu({ x: e.clientX, y: e.clientY })
   }
   
@@ -2062,10 +2044,10 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
   
   // Get cursor style
   const getCursor = () => {
-    if (isZooming) return 'ew-resize'
+
     if (isPanning) return 'grabbing'
-    if (isSpaceHeld && isCtrlHeld) return 'ew-resize'
-    if (isSpaceHeld) return 'grab'
+
+    if (handTool) return 'grab'
     return 'default'
   }
 
@@ -2362,7 +2344,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
   const previewStageStyle = {
     transform: `translate(${pan.x}px, ${pan.y}px)`,
     transformOrigin: 'center center',
-    transition: isZooming || isPanning ? 'none' : 'transform 0.1s ease-out',
+    transition: isPanning ? 'none' : 'transform 0.1s ease-out',
   }
 
   // Editor and export review deliberately share this exact cached/live
@@ -2402,8 +2384,8 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
           timelineWidth={timelineWidth}
           timelineHeight={timelineHeight}
           timelineFps={timelineSettings?.fps || timelineFps || 30}
-          onClipPointerDown={reviewOnly ? undefined : handlePreviewClipPointerDown}
-          onClipDoubleClick={reviewOnly ? undefined : handlePreviewTextDoubleClick}
+          onClipPointerDown={reviewOnly || isFullscreen ? undefined : handlePreviewClipPointerDown}
+          onClipDoubleClick={reviewOnly || isFullscreen ? undefined : handlePreviewTextDoubleClick}
           playbackStatsRef={playbackStatsRef}
         />
       )}
@@ -2444,6 +2426,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
   return (
     <div 
       ref={panelRef}
+      data-viewer-presentation={isFullscreen ? 'active' : undefined}
       className={`flex-1 bg-sf-dark-950 flex flex-col h-full ${isFullscreen ? 'fullscreen-panel' : ''}`}
       style={isFullscreen ? { width: '100vw', height: '100vh', minHeight: 0 } : undefined}
     >
@@ -2454,8 +2437,9 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
             {currentPreview ? `${t('preview.title')} - ${currentPreview.name}` : t('preview.title')}
             {isFullscreen && <span className="ml-2 text-sf-text-muted">{t('preview.escExit')}</span>}
           </span>
+          {fullscreenError && <span role="alert" className="text-xs text-red-400">{fullscreenError}</span>}
 
-          {previewMode === 'timeline' && getTopmostVideoOrImageClipAtTime(playheadPosition) && (
+          {!isFullscreen && previewMode === 'timeline' && getTopmostVideoOrImageClipAtTime(playheadPosition) && (
             <button
               onClick={handleCaptureStill}
               disabled={capturingStillFrame}
@@ -2597,7 +2581,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
               <X className="w-4 h-4 text-sf-text-muted" />
             </button>
           )}
-          {previewMode === 'timeline' && (
+          {previewMode === 'timeline' && !isFullscreen && (
             <button
               onClick={() => setShowPreviewTransformControls((value) => !value)}
               disabled={!canShowPreviewTransformControls}
@@ -2617,6 +2601,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
           )}
           <button
             onClick={togglePreviewPopout}
+            hidden={isFullscreen}
             className={`p-1 hover:bg-sf-dark-700 rounded transition-colors ${isPreviewPoppedOut ? 'text-sf-accent' : 'text-sf-text-muted'}`}
             title={isPreviewPoppedOut ? t('preview.closePopout') : t('preview.openPopout')}
           >
@@ -2624,6 +2609,9 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
           </button>
           <button
             onClick={toggleFullscreen}
+            disabled={fullscreenPending}
+            aria-label={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+            aria-pressed={isFullscreen}
             className="p-1 hover:bg-sf-dark-700 rounded transition-colors"
             title={isFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
           >
@@ -2649,10 +2637,13 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
           `,
           backgroundSize: '20px 20px',
         }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        data-preview-viewport
+        onPointerDownCapture={handlePanDown}
+        onPointerMoveCapture={handlePanMove}
+        onPointerUpCapture={stopPan}
+        onPointerCancel={stopPan}
+        onLostPointerCapture={stopPan}
+        onAuxClick={e => { if (e.button === 1) e.preventDefault() }}
         onWheel={handleWheel}
       >
         {/* Wrapper for video container and guides overlay */}
@@ -3083,7 +3074,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
 
           {/* Mask gizmo takes over while the Inspector's Mask section is
               open on a masked clip — two gizmos at once is handle soup. */}
-          {maskDrawActive && selectedPreviewClip && selectedPreviewTransform && (
+          {!isFullscreen && maskDrawActive && selectedPreviewClip && selectedPreviewTransform && (
             <div
               className="absolute inset-0 overflow-visible pointer-events-none"
               style={previewStageStyle}
@@ -3103,7 +3094,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
             </div>
           )}
 
-          {!maskDrawActive && maskEditActive && selectedPreviewClip?.shapeMask && selectedPreviewTransform && (
+          {!isFullscreen && !maskDrawActive && maskEditActive && selectedPreviewClip?.shapeMask && selectedPreviewTransform && (
             <div
               className="absolute inset-0 overflow-visible pointer-events-none"
               style={previewStageStyle}
@@ -3114,7 +3105,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
                 transform={selectedPreviewTransform}
                 buildVideoTransform={buildVideoTransform}
                 frameRect={selectedPreviewFrameRect}
-                disabled={isSpaceHeld || isPanning || isZooming}
+                disabled={handTool || isPanning}
                 onInteractionStart={() => useTimelineStore.getState().saveToHistory()}
                 onMaskChange={(updates, meta) => {
                   const store = useTimelineStore.getState()
@@ -3152,7 +3143,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
             </div>
           )}
 
-          {showPreviewTransformControls && !maskDrawActive && !(maskEditActive && selectedPreviewClip?.shapeMask) && selectedPreviewClip && selectedPreviewTransform && (
+          {!isFullscreen && showPreviewTransformControls && !maskDrawActive && !(maskEditActive && selectedPreviewClip?.shapeMask) && selectedPreviewClip && selectedPreviewTransform && (
             <div
               className="absolute inset-0 overflow-visible pointer-events-none"
               style={previewStageStyle}
@@ -3164,7 +3155,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
                 frameRect={selectedPreviewFrameRect}
                 previewScale={previewScale}
                 zoomScale={1}
-                disabled={isSpaceHeld || isPanning || isZooming}
+                disabled={handTool || isPanning}
                 onInteractionStart={handlePreviewTransformInteractionStart}
                 onTransformChange={handlePreviewTransformChange}
                 onTransformCommit={handlePreviewTransformCommit}
@@ -3451,21 +3442,23 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
           <ZoomIn className="w-3.5 h-3.5 text-sf-text-secondary" />
         </button>
         
-        <div className="w-px h-4 bg-sf-dark-600" />
-        
-        {/* Pan indicator */}
-        <div className="flex items-center gap-1 text-[10px] text-sf-text-muted">
-          <Move className="w-3 h-3" />
-          <span>Space+Drag</span>
-        </div>
-        
-        <div className="w-px h-4 bg-sf-dark-600" />
-        
-        {/* Zoom indicator */}
-        <div className="flex items-center gap-1 text-[10px] text-sf-text-muted">
-          <ZoomIn className="w-3 h-3" />
-          <span>Space+Ctrl+Drag L/R</span>
-        </div>
+        {!isFullscreen && (
+          <>
+            <div className="w-px h-4 bg-sf-dark-600" />
+            <button type="button" aria-label="Pan preview" aria-pressed={handTool} onClick={() => setHandTool(value => !value)} title="Hand tool: left-drag to pan" className="rounded p-1.5 hover:bg-sf-dark-700"><Hand className={handTool ? "w-3.5 h-3.5 text-sf-accent" : "w-3.5 h-3.5 text-sf-text-secondary"} /></button>
+            {/* Pan indicator */}
+            <div className="flex items-center gap-1 text-[10px] text-sf-text-muted">
+              <Move className="w-3 h-3" />
+              <span>Middle-drag</span>
+            </div>
+            <div className="w-px h-4 bg-sf-dark-600" />
+            {/* Zoom indicator */}
+            <div className="flex items-center gap-1 text-[10px] text-sf-text-muted">
+              <ZoomIn className="w-3 h-3" />
+              <span>Scroll to zoom</span>
+            </div>
+          </>
+        )}
       </div>
       
       {/* Context Menu (Portal). No overflow-auto here on purpose -- it
@@ -3473,7 +3466,7 @@ function PreviewPanel({ reviewOnly = false, playbackRange = null } = {}) {
           absolutely-positioned submenu children (see Timeline.jsx). The
           viewport-clamped position keeps the menu on-screen for any
           reasonable window size. */}
-      {contextMenu && (
+      {!isFullscreen && contextMenu && (
         <div
           ref={contextMenuRef}
           className="fixed z-50 bg-sf-dark-800 border border-sf-dark-600 rounded-lg shadow-xl py-1 min-w-[150px]"

@@ -139,8 +139,11 @@ export default function WorkflowDetail({
             ) : canPreviewAsset && previewAsset.type === 'image' ? (
               <img src={previewAsset.url} alt={previewAsset.name || ''} className="h-full w-full object-contain" />
             ) : canPreviewAsset && previewAsset.type === 'audio' ? (
-              <div className="flex h-full items-center justify-center p-6">
+              <div className="flex h-full flex-col items-center justify-center gap-3 p-6">
                 <audio src={previewAsset.url} controls className="w-full max-w-md" />
+                {previewAsset.generatedMusic?.completion?.warning && <p role="status" className="max-w-md text-xs text-amber-300">
+                  {previewAsset.generatedMusic.completion.warning}
+                </p>}
               </div>
             ) : workflow.cover && coverIsVideo ? (
               <video
@@ -232,6 +235,20 @@ export default function WorkflowDetail({
             />
           ))}
         </div>
+
+        {(workflow.runtimeNote || workflow.licenseNotice) && (
+          <div className="mt-4 space-y-2 rounded-lg border border-sf-dark-700 bg-sf-dark-800/50 p-3 text-[11px] leading-relaxed text-sf-text-muted">
+            {workflow.runtimeNote && <p>{workflow.runtimeNote}</p>}
+            {workflow.licenseNotice && (
+              <p>
+                {workflow.licenseNotice}{' '}
+                {workflow.licenseUrl && (
+                  <a href={workflow.licenseUrl} target="_blank" rel="noreferrer" className="text-sf-accent hover:underline">Model license</a>
+                )}
+              </p>
+            )}
+          </div>
+        )}
 
         {!workflow.runnable && (
           <div className="mt-4 rounded-lg border border-yellow-400/25 bg-yellow-400/10 p-3 text-xs text-yellow-200">

@@ -1,0 +1,6 @@
+.ca-local-workflow-trust { min-width: 0; }
+.ca-local-workflow-trust ul { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 10px 0; padding: 0; }
+.ca-local-workflow-trust li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }
+.ca-local-workflow-trust li > span { min-width: 0; overflow-wrap: anywhere; color: #d9e0ec; }
+.ca-local-workflow-trust button { flex-shrink: 0; }
+.ca-local-workflow-trust [role=alert] { color: #ffc9ac; }

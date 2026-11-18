@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import useAssetBrowserStore from './assetBrowserStore.mjs'
 import { checkCompoundAssetDeletion } from '../services/compoundAssetProtection'
 import { hasUsablePlaybackCache, PLAYBACK_CACHE_VERSION } from '../services/playbackCache'
 import {
@@ -464,6 +465,7 @@ export const useAssetsStore = create(
       assets: updatedAssets,
       folders: updatedFolders
     })
+    useAssetBrowserStore.getState().pruneFolders(updatedFolders)
     return { ok: true }
   },
 
@@ -484,6 +486,8 @@ export const useAssetsStore = create(
    * Clear all assets (for "New Project")
    */
   clearProject: () => {
+    // Navigation survives panel remounts, not opening/closing a project.
+    useAssetBrowserStore.getState().resetProject()
     // Revoke any blob URLs before clearing
     const state = get()
     state.assets.forEach(asset => {
