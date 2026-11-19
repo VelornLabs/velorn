@@ -1,8 +1,11 @@
+import { GENERATED_FOLDERS, generatedFolderId } from './generatedFolders.mjs'
 // Shared import action for Cloud image and MCP. No provider URL or key ever
 // reaches this layer; the native manager returns one validated image by job ID.
 export function createRouterImageImporter({ getApi, getProject, getAssets, captureContext, isBusy, importFile, makeFile, resolveAssetUrl, measureDuration }) {
   const tasks = new Map()
-  return async function importRouterImage(jobId, { previewOnly = true } = {}) {
+  // `filed`: put the result in the Assets panel's "Visuals" or "Sound" folder instead of loose at the top.
+  // Asked for by the Visuals and Sound tabs and the phone; the Director and agents place their own results.
+  return async function importRouterImage(jobId, { previewOnly = true, filed = false } = {}) {
     try {
       if (typeof jobId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(jobId)) throw new Error('Choose a known Router image job.')
       const api = getApi()
@@ -85,7 +88,8 @@ export function createRouterImageImporter({ getApi, getProject, getAssets, captu
         }
         const duplicate = findExisting()
         if (duplicate) return await showExisting(duplicate)
-        const asset = getAssets().addAsset({ ...assetInfo, url, name: output.filename, type: isAudio ? 'audio' : isVideo ? 'video' : 'image', isImported: true,
+        const folderId = filed ? generatedFolderId(getAssets(), isAudio ? GENERATED_FOLDERS.sound : GENERATED_FOLDERS.visuals) : null
+        const asset = getAssets().addAsset({ ...assetInfo, url, name: output.filename, type: isAudio ? 'audio' : isVideo ? 'video' : 'image', isImported: true, ...(folderId ? { folderId } : {}),
           ...(Number.isFinite(seconds) && seconds > 0 ? { duration: seconds } : {}),
           source: 'comfy-router', routerGeneration: { version: 1, jobId, model: job.model, estimate: job.estimate,
             ...(job.create ? { modelLabel: job.modelLabel, estimateUsd: job.estimateUsd ?? null } : {}) } })

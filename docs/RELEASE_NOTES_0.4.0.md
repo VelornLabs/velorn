@@ -80,6 +80,8 @@ commands and work with files on your computer.
 - **Your phone:** connect a phone in the browser to a computer running Velorn.
 - **Tutorials** tab.
 - **Faster export.**
+- What you make in Visuals, Sound and GPU sharing is filed in a folder of that
+  name in the Assets panel, instead of loose at the top.
 - The Windows installer now carries the Microsoft Visual C++ runtime files that
   song listening needs, so it starts on a freshly installed Windows.
 

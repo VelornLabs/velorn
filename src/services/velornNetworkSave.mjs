@@ -1,5 +1,7 @@
 // Saves a clip, a picture or a piece of music that came back from the Velorn network into the
 // open project, through the same import the Create tab uses. Once per job.
+import { GENERATED_FOLDERS, generatedFolderId } from './generatedFolders.mjs'
+
 const NAME = /^velorn-network-[A-Za-z0-9_-]{1,12}\.(mp4|mov|webm|png|mp3|flac|opus)$/
 const TYPES = ['video/mp4', 'video/quicktime', 'video/webm', 'image/png', 'audio/mpeg', 'audio/flac', 'audio/ogg']
 const SOUND_EXTENSION = { 'audio/mpeg': '.mp3', 'audio/flac': '.flac', 'audio/ogg': '.opus' }
@@ -26,7 +28,9 @@ export function createVelornNetworkSaver({ getProject, getAssets, importFile, ma
       // The timeline needs a sound's real length. A length that cannot be read is left out, never guessed.
       let seconds = null
       if (type === 'audio' && typeof measureDuration === 'function') { try { seconds = await measureDuration(url) } catch { seconds = null } }
-      const asset = getAssets().addAsset({ ...info, url, name: filename, type, isImported: true, source: 'velorn-network', ...(Number.isFinite(seconds) && seconds > 0 ? { duration: seconds } : {}),
+      // Filed in the Assets panel's "GPU sharing" folder, not loose at the top.
+      const folderId = generatedFolderId(getAssets(), GENERATED_FOLDERS.shared)
+      const asset = getAssets().addAsset({ ...info, url, name: filename, type, isImported: true, source: 'velorn-network', ...(folderId ? { folderId } : {}), ...(Number.isFinite(seconds) && seconds > 0 ? { duration: seconds } : {}),
         velornNetwork: { version: 1, jobId, hostName: String(hostName).slice(0, 80), prompt: String(prompt).slice(0, 2000) } })
       if (type !== 'audio') getAssets().setPreview?.(asset)
       return { success: true, assetId: asset.id }

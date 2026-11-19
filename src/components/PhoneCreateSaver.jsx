@@ -9,7 +9,7 @@ import { createPhoneCreateSaver } from '../services/phoneCreateSave.mjs'
 // a result is collected even when the phone has been put away.
 const saver = createPhoneCreateSaver({
   getApi: () => window.electronAPI?.comfyRouter,
-  importJob: jobId => importRouterImage(jobId, { previewOnly: false }),
+  importJob: jobId => importRouterImage(jobId, { previewOnly: false, filed: true }),
 })
 
 export default function PhoneCreateSaver() {

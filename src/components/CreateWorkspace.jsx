@@ -246,7 +246,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
 
   // Saves one finished request into the project. Returns the result, or a message when it could not be saved.
   const collect = useCallback(async finished => {
-    const saved = await importRouterImage(finished.jobId, { previewOnly: false })
+    const saved = await importRouterImage(finished.jobId, { previewOnly: false, filed: true })
     if (!saved?.success) return { error: saved?.error || 'The result could not be added to your project.' }
     const asset = useAssetsStore.getState().assets.find(item => item.id === saved.assetId)
     return { jobId: finished.jobId, assetId: saved.assetId, url: asset?.url || '', type: asset?.type || finished.kind, chargedUsd: finished.chargedUsd, chargedCredits: finished.chargedCredits, modelLabel: finished.modelLabel }
@@ -434,7 +434,7 @@ export default function CreateWorkspace({ mode = 'create', onShare = null }) {
     } else if (netState.phase === 'done') {
       const asset = useAssetsStore.getState().assets.find(item => item.id === netState.assetId)
       velornNetwork.clear(); void loadNetHosts()
-      if (asset) { setResults([{ jobId: netState.job.jobId, assetId: asset.id, url: asset.url, type: made === 'music' ? 'audio' : made, made, modelLabel: label, network: true, madeOn: netState.job.hostName,
+      if (asset) { setResults([{ jobId: netState.job.jobId, assetId: asset.id, url: asset.url, type: made === 'music' || asset.type === 'audio' ? 'audio' : made, kind: asset.type === 'audio' ? 'music' : made, made, modelLabel: label, network: true, madeOn: netState.job.hostName,
         // A creator's own workflow can be reported by the person who just used it.
         ...(/^own-[a-f0-9]{16}$/.test(netState.job.workflowId || '') && netState.job.hostId ? { reportable: { hostId: netState.job.hostId, workflowId: netState.job.workflowId } } : {}) }]); setNotice(''); setStep('result') }
       else { setNotice(`Your ${made === 'image' ? 'picture' : made === 'music' ? 'song' : 'clip'} is in the project’s assets.`); setStep('compose') }

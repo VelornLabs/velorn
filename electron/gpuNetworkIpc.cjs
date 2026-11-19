@@ -14,7 +14,7 @@ const JOB_ID = /^[A-Za-z0-9_-]{8,64}$/
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 // How the window wants to name a job it sent (an owner's own workflow has no name Velorn knows): display only.
 const shownAs = value => ({ ...(/^[a-f0-9]{32}$/.test(value?.hostId || '') ? { hostId: value.hostId } : {}), ...(typeof value?.label === 'string' && value.label.trim() ? { label: value.label.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 120) } : {}),
-  ...(['image', 'video'].includes(value?.kind) ? { kind: value.kind } : {}) })
+  ...(['image', 'video', 'music'].includes(value?.kind) ? { kind: value.kind } : {}) })
 
 // The one job this account has on the network, for whoever sends and follows it: the main window
 // (through the channels below) and the paired phone (mobileCompanionSharedGpu.cjs). `on(listener)`
