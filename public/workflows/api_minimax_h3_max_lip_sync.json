@@ -1,0 +1,6 @@
+{
+  "1": { "class_type": "LoadImage", "_meta": { "title": "Keyframe" }, "inputs": { "image": "keyframe.png" } },
+  "2": { "class_type": "LoadAudio", "_meta": { "title": "This shot's part of the song" }, "inputs": { "audio": "song_slice.wav" } },
+  "3": { "class_type": "MinimaxHailuo03MaxLipSyncNode", "_meta": { "title": "MiniMax H3 Max Lip Sync (paid)" }, "inputs": { "model": "MiniMax H3 Max", "model.image": ["1", 0], "model.audio": ["2", 0], "model.resolution": "768P", "model.transcription": false, "model.seed": 42 } },
+  "4": { "class_type": "SaveVideo", "inputs": { "video": ["3", 0], "filename_prefix": "video/Velorn_h3_lip_sync", "format": "auto", "codec": "auto" } }
+}

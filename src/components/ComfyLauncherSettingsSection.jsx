@@ -30,6 +30,7 @@ import {
   updateComfyLauncherConfig,
 } from '../services/comfyLauncher'
 import { useI18n } from '../i18n/I18nContext'
+import ComfyConnectionSetup from './ComfyConnectionSetup'
 
 const STATE_LABEL = {
   unknown: { key: 'unknown', dot: 'bg-slate-400' },
@@ -55,7 +56,7 @@ function Toggle({ checked, onChange, ariaLabel }) {
   )
 }
 
-function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
+function ComfyLauncherSettingsSection({ onOpenLogViewer, refreshOnMount = true }) {
   const { t } = useI18n()
   const available = isComfyLauncherAvailable()
   const [state, setState] = useState(() => getComfyLauncherSnapshot())
@@ -75,13 +76,13 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
     detectComfyLauncherCandidates({}).then((result) => {
       if (result?.success) setCandidates(result.candidates || [])
     }).catch(() => {})
-    refreshComfyLauncher().catch(() => {})
+    if (refreshOnMount) refreshComfyLauncher().catch(() => {})
     if (window?.electronAPI?.comfyLauncher?.getConfig) {
       window.electronAPI.comfyLauncher.getConfig().then((cfg) => {
         if (cfg) setConfig(cfg)
       }).catch(() => {})
     }
-  }, [available])
+  }, [available, refreshOnMount])
 
   const stateMeta = STATE_LABEL[state.state] || STATE_LABEL.unknown
   const isMacPlatform = window?.electronAPI?.platform === 'darwin'
@@ -90,12 +91,11 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
   const updateConfig = useCallback(async (partial) => {
     setError('')
     const next = { ...config, ...partial }
-    setConfig(next)
     const result = await updateComfyLauncherConfig(partial)
     if (result?.success === false) {
       setError(result.error || t('settings.launcher.saveFailed'))
-    } else if (result?.config) {
-      setConfig(result.config)
+    } else {
+      setConfig(result?.config || next)
     }
   }, [config, t])
 
@@ -128,7 +128,12 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
 
   const handleUseCandidate = async (candidate) => {
     if (!candidate?.path) return
-    await updateConfig({ launcherMode: 'script', launcherScript: candidate.path })
+    if (candidate.launcherMode === 'mac-app') {
+      if (!isMacPlatform) return
+      await updateConfig({ launcherMode: 'mac-app', macAppPath: candidate.path })
+    } else {
+      await updateConfig({ launcherMode: 'script', launcherScript: candidate.path })
+    }
   }
 
   const startupTimeoutSeconds = useMemo(() => Math.max(10, Math.round((config.startupTimeoutMs || 120000) / 1000)), [config.startupTimeoutMs])
@@ -146,6 +151,14 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
   const canStart = (state.state === 'idle' || state.state === 'stopped' || state.state === 'crashed' || state.state === 'unknown') && hasLauncherTarget
   const canStop = state.state === 'running' && (state.ownership === 'ours' || canControlMacApp)
   const canRestart = state.state === 'running' && (state.ownership === 'ours' || canControlMacApp)
+  const connectedExternally = state.ownership === 'external' || state.state === 'external'
+  const statusLabel = connectedExternally
+    ? t('settings.launcher.connectedExternally', {}, 'Connected externally')
+    : state.state === 'running' && (state.ownership === 'ours' || state.ownership === 'app')
+      ? t('settings.launcher.connectedManaged', {}, 'Connected · managed by Velorn')
+      : t(`settings.launcher.states.${stateMeta.key}`)
+  const usableCandidates = candidates.filter(candidate => candidate?.path
+    && (candidate.launcherMode === 'mac-app' ? isMacPlatform : !candidate.launcherMode || candidate.launcherMode === 'script'))
   const statusMessage = state.statusMessage === 'ComfyUI is not running.'
     ? t('settings.launcher.status.notRunning')
     : state.statusMessage === 'ComfyUI not detected.'
@@ -162,11 +175,11 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
     <div className="space-y-5">
       {/* Status */}
       <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 px-4 py-3.5">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <span className={`w-2.5 h-2.5 rounded-full ${stateMeta.dot}`} />
             <div className="min-w-0">
-              <div className="text-sm font-medium text-sf-text-primary">ComfyUI {t(`settings.launcher.states.${stateMeta.key}`)}</div>
+              <div className="text-sm font-medium text-sf-text-primary">ComfyUI · {statusLabel}</div>
               <div className="text-[11px] text-sf-text-muted truncate">{statusMessage}</div>
             </div>
           </div>
@@ -215,16 +228,26 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
             <div className="flex-1 break-words">{error}</div>
           </div>
         )}
-        {state.state === 'external' && (
+        {connectedExternally && (
           <div className="mt-2 flex items-start gap-2 rounded bg-sky-500/10 border border-sky-500/30 px-2 py-1.5 text-[11px] text-sky-200">
             <ExternalLink className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
             <div>
-              {t('settings.launcher.externalHelp')}
+              {t('settings.launcher.externalConnectionHelp', {}, 'ComfyUI is connected. Open its app or terminal to stop or restart it; generation does not require Velorn to manage startup.')}
             </div>
           </div>
         )}
       </div>
 
+      <ComfyConnectionSetup />
+
+      <details open={hasLauncherTarget} className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/30 px-4 py-3">
+        <summary className="cursor-pointer text-sm font-medium text-sf-text-primary">
+          {t('settings.launcher.optionalStartup', {}, 'Let Velorn start ComfyUI (optional)')}
+        </summary>
+        <p className="mt-2 text-xs text-sf-text-muted">
+          {t('settings.launcher.optionalStartupHelp', {}, 'Already open ComfyUI yourself? Keep using it that way. To start it here instead, choose a detected installation or browse for your launch script.')}
+        </p>
+        <div className="mt-4 space-y-5">
       {/* Launcher target */}
       {isMacPlatform && (
         <div>
@@ -278,9 +301,9 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
               </button>
             </div>
           </div>
-          <div className="bg-sf-dark-800 border border-sf-dark-600 rounded px-3 py-2 text-xs text-sf-text-primary truncate min-h-[34px]">
+          <div className="bg-sf-dark-800 border border-sf-dark-600 rounded px-3 py-2 text-xs text-sf-text-primary break-words min-h-[34px]">
             {config.macAppPath || (
-              <span className="italic text-sf-text-muted">{t('settings.launcher.noApp')}</span>
+              <span className="italic text-sf-text-muted">{t('settings.launcher.noAppOptional', {}, 'No app selected. Browse for ComfyUI.app, or open it yourself and connect above.')}</span>
             )}
           </div>
           <p className="text-[11px] text-sf-text-muted mt-1.5">
@@ -313,25 +336,31 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
             {t('settings.launcher.browse')}
           </button>
         </div>
-        <div className="bg-sf-dark-800 border border-sf-dark-600 rounded px-3 py-2 text-xs text-sf-text-primary truncate min-h-[34px]">
+        <div className="bg-sf-dark-800 border border-sf-dark-600 rounded px-3 py-2 text-xs text-sf-text-primary break-words min-h-[34px]">
           {config.launcherScript || (
-            <span className="italic text-sf-text-muted">{t('settings.launcher.noLauncher')}</span>
+            <span className="italic text-sf-text-muted">{t('settings.launcher.noScriptOptional', {}, 'No launch script selected. You can still open ComfyUI yourself and connect above.')}</span>
           )}
         </div>
-        {candidates.length > 0 && (
+        <p className="mt-1.5 text-[11px] text-sf-text-muted">
+          {t('settings.launcher.scriptChoiceHelp', {}, 'Choose the script you normally use to start ComfyUI, such as a .bat file on Windows or a .sh file on Linux/macOS. For a desktop app, open the app and start the instance you want to use.')}
+        </p>
+      </div>
+      )}
+        {usableCandidates.length > 0 && (
           <div className="mt-2 space-y-1">
             <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold flex items-center gap-1">
               <FolderSearch className="w-3 h-3" />
-              {t('settings.launcher.detectedNearby')}
+              {t('settings.launcher.detectedInstallations', {}, 'Detected installations')}
             </div>
-            {candidates.map((candidate) => {
-              const isCurrent = candidate.path === config.launcherScript
+            {usableCandidates.map((candidate) => {
+              const candidateMode = candidate.launcherMode === 'mac-app' ? 'mac-app' : 'script'
+              const isCurrent = candidateMode === launcherMode && candidate.path === (candidateMode === 'mac-app' ? config.macAppPath : config.launcherScript)
               return (
                 <button
                   key={candidate.path}
                   type="button"
-                  onClick={() => handleUseCandidate(candidate)}
-                  disabled={isCurrent}
+                  onClick={() => wrap(() => handleUseCandidate(candidate))}
+                  disabled={busy || isCurrent}
                   className={`w-full text-left px-2.5 py-1.5 rounded border text-[11px] transition-colors ${isCurrent
                     ? 'bg-sf-accent/20 border-sf-accent/40 text-sf-text-primary cursor-default'
                     : 'bg-sf-dark-800 border-sf-dark-700 hover:bg-sf-dark-700 text-sf-text-primary'
@@ -344,8 +373,6 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
             })}
           </div>
         )}
-      </div>
-      )}
 
       {/* Behavior */}
       <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-4 py-3 space-y-3">
@@ -386,8 +413,9 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
       </div>
 
       {/* Advanced */}
-      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-4 py-3 space-y-3">
-        <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold">{t('settings.launcher.advanced')}</div>
+      <details className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-4 py-3">
+        <summary className="cursor-pointer text-xs text-sf-text-muted font-semibold">{t('settings.launcher.advanced')}</summary>
+        <div className="mt-3 space-y-3">
         <div>
           <label className="block text-[11px] text-sf-text-muted mb-1">{t('settings.launcher.timeout')}</label>
           <input
@@ -414,7 +442,10 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
           />
           <p className="text-[11px] text-sf-text-muted mt-1">{t('settings.launcher.extraArgsHelp')}</p>
         </div>
-      </div>
+        </div>
+      </details>
+        </div>
+      </details>
 
       {/* Logs */}
       <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/60 px-4 py-3 space-y-2">
@@ -452,11 +483,8 @@ function ComfyLauncherSettingsSection({ onOpenLogViewer }) {
       <div className="flex items-start gap-2 text-[11px] text-sf-text-muted">
         <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
         <div>
-          {t('settings.launcher.connectionHelpBefore')} <code className="px-1 rounded bg-sf-dark-800">{state.httpBase || 'http://127.0.0.1:8188'}</code>{t('settings.launcher.connectionHelpMiddle')}
-          <span className="mx-1 inline-flex items-center gap-1">
-            <strong>{t('settings.sections.connection.title')}</strong>
-          </span>
-          {t('settings.launcher.connectionHelpAfter')}
+          {t('settings.launcher.connectionHelpBefore')} <code className="px-1 rounded bg-sf-dark-800">{state.httpBase || 'http://127.0.0.1:8188'}</code>.
+          {' '}{t('settings.comfySetup.portHint', {}, 'Use Connect ComfyUI above to find or test a different local port.')}
           {(busy || state.state === 'starting' || state.state === 'stopping') && (
             <span className="ml-1 inline-flex items-center gap-1 text-sky-300">
               <Loader2 className="w-3 h-3 animate-spin" />

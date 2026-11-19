@@ -1,8 +1,8 @@
 // Personal workflow library: graphs the user saved from the embedded ComfyUI
 // tab. Launcher model — each entry stores the UI-format graph so a click can
-// load it straight back into the tab. No forms, no bindings; the only
-// conversion is on-demand UI→API when an entry is promoted into a Director
-// custom slot (VELORN node-title contract).
+// load it straight back into the tab. No forms or bindings are required.
+// Captures also retain ComfyUI's API graph when available. Older UI-only
+// entries remain compatible with the Generate picker and advanced editor.
 
 import { getLocalComfyConnectionSync } from './localComfyConnection'
 import { openUiWorkflowInComfyUi } from './workflowSetupManager'
@@ -58,6 +58,7 @@ function toListEntry(parsed, filePath) {
   return {
     id,
     title,
+    description: typeof parsed.description === 'string' ? parsed.description : '',
     savedAt: Number(parsed.savedAt) || 0,
     updatedAt: Number(parsed.updatedAt) || Number(parsed.savedAt) || 0,
     nodeCount: Number(parsed.nodeCount) || 0,
@@ -100,33 +101,31 @@ async function writeLibraryRecord(record, filePath) {
 }
 
 export async function renameCustomLibraryWorkflow(id, newTitle) {
-  const api = typeof window !== 'undefined' ? window.electronAPI : null
+  return updateCustomLibraryWorkflowMetadata(id, { title: newTitle })
+}
+
+/** Display metadata changes never change a saved workflow's identity or graph. */
+export async function updateCustomLibraryWorkflowMetadata(id, changes = {}, { assertCurrent } = {}) {
+  await loadCustomWorkflowLibrary()
   const entry = entriesById.get(String(id || '').trim())
-  const title = String(newTitle || '').trim()
+  const title = String(changes.title ?? entry?.title ?? '').trim().slice(0, 240)
   if (!entry) return { success: false, error: 'That workflow is no longer in the library.' }
   if (!title) return { success: false, error: 'Give it a name first.' }
 
   try {
     const record = await readLibraryRecord(entry)
-    const newId = slugify(title)
-    record.id = newId
     record.title = title
-    record.updatedAt = Date.now()
-
-    const newFilePath = await getEntryFilePath(newId)
-    if (!newFilePath) throw new Error('Could not resolve the workflow library folder.')
-    await writeLibraryRecord(record, newFilePath)
-    if (newId !== entry.id) {
-      entriesById.delete(entry.id)
-      if (api?.deleteFile) {
-        try { await api.deleteFile(entry.filePath) } catch { /* old file may linger */ }
-      }
+    if (Object.prototype.hasOwnProperty.call(changes, 'description')) {
+      record.description = String(changes.description || '').trim().slice(0, 2000)
     }
-    entriesById.set(newId, toListEntry(record, newFilePath))
+    record.updatedAt = Date.now()
+    assertCurrent?.()
+    await writeLibraryRecord(record, entry.filePath)
+    entriesById.set(entry.id, toListEntry(record, entry.filePath))
     notifyChanged()
     return { success: true }
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Could not rename the workflow.' }
+    return { success: false, error: error instanceof Error ? error.message : 'Could not update the workflow.' }
   }
 }
 
@@ -152,6 +151,7 @@ export function getCustomLibraryWorkflows() {
 }
 
 async function loadFromDiskOnce() {
+  const entriesBeforeRead = new Map(entriesById)
   const api = typeof window !== 'undefined' ? window.electronAPI : null
   const dir = await getLibraryDir()
   if (!api?.listDirectory || !api?.readFile || !dir) return
@@ -164,6 +164,7 @@ async function loadFromDiskOnce() {
   }
   if (!listing?.success || !Array.isArray(listing.items)) return
 
+  const loaded = new Map()
   for (const item of listing.items) {
     const name = typeof item === 'string' ? item : item?.name
     if (!name || !/\.json$/i.test(name)) continue
@@ -172,18 +173,27 @@ async function loadFromDiskOnce() {
       const read = await api.readFile(filePath, { encoding: 'utf8' })
       if (!read?.success || !read.data) continue
       const entry = toListEntry(JSON.parse(read.data), filePath)
-      if (entry) entriesById.set(entry.id, entry)
+      if (entry) loaded.set(entry.id, entry)
     } catch {
       // Skip unreadable entries; the rest of the library still loads.
     }
   }
 
-  if (entriesById.size > 0) notifyChanged()
+  // Capture/rename can finish while a disk snapshot is being read. Preserve
+  // those newer in-memory writes (and deletions) for the existing picker.
+  for (const [id, entry] of entriesById) {
+    if (entry !== entriesBeforeRead.get(id)) loaded.set(id, entry)
+  }
+  for (const id of entriesBeforeRead.keys()) {
+    if (!entriesById.has(id)) loaded.delete(id)
+  }
+  entriesById.clear()
+  for (const [id, entry] of loaded) entriesById.set(id, entry)
 }
 
-export function loadCustomWorkflowLibrary() {
-  if (!loadPromise) {
-    loadPromise = loadFromDiskOnce().catch(() => {})
+export function loadCustomWorkflowLibrary({ refresh = false } = {}) {
+  if (!loadPromise || refresh) {
+    loadPromise = Promise.resolve(loadPromise).then(() => loadFromDiskOnce()).catch(() => {})
   }
   return loadPromise
 }
@@ -209,9 +219,20 @@ export async function captureCurrentComfyGraph() {
 
 /**
  * Save a captured graph to the library under the given name (falls back to
- * ComfyUI's workflow name). Saving under an existing name updates that entry.
+ * ComfyUI's workflow name). Every capture is a new immutable identity; names
+ * are display metadata, so a repeated name never silently replaces a graph.
  */
-export async function saveCapturedGraphToLibrary(captured, titleInput = '') {
+// The saved workflows that already carry this name, newest first. Saving never replaces by itself, so the person is asked.
+export async function findCustomLibraryWorkflowsByTitle(titleInput) {
+  const wanted = String(titleInput || '').trim().toLowerCase()
+  if (!wanted) return []
+  await loadCustomWorkflowLibrary({ refresh: true })
+  return getCustomLibraryWorkflows().filter(entry => entry.title.trim().toLowerCase() === wanted)
+}
+
+// `replaceId` overwrites that saved workflow's graph in place (same identity, same file, its description kept);
+// without it every save is a new workflow, even under a name that exists.
+export async function saveCapturedGraphToLibrary(captured, titleInput = '', { replaceId = null } = {}) {
   const api = typeof window !== 'undefined' ? window.electronAPI : null
   if (!api?.writeFile) {
     throw new Error('Saving workflows is only available in the desktop build.')
@@ -223,21 +244,36 @@ export async function saveCapturedGraphToLibrary(captured, titleInput = '') {
   const title = String(titleInput || '').trim()
     || String(captured.workflowName || '').trim()
     || `Workflow ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { timeStyle: 'short' })}`
-  const id = slugify(title)
+  // A UUID suffix also protects captures saved concurrently by separate
+  // renderers. Keep the readable slug only as a convenience, not identity.
+  const unique = globalThis.crypto?.randomUUID?.()
+  if (!unique) throw new Error('Could not create a unique workflow identity. Please try again in the desktop app.')
   const now = Date.now()
-  const existing = entriesById.get(id)
+  // Replacing: keep what the person wrote about it, change only the graph.
+  let kept = null
+  const existing = replaceId ? entriesById.get(String(replaceId)) : null
+  if (replaceId) {
+    if (!existing) throw new Error('The workflow to replace is no longer in My Workflows. Save it as a new one.')
+    try { const read = await api.readFile(existing.filePath, { encoding: 'utf8' }); kept = JSON.parse(typeof read === 'string' ? read : read?.data ?? read?.content ?? '') } catch { kept = null }
+    if (!kept || kept.id !== existing.id) throw new Error('The workflow to replace could not be read. Save it as a new one.')
+  }
+  const id = existing ? existing.id : `${slugify(title)}-${unique}`
 
   const record = {
+    ...(kept ? Object.fromEntries(Object.entries(kept).filter(([key]) => !['uiWorkflow', 'apiWorkflow'].includes(key))) : {}),
     id,
-    title,
-    savedAt: existing?.savedAt || now,
+    title: existing ? existing.title : title,
+    savedAt: kept?.savedAt || now,
     updatedAt: now,
     nodeCount: Array.isArray(captured.workflow?.nodes) ? captured.workflow.nodes.length : 0,
     uiWorkflow: captured.workflow,
+    ...(captured.output && typeof captured.output === 'object' && !Array.isArray(captured.output)
+      ? { apiWorkflow: captured.output }
+      : {}),
   }
 
   const dir = await getLibraryDir()
-  const filePath = await getEntryFilePath(id)
+  const filePath = existing ? existing.filePath : await getEntryFilePath(id)
   if (!dir || !filePath) throw new Error('Could not resolve the workflow library folder.')
   await api.createDirectory?.(dir, { recursive: true })
   const wrote = await api.writeFile(filePath, JSON.stringify(record, null, 2), { encoding: 'utf8' })

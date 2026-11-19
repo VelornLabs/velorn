@@ -32,3 +32,14 @@ test('deletion guard protects descendant sources/masks without changing normal c
   assert.deepEqual(getCompoundAssetDeletionGuard(['video', 'mask', 'video', 'unused'], {}, state).assetIds, ['video', 'mask'])
   assert.equal(getCompoundAssetDeletionGuard(['other-source'], projectState, state).ok, false)
 })
+
+test('storyboard song, references and every take protect Trash but not project-only removal', () => {
+  const project = { currentProject: { storyboard: { version: 1, songAssetId: 'song', shots: [
+    { referenceAssetIds: ['reference'], takes: [{ assetId: 'chosen' }, { assetId: 'alternate' }] },
+  ] }, timelines: [] } }
+  assert.deepEqual([...getProjectAssetReferences(project, {})].sort(), ['alternate', 'chosen', 'reference', 'song'])
+  assert.deepEqual([...getProjectAssetReferences(project, {}, { compoundOnly: true })], [])
+  assert.equal(getCompoundAssetDeletionGuard(['chosen'], project, {}).ok, true)
+  project.currentProject.storyboard.version = 99
+  assert.equal(getProjectAssetReferences(project, {}).has('song'), true, 'Future boards retain conservative file protection')
+})

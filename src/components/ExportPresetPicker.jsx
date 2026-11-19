@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react'
-import { Check, Film, Play, Send } from 'lucide-react'
+import { Check, Send, Smartphone, Youtube } from 'lucide-react'
 import { useI18n } from '../i18n/I18nContext'
 import useExportPresetLibrary from '../hooks/useExportPresetLibrary'
 import { matchCustomExportPreset, readExportPresetLibrary, validateCustomExportPresetSettings, MAX_CUSTOM_EXPORT_PRESETS } from '../utils/exportPresetLibrary.mjs'
 import ExportPresetDialog from './ExportPresetDialog'
+
+// The tiles, in order. The two YouTube presets share one tile with a size
+// switch on it, as on a delivery page: where it is going first, then how big.
+const YOUTUBE_SIZES = [['youtube-1080p', '1080p'], ['youtube-4k', '4K']]
+const FILE_BADGES = { 'h264-master': 'MP4', 'prores-master': 'MOV' }
+const TILE_NAMES = { 'h264-master': 'H.264 Master', 'prores-master': 'ProRes', 'review-copy': 'Review copy' }
+const TILE_NOTES = { 'h264-master': 'Best quality', 'prores-master': 'For other editors', 'review-copy': 'Small, quick to share' }
 
 const TILE_DETAILS = {
   'youtube-1080p': 'Up to HD · MP4',
@@ -13,12 +20,14 @@ const TILE_DETAILS = {
   'review-copy': 'Small, quick sharing',
 }
 
-export default function ExportPresetPicker({ presets, activePresetId, hardwareLabel, onApply, settings, active = true, sessionKey = '' }) {
+export default function ExportPresetPicker({ presets, activePresetId, hardwareLabel, onApply, settings, active = true, sessionKey = '', tall = false }) {
   const { t } = useI18n()
   const library = useExportPresetLibrary()
   const [dialog, setDialog] = useState(null)
   const [selectedId, setSelectedId] = useState('')
   const [status, setStatus] = useState('')
+  // The YouTube size last picked, so the tile itself goes back to it.
+  const [youtubeSize, setYoutubeSize] = useState('youtube-1080p')
   useEffect(() => { setDialog(null); setStatus('') }, [active, sessionKey])
   const selectedPreset = library.presets.find(preset => preset.id === selectedId)
   const activeCustomPreset = matchCustomExportPreset(selectedPreset ? [selectedPreset] : [], settings)
@@ -64,17 +73,37 @@ export default function ExportPresetPicker({ presets, activePresetId, hardwareLa
       {t('export.deliveryPresets.title', undefined, 'Delivery presets')}
     </h3>
     <div className="export-presets__tiles" role="group" aria-label={t('export.deliveryPresets.title', undefined, 'Delivery presets')}>
-      {recommended.map(item => {
+      {(() => {
+        const activeSize = !activeCustomPreset && YOUTUBE_SIZES.some(([id]) => id === activePresetId) ? activePresetId : ''
+        const pick = id => { const item = presets.find(entry => entry.id === id); if (item) { setYoutubeSize(id); onApply(item) } }
+        // A tall timeline is delivered tall: the same presets, named for where tall video goes.
+        const name = tall ? 'Vertical video' : 'YouTube'
+        return <div className="export-preset-tile export-preset-tile--split" data-active={activeSize ? 'true' : undefined} data-testid="export-preset-youtube">
+          <button type="button" className="export-preset-tile__main" aria-pressed={Boolean(activeSize)} aria-label={name}
+            title={presetSummary(presets.find(entry => entry.id === (activeSize || youtubeSize)) || recommended[0])} onClick={() => pick(activeSize || youtubeSize)}>
+            {tall ? <Smartphone size={24} className="export-preset-tile__icon" aria-hidden="true" />
+              : <Youtube size={26} className="export-preset-tile__icon export-preset-tile__icon--youtube" aria-hidden="true" />}
+            <span className="export-preset-tile__name">{name}</span>
+            <span className="export-preset-tile__detail">{tall ? 'Shorts · Reels · TikTok' : 'MP4 for upload'}</span>
+          </button>
+          <div className="export-preset-tile__sizes" role="group" aria-label={name + ' size'}>
+            {YOUTUBE_SIZES.map(([id, label]) => <button type="button" key={id} data-testid={'export-preset-' + id}
+              aria-pressed={activeSize === id} aria-label={presetLabel(presets.find(entry => entry.id === id) || { id, label })}
+              onClick={() => pick(id)}>{label}</button>)}
+          </div>
+          {activeSize && <Check size={12} className="export-preset-tile__check" aria-hidden="true" />}
+        </div>
+      })()}
+      {recommended.filter(item => !item.id.startsWith('youtube-')).map(item => {
         const selected = !activeCustomPreset && activePresetId === item.id
-        const Icon = item.id.startsWith('youtube-') ? Play : item.id === 'review-copy' ? Send : Film
         return <button type="button" key={item.id} data-testid={'export-preset-' + item.id}
           className="export-preset-tile" aria-pressed={selected} aria-label={presetLabel(item)}
           title={presetSummary(item)} onClick={() => onApply(item)}>
-          <Icon size={15} className="export-preset-tile__icon shrink-0" aria-hidden="true" />
-          <span className="min-w-0 flex-1">
-            <span className="export-preset-tile__name">{presetLabel(item)}</span>
-            <span className="export-preset-tile__detail">{t(`export.deliveryPresets.items.${item.id}.detail`, undefined, TILE_DETAILS[item.id])}</span>
-          </span>
+          {FILE_BADGES[item.id]
+            ? <span className={'export-preset-tile__badge export-preset-tile__badge--' + FILE_BADGES[item.id].toLowerCase()} aria-hidden="true">{FILE_BADGES[item.id]}</span>
+            : <Send size={22} className="export-preset-tile__icon" aria-hidden="true" />}
+          <span className="export-preset-tile__name">{TILE_NAMES[item.id] || presetLabel(item)}</span>
+          <span className="export-preset-tile__detail">{TILE_NOTES[item.id] || TILE_DETAILS[item.id]}</span>
           {selected && <Check size={12} className="export-preset-tile__check" aria-hidden="true" />}
         </button>
       })}

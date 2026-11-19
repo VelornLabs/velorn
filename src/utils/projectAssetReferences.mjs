@@ -18,6 +18,11 @@ export function collectAssetReferences(value, assetIds = new Set(), seen = new W
 export function getProjectAssetReferences(projectState = {}, timelineState = {}, { compoundOnly = false } = {}) {
   const assetIds = new Set()
   const project = projectState.currentProject
+  // Storyboard references protect files from Trash, while project-only removal
+  // remains available under the existing (compound-only) deletion guard.
+  // Collect even unsupported future boards conservatively; never normalize or
+  // discard unknown authored data just to inspect its references.
+  if (!compoundOnly) collectAssetReferences(project?.storyboard, assetIds)
   const currentTimelineId = projectState.currentTimelineId || project?.currentTimelineId
   const context = timelineState.compoundEditContext
   const collectClips = (clips, insideCompound = false) => {

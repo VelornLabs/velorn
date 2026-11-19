@@ -84,6 +84,7 @@ function createMediaPreparationService({
   const counters = new Map()
   let active = null
   let drainScheduled = false
+  let exclusiveOperation = false
   const historyLimit = Math.max(1, Math.min(500, Number(maxHistory) || 100))
   const threadLimit = Math.max(1, Math.min(4, Math.floor(Number(threads) || 2)))
   const normalizePath = (value) => platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value)
@@ -279,7 +280,7 @@ function createMediaPreparationService({
     drainScheduled = true
     queueMicrotask(async () => {
       drainScheduled = false
-      if (active) return
+      if (active || exclusiveOperation) return
       const job = queue.shift()
       if (!job) return
       active = job
@@ -296,6 +297,10 @@ function createMediaPreparationService({
   }
 
   function enqueue(options = {}) {
+    if (exclusiveOperation) return Promise.resolve({
+      success: false,
+      error: 'Media files are being removed. Please retry media preparation after removal finishes.',
+    })
     const { inputPath, outputPath, kind, ownerId = 'default', assetId = null, label } = options
     if (!['playback', 'proxy'].includes(kind)) return Promise.resolve({ success: false, error: 'Invalid media preparation kind.' })
     if (typeof inputPath !== 'string' || !inputPath || typeof outputPath !== 'string' || !outputPath) {
@@ -371,7 +376,24 @@ function createMediaPreparationService({
     return { success: true, cancelledCount }
   }
 
-  return { enqueue, getStatus, cancelOwner, cancelAll }
+  // Claim synchronously, before invoking or awaiting native file work. Checking
+  // jobs as well as active covers the microtask before drain starts; active
+  // remains set through probing, cancellation and temporary-file cleanup.
+  // Refuse instead of cancelling work or queueing a stale destructive plan.
+  async function runExclusiveWhenIdle(operation) {
+    if (typeof operation !== 'function') throw new TypeError('An exclusive media-file operation is required.')
+    if (active || jobs.size || queue.length) {
+      throw Object.assign(new Error('Media preparation is running or queued. Wait for playback caches and proxies to finish, then try moving files to Trash again.'), { code: 'MEDIA_PREPARATION_BUSY' })
+    }
+    if (exclusiveOperation) {
+      throw Object.assign(new Error('Media files are already being removed. Please try again after removal finishes.'), { code: 'MEDIA_FILE_OPERATION_BUSY' })
+    }
+    exclusiveOperation = true
+    try { return await operation() }
+    finally { exclusiveOperation = false }
+  }
+
+  return { enqueue, getStatus, cancelOwner, cancelAll, runExclusiveWhenIdle }
 }
 
 module.exports = { createMediaPreparationService, buildMediaPreparationArgs, validatePreparedMedia, proxyHeight }

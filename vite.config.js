@@ -9,6 +9,8 @@ export default defineConfig({
   plugins: [react()],
   // Use relative paths for Electron (file:// protocol)
   base: './',
+  // The built-in voice model's worker loads its library in pieces, which needs module workers.
+  worker: { format: 'es' },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -166,5 +168,9 @@ export default defineConfig({
   // Optimize deps for Electron
   optimizeDeps: {
     exclude: [],
+    // The voice library is prepared when the dev server starts. Left to be discovered later, Vite
+    // finds it the first time a voice is made and reloads the whole window in the middle of it,
+    // which looks like a crash.
+    include: ['kokoro-js', '@huggingface/transformers'],
   },
 })

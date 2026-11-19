@@ -1,0 +1,40 @@
+.comfy-router-backdrop { position: fixed; inset: 0; z-index: 170; background: rgb(0 0 0 / .72); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.comfy-router-panel { width: min(740px, 100%); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; overflow: hidden; color: rgb(var(--sf-text-primary)); background: rgb(var(--sf-dark-950)); border: 1px solid rgb(var(--sf-dark-600)); border-radius: 14px; box-shadow: 0 24px 80px rgb(0 0 0 / .4); }
+.comfy-router-panel header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 22px; border-bottom: 1px solid rgb(var(--sf-dark-700)); }
+.comfy-router-panel h2 { font-size: 20px; line-height: 1.4; font-weight: 600; margin: 0; }
+.comfy-router-panel h3, .comfy-router-panel h4 { font-size: 13px; font-weight: 600; margin: 0; }
+.comfy-router-panel p { font-size: 12px; line-height: 1.6; color: rgb(var(--sf-text-secondary)); margin: 8px 0; overflow-wrap: anywhere; }
+.comfy-router-panel .comfy-router-eyebrow { margin: 0 0 3px; font-size: 11px; color: rgb(var(--sf-text-muted)); }
+.comfy-router-body { padding: 14px 22px 22px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.comfy-router-card { margin-top: 15px; padding: 16px; min-width: 0; border: 1px solid rgb(var(--sf-dark-650, var(--sf-dark-600))); border-radius: 10px; background: rgb(var(--sf-dark-900) / .7); }
+.comfy-router-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.comfy-router-panel .comfy-router-muted { font-size: 11px; color: rgb(var(--sf-text-muted)); }
+.comfy-router-badge { font-size: 10px; padding: 4px 8px; border-radius: 20px; background: rgb(var(--sf-dark-700)); color: rgb(var(--sf-text-secondary)); }
+.comfy-router-panel label { display: block; margin: 10px 0 7px; font-size: 12px; font-weight: 500; }
+.comfy-router-panel input[type="password"], .comfy-router-panel textarea { display: block; width: 100%; min-width: 0; border: 1px solid rgb(var(--sf-dark-600)); border-radius: 7px; background: rgb(var(--sf-dark-950)); color: rgb(var(--sf-text-primary)); padding: 10px 11px; font-size: 12px; }
+.comfy-router-panel textarea { resize: vertical; min-height: 100px; max-height: 300px; line-height: 1.6; }
+.comfy-router-panel button { border: 1px solid rgb(var(--sf-dark-600)); border-radius: 7px; background: rgb(var(--sf-dark-800)); color: rgb(var(--sf-text-primary)); padding: 8px 11px; font-size: 12px; cursor: pointer; }
+.comfy-router-panel button:hover:not(:disabled) { background: rgb(var(--sf-dark-700)); }
+.comfy-router-panel button:disabled { opacity: .5; cursor: not-allowed; }
+.comfy-router-panel button:focus-visible, .comfy-router-panel input:focus-visible, .comfy-router-panel textarea:focus-visible { outline: 2px solid rgb(var(--sf-text-secondary)); outline-offset: 3px; }
+.comfy-router-panel .comfy-router-close { background: none; border: none; padding: 6px; }
+.comfy-router-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.comfy-router-estimate { margin-top: 15px; padding: 13px; background: rgb(var(--sf-dark-800)); border: 1px solid rgb(var(--sf-dark-600)); border-radius: 8px; font-size: 13px; }
+.comfy-router-panel .comfy-router-primary { background: rgb(var(--sf-accent) / .2); border-color: rgb(var(--sf-accent) / .55); }
+.comfy-router-warning { margin-top: 15px; border: 1px solid #a77c35; border-radius: 8px; padding: 13px; color: #f6d79a; font-size: 12px; }
+.comfy-router-panel .comfy-router-error { color: #ffb5a5; }
+.comfy-router-panel .comfy-router-notice { color: #a6dbb7; }
+.comfy-router-jobs { margin-top: 22px; }
+.comfy-router-job-prompt { white-space: pre-wrap; }
+.comfy-router-error-details { margin-top: 10px; font-size: 11px; color: rgb(var(--sf-text-muted)); }
+.comfy-router-error-details summary { cursor: pointer; }
+.comfy-router-panel footer { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 16px; padding: 11px 22px; border-top: 1px solid rgb(var(--sf-dark-700)); }
+.comfy-router-panel footer p { font-size: 11px; color: rgb(var(--sf-text-muted)); max-width: 540px; margin: 0; }
+@media (max-width: 540px) {
+  .comfy-router-backdrop { padding: 8px; }
+  .comfy-router-panel { max-height: calc(100dvh - 16px); }
+  .comfy-router-panel header { padding: 14px; }
+  .comfy-router-body { padding: 10px 14px 14px; }
+  .comfy-router-card { padding: 12px; }
+  .comfy-router-panel footer { padding: 10px 14px; }
+}

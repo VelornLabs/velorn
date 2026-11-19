@@ -107,7 +107,7 @@ export function useWorkflowSetupFlow({ dependencyCheck, isConnected, recheck }) 
   const [phaseError, setPhaseError] = useState('')
   const [progress, setProgress] = useState(createInitialProgress)
   const [rootValidation, setRootValidation] = useState({ checked: false, isValid: false, normalizedPath: '', error: '' })
-  const [diskSpace, setDiskSpace] = useState({ checked: false, freeBytes: null })
+  const [diskSpace, setDiskSpace] = useState({ checked: false, freeBytes: null, destinations: [] })
   const [restartCapability, setRestartCapability] = useState('none')
   const phaseRef = useRef('idle')
   const installTokenRef = useRef(0)
@@ -246,20 +246,23 @@ export function useWorkflowSetupFlow({ dependencyCheck, isConnected, recheck }) 
   // Free-space probe for the volume that holds the ComfyUI models folder.
   useEffect(() => {
     let cancelled = false
-    setDiskSpace({ checked: false, freeBytes: null })
+    setDiskSpace({ checked: false, freeBytes: null, destinations: [] })
     if (!hasActionableTasks || !rootValidation.isValid) return undefined
     const api = typeof window !== 'undefined' ? window.electronAPI : null
     if (!api?.getWorkflowSetupDiskSpace) return undefined
     ;(async () => {
       try {
-        const result = await api.getWorkflowSetupDiskSpace({ comfyRootPath: rootValidation.normalizedPath })
+        // Also asks where each model would be downloaded: that follows extra_model_paths.yaml.
+        const result = await api.getWorkflowSetupDiskSpace({ comfyRootPath: rootValidation.normalizedPath,
+          models: (plan?.models || []).map(model => ({ targetSubdir: model?.targetSubdir || '' })) })
         if (cancelled) return
         setDiskSpace({
           checked: true,
           freeBytes: result?.success && Number.isFinite(result.freeBytes) ? Number(result.freeBytes) : null,
+          destinations: result?.success && Array.isArray(result.destinations) ? result.destinations : [],
         })
       } catch {
-        if (!cancelled) setDiskSpace({ checked: true, freeBytes: null })
+        if (!cancelled) setDiskSpace({ checked: true, freeBytes: null, destinations: [] })
       }
     })()
     return () => { cancelled = true }

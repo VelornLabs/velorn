@@ -1,13 +1,15 @@
 import { lazy, Suspense, useState, useEffect, useRef } from 'react'
-import { FolderOpen, Plus, Film, AlertCircle, Loader2, Trash2, KeyRound, CheckCircle2, Compass, LayoutGrid, List, Minus, Square, Copy, X } from 'lucide-react'
+import { FolderOpen, Plus, Film, BookOpen, AlertCircle, Loader2, Trash2, KeyRound, CheckCircle2, Compass, LayoutGrid, List, Minus, Square, Copy, X, Plug } from 'lucide-react'
 import useProjectStore from '../stores/projectStore'
 import useAssetsStore from '../stores/assetsStore'
 import NewProjectDialog from './NewProjectDialog'
 import ComfyLauncherChip from './ComfyLauncherChip'
+import { DesktopAccountButton } from './DesktopAccount'
 import CreditsChip from './CreditsChip'
 import GettingStartedModal from './GettingStartedModal'
 import ApiKeyDialog from './ApiKeyDialog'
 import SettingsModal from './SettingsModal'
+import { OptionalSetupDialog } from './OptionalSetup'
 import {
   getComfyPartnerApiKey,
   COMFY_PARTNER_KEY_CHANGED_EVENT,
@@ -166,6 +168,7 @@ function WelcomeScreen() {
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState(false)
   const [partnerKeyConfigured, setPartnerKeyConfigured] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [optionalSetupOpen, setOptionalSetupOpen] = useState(false)
   const [settingsInitialSection, setSettingsInitialSection] = useState(null)
   const [windowState, setWindowState] = useState({ isMaximized: false, isFullScreen: false })
   const [deleteProjectDialog, setDeleteProjectDialog] = useState(null)
@@ -419,6 +422,7 @@ function WelcomeScreen() {
   const titleStrip = (
     <div className="relative z-50 h-10 flex-shrink-0 bg-black flex items-stretch justify-end drag-region select-none">
       <div className="no-drag flex items-stretch">
+        <div className="flex items-center"><DesktopAccountButton /></div>
         <button
           onClick={handleMinimize}
           className="w-10 h-10 flex items-center justify-center hover:bg-sf-dark-700 transition-colors"
@@ -477,8 +481,8 @@ function WelcomeScreen() {
     return (
       <div className="h-screen bg-sf-dark-950 flex flex-col">
         {titleStrip}
-        <div className="flex-1 flex items-center justify-center">
-          <div className="max-w-md w-full mx-4">
+        <div className="flex-1 min-h-0 overflow-y-auto flex justify-center py-6">
+          <div className="max-w-md w-full mx-4 my-auto">
           {/* Branding */}
           <div className="text-center mb-8">
             <h1 className="text-4xl font-bold text-sf-text-primary">Velorn</h1>
@@ -555,8 +559,16 @@ function WelcomeScreen() {
               {t('welcome.changeLater')}
             </p>
           </div>
+          <div className="mt-5 text-center">
+            <p className="text-xs text-sf-text-muted mb-2">Use Velorn as an editor, or add an agent and generation tools when you want them.</p>
+            <button type="button" onClick={() => setOptionalSetupOpen(true)} className="inline-flex items-center gap-2 rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary hover:bg-sf-dark-800">
+              <Plug className="h-3.5 w-3.5" />Connect tools · optional
+            </button>
+          </div>
         </div>
         </div>
+        {optionalSetupOpen && <OptionalSetupDialog onClose={() => setOptionalSetupOpen(false)} onCloudSetup={() => { setOptionalSetupOpen(false); setApiKeyDialogOpen(true) }} />}
+        <ApiKeyDialog open={apiKeyDialogOpen} onClose={() => setApiKeyDialogOpen(false)} onSaved={value => setPartnerKeyConfigured(Boolean(String(value || '').trim()))} />
       </div>
     )
   }
@@ -573,10 +585,10 @@ function WelcomeScreen() {
           <button
             type="button"
             onClick={() => setApiKeyDialogOpen(true)}
-            title={partnerKeyConfigured ? t('launcherChip.apiKeySetHelp') : t('launcherChip.apiKeyNeededHelp')}
+            title={partnerKeyConfigured ? t('launcherChip.apiKeySetHelp') : 'Optional cloud generation setup. No API key is needed to use the editor.'}
             className={`flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11px] font-medium transition-colors border ${partnerKeyConfigured
               ? 'bg-sf-dark-800 hover:bg-sf-dark-700 border-sf-dark-700 text-sf-text-primary'
-              : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/40 text-amber-100'
+              : 'bg-sf-dark-900 hover:bg-sf-dark-800 border-sf-dark-700 text-sf-text-muted'
             }`}
           >
             {partnerKeyConfigured ? (
@@ -587,7 +599,7 @@ function WelcomeScreen() {
             ) : (
               <>
                 <KeyRound className="w-3.5 h-3.5" />
-                <span>{t('launcherChip.apiKeyNeeded')}</span>
+                <span>Cloud generation · optional</span>
               </>
             )}
           </button>
@@ -596,14 +608,17 @@ function WelcomeScreen() {
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" onClick={() => setOptionalSetupOpen(true)} className="flex items-center gap-2 rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-xs text-sf-text-secondary hover:bg-sf-dark-800" title="Optional agents and ComfyUI. Your editor works without them.">
+          <Plug className="h-4 w-4" />Connect tools
+        </button>
         <button
           type="button"
           onClick={() => setDiscoverOpen(true)}
           className="flex h-9 items-center gap-2 rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 text-xs font-medium text-sf-text-secondary transition-colors hover:bg-sf-dark-800 hover:text-sf-text-primary"
           title={t('welcome.discoverHelp')}
         >
-          <Film className="h-4 w-4 text-sf-accent" />
+          <BookOpen className="h-4 w-4 text-sf-accent" />
           {t('welcome.discover')}
         </button>
         <button
@@ -639,7 +654,7 @@ function WelcomeScreen() {
       {/* Header bar — always a solid dark strip, never overlaps the image.
           The top border visually separates the header from the native window
           controls strip above it (matches the border below the banner). */}
-      <div className="relative z-30 flex-shrink-0 flex items-center justify-between px-8 py-4 bg-sf-dark-950 border-t border-b border-sf-dark-800/60">
+      <div className="relative z-30 flex-shrink-0 flex flex-wrap gap-3 items-center justify-between px-8 py-4 bg-sf-dark-950 border-t border-b border-sf-dark-800/60">
         {headerContent}
       </div>
 
@@ -973,6 +988,8 @@ function WelcomeScreen() {
         </div>{/* /max-w-5xl */}
       </div>
       
+      {optionalSetupOpen && <OptionalSetupDialog onClose={() => setOptionalSetupOpen(false)} onCloudSetup={() => { setOptionalSetupOpen(false); setApiKeyDialogOpen(true) }} />}
+
       {/* New Project Dialog */}
       <NewProjectDialog
         isOpen={showNewProjectDialog}

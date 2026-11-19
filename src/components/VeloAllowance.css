@@ -1,0 +1,8 @@
+.velo-allowance { margin: 8px 0; color: #b5becb; font-size: 11px; min-width: 0; }
+.velo-allowance-label { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 3px 12px; margin-bottom: 5px; }
+.velo-allowance-label span:last-child { color: #d6bd80; font-variant-numeric: tabular-nums; }
+.velo-allowance-track { height: 5px; border-radius: 3px; background: #29313e; overflow: hidden; }
+.velo-allowance-track > span { display: block; height: 100%; background: #c4a662; border-radius: inherit; }
+.velo-allowance small { display: block; font-size: 10px; margin-top: 4px; line-height: 1.4; }
+.velo-allowance-unknown { color: #a7afbb; }
+@media (forced-colors: active) { .velo-allowance-track { border: 1px solid CanvasText; } .velo-allowance-track > span { background: Highlight; forced-color-adjust: none; } }

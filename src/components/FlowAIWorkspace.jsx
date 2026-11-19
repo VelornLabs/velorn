@@ -1,4 +1,5 @@
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { isNativeTextKeyboardEvent } from '../utils/transportKeyboardGuards.mjs'
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -2416,6 +2417,7 @@ export default function FlowAIWorkspace({ onOpenWorkflowSetup }) {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
+      if (isNativeTextKeyboardEvent(event)) return
       if (isTypingTarget(event.target)) return
 
       const key = String(event.key || '').toLowerCase()
@@ -3533,4 +3535,3 @@ export default function FlowAIWorkspace({ onOpenWorkflowSetup }) {
     </div>
   )
 }
-

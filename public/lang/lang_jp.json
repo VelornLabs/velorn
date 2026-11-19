@@ -502,16 +502,18 @@
   },
   "topTabs": {
     "navigation": "ワークスペースモード",
+    "storyboard": "ストーリーボード",
     "editor": "編集",
-    "generate": "生成",
+    "generate": "ディレクター",
     "agent": "エージェント",
     "flow-ai": "Flow AI",
     "mog": "MoGraph",
     "stock": "ストック",
-    "discover": "見つける",
+    "discover": "チュートリアル",
     "export": "書き出し"
   },
   "bottomBar": {
+    "openStoryboard": "ストーリーボードを開く",
     "saveProject": "プロジェクトを保存",
     "undo": "元に戻す",
     "redo": "やり直す",
@@ -521,6 +523,9 @@
     "minimize": "最小化",
     "maximize": "最大化",
     "projectSelection": "プロジェクト選択"
+  },
+  "storyboard": {
+    "backToEditor": "編集に戻る"
   },
   "inspector": {
     "title": "インスペクター",
@@ -548,9 +553,9 @@
     "openLatestAutosaveFor": "{{project}}の最新の自動保存を開く",
     "openProject": "プロジェクトを開く",
     "newProject": "新規プロジェクト",
-    "discover": "作品を見る",
-    "discoverHelp": "Velornで制作された作品とチュートリアルを見ます。",
-    "discoverLoading": "Discoverを読み込み中...",
+    "discover": "チュートリアル",
+    "discoverHelp": "Velornの使い方を学べる短い動画です。",
+    "discoverLoading": "チュートリアルを読み込み中...",
     "selectProject": "プロジェクトを選択",
     "noRecentProjects": "最近使ったプロジェクトはありません",
     "createFirstProject": "最初のプロジェクトを作成して始めましょう",
@@ -560,76 +565,23 @@
     "dismiss": "閉じる"
   },
   "discover": {
-    "title": "見つける",
-    "subtitle": "Velornでクリエイターが制作した作品を見て、その制作ワークフローを学びましょう。",
-    "visibilityHint": "Discoverタブは「設定」→「外観」からいつでも非表示にできます。",
-    "tabs": {
-      "featured": "おすすめ",
-      "showcase": "Velorn作品",
-      "tutorials": "チュートリアル"
-    },
-    "sections": {
-      "featured": "おすすめ",
-      "featuredDescription": "注目のコミュニティ作品と実践的なチュートリアルを紹介します。",
-      "showcase": "Velornで制作",
-      "showcaseDescription": "Velornコミュニティが制作または編集した動画です。",
-      "tutorials": "チュートリアル",
-      "tutorialsDescription": "実践的な解説を通してVelornの使い方を学べます。"
+    "title": "チュートリアル",
+    "subtitle": "Velornの使い方を少しずつ学べる短い動画です。",
+    "visibilityHint": "チュートリアルタブは「設定」→「外観」からいつでも非表示にできます。",
+    "groups": {
+      "start": "はじめに",
+      "tabs": "各タブの紹介",
+      "editor": "エディターを順番に学ぶ",
+      "project": "作品を最初から最後まで"
     },
     "actions": {
       "watch": "{{title}}を再生",
       "openYouTube": "YouTubeで開く",
-      "submit": "YouTube動画を投稿",
-      "retry": "再試行",
       "close": "閉じる"
-    },
-    "labels": {
-      "by": "{{creator}}"
     },
     "player": {
       "title": "YouTube動画: {{title}}",
       "privacy": "サムネイルはYouTubeから提供されます。Velornは動画の再生を選択した後にのみプレーヤーを読み込みます。"
-    },
-    "states": {
-      "loading": "Discoverを読み込み中...",
-      "offline": "保存済みのDiscoverコンテンツを表示しています。オンラインに戻ると新しい動画が表示される場合があります。",
-      "error": "現在Discoverを読み込めません。",
-      "empty": "このセクションにはまだコンテンツがありません。"
-    },
-    "submit": {
-      "title": "作品を投稿",
-      "body": "Velornで制作したYouTube動画を共有してください。掲載前にすべての投稿を確認します。",
-      "youtubeUrl": "YouTube URL",
-      "youtubePlaceholder": "https://www.youtube.com/watch?v=...",
-      "creator": "クリエイター名または表示名",
-      "creatorPlaceholder": "掲載する名前を入力してください",
-      "category": "カテゴリー",
-      "categories": {
-        "musicVideo": "ミュージックビデオ",
-        "podcast": "ポッドキャスト",
-        "shortFilm": "短編映画",
-        "social": "ソーシャル動画",
-        "ad": "広告",
-        "animation": "アニメーション",
-        "other": "その他"
-      },
-      "description": "Velornをどのように使いましたか？",
-      "descriptionPlaceholder": "作品のどの部分をVelornで制作または編集したか、簡単に教えてください。",
-      "email": "連絡先メールアドレス",
-      "emailPlaceholder": "you@example.com",
-      "rights": "私はこの作品を所有しているか、投稿および共有に必要な許可を得ています。",
-      "featurePermission": "Velornが動画のタイトル、サムネイル、リンク、説明、クリエイター名を掲載することを許可します。",
-      "reviewNote": "投稿は非公開の審査キューに送られ、自動的に公開されることはありません。",
-      "requiredFields": "動画、クリエイター名、説明、連絡先をすべて入力してください。",
-      "permissionsRequired": "投稿する前に両方の許可を確認してください。",
-      "invalidYouTube": "有効なYouTube動画のURLを入力してください。",
-      "tooLong": "説明を短くしてから、もう一度お試しください。",
-      "sendFailed": "投稿を送信できませんでした。後でもう一度お試しください。",
-      "submitting": "送信中...",
-      "submit": "確認用に送信",
-      "successTitle": "確認用に送信しました",
-      "successBody": "ありがとうございます。Velornチームが投稿を確認します。自動的に公開されることはありません。",
-      "submitAnother": "別の作品を投稿"
     }
   },
   "settings": {
@@ -689,6 +641,22 @@
         "rebuildFailed": "動画キャッシュを再作成できませんでした。"
       }
     },
+    "comfySetup": {
+      "title": "ComfyUIに接続",
+      "openHelp": "このコンピューターでComfyUIを開いてから、ここで検索してください。Comfy Desktopでは、使用したいローカルインスタンスを起動してください。起動スクリプトは不要です。",
+      "find": "起動中のComfyUIを検索",
+      "choose": "使用するローカル接続先を選択してください。検索だけでは設定は変更されません。",
+      "ready": "ComfyUIは接続できます",
+      "connect": "接続",
+      "notFound": "通常のローカルポートでは、起動中のComfyUIが見つかりませんでした。ComfyUIを開いて初期設定を完了し、ローカルインスタンスを起動してから、もう一度お試しください。別のポートを使用している場合は、下に入力してください。",
+      "manual": "ポートを手動で入力",
+      "port": "ComfyUIポート",
+      "testConnect": "テストして接続",
+      "connected": "ポート{{port}}のComfyUIに接続しました。",
+      "failed": "接続できませんでした。もう一度お試しください。",
+      "advanced": "接続の詳細設定",
+      "localOnly": "ローカル接続専用です。この操作では、インストール、ComfyUIの起動、素材の生成は行いません。ComfyUIがなくても編集はできます。"
+    },
     "connection": {
       "localPort": "ローカルComfyUIポート",
       "localOnlyHelp": "ローカル専用モードです。このビルドではリモート／LAN上のComfyUI接続は無効です。",
@@ -726,6 +694,15 @@
     },
     "launcher": {
       "desktopOnly": "ComfyUIランチャーはデスクトップ版でのみ利用できます。",
+      "connectedExternally": "接続済み（Velornの管理外）",
+      "connectedManaged": "接続済み・Velornで管理",
+      "externalConnectionHelp": "ComfyUIに接続しています。停止や再起動は、ComfyUIのアプリまたはターミナルで行ってください。Velornで起動を管理しなくても生成できます。",
+      "optionalStartup": "VelornからComfyUIを起動する（任意）",
+      "optionalStartupHelp": "ComfyUIを自分で開いている場合は、そのまま利用できます。ここから起動したい場合は、検出されたインストール先を選ぶか、起動スクリプトを参照してください。",
+      "noAppOptional": "アプリは選択されていません。ComfyUI.appを参照するか、自分で開いて上の項目から接続してください。",
+      "noScriptOptional": "起動スクリプトは選択されていません。ComfyUIを自分で開いて、上の項目から接続することもできます。",
+      "scriptChoiceHelp": "Windowsの.batファイルやLinux／macOSの.shファイルなど、普段ComfyUIの起動に使っているスクリプトを選択してください。デスクトップアプリの場合は、アプリを開いて使用したいインスタンスを起動してください。",
+      "detectedInstallations": "検出されたインストール先",
       "saveFailed": "ランチャー設定を保存できませんでした。",
       "actionFailed": "操作に失敗しました。",
       "states": {
@@ -863,10 +840,12 @@
       },
       "timelineThumbnails": "タイムラインのクリップサムネイル",
       "timelineThumbnailsHelp": "負荷の高い編集ではオフにすると、クリップを軽量な色付きブロックとして表示します。",
-      "discoverTab": "Discoverタブを表示",
-      "discoverTabHelp": "コミュニティ作品とチュートリアルへのショートカットを上部のタブバーに表示します。",
-      "hideDiscoverTab": "Discoverタブを非表示",
-      "showDiscoverTab": "Discoverタブを表示"
+      "discoverTab": "チュートリアルタブを表示",
+      "generateTab": "ディレクタータブを表示",
+      "generateTabHelp": "エージェント中心のレイアウトにするにはタブを非表示にします。ComfyUI、エージェントツール、生成キューは引き続き利用でき、タブはいつでも再表示できます。",
+      "discoverTabHelp": "チュートリアル動画へのショートカットを上部のタブバーに表示します。",
+      "hideDiscoverTab": "チュートリアルタブを非表示",
+      "showDiscoverTab": "チュートリアルタブを表示"
     },
     "notifications": {
       "completionSound": "生成完了音",
@@ -1122,8 +1101,17 @@
     "lineSummary": "{{total}}行中{{visible}}行{{rolling}}{{paused}}"
   },
   "launcherChip": {
+    "connectedExternally": "接続済み（Velornの管理外）",
+    "externalConnectionHelp": "ComfyUIに接続しています。通常どおり生成できます。停止や再起動はComfyUIのアプリまたはターミナルで行うか、Velornで安全に管理できるか再確認してください。",
+    "recheckControls": "操作できるか再確認",
+    "optionalStartup": "VelornからComfyUIを起動する（任意）",
+    "optionalStartupHelp": "Velornから起動したい場合だけ、インストール先を選択してください。それ以外の場合は、ComfyUIを自分で開き、「起動中のComfyUIを検索」から接続してください。",
+    "noAppOptional": "アプリは選択されていません。ComfyUI.appを参照するか、自分で開いて接続してください。",
+    "noScriptOptional": "起動スクリプトは選択されていません。ComfyUIを自分で開いて接続するか、普段使っている.batまたは.shスクリプトを参照してください。",
+    "detectedInstallations": "検出されたインストール先",
+    "troubleshootingLogs": "トラブルシューティングとログ",
     "states": { "unknown": "ComfyUI", "idle": "オフライン", "starting": "起動中…", "running": "実行中", "external": "外部プロセス", "stopping": "停止中…", "stopped": "停止済み", "crashed": "異常終了" },
-    "summary": { "unavailable": "ランチャーを利用できません（Electron外）。", "running": "実行中 • PID {{pid}}{{uptime}}", "up": "稼働時間", "external": "外部プロセスを検出：{{endpoint}}", "notRunning": "ComfyUIは実行されていません。", "unknown": "ComfyUIの状態は不明です。" },
+    "summary": { "unavailable": "ランチャーを利用できません（Electron外）。", "running": "実行中 • PID {{pid}}{{uptime}}", "up": "稼働時間", "external": "外部プロセスを検出：{{endpoint}}", "notRunning": "ComfyUIは実行されていません。", "unknown": "ComfyUIの状態は不明です。", "managedApp": "接続済み・ComfyUI.appをVelornで管理{{uptime}}", "managed": "接続済み・Velornで管理{{uptime}}", "connectedExternal": "{{endpoint}}に接続済み・起動はVelornの管理外" },
     "reprobeHelp": "ComfyUIの状態を再確認", "start": "起動", "stop": "停止", "restart": "再起動", "script": "ランチャースクリプト", "pickScript": ".bat／.shランチャースクリプトを選択", "browse": "参照...", "logTail": "最新ログ", "openViewerHelp": "検索・絞り込み対応のログビューアーを開く", "openViewer": "ログビューアーを開く", "noLogFile": "ログファイルはまだ作成されていません", "openLogFile": "ログファイルを開く", "noLogs": "ログ出力はまだありません。ComfyUIを起動するとここに表示されます。", "manage": "設定で管理 → ComfyUIランチャー", "apiKeySet": "APIキー設定済み", "apiKeyNeeded": "APIキーが必要", "apiKeySetHelp": "クラウドAPIキーは設定済みです。クリックして管理します。", "apiKeyNeededHelp": "クラウドワークフローを利用するにはComfy.org APIキーを設定してください。"
   },
   "preview": {
@@ -1138,7 +1126,7 @@
     }
   },
   "generate": {
-    "mode": { "generate": "生成", "director": "ディレクター" },
+    "mode": { "generate": "生成", "director": "ディレクター", "backToDirector": "ディレクターに戻る" },
     "browser": {
       "tabs": { "featured": "おすすめ", "custom": "マイワークフロー", "templates": "テンプレート" },
       "searchTemplates": "ComfyUIテンプレート、モデル、タグを検索...",
@@ -1246,7 +1234,7 @@
       "description": "ワークフローファイルがアプリに同梱されていても、カスタムノード、モデル、または提携サービスのAPIキーが必要な場合があります。",
       "status": "ワークフロー設定を使用",
       "help1": "設定 > ワークフロー設定を開くと、すべての内蔵ワークフローをまとめて検査できます。",
-      "help2": "ComfyUIで読み込む、ワークフローごとの再チェックなどが必要な場合は「生成」を使用します。",
+      "help2": "モデルやノードをインストールした後は、もう一度スキャンします。",
       "help3": "同じワークフローが別のコンピューターで動作しない原因を素早く確認できます。",
       "action": "ワークフロー設定"
     },
@@ -1276,8 +1264,8 @@
     "tour": {
       "intro": "このクイックガイドでは、次にどこへ進めばよいかを案内します。詳しい編集方法やプロンプト作成方法は動画で確認できます。",
       "editorTitle": "編集ワークスペース", "editorDescription": "プロジェクトに素材を追加した後、日常的な編集を行う画面です。",
-      "editor1": "素材パネル：映像、音声、画像を読み込み、タイムラインへドラッグします。", "editor2": "プレビュー：素材を確認し、フレームを開始キーフレームとして「生成」へ送ります。", "editor3": "タイムライン：トリミング、リップル、スナップ、マーカーを使って編集します。", "editor4": "インスペクター：選択項目の変形、クロップ、タイミング、エフェクト、テキスト、調整を設定します。", "openEditor": "編集画面を開く",
-      "generateTitle": "生成", "generateDescription": "ローカルまたはクラウドのワークフローで画像、映像、音声を作成します。", "generate1": "シングルモードは、画像、映像、音声を個別に生成する場合に使用します。", "generate2": "ディレクターモードでは、設定、台本、キーフレーム、映像の順に作業します。", "generate3": "モデルやノードが不足している場合は、キューへ追加する前に再チェックします。",
+      "editor1": "素材パネル：映像、音声、画像を読み込み、タイムラインへドラッグします。", "editor2": "プレビュー：素材を確認し、フレームをAIの開始キーフレームとして使います。", "editor3": "タイムライン：トリミング、リップル、スナップ、マーカーを使って編集します。", "editor4": "インスペクター：選択項目の変形、クロップ、タイミング、エフェクト、テキスト、調整を設定します。", "openEditor": "編集画面を開く",
+      "generateTitle": "ディレクター", "generateDescription": "広告、ミュージックビデオ、ショートフィルムを手順に沿って作成します。", "generate1": "作るものを選びます：広告、ミュージックビデオ、ショートフィルム。", "generate2": "ディレクターでは、設定、台本、キーフレーム、映像の順に作業します。", "generate3": "モデルやノードが不足している場合は、設定 > ワークフロー設定を開きます。",
       "stockTitle": "ストック", "stockDescription": "Pexelsを検索し、映像や静止画を現在のプロジェクトへ直接読み込みます。", "stock1": "仮素材、アイデア探し、背景素材がすぐ必要な場合に便利です。", "stock2": "設定画面でPexels APIキーが必要です。", "openStock": "ストックを開く",
       "exportTitle": "書き出し", "exportDescription": "現在のタイムラインをファイルへレンダリングし、書き出しキューを管理します。", "export1": "形式、コーデック、範囲、解像度、FPS、音声設定を選択します。", "export2": "複数の出力形式が必要な場合は、複数の書き出しをキューへ追加できます。", "openExport": "書き出しを開く",
       "settingsTitle": "設定", "settingsDescription": "コンピューター固有の構成が変わった場合は、ここで更新します。", "settings1": "プロジェクトフォルダー、ComfyUIポート、ComfyアカウントのAPIキー、Pexelsキー、新規プロジェクトの初期値を設定できます。", "settings2": "別のコンピューターで動作が異なる場合は、最初にこの設定を比較してください。"
@@ -1288,7 +1276,7 @@
       "testing": "テスト中...",
       "testConnection": "接続をテスト",
       "connectionSettings": "接続設定",
-      "openGenerate": "生成を開く"
+      "openGenerate": "ディレクターを開く"
     }
   },
   "timelineEditor": {

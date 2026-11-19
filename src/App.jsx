@@ -1,7 +1,15 @@
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
-import { RefreshCw, ExternalLink, Loader2, BookmarkPlus } from 'lucide-react'
+import { registerDesktopClose } from './services/desktopClose'
+import { RefreshCw, ExternalLink, Loader2, BookmarkPlus, Library } from 'lucide-react'
 import TitleBar from './components/TitleBar'
+import { DesktopAccountProvider } from './components/DesktopAccount'
+import AgentComfyCloudSetup from './components/AgentComfyCloudSetup'
+import PhoneCreateSaver from './components/PhoneCreateSaver'
+import VelornNetworkSaver from './components/VelornNetworkSaver'
 import ExportPanel from './components/ExportPanel'
+import ExportProgressOverlay from './components/ExportProgressOverlay'
+import useExportActivityStore, { isExportBusy } from './stores/exportActivityStore'
+import { startExportActivityBridge } from './services/exportActivity'
 import WorkspaceErrorBoundary from './components/WorkspaceErrorBoundary'
 import LeftPanel from './components/LeftPanel'
 import PreviewPanel from './components/PreviewPanel'
@@ -11,6 +19,7 @@ import MixerPanel from './components/MixerPanel'
 import ScopesPanel from './components/ScopesPanel'
 import TransportControls from './components/TransportControls'
 import InspectorPanel from './components/InspectorPanel'
+import RightPanelDock from './components/RightPanelDock'
 import ResizeHandle from './components/ResizeHandle'
 import SettingsModal from './components/SettingsModal'
 import GettingStartedModal from './components/GettingStartedModal'
@@ -19,6 +28,10 @@ import BottomBar from './components/BottomBar'
 import useProjectStore from './stores/projectStore'
 import useAssetsStore from './stores/assetsStore'
 import useTimelineStore from './stores/timelineStore'
+import useStoryboardWorkspace from './hooks/useStoryboardWorkspace'
+import useGenerateWorkspace from './hooks/useGenerateWorkspace'
+import { getStoryboardProjectKey } from './utils/storyboardWorkspace.mjs'
+import { stageWorkflowInAgent } from './utils/workflowAgentHandoff.mjs'
 import videoCache from './services/videoCache'
 import { WORKFLOW_SETUP_SECTION_ID } from './services/workflowSetupManager'
 import {
@@ -30,6 +43,7 @@ import { startComfyLauncherEventBridge } from './services/comfyLauncherEventBrid
 import { startComfyAutoImport } from './services/comfyAutoImport'
 import { startMcpSnapshotPublisher } from './services/mcpSnapshot'
 import { MCP_ACTION_BRIDGE_VERSION, startMcpActionBridge } from './services/mcpActions'
+import { startGenerationRuns } from './services/generationRuns'
 import { attachProjectDirtyWatchers, isProjectDirty } from './services/projectDirtyTracker'
 import { VELORN_OPEN_STOCK_EVENT } from './services/pexelsStock'
 import {
@@ -37,6 +51,7 @@ import {
   getShowDiscoverTab,
   hydrateShowDiscoverTab,
 } from './services/discoverTabVisibilitySettings.mjs'
+import { useHiddenTopTabs } from './services/topTabVisibilitySettings.mjs'
 
 // Tab workspaces load on first visit instead of shipping in the startup
 // bundle. This keeps launch parse time down; GenerateWorkspace alone carries
@@ -48,8 +63,13 @@ const GenerateWorkspace = lazy(() => import('./components/GenerateWorkspace'))
 const FlowAIWorkspace = lazy(() => import('./components/FlowAIWorkspace'))
 const AgentWorkspace = lazy(() => import('./components/AgentWorkspace'))
 const MOGWorkspace = lazy(() => import('./components/MOGWorkspace'))
+const CreateWorkspace = lazy(() => import('./components/CreateWorkspace'))
 const StockPanel = lazy(() => import('./components/StockPanel'))
 const DiscoverWorkspace = lazy(() => import('./components/DiscoverWorkspace'))
+const GpuSharingWorkspace = lazy(() => import('./components/GpuSharingWorkspace'))
+const ProductionWorkspace = lazy(() => import('./components/ProductionWorkspace'))
+const ConnectedAgentPanel = lazy(() => import('./components/ConnectedAgentPanel'))
+const WorkflowLibraryDrawer = lazy(() => import('./components/WorkflowLibraryDrawer'))
 
 const WORKSPACE_LOADING_FALLBACK = (
   <div className="flex-1 flex items-center justify-center bg-sf-dark-950 text-xs text-sf-text-muted">
@@ -71,20 +91,47 @@ function formatDownloadBytes(bytes) {
   return `${value.toFixed(digits)} ${units[unitIndex]}`
 }
 
-function App() {
+function AppWorkspace({ accountAgentRequested = false }) {
+  const exportBusy = useExportActivityStore(state => Boolean(state.activeJob || state.localActivity))
+  useLayoutEffect(() => startExportActivityBridge(), [])
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [settingsInitialSection, setSettingsInitialSection] = useState(null)
+  const [agentModelPickerRequest, setAgentModelPickerRequest] = useState(0)
   const [gettingStartedOpen, setGettingStartedOpen] = useState(false)
   const [selectedItem, setSelectedItem] = useState({ type: 'shot', id: '2.1' })
-  const [mainTab, setMainTab] = useState('editor')
+  const [requestedMainTab, setMainTab] = useState('editor')
+  const [rightPanelTab, setRightPanelTab] = useState('inspector')
+  const rightPanelHostRef = useRef(null)
+  const workflowReferenceRef = useRef(null)
+  const workflowLibraryEpoch = useRef(0)
+  const [workflowLibraryOpen, setWorkflowLibraryOpen] = useState(false)
+  const closeWorkflowLibrary = useCallback(() => { workflowLibraryEpoch.current++; setWorkflowLibraryOpen(false) }, [])
+  useEffect(() => () => { workflowLibraryEpoch.current++ }, [])
+  const [agentHighlightShotIds, setAgentHighlightShotIds] = useState([])
+  const [agentRevealShotId, setAgentRevealShotId] = useState(null)
+  const agentWorkspaceRef = useRef(null)
+  const { activeTab: visibleMainTab, showGenerateTab, hasMountedGenerate } = useGenerateWorkspace({
+    activeTab: requestedMainTab, onTabChange: setMainTab, disabled: exportBusy,
+  })
+  const { activeTab: mainTab, showStoryboardTab, selectTab, openStoryboard } = useStoryboardWorkspace({
+    activeTab: visibleMainTab, onTabChange: setMainTab, disabled: exportBusy,
+  })
   const [hasMountedFlowAi, setHasMountedFlowAi] = useState(false)
-  const [hasMountedGenerate, setHasMountedGenerate] = useState(false)
   const [showDiscoverTab, setShowDiscoverTabState] = useState(getShowDiscoverTab)
   const [bottomEditorView, setBottomEditorView] = useState('timeline')
+  // Migrate the previous lab's panel selection during a development hot update.
+  useEffect(() => {
+    if (bottomEditorView === 'storyboard') setBottomEditorView('timeline')
+  }, [bottomEditorView])
   const [activeTimelineToolLabel, setActiveTimelineToolLabel] = useState('Move tool')
   const [timelineStatusText, setTimelineStatusText] = useState('')
   const [downloadProgressItems, setDownloadProgressItems] = useState([])
   const mainTabRef = useRef(mainTab)
+  useLayoutEffect(() => {
+    // Release the editor's preview/decoder tree, including agent-started jobs.
+    // Remain on Export afterwards so completion or errors are easy to review.
+    if (exportBusy) setMainTab('export')
+  }, [exportBusy, mainTab])
   const downloadDismissTimersRef = useRef(new Map())
   
   // Left panel state
@@ -167,17 +214,29 @@ function App() {
       })
     }
   }, [])
-  const handleConfirmSaveComfyGraph = useCallback(async () => {
+  // `choice` is undefined on the first press of Save. If a workflow of that name exists, the person is asked once:
+  // 'replace' overwrites it in place, 'both' saves a second one as before.
+  const handleConfirmSaveComfyGraph = useCallback(async (choice) => {
     const captured = capturedComfyGraphRef.current
+    const existing = comfySaveState.existing
     setComfySaveState((prev) => ({ ...prev, phase: 'busy' }))
     try {
-      const { saveCapturedGraphToLibrary } = await import('./services/customWorkflowLibrary')
-      const result = await saveCapturedGraphToLibrary(captured, comfySaveState.name)
+      const { saveCapturedGraphToLibrary, findCustomLibraryWorkflowsByTitle } = await import('./services/customWorkflowLibrary')
+      if (choice !== 'replace' && choice !== 'both') {
+        const same = await findCustomLibraryWorkflowsByTitle(comfySaveState.name || captured?.workflowName)
+        if (same.length) {
+          const { isSharedInGpuSharing } = await import('./services/workflowLibrary')
+          const shared = await isSharedInGpuSharing(`my-workflow:${same[0].id}`)
+          setComfySaveState((prev) => ({ ...prev, phase: 'exists', existing: { id: same[0].id, title: same[0].title, count: same.length, shared }, error: '', message: '' }))
+          return
+        }
+      }
+      const result = await saveCapturedGraphToLibrary(captured, comfySaveState.name, choice === 'replace' && existing ? { replaceId: existing.id } : {})
       capturedComfyGraphRef.current = null
       setComfySaveState({
         phase: 'idle',
         name: '',
-        message: `${result.updated ? 'Updated' : 'Saved'} "${result.entry.title}" — find it under Generate → Custom.`,
+        message: `${result.updated ? 'Replaced' : 'Saved'} "${result.entry.title}" — find it in My Workflows.${result.updated && existing?.shared ? ' It is no longer shared in GPU sharing: add it there again.' : ''}`,
         error: '',
       })
     } catch (error) {
@@ -188,7 +247,7 @@ function App() {
         error: error instanceof Error ? error.message : 'Could not save the workflow.',
       }))
     }
-  }, [comfySaveState.name])
+  }, [comfySaveState.name, comfySaveState.existing])
   const handleCancelSaveComfyGraph = useCallback(() => {
     capturedComfyGraphRef.current = null
     setComfySaveState({ phase: 'idle', name: '', message: '', error: '' })
@@ -253,6 +312,9 @@ function App() {
     return () => { try { stop?.() } catch (_) { /* ignore */ } }
   }, [MCP_ACTION_BRIDGE_VERSION])
 
+  // Native run tracking is independent of the mounted workspace.
+  useEffect(() => startGenerationRuns(), [])
+
   useLayoutEffect(() => {
     const previousTab = mainTabRef.current
     mainTabRef.current = mainTab
@@ -274,6 +336,31 @@ function App() {
       shouldImportUnmanagedPrompt: () => mainTabRef.current === 'comfyui',
     })
     return () => { try { stop?.() } catch (_) { /* ignore */ } }
+  }, [])
+
+  // ComfyUI's own Download button for a missing model: the frame asks, Velorn
+  // saves the file into the right models folder (electron/comfyModelDownload.cjs).
+  useEffect(() => {
+    const onMessage = async (event) => {
+      const data = event.data
+      if (!data || data.source !== 'velorn-comfy-frame' || data.type !== 'download-model') return
+      const frame = document.querySelector('iframe[title="ComfyUI"]')
+      if (!frame || event.source !== frame.contentWindow) return
+      let answer = null
+      try {
+        answer = await window.electronAPI?.comfyModelDownload?.({ url: data.url, name: data.name, directory: data.directory })
+      } catch (error) {
+        answer = { success: false, error: error?.message }
+      }
+      try {
+        event.source.postMessage({
+          source: 'velorn-host', type: 'download-model-answer', id: data.id,
+          ok: Boolean(answer?.success), error: answer?.error || (answer ? '' : 'Model downloads need the Velorn desktop app.'),
+        }, '*')
+      } catch { /* the frame was reloaded meanwhile */ }
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
   }, [])
 
   useEffect(() => {
@@ -334,9 +421,6 @@ function App() {
     if (mainTab === 'flow-ai') {
       setHasMountedFlowAi(true)
     }
-    if (mainTab === 'generate') {
-      setHasMountedGenerate(true)
-    }
   }, [mainTab])
 
   useEffect(() => {
@@ -361,18 +445,14 @@ function App() {
     }
   }, [mainTab, showDiscoverTab])
 
-  // When user sends timeline frame to Generate (right-click preview → Extend with AI / Starting keyframe for AI)
+  // A tab hidden in Settings while it is open: go back to the Editor. Buttons
+  // elsewhere that open a hidden tab (Share my GPU, Open Stock) still work.
+  const hiddenTopTabs = useHiddenTopTabs()
+  const openTabRef = useRef(mainTab)
+  openTabRef.current = mainTab
   useEffect(() => {
-    const handler = () => setMainTab('generate')
-    window.addEventListener('comfystudio-open-generate-with-frame', handler)
-    return () => window.removeEventListener('comfystudio-open-generate-with-frame', handler)
-  }, [])
-
-  useEffect(() => {
-    const handler = () => setMainTab('generate')
-    window.addEventListener('comfystudio-open-generate-tab', handler)
-    return () => window.removeEventListener('comfystudio-open-generate-tab', handler)
-  }, [])
+    if (hiddenTopTabs.includes(openTabRef.current)) setMainTab('editor')
+  }, [hiddenTopTabs])
 
   useEffect(() => {
     const handler = () => setMainTab('stock')
@@ -443,7 +523,14 @@ function App() {
     } catch (_) { /* ignore */ }
   }, [])
 
-  const isFullScreenTab = mainTab === 'export' || mainTab === 'generate' || mainTab === 'agent' || mainTab === 'flow-ai' || mainTab === 'mog' || mainTab === 'llm-assistant' || mainTab === 'stock' || mainTab === 'comfyui'
+  const [hasOpenedCreate, setHasOpenedCreate] = useState(false)
+  useEffect(() => { if (mainTab === 'create') setHasOpenedCreate(true) }, [mainTab])
+  const [hasOpenedSound, setHasOpenedSound] = useState(false)
+  useEffect(() => { if (mainTab === 'sound') setHasOpenedSound(true) }, [mainTab])
+  const [hasOpenedGpuSharing, setHasOpenedGpuSharing] = useState(false)
+  const [gpuShareAsk, setGpuShareAsk] = useState(0) // counts requests to show the owner's side of the GPU sharing tab
+  useEffect(() => { if (mainTab === 'gpu-sharing') setHasOpenedGpuSharing(true) }, [mainTab])
+  const isFullScreenTab = mainTab === 'storyboard' || mainTab === 'export' || mainTab === 'generate' || mainTab === 'create' || mainTab === 'sound' || mainTab === 'agent' || mainTab === 'flow-ai' || mainTab === 'mog' || mainTab === 'llm-assistant' || mainTab === 'stock' || mainTab === 'gpu-sharing' || mainTab === 'comfyui'
   // Editor layout insets used by the editor content shell.
   const editorLeftInset = leftPanelExpanded ? ICON_BAR_WIDTH + leftPanelWidth : ICON_BAR_WIDTH
   const editorRightInset = inspectorExpanded ? ICON_BAR_WIDTH + inspectorWidth : ICON_BAR_WIDTH
@@ -463,6 +550,23 @@ function App() {
   const projectSessionKey = currentProject
     ? (currentProject.created || currentProject.name || 'project')
     : 'no-project'
+  const agentProjectHandle = useProjectStore(state => state.currentProjectHandle)
+  const agentProjectKey = getStoryboardProjectKey(currentProject, agentProjectHandle)
+  useLayoutEffect(() => { setAgentHighlightShotIds([]); setAgentRevealShotId(null) }, [agentProjectKey, isLoading])
+  useEffect(() => {
+    if (mainTab !== 'storyboard' || !agentRevealShotId) return
+    let cancelled = false, timer
+    let attempts = 0
+    const reveal = () => {
+      if (cancelled) return
+      const card = [...(agentWorkspaceRef.current?.querySelectorAll('[data-shot-id]') || [])]
+        .find(element => element.dataset.shotId === agentRevealShotId)
+      if (card) { card.scrollIntoView({ block: 'center', behavior: 'smooth' }); setAgentRevealShotId(null) }
+      else if (++attempts < 20) timer = setTimeout(reveal, 100)
+    }
+    reveal()
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [mainTab, agentRevealShotId])
   const mediaPreparation = useAssetsStore((state) => state.mediaPreparation)
   const mediaPreparationTotal = Math.max(0, Number(mediaPreparation?.total) || 0)
   const mediaPreparationCompleted = Math.max(0, Math.min(mediaPreparationTotal, Number(mediaPreparation?.completed) || 0))
@@ -487,6 +591,7 @@ function App() {
 
     const AUTOSAVE_BACKSTOP_MS = 5 * 60 * 1000
     const autoSaveTimer = setInterval(() => {
+      if (isExportBusy()) return
       const lastSavedAt = Date.parse(useProjectStore.getState().lastAutoSave || '') || 0
       const overdue = Date.now() - lastSavedAt > AUTOSAVE_BACKSTOP_MS
       const dirty = isProjectDirty()
@@ -498,17 +603,11 @@ function App() {
     return () => clearInterval(autoSaveTimer)
   }, [currentProject, autoSaveEnabled, autoSaveInterval, saveProject])
   
-  // Save on window close/refresh
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (currentProject) {
-        saveProject()
-      }
-    }
-    
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [currentProject, saveProject])
+  // Await saving before native close; retain browser/reload fallback.
+  useEffect(() => registerDesktopClose({
+    api: window.electronAPI,
+    getProjectState: () => useProjectStore.getState(),
+  }), [])
 
   // Resize handlers
   const handleLeftPanelResize = useCallback((clientX) => {
@@ -555,10 +654,49 @@ function App() {
   }, [persistLayout])
 
   const handleToggleInspectorExpanded = useCallback(() => {
+    if (mainTab !== 'editor' && rightPanelTab !== 'agent') {
+      setRightPanelTab('agent')
+      setInspectorExpanded(true)
+      persistLayout({ inspectorExpanded: true })
+      return
+    }
     setInspectorExpanded(prev => {
       const next = !prev
       persistLayout({ inspectorExpanded: next })
       return next
+    })
+  }, [persistLayout, mainTab, rightPanelTab])
+
+  const handleRightPanelTabClick = useCallback((tab) => {
+    if (isExportBusy() || (tab === 'inspector' && mainTab !== 'editor')) return
+    if (rightPanelTab === tab && inspectorExpanded) {
+      handleToggleInspectorExpanded()
+    } else {
+      setRightPanelTab(tab)
+      setInspectorExpanded(true)
+      persistLayout({ inspectorExpanded: true })
+    }
+  }, [mainTab, rightPanelTab, inspectorExpanded, persistLayout, handleToggleInspectorExpanded])
+
+  const handleRevealInspector = useCallback(() => {
+    setRightPanelTab('inspector')
+    setInspectorExpanded(true)
+    persistLayout({ inspectorExpanded: true })
+  }, [persistLayout])
+
+  const handleUseWorkflowWithAgent = useCallback(entry => {
+    const before = useProjectStore.getState()
+    const key = getStoryboardProjectKey(before.currentProject, before.currentProjectHandle)
+    const epoch = workflowLibraryEpoch.current
+    return stageWorkflowInAgent(entry, {
+      handlerRef: workflowReferenceRef,
+      reveal: () => { setRightPanelTab('agent'); setInspectorExpanded(true); persistLayout({ inspectorExpanded: true }) },
+      isCurrent: () => {
+        const current = useProjectStore.getState()
+        return epoch === workflowLibraryEpoch.current && !isExportBusy() && !current.isLoading && Boolean(current.currentProject)
+          && current.currentProjectHandle === before.currentProjectHandle
+          && getStoryboardProjectKey(current.currentProject, current.currentProjectHandle) === key
+      },
     })
   }, [persistLayout])
 
@@ -582,6 +720,8 @@ function App() {
   // column would be dead space above the timeline) — the left panel wins and
   // the inspector regains full height when the left panel drops it.
   const inspectorFullHeightActive = inspectorFullHeight && !(editorLayout === 'vertical' && leftPanelFullHeight)
+  const rightPanelExpanded = inspectorExpanded && (mainTab === 'editor' || rightPanelTab === 'agent')
+  const agentVisible = rightPanelExpanded && rightPanelTab === 'agent'
 
   const handleActiveTimelineToolChange = useCallback((label) => {
     setActiveTimelineToolLabel(label || 'Move tool')
@@ -595,6 +735,14 @@ function App() {
     setSettingsInitialSection(section)
     setSettingsModalOpen(true)
   }, [])
+
+  // Other parts of the window (the account drop-down) can ask for a Settings page by name.
+  useEffect(() => {
+    // GPU sharing has its own tab now; a request for its old Settings page goes there.
+    const open = event => { if (isExportBusy()) return; if (event.detail === 'network') { setSettingsModalOpen(false); setMainTab('gpu-sharing'); setGpuShareAsk(count => count + 1) } else openSettingsModal(typeof event.detail === 'string' ? event.detail : null) }
+    window.addEventListener('velorn:open-settings', open)
+    return () => window.removeEventListener('velorn:open-settings', open)
+  }, [openSettingsModal])
 
   const handleOpenSettingsFromBottomBar = useCallback(() => {
     setMainTab('editor')
@@ -617,7 +765,7 @@ function App() {
 
   // Show welcome screen if no project is open
   if (!currentProject) {
-    return <WelcomeScreen />
+    return <><div inert={exportBusy ? '' : undefined}><WelcomeScreen /></div><ExportProgressOverlay /></>
   }
 
   return (
@@ -626,11 +774,17 @@ function App() {
       <TitleBar
         projectName={currentProject?.name || 'Untitled'}
         activeTab={mainTab}
-        onTabChange={setMainTab}
+        onTabChange={selectTab}
+        showStoryboardTab={showStoryboardTab}
+        showGenerateTab={showGenerateTab}
         showDiscoverTab={showDiscoverTab}
+        hiddenTabs={hiddenTopTabs}
         editorLayout={editorLayout}
         onEditorLayoutChange={handleEditorLayoutChange}
+        exportBusy={exportBusy}
       />
+
+      <div className="contents" inert={exportBusy ? '' : undefined} aria-hidden={exportBusy ? true : undefined}>
 
       {showMediaPreparation && (
         <div className="pointer-events-none fixed left-1/2 top-1/2 z-50 w-[min(420px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-sf-dark-600 bg-sf-dark-900/95 px-3 py-2 shadow-2xl shadow-black/40 backdrop-blur">
@@ -703,9 +857,10 @@ function App() {
       
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden min-h-0">
+      <div className="flex-1 flex overflow-hidden min-h-0 min-w-0">
         {/* ComfyUI tab – kept mounted when visible so iframe does not reload */}
         <div
-          className="flex-1 flex flex-col min-h-0 bg-sf-dark-950"
+          className="flex-1 flex flex-col min-h-0 min-w-0 bg-sf-dark-950"
           style={{ display: mainTab === 'comfyui' ? 'flex' : 'none' }}
         >
           {/* Thin toolbar: the embedded ComfyUI iframe has no browser chrome,
@@ -714,16 +869,23 @@ function App() {
               under it) the user has no way to recover from inside the app.
               Reload remounts the iframe; Open-external pops it in the system
               browser as a fallback diagnostic. */}
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-sf-dark-700 bg-sf-dark-900 text-xs text-sf-text-muted flex-shrink-0">
-            <span className="font-mono truncate">{comfyIframeUrl || '—'}</span>
+          <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-sf-dark-700 bg-sf-dark-900 text-xs text-sf-text-muted flex-shrink-0">
+            <span>Local ComfyUI</span><span className="min-w-0 max-w-full font-mono truncate">{comfyIframeUrl || '—'}</span>
             {(comfySaveState.message || comfySaveState.error) && (
-              <span className={`max-w-[420px] truncate ${comfySaveState.error ? 'text-sf-error' : 'text-emerald-300'}`}>
+              <span className={`min-w-0 max-w-[min(420px,100%)] truncate ${comfySaveState.error ? 'text-sf-error' : 'text-emerald-300'}`}>
                 {comfySaveState.error || comfySaveState.message}
               </span>
             )}
             <div className="flex-1" />
-            {comfySaveState.phase === 'naming' ? (
-              <span className="inline-flex items-center gap-1.5">
+            {comfySaveState.phase === 'exists' ? (
+              <span className="inline-flex max-w-full flex-wrap items-center gap-1.5 text-sf-text-secondary" role="group" aria-label="A workflow with this name exists">
+                <span className="min-w-0">You already have “{comfySaveState.existing?.title}”{comfySaveState.existing?.count > 1 ? ` (${comfySaveState.existing.count} of them)` : ''}.{comfySaveState.existing?.shared ? ' It is shared in GPU sharing; replacing it stops that until you add it again.' : ''}</span>
+                <button type="button" onClick={() => { void handleConfirmSaveComfyGraph('replace') }} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-sf-accent/15 text-sf-accent hover:bg-sf-accent/25 transition-colors">{comfySaveState.existing?.count > 1 ? 'Replace the newest' : 'Replace it'}</button>
+                <button type="button" onClick={() => { void handleConfirmSaveComfyGraph('both') }} className="px-2 py-1 rounded hover:bg-sf-dark-700 hover:text-sf-text-primary transition-colors">Keep both</button>
+                <button type="button" onClick={handleCancelSaveComfyGraph} className="px-2 py-1 rounded hover:bg-sf-dark-700 hover:text-sf-text-primary transition-colors">Cancel</button>
+              </span>
+            ) : comfySaveState.phase === 'naming' ? (
+              <span className="inline-flex max-w-full flex-wrap items-center gap-1.5">
                 <input
                   type="text"
                   value={comfySaveState.name}
@@ -735,7 +897,7 @@ function App() {
                   ref={comfySaveNameInputRef}
                   autoFocus
                   placeholder="Workflow name"
-                  className="w-56 rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1 text-xs text-sf-text-primary outline-none placeholder:text-sf-text-muted focus:border-sf-accent"
+                  className="w-56 min-w-0 max-w-full rounded border border-sf-dark-600 bg-sf-dark-800 px-2 py-1 text-xs text-sf-text-primary outline-none placeholder:text-sf-text-muted focus:border-sf-accent"
                 />
                 <button
                   type="button"
@@ -763,12 +925,17 @@ function App() {
                     ? 'cursor-not-allowed text-sf-text-muted'
                     : 'bg-sf-accent/15 text-sf-accent hover:bg-sf-accent/25'
                 }`}
-                title="Save the workflow currently open below to your library (Generate → Custom), so you can reopen it here anytime"
+                title="Save a copy of the current workflow in My Workflows, to reopen it or use it with your agent"
               >
                 {comfySaveState.phase === 'busy' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BookmarkPlus className="w-3.5 h-3.5" />}
-                Save to Velorn
+                Save workflow
               </button>
             )}
+            <button type="button" onClick={() => setWorkflowLibraryOpen(true)} disabled={exportBusy}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-sf-dark-700 hover:text-sf-text-primary transition-colors"
+              title="Browse saved workflows and add one to your agent chat">
+              <Library className="w-3.5 h-3.5" /> My Workflows
+            </button>
             <button
               type="button"
               onClick={reloadComfyIframe}
@@ -796,13 +963,12 @@ function App() {
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
           />
         </div>
-        {/* Generate tab – mounted on first visit, then kept mounted so
-            queue/progress survives tab switches. MCP music-video tools open
-            this tab via the comfystudio-open-generate-tab event before their
-            readiness probe, so first mount happens before they need it. */}
+        {/* Generate stays mounted after first use so its existing jobs survive
+            tab switches and hiding the tab. Older MCP adapters can still
+            mount its listeners in the background through the open event. */}
         {hasMountedGenerate && (
           <div
-            className="flex-1 flex flex-col min-h-0 overflow-hidden bg-sf-dark-950"
+            className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-sf-dark-950"
             style={{ display: mainTab === 'generate' ? 'flex' : 'none' }}
           >
             <WorkspaceErrorBoundary>
@@ -817,7 +983,7 @@ function App() {
         )}
         {hasMountedFlowAi && (
           <div
-            className="flex-1 flex flex-col min-h-0 overflow-hidden bg-sf-dark-950"
+            className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-sf-dark-950"
             style={{ display: mainTab === 'flow-ai' ? 'flex' : 'none' }}
           >
             <WorkspaceErrorBoundary>
@@ -827,8 +993,28 @@ function App() {
             </WorkspaceErrorBoundary>
           </div>
         )}
+        {/* Sound tab - the same screen as Create, making voice, music and effects */}
+        {(mainTab === 'sound' || hasOpenedSound) && (
+          <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-sf-dark-950" style={{ display: mainTab === 'sound' ? 'flex' : 'none' }}>
+            <WorkspaceErrorBoundary>
+              <Suspense fallback={WORKSPACE_LOADING_FALLBACK}>
+                <CreateWorkspace mode="sound" />
+              </Suspense>
+            </WorkspaceErrorBoundary>
+          </div>
+        )}
+        {/* Create tab - kept mounted once opened so a request in progress survives tab switches */}
+        {(mainTab === 'create' || hasOpenedCreate) && (
+          <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-sf-dark-950" style={{ display: mainTab === 'create' ? 'flex' : 'none' }}>
+            <WorkspaceErrorBoundary>
+              <Suspense fallback={WORKSPACE_LOADING_FALLBACK}>
+                <CreateWorkspace />
+              </Suspense>
+            </WorkspaceErrorBoundary>
+          </div>
+        )}
         {mainTab === 'mog' && (
-          <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-sf-dark-950">
+          <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-sf-dark-950">
             <WorkspaceErrorBoundary>
               <Suspense fallback={WORKSPACE_LOADING_FALLBACK}>
                 <MOGWorkspace />
@@ -838,17 +1024,38 @@ function App() {
         )}
         {/* Export tab - keep mounted so settings, queue, and progress survive tab switches */}
         <div
-          className="flex-1 flex flex-col min-h-0 overflow-hidden bg-sf-dark-950"
+          className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-sf-dark-950"
           style={{ display: mainTab === 'export' ? 'flex' : 'none' }}
         >
           <ExportPanel active={mainTab === 'export'} />
         </div>
+        {mainTab === 'storyboard' && (
+          <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden" data-workspace="storyboard">
+          <div ref={agentWorkspaceRef} className="flex-1 min-w-0 min-h-0 overflow-hidden">
+            <WorkspaceErrorBoundary>
+              <Suspense fallback={WORKSPACE_LOADING_FALLBACK}>
+                <ProductionWorkspace workspace onBackToEditor={() => selectTab('editor')} highlightShotIds={agentHighlightShotIds} />
+              </Suspense>
+            </WorkspaceErrorBoundary>
+          </div>
+          </div>
+        )}
         {mainTab === "stock" && (
           <WorkspaceErrorBoundary>
             <Suspense fallback={WORKSPACE_LOADING_FALLBACK}>
               <StockPanel />
             </Suspense>
           </WorkspaceErrorBoundary>
+        )}
+        {/* GPU sharing tab - kept mounted once opened, like Create, so a job being made survives tab switches */}
+        {(mainTab === 'gpu-sharing' || hasOpenedGpuSharing) && (
+          <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-sf-dark-950" style={{ display: mainTab === 'gpu-sharing' ? 'flex' : 'none' }}>
+            <WorkspaceErrorBoundary>
+              <Suspense fallback={WORKSPACE_LOADING_FALLBACK}>
+                <GpuSharingWorkspace openShare={gpuShareAsk} />
+              </Suspense>
+            </WorkspaceErrorBoundary>
+          </div>
         )}
         {mainTab === 'discover' && showDiscoverTab && (
           <WorkspaceErrorBoundary>
@@ -875,7 +1082,7 @@ function App() {
             {editorLayout === 'vertical' && (
               <>
                 <div style={{ width: verticalPreviewWidth }} className="flex-shrink-0 flex flex-col min-h-0">
-                  <div className="flex-1 min-h-0">
+                  <div ref={agentWorkspaceRef} className="flex-1 min-h-0">
                     <PreviewPanel />
                   </div>
                   <div className="flex-shrink-0 flex items-center justify-center py-1 border-t border-sf-dark-700">
@@ -958,7 +1165,7 @@ function App() {
                 {/* Center - Preview (in the vertical layout it lives in the
                     dedicated left column instead) */}
                 {editorLayout !== 'vertical' && (
-                  <div className="flex-1 min-w-0">
+                  <div ref={agentWorkspaceRef} className="flex-1 min-w-0">
                     <PreviewPanel />
                   </div>
                 )}
@@ -979,20 +1186,12 @@ function App() {
                       />
                     )}
 
-                    {/* Right Sidebar - Inspector with Icon Toolbar */}
+                    {/* One shared right sidebar: Inspector or Agent. */}
                     <div
+                      ref={rightPanelHostRef}
                       style={{ width: inspectorExpanded ? inspectorWidth + ICON_BAR_WIDTH : ICON_BAR_WIDTH }}
                       className="flex-shrink-0 transition-[width] duration-200 ease-out"
-                    >
-                      <InspectorPanel
-                        selectedItem={selectedItem}
-                        isExpanded={inspectorExpanded}
-                        onToggleExpanded={handleToggleInspectorExpanded}
-                        isFullHeight={false}
-                        onToggleFullHeight={handleToggleInspectorFullHeight}
-                        fullHeightDisabled={editorLayout === 'vertical' && leftPanelFullHeight}
-                      />
-                    </div>
+                    />
                   </>
                 )}
               </div>
@@ -1116,32 +1315,60 @@ function App() {
                   />
                 )}
                 <div
+                  ref={rightPanelHostRef}
                   style={{ width: inspectorExpanded ? inspectorWidth + ICON_BAR_WIDTH : ICON_BAR_WIDTH }}
                   className="flex-shrink-0 transition-[width] duration-200 ease-out h-full"
-                >
-                  <InspectorPanel
-                    selectedItem={selectedItem}
-                    isExpanded={inspectorExpanded}
-                    onToggleExpanded={handleToggleInspectorExpanded}
-                    isFullHeight={true}
-                    onToggleFullHeight={handleToggleInspectorFullHeight}
-                  />
-                </div>
+                />
               </>
             )}
           </>
         </div>
         )}
       </div>
+
+      {/* Every non-editor workspace shares a full-height Agent slot. The editor
+          keeps its normal/full-height slots; RightPanelDock moves its existing
+          DOM between them without remounting the conversation. */}
+      {mainTab !== 'editor' && <>
+        {rightPanelExpanded && <ResizeHandle direction="horizontal" onResize={handleInspectorResize} />}
+        <div ref={rightPanelHostRef}
+          style={{ width: rightPanelExpanded ? inspectorWidth + ICON_BAR_WIDTH : ICON_BAR_WIDTH, maxWidth: '60vw' }}
+          className="flex-shrink-0 min-h-0 transition-[width] duration-200 ease-out" />
+      </>}
       
+      <RightPanelDock hostRef={rightPanelHostRef} activeTab={rightPanelTab} isExpanded={rightPanelExpanded}
+        keepAgentMounted={accountAgentRequested}
+        onTabClick={handleRightPanelTabClick} onToggleExpanded={handleToggleInspectorExpanded}
+        isFullHeight={mainTab !== 'editor' || inspectorFullHeightActive}
+        onToggleFullHeight={handleToggleInspectorFullHeight}
+        fullHeightDisabled={mainTab !== 'editor' || (editorLayout === 'vertical' && leftPanelFullHeight)}
+        inspectorAvailable={mainTab === 'editor'}
+        inspector={mainTab === 'editor' ? <InspectorPanel embedded
+          isExpanded={rightPanelExpanded && rightPanelTab === 'inspector'} onToggleExpanded={handleRevealInspector} /> : null}
+        agent={<WorkspaceErrorBoundary><Suspense fallback={null}>
+          <ConnectedAgentPanel docked visible={agentVisible} activeTab={mainTab} workspaceRef={agentWorkspaceRef} modelPickerRequest={agentModelPickerRequest}
+            onOpenEditor={() => { if (!isExportBusy()) setMainTab('editor') }}
+            workflowReferenceRef={workflowReferenceRef}
+            onHighlight={setAgentHighlightShotIds}
+            onShowShot={shotId => {
+              if (isExportBusy()) return
+              setAgentHighlightShotIds([shotId]); setAgentRevealShotId(shotId); openStoryboard()
+            }} />
+        </Suspense></WorkspaceErrorBoundary>} />
+      </div>
       {/* Bottom bar: settings menu + undo/redo */}
       <BottomBar
         projectName={currentProject?.name}
         onOpenSettings={handleOpenSettingsFromBottomBar}
         onOpenGettingStarted={handleOpenGettingStarted}
+        onOpenStoryboard={openStoryboard}
       />
 
       {/* Settings Modal */}
+      {workflowLibraryOpen && <Suspense fallback={WORKSPACE_LOADING_FALLBACK}>
+        <WorkflowLibraryDrawer open onClose={closeWorkflowLibrary}
+          onUseWithAgent={handleUseWorkflowWithAgent} disabled={exportBusy} />
+      </Suspense>}
       <SettingsModal
         isOpen={settingsModalOpen}
         onClose={() => {
@@ -1149,6 +1376,11 @@ function App() {
           setSettingsInitialSection(null)
         }}
         initialSection={settingsInitialSection}
+        onChooseAgentModel={() => {
+          setSettingsModalOpen(false); setSettingsInitialSection(null)
+          setRightPanelTab('agent'); setInspectorExpanded(true)
+          setAgentModelPickerRequest(value => value + 1)
+        }}
       />
       <GettingStartedModal
         isOpen={gettingStartedOpen}
@@ -1158,8 +1390,20 @@ function App() {
         onOpenSettings={handleOpenSettingsFromGettingStarted}
         onNavigate={handleNavigateFromGettingStarted}
       />
+      </div>
+      <ExportProgressOverlay />
     </div>
   )
 }
 
-export default App
+export default function App() {
+  const hasProject = useProjectStore(state => Boolean(state.currentProject) && !state.isLoading)
+  const [accountAgentRequested, setAccountAgentRequested] = useState(false)
+  const requestAccountAgent = useCallback(() => setAccountAgentRequested(true), [])
+  return <DesktopAccountProvider hasProject={hasProject} onRequestAgent={requestAccountAgent}>
+    <AppWorkspace accountAgentRequested={accountAgentRequested} />
+    <AgentComfyCloudSetup />
+    <PhoneCreateSaver />
+    <VelornNetworkSaver />
+  </DesktopAccountProvider>
+}

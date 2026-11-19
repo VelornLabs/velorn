@@ -1,0 +1,107 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "minimax_h3_image_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader"
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "minimax_h3_image_vae_fp16.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "4": {
+    "inputs": {
+      "value": ""
+    },
+    "class_type": "PrimitiveStringMultiline"
+  },
+  "5": {
+    "inputs": {
+      "prompt": [
+        "4",
+        0
+      ],
+      "width": 2048,
+      "height": 2048,
+      "clip": [
+        "2",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ImageConditioning"
+  },
+  "6": {
+    "inputs": {
+      "conditioning": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut"
+  },
+  "7": {
+    "inputs": {
+      "seed": 42,
+      "steps": 6,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "5",
+        0
+      ],
+      "negative": [
+        "6",
+        0
+      ],
+      "latent_image": [
+        "5",
+        1
+      ]
+    },
+    "class_type": "KSampler"
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "VAEDecode"
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "velorn_network/h3",
+      "images": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "SaveImage"
+  }
+}

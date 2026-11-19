@@ -64,7 +64,7 @@ export async function setShowDiscoverTab(show) {
   try {
     if (typeof window !== 'undefined' && window.electronAPI?.setSetting) {
       const result = await window.electronAPI.setSetting(DISCOVER_TAB_VISIBILITY_SETTING_KEY, next)
-      if (result?.success === false) throw new Error(result.error || 'Could not save the Discover tab setting.')
+      if (result?.success === false) throw new Error(result.error || 'Could not save the Tutorials tab setting.')
     }
   } catch (_) {
     // localStorage remains a durable fallback if the Electron settings write

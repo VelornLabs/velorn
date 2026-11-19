@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Check,
   CheckCircle2,
   Clipboard,
   Edit3,
@@ -33,22 +34,41 @@ import {
 } from '../../config/generateWorkspaceConfig'
 import { BUILTIN_WORKFLOW_PATHS } from '../../config/workflowRegistry'
 import CustomWorkflowSlotCard from './CustomWorkflowSlotCard'
+import SongStep from './SongStep'
+import { useVeloAllowance, VeloAllowance } from '../VeloAllowance'
+import { startWatchingVelo, writeScriptWithVelo } from '../../services/veloScriptWriter.mjs'
+import { groupPassBySongPart, groupShotsByPass } from '../../utils/keyframeGroups.mjs'
+import { FLUX2_KLEIN_WORKFLOW_ID } from '../../services/flux2KleinWorkflow.mjs'
+import { MINIMAX_H3_LOCAL_WORKFLOW_ID, MINIMAX_H3_QUALITY_LEVELS, countPictureShapes } from '../../services/minimaxH3LocalWorkflow.mjs'
+import DirectorHero from './DirectorHero'
+import { parseStructuredDirectorScript } from '../../utils/yoloPlanning'
+import { newPlace, placeNameFromFile, placeSlug } from '../../services/musicVideoPlaces.mjs'
+import { collectRouterPicture, dollars, quoteRouterPicture, routerPictureModel, routerPictureProblem, sendRouterPicture } from '../../services/routerPicture.mjs'
+import { buildKeyframeBatch, runFewAtATime } from '../../services/routerKeyframes.mjs'
+import { importRouterImage } from '../../services/comfyRouterImages'
+import LocalModelSetup from './LocalModelSetup'
+import { MINIMAX_H3_CLOUD_WORKFLOW_ID, MINIMAX_H3_CLOUD_LEVELS, MINIMAX_H3_LIP_SYNC_WORKFLOW_ID } from '../../services/minimaxH3CloudWorkflow.mjs'
+import { describeSongParts, formatClock, guessSongParts, normalizeSongParts, parseSrtLines } from '../../utils/songLyricMap.mjs'
 
 const DRAFT_STORAGE_KEY = 'comfystudio-music-video-easy-mode-draft-v1'
 const DRAFT_PROJECT_STORAGE_PREFIX = `${DRAFT_STORAGE_KEY}:project:`
 
 const STEPS = [
   { id: 'song', label: 'Song', number: '1' },
-  { id: 'people', label: 'People', number: '2' },
+  { id: 'people', label: 'Cast and places', number: '2' },
   { id: 'script', label: 'Director Script', number: '3' },
   { id: 'keyframes', label: 'Keyframes', number: '4' },
   { id: 'videos', label: 'Videos', number: '5' },
+  // The last step: putting the videos on a timeline. It used to be a box at
+  // the bottom of Videos, below every shot, where it was easy to miss.
+  { id: 'timeline', label: 'Timeline', number: '6' },
 ]
 
 const ASPECT_RATIO_OPTIONS = [
-  { id: 'landscape_16x9', label: '16:9', helper: 'Landscape music video frame.' },
-  { id: 'vertical_9x16', label: '9:16', helper: 'Vertical social frame.' },
-  { id: 'square_1x1', label: '1:1', helper: 'Square social frame.' },
+  // Named by their ratio, the way cameras and video sites name them. The
+  // little rectangle on each button shows the shape for anyone new to ratios.
+  { id: 'landscape_16x9', label: '16:9', helper: 'Wide, for YouTube and TV' },
+  { id: 'vertical_9x16', label: '9:16', helper: 'Tall, for TikTok, Reels and Shorts' },
 ]
 
 const RESOLUTION_OPTIONS = [
@@ -97,6 +117,37 @@ const COVERAGE_PRESET_OPTIONS = [
     includeDetailBroll: true,
   },
 ]
+// The five parts a music video shoot can have, in plain words, with the
+// strip colour each one gets on the coverage cards.
+const COVERAGE_PARTS = [
+  { label: 'Main shots', colour: 'bg-[#8B7CF6]' },
+  { label: 'Extra takes', colour: 'bg-[#B9AEFA]' },
+  { label: 'Story shots', colour: 'bg-[#5DCAA5]' },
+  { label: 'Place shots', colour: 'bg-[#EF9F27]' },
+  { label: 'Detail shots', colour: 'bg-[#ED93B1]' },
+]
+// The parts of a script, in the same plain words as the "What else do you
+// want to film?" list.
+const SCRIPT_PART_NAMES = {
+  main_sequence: 'Main shots',
+  performance_pass: 'Extra take',
+  story_broll: 'Story shots',
+  environmental_broll: 'Place shots',
+  detail_broll: 'Detail shots',
+}
+// A part's name in plain words, from whatever label it carries.
+function plainPartName(label) {
+  const text = String(label || '')
+  if (/main|master|scripted/i.test(text)) return SCRIPT_PART_NAMES.main_sequence
+  if (/performance/i.test(text)) {
+    const number = text.match(/(\d+)\s*$/)
+    return number ? `${SCRIPT_PART_NAMES.performance_pass} ${number[1]}` : SCRIPT_PART_NAMES.performance_pass
+  }
+  if (/story/i.test(text)) return SCRIPT_PART_NAMES.story_broll
+  if (/environment/i.test(text)) return SCRIPT_PART_NAMES.environmental_broll
+  if (/detail/i.test(text)) return SCRIPT_PART_NAMES.detail_broll
+  return text
+}
 const COVERAGE_TYPE_LABELS = Object.freeze({
   main_sequence: 'Main sequence',
   performance_pass: 'Performance pass',
@@ -105,6 +156,15 @@ const COVERAGE_TYPE_LABELS = Object.freeze({
   environmental_broll: 'Environmental b-roll',
 })
 const DEFAULT_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
+  {
+    id: MINIMAX_H3_LOCAL_WORKFLOW_ID,
+    label: 'MiniMax H3',
+    runtimeLabel: 'Local',
+    description: 'Best lip sync. Starts from the keyframe and follows the song. Needs a strong graphics card.',
+  },
+  // Cloud video is parked (2026-11-11): no cloud model gave both movement and
+  // lip sync that stays on the song. The H3 Lip Sync and Reference code is kept
+  // but not offered. See docs/DIRECTOR_DIRECTION.md.
   {
     id: MUSIC_VIDEO_SHOT_WORKFLOW_ID,
     label: 'LTX 2.3 Music',
@@ -123,6 +183,12 @@ const DEFAULT_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
   },
 ])
 const DEFAULT_KEYFRAME_WORKFLOW_OPTIONS = Object.freeze([
+  {
+    id: FLUX2_KLEIN_WORKFLOW_ID,
+    label: 'FLUX.2 klein',
+    runtimeLabel: 'Local',
+    description: 'Light and fast local keyframes. Keeps the cast from their pictures and also makes shots with nobody in them.',
+  },
   {
     id: 'image-edit',
     label: 'Qwen Image Edit',
@@ -493,6 +559,8 @@ export default function MusicVideoEasyMode({
   assets,
   generationQueue,
   yoloMusicAudioAssets,
+  handleImportYoloMusicAudio,
+  yoloMusicAudioImporting,
   yoloMusicAudioAssetId,
   setYoloMusicAudioAssetId,
   yoloMusicAudioKind,
@@ -509,12 +577,18 @@ export default function MusicVideoEasyMode({
   setYoloMusicProvidedLyrics,
   yoloMusicAlignProvidedLyrics,
   setYoloMusicAlignProvidedLyrics,
+  yoloMusicSongMap,
+  setYoloMusicSongMap,
+  yoloMusicConcept = '',
+  setYoloMusicConcept,
   yoloMusicLyrics,
   setYoloMusicLyrics,
   yoloMusicParsedLyrics,
   yoloMusicScript,
   setYoloMusicScript,
   yoloMusicCast,
+  yoloMusicPlaces = [],
+  setYoloMusicPlaces,
   yoloMusicResolvedCast,
   setYoloMusicCast,
   handleYoloMusicCastAdd,
@@ -542,12 +616,17 @@ export default function MusicVideoEasyMode({
   handleCheckYoloMusicCustomKeyframeBridge,
   yoloMusicVideoWorkflowId,
   setYoloMusicVideoWorkflowId,
+  yoloMusicVideoQuality = 'best',
+  yoloMusicCloudVideoLevel = 'standard',
+  setYoloMusicCloudVideoLevel,
+  setYoloMusicVideoQuality,
   yoloMusicVideoWorkflowOptions = DEFAULT_VIDEO_WORKFLOW_OPTIONS,
   yoloMusicCustomVideoWorkflow,
   yoloMusicCustomVideoValidation,
   handleImportYoloMusicCustomVideoWorkflow,
   handleOpenYoloMusicCustomVideoWorkflowInComfyUi,
   handleClearYoloMusicCustomVideoWorkflow,
+  handleOpenYoloMusicCustomStarter,
   handleUseYoloMusicLibraryWorkflow,
   yoloActivePlan,
   yoloQueueVariants,
@@ -591,6 +670,19 @@ export default function MusicVideoEasyMode({
   const [runtimeImageDimensions, setRuntimeImageDimensions] = useState({})
   const [advancedAudioOpen, setAdvancedAudioOpen] = useState(false)
   const [briefStatus, setBriefStatus] = useState('')
+  // Writing the script with Velo: idle | writing | done | error
+  const [veloScript, setVeloScript] = useState({ status: 'idle', shots: 0, message: '' })
+  const [veloSeconds, setVeloSeconds] = useState(0)
+  useEffect(() => {
+    if (veloScript.status !== 'writing') return undefined
+    const tick = () => setVeloSeconds(Math.max(0, Math.round((Date.now() - (veloScript.startedAt || Date.now())) / 1000)))
+    tick()
+    const timer = setInterval(tick, 1000)
+    return () => clearInterval(timer)
+  }, [veloScript.status, veloScript.startedAt])
+  const veloStopRef = useRef(null)
+  const veloAllowance = useVeloAllowance({ enabled: step === 'script', accountKey: 'music-video-script', revision: veloScript.status === 'done' ? 1 : 0 })
+  useEffect(() => { startWatchingVelo(typeof window !== 'undefined' ? window.electronAPI?.connectedAgent : null) }, [])
   const [peopleStatus, setPeopleStatus] = useState('')
   const [parseStatus, setParseStatus] = useState('')
   const [keyframeStatus, setKeyframeStatus] = useState('')
@@ -610,7 +702,8 @@ export default function MusicVideoEasyMode({
   const replacementFileInputRef = useRef(null)
   const videoReplacementFileInputRef = useRef(null)
 
-  const peopleWizardGenerationEnabled = Boolean(canUsePeopleWizardGeneration && BUILTIN_WORKFLOW_PATHS['z-image-turbo'] && BUILTIN_WORKFLOW_PATHS['multi-angles'])
+  // Cast pictures are made with the same light local model as the keyframes.
+  const peopleWizardGenerationEnabled = Boolean(canUsePeopleWizardGeneration && BUILTIN_WORKFLOW_PATHS[FLUX2_KLEIN_WORKFLOW_ID])
 
   useEffect(() => {
     if (!draftStorageKey || typeof localStorage === 'undefined') return
@@ -678,7 +771,10 @@ export default function MusicVideoEasyMode({
     setPeopleWizard({
       sessionId,
       mode: entry ? 'edit' : 'create',
-      step: 'person',
+      // Simple by default: a name and a picture. "More options" opens the
+      // full three-part form with the character sheet.
+      advanced: false,
+      step: 'image',
       entryId: entry?.id || null,
       name: String(entry?.label || ''),
       slug: String(entry?.slug || ''),
@@ -694,7 +790,7 @@ export default function MusicVideoEasyMode({
       imageJobId: null,
       sheetJobId: null,
       sheetSeed: Math.floor(Math.random() * 1000000000),
-      imageWorkflow: 'z-image-turbo',
+      imageWorkflow: FLUX2_KLEIN_WORKFLOW_ID,
       sheetWorkflow: 'multi-angles',
     })
   }
@@ -742,6 +838,26 @@ export default function MusicVideoEasyMode({
     return busyJobs[busyJobs.length - 1] || null
   }, [generationQueue, peopleWizard?.sessionId])
   const flatShots = useMemo(() => flattenPlanShots(yoloActivePlan), [yoloActivePlan])
+  // The shots as a storyboard of the song: tabs are the passes of the script,
+  // and inside a pass the shots sit under the part of the song they fall in.
+  const shotPasses = useMemo(() => groupShotsByPass(flatShots, ({ scene, shot }) => getCoverageLabel(scene, shot)), [flatShots])
+  const songPartsForShots = useMemo(() => {
+    const lines = parseSrtLines(yoloMusicParsedLyrics?.isTimed ? yoloMusicLyrics : '')
+    if (!lines.length) return []
+    return describeSongParts(lines, normalizeSongParts(yoloMusicSongMap?.parts, lines.length) || guessSongParts(lines))
+  }, [yoloMusicLyrics, yoloMusicParsedLyrics?.isTimed, yoloMusicSongMap?.parts])
+  const [shotPassKey, setShotPassKey] = useState('')
+  const activeShotPass = shotPasses.find((pass) => pass.key === shotPassKey) || shotPasses[0] || null
+  // One plain grid per tab, in shot order. The shots used to sit under verse
+  // and chorus headings from the Song step; unless someone had tidied those
+  // parts it made many tiny groups, and it put shots out of order when two
+  // claimed the same moment (removed 2026-11-12). The Song step keeps its parts.
+  const activeShotSections = useMemo(
+    () => (activeShotPass ? [{ key: 'all', label: '', indexes: [...activeShotPass.indexes].sort((a, b) => a - b) }] : []),
+    [activeShotPass]
+  )
+  const [editingPromptIndex, setEditingPromptIndex] = useState(-1)
+  const [editingMotionIndex, setEditingMotionIndex] = useState(-1)
   const variantByShotKey = useMemo(() => {
     const map = new Map()
     for (const variant of yoloQueueVariants || []) {
@@ -909,6 +1025,8 @@ export default function MusicVideoEasyMode({
   const customKeyframeReady = !customKeyframeWorkflowSelected || Boolean(customKeyframeValidation.ok)
   const customVideoReady = !customVideoWorkflowSelected || Boolean(customVideoValidation.ok)
   const canQueueKeyframes = plannedShotCount > 0 && !yoloActivePlanIsStale && customKeyframeReady
+  // The script was approved before and has been edited since.
+  const scriptHasUnusedChanges = Boolean(yoloActivePlanIsStale) && plannedShotCount > 0
   const canQueueVideos = canQueueKeyframes && yoloStoryboardReadyCount > 0 && customVideoReady
   const normalizedSelectedShotIndexes = useMemo(() => {
     if (flatShots.length === 0) return []
@@ -1019,9 +1137,525 @@ export default function MusicVideoEasyMode({
     if (nextStep) setStep(nextStep.id)
   }
 
+  // What is finished, for the ticks in the step bar.
+  // Set once the videos have been put on a timeline, for the last step's tick.
+  const [timelinePlaced, setTimelinePlaced] = useState(false)
+  const stepDone = {
+    song: Boolean(yoloMusicAudioAsset && yoloMusicParsedLyrics?.isTimed),
+    people: (yoloMusicCast || []).length > 0,
+    script: plannedShotCount > 0,
+    keyframes: plannedShotCount > 0 && yoloStoryboardReadyCount >= plannedShotCount,
+    videos: plannedShotCount > 0 && videoReadyCount >= plannedShotCount,
+    timeline: timelinePlaced,
+  }
+
+
+  // The script read as a list of shots, for the Director Script step. The text
+  // itself stays the thing that is saved and edited.
+  const [scriptTextOpen, setScriptTextOpen] = useState(false)
+  const scriptShots = useMemo(() => {
+    try {
+      const parsed = parseStructuredDirectorScript(yoloMusicScript, { takesPerAngle: 1 })
+      const scenes = Array.isArray(parsed) ? parsed : (parsed?.scenes || [])
+      return scenes.flatMap((scene) => (scene?.shots || []).map((shot) => ({ ...shot, part: scene?.coverageSectionLabel || scene?.label || '' })))
+    } catch {
+      return []
+    }
+  }, [yoloMusicScript])
+  // The script's parts, for the tabs above the shot list: the video itself,
+  // each extra singing take, story shots, places, close-up details.
+  const [scriptTab, setScriptTab] = useState('')
+  const scriptParts = useMemo(() => {
+    const parts = []
+    const byKey = new Map()
+    scriptShots.forEach((shot, index) => {
+      const type = SCRIPT_PART_NAMES[shot.coverageType] ? shot.coverageType : 'main_sequence'
+      const key = `${type}:${shot.coverageSectionIndex || ''}`
+      if (!byKey.has(key)) {
+        const part = { key, type, rows: [] }
+        byKey.set(key, part)
+        parts.push(part)
+      }
+      byKey.get(key).rows.push({ shot, index })
+    })
+    const takes = parts.filter((part) => part.type === 'performance_pass')
+    return parts.map((part) => ({
+      ...part,
+      label: part.type === 'performance_pass' && takes.length > 1
+        ? `${SCRIPT_PART_NAMES.performance_pass} ${takes.indexOf(part) + 1}`
+        : SCRIPT_PART_NAMES[part.type],
+    }))
+  }, [scriptShots])
+  const scriptPartShown = scriptTab === 'all' ? null : (scriptParts.find((part) => part.key === scriptTab) || scriptParts[0] || null)
+  const scriptRowsShown = scriptParts.length > 1 && scriptPartShown
+    ? scriptPartShown.rows
+    : scriptShots.map((shot, index) => ({ shot, index }))
+
+  // ---------- Where pictures are made ----------
+  // One choice for the Cast and places step: FLUX on this computer (free), or
+  // the cloud picture model through Comfy Router (costs credits, asked each time).
+  const [pictureMaker, setPictureMaker] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem('velorn.director.pictureMaker')
+      return ['cloud', 'custom'].includes(saved) ? saved : 'local'
+    } catch { return 'local' }
+  })
+  const choosePictureMaker = (next) => {
+    setPictureMaker(next)
+    setPlaceQuote(null)
+    setPlaceCloudError('')
+    try { window.localStorage.setItem('velorn.director.pictureMaker', next) } catch { /* the choice still holds for this visit */ }
+  }
+  const [cloudPictureModel, setCloudPictureModel] = useState(null)
+  useEffect(() => {
+    let alive = true
+    routerPictureModel(window.electronAPI?.comfyRouter).then((model) => { if (alive) setCloudPictureModel(model) })
+    return () => { alive = false }
+  }, [])
+  const cloudPicturesOn = pictureMaker === 'cloud' && Boolean(cloudPictureModel)
+  // A price waiting for a yes: { key: 'new' or a place id, planId, usd, description, label }.
+  const [placeQuote, setPlaceQuote] = useState(null)
+  const [placeQuoteBusy, setPlaceQuoteBusy] = useState(false)
+  const [placeCloudError, setPlaceCloudError] = useState('')
+  const [placeCloudBusy, setPlaceCloudBusy] = useState({})
+  const placePictureText = (description) => `${String(description || '').trim()}. Wide establishing shot of the place, no text.`
+  const askPlacePrice = async (key, description, label) => {
+    setPlaceCloudError('')
+    setPlaceQuote(null)
+    setPlaceQuoteBusy(true)
+    const quote = await quoteRouterPicture({
+      api: window.electronAPI?.comfyRouter,
+      modelId: cloudPictureModel.id,
+      size: cloudPictureModel.size,
+      prompt: placePictureText(description),
+      shape: aspectRatio === 'vertical_9x16' ? 'portrait' : 'landscape',
+    })
+    setPlaceQuoteBusy(false)
+    if (!quote.success) { setPlaceCloudError(quote.error); return }
+    setPlaceQuote({ key, planId: quote.planId, usd: quote.usd, description, label })
+  }
+  // Runs straight from the click on the price button: that click is the approval.
+  const confirmPlaceQuote = async () => {
+    const quote = placeQuote
+    if (!quote) return
+    const api = window.electronAPI?.comfyRouter
+    const sent = await sendRouterPicture({ api, planId: quote.planId })
+    if (!sent.success) { setPlaceCloudError(sent.error); return }
+    setPlaceQuote(null)
+    let placeId = quote.key
+    if (quote.key === 'new') {
+      const entry = newPlace({ label: quote.label, notes: quote.description, pendingJobTag: `router:${sent.jobId}` }, yoloMusicPlaces || [])
+      placeId = entry.id
+      setYoloMusicPlaces?.((prev) => [...(Array.isArray(prev) ? prev : []), entry])
+      setPlaceIdea('')
+      setPlaceIdeaOpen(false)
+    } else {
+      changePlace(placeId, { pendingJobTag: `router:${sent.jobId}` })
+    }
+    setPlaceCloudBusy((busy) => ({ ...busy, [placeId]: true }))
+    const made = await collectRouterPicture({ api, jobId: sent.jobId, importImage: importRouterImage })
+    setPlaceCloudBusy((busy) => { const next = { ...busy }; delete next[placeId]; return next })
+    if (made.success) changePlace(placeId, { assetId: made.assetId, pendingJobTag: '' })
+    else { changePlace(placeId, { pendingJobTag: '' }); setPlaceCloudError(made.error) }
+  }
+  const renderPicturePrice = (quote, onYes, onNo) => (
+    <div className="rounded-lg border border-sf-accent/40 bg-sf-accent/10 p-3 text-left text-xs leading-5 text-sf-text-secondary">
+      <div>
+        This picture costs about <span className="font-semibold text-sf-text-primary">{dollars(quote.usd)}</span>
+        {cloudPictureModel?.creditsPerUsd && quote.usd != null ? ` (${Math.round(quote.usd * cloudPictureModel.creditsPerUsd)} credits)` : ''} on your Comfy account.
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onYes}
+          className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent-hover"
+        >
+          Make it for {dollars(quote.usd)}
+        </button>
+        <button
+          type="button"
+          onClick={onNo}
+          className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+  const renderPlacePrice = () => renderPicturePrice(placeQuote, confirmPlaceQuote, () => setPlaceQuote(null))
+
+  // A new person's picture through the cloud model, inside the person window.
+  const [personQuote, setPersonQuote] = useState(null)
+  const [personQuoteBusy, setPersonQuoteBusy] = useState(false)
+  const [personCloudBusy, setPersonCloudBusy] = useState(false)
+  const [personCloudError, setPersonCloudError] = useState('')
+  const askPersonPrice = async () => {
+    setPersonCloudError('')
+    setPersonQuote(null)
+    setPersonQuoteBusy(true)
+    const quote = await quoteRouterPicture({
+      api: window.electronAPI?.comfyRouter,
+      modelId: cloudPictureModel.id,
+      size: cloudPictureModel.size,
+      prompt: String(peopleWizard?.imagePrompt || '').trim() || `${peopleWizard?.name || 'Character'} portrait`,
+      shape: String(peopleWizard?.imageOrientation || '') === 'landscape' ? 'landscape' : 'portrait',
+    })
+    setPersonQuoteBusy(false)
+    if (!quote.success) { setPersonCloudError(quote.error); return }
+    setPersonQuote({ planId: quote.planId, usd: quote.usd })
+  }
+  // Runs straight from the click on the price button: that click is the approval.
+  const confirmPersonQuote = async () => {
+    const quote = personQuote
+    if (!quote) return
+    const api = window.electronAPI?.comfyRouter
+    const sent = await sendRouterPicture({ api, planId: quote.planId })
+    if (!sent.success) { setPersonCloudError(sent.error); return }
+    setPersonQuote(null)
+    setPersonCloudBusy(true)
+    const made = await collectRouterPicture({ api, jobId: sent.jobId, importImage: importRouterImage })
+    setPersonCloudBusy(false)
+    if (!made.success) { setPersonCloudError(made.error); return }
+    // A fresh session id, so a FLUX picture made earlier in this window does
+    // not take the place of the new one.
+    updatePeopleWizard({ assetId: made.assetId, sessionId: `wizard-${Date.now()}` })
+  }
+
+  const renderPictureMakerRow = () => (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 px-4 py-3">
+        <span className="text-sm font-semibold text-sf-text-primary">Pictures are made with</span>
+        <div role="group" aria-label="Where pictures are made" className="inline-flex overflow-hidden rounded-lg border border-sf-dark-600">
+          <button
+            type="button"
+            aria-pressed={pictureMaker === 'local'}
+            onClick={() => choosePictureMaker('local')}
+            className={`px-3 py-1.5 text-xs font-semibold transition-colors ${pictureMaker === 'local' ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+          >
+            FLUX
+          </button>
+          <button
+            type="button"
+            aria-pressed={pictureMaker === 'cloud'}
+            disabled={!cloudPictureModel}
+            onClick={() => choosePictureMaker('cloud')}
+            className={`px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${pictureMaker === 'cloud' ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+          >
+            {cloudPictureModel?.name || 'Cloud'}
+          </button>
+          <button
+            type="button"
+            aria-pressed={pictureMaker === 'custom'}
+            onClick={() => choosePictureMaker('custom')}
+            title="For people who build their own ComfyUI workflows."
+            className={`px-3 py-1.5 text-xs font-semibold transition-colors ${pictureMaker === 'custom' ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+          >
+            My own workflow
+          </button>
+        </div>
+        <span className="text-xs text-sf-text-muted">
+          {cloudPicturesOn
+            ? `In the cloud, through Comfy. About ${dollars(cloudPictureModel.usd)} a picture, and you see the price before each one.`
+            : pictureMaker === 'custom'
+              ? 'A ComfyUI workflow of your own makes the keyframes. People and places are still made with FLUX.'
+              : 'Free, on this computer.'}
+        </span>
+      </div>
+  )
+
+  // The Keyframes step has one model choice (the row at the top). The older
+  // second choice is gone: 'My own workflow' in that row stands for Custom
+  // Workflow, and any other local model goes to FLUX.
+  useEffect(() => {
+    const wanted = pictureMaker === 'custom' ? CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID : FLUX2_KLEIN_WORKFLOW_ID
+    if (selectedKeyframeWorkflowId && selectedKeyframeWorkflowId !== wanted
+      && keyframeWorkflowOptions.some((option) => option.id === wanted)) handleKeyframeWorkflowChange(wanted)
+    // Only the chosen model and the choice at the top matter here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKeyframeWorkflowId, pictureMaker])
+
+  // The Videos step offers MiniMax H3, or a ComfyUI workflow of the person's
+  // own. Any other model a project had chosen goes to MiniMax H3.
+  const [videoMaker, setVideoMaker] = useState(() => {
+    try { return window.localStorage.getItem('velorn.director.videoMaker') === 'custom' ? 'custom' : 'h3' } catch { return 'h3' }
+  })
+  const chooseVideoMaker = (next) => {
+    setVideoMaker(next)
+    try { window.localStorage.setItem('velorn.director.videoMaker', next) } catch { /* the choice still holds for this visit */ }
+  }
+  useEffect(() => {
+    const wanted = videoMaker === 'custom' ? CUSTOM_MUSIC_VIDEO_WORKFLOW_ID : MINIMAX_H3_LOCAL_WORKFLOW_ID
+    if (selectedVideoWorkflowId && selectedVideoWorkflowId !== wanted
+      && videoWorkflowOptions.some((option) => option.id === wanted)) handleVideoWorkflowChange(wanted)
+    // Only the chosen model and the choice at the top matter here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedVideoWorkflowId, videoMaker])
+
+  // ---------- Keyframes in the cloud ----------
+  // With the cloud model chosen, keyframes go through Comfy Router as one
+  // batch: one price, one approval, then each picture lands on its shot.
+  const [cloudKeyframes, setCloudKeyframes] = useState({ phase: 'idle' })
+  // The shots being made in the cloud right now, so their cards can say so.
+  const [cloudMakingShots, setCloudMakingShots] = useState({})
+  const shotKey = (row) => `${row.scene.id}|${row.shot.id}`
+  // The newest version of the "put this picture on this shot" function: a
+  // picture that has just arrived is only known to the newest one.
+  const placeKeyframeRef = useRef(handleReplaceYoloMusicKeyframe)
+  placeKeyframeRef.current = handleReplaceYoloMusicKeyframe
+  const picturesNotRead = useRef(0)
+  // A reference picture, made small enough to send: at most 1280 on its long side.
+  const loadReferencePicture = async (assetId) => {
+    const asset = imageAssets.find((entry) => entry?.id === assetId)
+    const url = asset ? (getAssetUrl(asset) || asset.url) : ''
+    if (!url) { picturesNotRead.current += 1; return null }
+    try {
+      const image = new Image()
+      image.crossOrigin = 'anonymous'
+      await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; image.src = url })
+      const scale = Math.min(1, 1280 / Math.max(image.naturalWidth, image.naturalHeight))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(256, Math.round(image.naturalWidth * scale))
+      canvas.height = Math.max(256, Math.round(image.naturalHeight * scale))
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height)
+      const data = canvas.toDataURL('image/jpeg', 0.9)
+      return { mimeType: 'image/jpeg', base64: data.slice(data.indexOf(',') + 1) }
+    } catch {
+      picturesNotRead.current += 1
+      return null
+    }
+  }
+  const askCloudKeyframesPrice = async (rows) => {
+    if (cloudKeyframes.phase !== 'idle' && cloudKeyframes.phase !== 'confirm') return
+    if (!rows.length) { setKeyframeStatus('There are no shots to make.'); return }
+    setKeyframeStatus('')
+    setCloudKeyframes({ phase: 'pricing', count: rows.length })
+    picturesNotRead.current = 0
+    const batch = await buildKeyframeBatch({
+      rows: rows.map((row) => ({ row, prompt: row.shot.referenceImagePrompt || row.shot.imageBeat || '', assetIds: row.shot.resolvedArtistAssetIds || [] })),
+      loadPicture: loadReferencePicture,
+      shape: aspectRatio === 'vertical_9x16' ? 'portrait' : 'landscape',
+      size: cloudPictureModel.size,
+    })
+    if (!batch.items.length) { setCloudKeyframes({ phase: 'idle' }); setKeyframeStatus('These shots have no keyframe text yet.'); return }
+    let plan = null
+    try { plan = await window.electronAPI?.comfyRouter?.previewCreateBatch?.({ modelId: cloudPictureModel.id, items: batch.items, pictures: batch.pictures }) } catch (error) { plan = { success: false, error: error?.message } }
+    if (!plan?.success) {
+      setCloudKeyframes({ phase: 'idle' })
+      setKeyframeStatus(plan ? routerPictureProblem(plan) : 'Cloud keyframes need Velorn to be restarted once.')
+      return
+    }
+    setCloudKeyframes({
+      phase: 'confirm', planId: plan.planId, usd: plan.estimate?.usd ?? null, rows: batch.rows.map((entry) => entry.row),
+      leftOut: batch.leftOut, clickApproves: Boolean(plan.buttonApproval), picturesNotRead: picturesNotRead.current,
+    })
+  }
+  // Runs straight from the click on the price button.
+  const confirmCloudKeyframes = async () => {
+    const run = cloudKeyframes
+    if (run.phase !== 'confirm') return
+    const api = window.electronAPI?.comfyRouter
+    const sending = (async () => {
+      try { return await api.submitCreate({ planId: run.planId }) } catch { return { success: false, error: 'Press the button once more to send them.' } }
+    })()
+    setCloudKeyframes({ ...run, phase: 'sending' })
+    setCloudMakingShots(Object.fromEntries(run.rows.map((row) => [shotKey(row), true])))
+    const sent = await sending
+    if (!sent?.success) {
+      setCloudMakingShots({})
+      setCloudKeyframes(sent?.code === 'COMFY_ROUTER_DECLINED' ? { phase: 'idle' } : { ...run, phase: 'confirm' })
+      setKeyframeStatus(sent?.code === 'COMFY_ROUTER_DECLINED' ? 'Nothing was sent.' : routerPictureProblem(sent))
+      return
+    }
+    const jobs = sent.jobs?.length ? sent.jobs : [sent.job]
+    let done = 0
+    let failed = 0
+    let lastError = ''
+    let placing = Promise.resolve()
+    setCloudKeyframes({ phase: 'making', total: jobs.length, done, failed, notSent: run.rows.length - jobs.length })
+    // Only the shots Comfy accepted are still being made.
+    setCloudMakingShots(Object.fromEntries(run.rows.slice(0, jobs.length).map((row) => [shotKey(row), true])))
+    await runFewAtATime(jobs, async (job, index) => {
+      const row = run.rows[index]
+      const made = await collectRouterPicture({ api, jobId: job.jobId, importImage: importRouterImage })
+      let ok = made.success
+      if (ok) {
+        // One at a time, and after the screen has taken in the new picture.
+        placing = placing.then(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 120))
+          try { await placeKeyframeRef.current?.({ sceneId: row.scene.id, shotId: row.shot.id, assetId: made.assetId }) } catch (error) { ok = false; lastError = error?.message || '' }
+        })
+        await placing
+      } else {
+        lastError = made.error || ''
+      }
+      if (ok) done += 1; else failed += 1
+      setCloudMakingShots((making) => { const next = { ...making }; delete next[shotKey(row)]; return next })
+      setCloudKeyframes((current) => (current.phase === 'making' ? { ...current, done, failed } : current))
+    }, 4)
+    setCloudKeyframes({ phase: 'idle' })
+    setCloudMakingShots({})
+    const notSent = run.rows.length - jobs.length
+    setKeyframeStatus([
+      `${plural(done, 'keyframe')} made.`,
+      failed ? `${failed} could not be made${lastError ? `: ${lastError}` : '.'}` : '',
+      notSent > 0 ? `${notSent} were not sent, because Comfy refused one and Velorn stopped there.` : '',
+    ].filter(Boolean).join(' '))
+  }
+  const cloudKeyframesBusy = ['pricing', 'sending', 'making'].includes(cloudKeyframes.phase)
+  const renderCloudKeyframes = () => {
+    const run = cloudKeyframes
+    if (run.phase === 'idle') return null
+    const credits = cloudPictureModel?.creditsPerUsd && run.usd != null ? ` (${Math.round(run.usd * cloudPictureModel.creditsPerUsd)} credits)` : ''
+    return (
+      // Pinned to the bottom of the window, so it is in view wherever the
+      // button that started it sits on a long page.
+      <div className="fixed bottom-6 left-1/2 z-[70] w-[min(560px,92vw)] -translate-x-1/2 rounded-xl border border-sf-accent/60 bg-sf-dark-900 p-4 text-xs leading-5 text-sf-text-secondary shadow-2xl ring-1 ring-black/40" role="status" aria-live="polite">
+        {run.phase === 'pricing' && <div className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Working out the price for {plural(run.count, 'keyframe')}…</div>}
+        {run.phase === 'confirm' && (
+          <>
+            <div className="text-sm text-sf-text-primary">
+              <span className="font-semibold">{plural(run.rows.length, 'keyframe')}</span> with {cloudPictureModel?.name}: about <span className="font-semibold">{dollars(run.usd)}</span>{credits} on your Comfy account.
+            </div>
+            {!run.clickApproves && <div className="mt-1">Because this is more than $2, Velorn asks you to confirm once more in a small window.</div>}
+            {run.leftOut > 0 && <div className="mt-1">{run.leftOut} more shots did not fit in this batch. Make those afterwards.</div>}
+            {run.picturesNotRead > 0 && <div className="mt-1 text-amber-200">{plural(run.picturesNotRead, 'reference picture')} could not be read, so those shots go without it.</div>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button type="button" onClick={confirmCloudKeyframes} className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent-hover">
+                Make them for {dollars(run.usd)}
+              </button>
+              <button type="button" onClick={() => setCloudKeyframes({ phase: 'idle' })} className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary">
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
+        {run.phase === 'sending' && <div className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Sending {plural(run.rows.length, 'keyframe')} to Comfy. A big batch can take a few minutes. Keep Velorn open.</div>}
+        {run.phase === 'making' && (
+          <>
+            <div className="flex items-center justify-between gap-3 text-sm text-sf-text-primary">
+              <span>Making keyframes: <span className="font-semibold">{run.done} of {run.total}</span> done</span>
+              {run.failed > 0 && <span className="text-xs text-amber-200">{run.failed} failed</span>}
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sf-dark-800">
+              <div className="h-full rounded-full bg-sf-accent transition-all" style={{ width: `${Math.round(((run.done + run.failed) / Math.max(1, run.total)) * 100)}%` }} />
+            </div>
+            <div className="mt-2">Each one appears on its shot as it arrives. Keep Velorn open.</div>
+          </>
+        )}
+      </div>
+    )
+  }
+
+  // ---------- Places ----------
+  const [placeIdea, setPlaceIdea] = useState('')
+  const [placeIdeaOpen, setPlaceIdeaOpen] = useState(false)
+  const changePlace = (id, changes) => setYoloMusicPlaces?.((prev) => (Array.isArray(prev) ? prev : []).map((entry) => {
+    if (entry.id !== id) return entry
+    const next = { ...entry, ...changes }
+    // The script uses the name, so the short name follows it.
+    if (Object.prototype.hasOwnProperty.call(changes, 'label')) next.slug = placeSlug(changes.label) || entry.slug
+    return next
+  }))
+  const removePlace = (id) => setYoloMusicPlaces?.((prev) => (Array.isArray(prev) ? prev : []).filter((entry) => entry.id !== id))
+  const handleAddPlaceFromPicture = async () => {
+    if (!handleImportYoloMusicCastImage || yoloMusicCastImageImporting) return
+    const asset = await handleImportYoloMusicCastImage({ addToCast: false })
+    if (!asset) return
+    setYoloMusicPlaces?.((prev) => {
+      const list = Array.isArray(prev) ? prev : []
+      return [...list, newPlace({ label: placeNameFromFile(asset.name), assetId: asset.id }, list)]
+    })
+  }
+  // Asks the picture model for a place picture and returns the tag the new
+  // picture will carry, so the place can pick it up when it arrives.
+  const queuePlacePicture = (description, name) => {
+    const tag = `place-${Date.now()}`
+    const orientation = aspectRatio === 'vertical_9x16' ? 'portrait' : 'landscape'
+    queuePeopleWizardJob({
+      workflowId: FLUX2_KLEIN_WORKFLOW_ID,
+      workflowLabel: 'FLUX.2 klein',
+      prompt: `${description}. Wide establishing shot of the place, no text.`,
+      resolution: resolvePeopleWizardImageResolution('hd', orientation),
+      needsImage: false,
+      peopleWizard: { wizardId: tag, stage: 'image', entryId: null, mode: 'create', assetPrefix: placeSlug(name) || 'place', imageSize: 'hd', imageOrientation: orientation },
+    })
+    return tag
+  }
+  // A new picture for a place you already have, from what is written on its
+  // card. The old picture stays until the new one arrives.
+  const handleRemakePlace = (entry) => {
+    const description = String(entry?.notes || '').trim() || String(entry?.label || '').trim()
+    if (!description) return
+    if (cloudPicturesOn) { void askPlacePrice(entry.id, description, entry.label); return }
+    if (!queuePeopleWizardJob) return
+    changePlace(entry.id, { pendingJobTag: queuePlacePicture(description, entry.label) })
+  }
+  const handleMakePlace = () => {
+    const idea = placeIdea.trim()
+    if (!idea) return
+    const label = idea.split(/[,.;:]/)[0].trim().split(/\s+/).slice(0, 4).join(' ')
+    if (cloudPicturesOn) { void askPlacePrice('new', idea, label); return }
+    if (!queuePeopleWizardJob) return
+    const tag = queuePlacePicture(idea, label)
+    setYoloMusicPlaces?.((prev) => {
+      const list = Array.isArray(prev) ? prev : []
+      return [...list, newPlace({ label, notes: idea, pendingJobTag: tag }, list)]
+    })
+    setPlaceIdea('')
+    setPlaceIdeaOpen(false)
+  }
+  // A place being made gets its picture as soon as the picture arrives.
+  useEffect(() => {
+    const waiting = (yoloMusicPlaces || []).filter((entry) => entry.pendingJobTag)
+    if (waiting.length === 0) return
+    const arrived = waiting
+      .map((entry) => ({ entry, asset: imageAssets.find((asset) => asset?.peopleWizard?.wizardId === entry.pendingJobTag) }))
+      .filter((pair) => pair.asset)
+    if (arrived.length === 0) return
+    setYoloMusicPlaces?.((prev) => (Array.isArray(prev) ? prev : []).map((entry) => {
+      const hit = arrived.find((pair) => pair.entry.id === entry.id)
+      return hit ? { ...entry, assetId: hit.asset.id, pendingJobTag: '' } : entry
+    }))
+  }, [yoloMusicPlaces, imageAssets, setYoloMusicPlaces])
+  // How tall the fixed heading is, so a step can pin its own bar right under it.
+  const fixedTopRef = useRef(null)
+  const [fixedTopHeight, setFixedTopHeight] = useState(0)
+  const [fullTopHeight, setFullTopHeight] = useState(0)
+  const smallRef = useRef(false)
+  useEffect(() => {
+    const node = fixedTopRef.current
+    if (!node || typeof ResizeObserver === 'undefined') return undefined
+    const measure = () => {
+      const height = Math.round(node.getBoundingClientRect().height)
+      setFixedTopHeight(height)
+      // The full size is remembered while the heading is big. When it shrinks, the
+      // space it gave up is kept below it, so the step underneath does not jump.
+      if (!smallRef.current) setFullTopHeight(height)
+    }
+    measure()
+    const watcher = new ResizeObserver(measure)
+    watcher.observe(node)
+    return () => watcher.disconnect()
+  }, [])
+  // Scrolling down shrinks the heading; back at the top it grows again. It only
+  // shrinks when there is plenty left to scroll, so a short page never flickers.
+  const [scrolledDown, setScrolledDown] = useState(false)
+  useEffect(() => {
+    let scroller = fixedTopRef.current?.parentElement
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement
+    if (!scroller) return undefined
+    const onScroll = () => {
+      const room = scroller.scrollHeight - scroller.clientHeight
+      const small = smallRef.current ? scroller.scrollTop > 8 : scroller.scrollTop > 60 && room > 200
+      smallRef.current = small
+      setScrolledDown(small)
+    }
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [])
   const isStepDisabled = (stepId) => {
     if (stepId === 'keyframes') return plannedShotCount === 0
     if (stepId === 'videos') return plannedShotCount === 0
+    if (stepId === 'timeline') return plannedShotCount === 0
     return false
   }
 
@@ -1208,7 +1842,7 @@ export default function MusicVideoEasyMode({
     if (!row || replaceVideoActionDisabled) return
     const variant = getVariantForShot(row.scene.id, row.shot.id)
     if (!variant?.key) {
-      setVideoStatus('Parse the director script before replacing a video for this shot.')
+      setVideoStatus('Press Use this script in the Director Script step before replacing a video for this shot.')
       return
     }
     const existingAsset = getVideoAssetForVariant(variant)
@@ -1325,7 +1959,7 @@ export default function MusicVideoEasyMode({
     if (!row || replaceKeyframeActionDisabled) return
     const variant = getVariantForShot(row.scene.id, row.shot.id)
     if (!variant?.key) {
-      setKeyframeStatus('Parse the director script before replacing a keyframe for this shot.')
+      setKeyframeStatus('Press Use this script in the Director Script step before replacing a keyframe for this shot.')
       return
     }
     const existingAsset = yoloStoryboardAssetMap?.get(variant.key) || null
@@ -1478,7 +2112,46 @@ export default function MusicVideoEasyMode({
   const handleCopyBrief = async () => {
     setBriefStatus('')
     await handleCopyMusicVideoLlmPrompt({ coveragePlan })
-    setBriefStatus('LLM brief copied.')
+    setBriefStatus('Copied. Paste it into your AI, then paste the script it writes into the box below.')
+    // The pasted script goes into the text box, so make sure it is showing.
+    setScriptTextOpen(true)
+  }
+
+  const handleStopVelo = () => { veloStopRef.current?.abort() }
+
+  const handleWriteWithVelo = async () => {
+    if (veloScript.status === 'writing') return
+    if (yoloMusicScript.trim() && !window.confirm('Write a new script? This replaces the one you have now.')) return
+    setVeloScript({ status: 'writing', shots: 0, message: '', startedAt: Date.now(), latest: '' })
+    const stopper = new AbortController()
+    veloStopRef.current = stopper
+    try {
+      const brief = await handleCopyMusicVideoLlmPrompt({ coveragePlan, copy: false })
+      const result = await writeScriptWithVelo({
+        api: window.electronAPI?.connectedAgent,
+        brief,
+        signal: stopper.signal,
+        onText: (text) => setVeloScript((current) => {
+          if (current.status !== 'writing') return current
+          const headings = text.match(/^[ \t#*>-]*shot\s+\d+\b[^\n]*/gim) || []
+          const latest = String(headings[headings.length - 1] || '').replace(/^[ \t#*>-]+/, '').replace(/[*#]+\s*$/, '').trim().slice(0, 80)
+          return { ...current, shots: headings.length, latest }
+        }),
+      })
+      if (result.code === 'CANCELLED') {
+        // The script box is only filled on success, so the old script is untouched.
+        setVeloScript({ status: 'stopped', shots: 0, message: '' })
+        return
+      }
+      if (!result.success) { setVeloScript({ status: 'error', shots: 0, message: result.error }); return }
+      setYoloMusicScript(result.text)
+      setParseStatus('')
+      setVeloScript({ status: 'done', shots: result.shots, message: '' })
+    } catch (error) {
+      setVeloScript({ status: 'error', shots: 0, message: error?.message || 'Velo could not write the script.' })
+    } finally {
+      if (veloStopRef.current === stopper) veloStopRef.current = null
+    }
   }
 
   const handleParseScript = () => {
@@ -1489,14 +2162,19 @@ export default function MusicVideoEasyMode({
     })
     const count = flattenPlanShots(nextPlan).length
     if (count > 0) {
-      setParseStatus(`Parsed ${plural(count, 'shot')}.`)
+      setParseStatus(`${plural(count, 'shot')} ${count === 1 ? 'is' : 'are'} ready. Next: Keyframes.`)
       setStep('keyframes')
     } else {
-      setParseStatus('No shots were parsed yet. Check the required format.')
+      setParseStatus('Velorn could not find any shots in this script. Check that it follows the script format.')
     }
   }
 
   const handleQueueKeyframes = async () => {
+    if (cloudPicturesOn) {
+      const missing = flatShots.filter((row) => !yoloStoryboardAssetMap?.get(getVariantForShot(row.scene.id, row.shot.id)?.key))
+      if (!missing.length) { setKeyframeStatus('All your keyframes are already made.'); return }
+      return askCloudKeyframesPrice(missing)
+    }
     setIsQueuingKeyframes(true)
     setKeyframeStatus('')
     try {
@@ -1517,6 +2195,7 @@ export default function MusicVideoEasyMode({
   const handleGenerateShotKeyframe = async (row, index) => {
     if (!row || singleKeyframeActionDisabled) return
     setSelectedShotIndex(index)
+    if (cloudPicturesOn) return askCloudKeyframesPrice([row])
     setIsQueuingKeyframes(true)
     setKeyframeStatus(`Queueing keyframe for Shot ${index + 1}...`)
     try {
@@ -1531,6 +2210,7 @@ export default function MusicVideoEasyMode({
 
   const handleRegenerateSelectedKeyframe = async () => {
     if (selectedShotRows.length === 0 || singleKeyframeActionDisabled) return
+    if (cloudPicturesOn) return askCloudKeyframesPrice(selectedShotRows)
     setIsQueuingKeyframes(true)
     const targetLabel = hasMultipleSelectedShots
       ? `${selectedShotRows.length} selected shots`
@@ -1559,6 +2239,7 @@ export default function MusicVideoEasyMode({
 
   const handleRegenerateAllKeyframes = async () => {
     if (plannedShotCount === 0) return
+    if (cloudPicturesOn) return askCloudKeyframesPrice(flatShots)
     setIsQueuingKeyframes(true)
     setKeyframeStatus('Queueing keyframe regeneration for all shots...')
     try {
@@ -1596,7 +2277,7 @@ export default function MusicVideoEasyMode({
     if (!row || singleVideoActionDisabled) return
     const variant = getVariantForShot(row.scene.id, row.shot.id)
     if (!variant) {
-      setVideoStatus(`No video variant found for Shot ${index + 1}. Parse the script again first.`)
+      setVideoStatus(`No video variant found for Shot ${index + 1}. Press Use the changes in the Director Script step first.`)
       return
     }
     if (!yoloStoryboardAssetMap?.has(variant.key)) {
@@ -1636,7 +2317,7 @@ export default function MusicVideoEasyMode({
     }
     if (queueableRows.length === 0) {
       if (selectedShotRows.length === 1 && missingVariants > 0) {
-        setVideoStatus(`No video variant found for Shot ${selectedShotRows[0].index + 1}. Parse the script again first.`)
+        setVideoStatus(`No video variant found for Shot ${selectedShotRows[0].index + 1}. Press Use the changes in the Director Script step first.`)
         return
       }
       if (selectedShotRows.length === 1 && missingKeyframes > 0) {
@@ -1696,13 +2377,23 @@ export default function MusicVideoEasyMode({
     }
   }
 
+  // The timeline's shape is asked next to the button. Until the person picks,
+  // it follows the videos that are ready: whichever shape there are more of.
+  const [timelineShapeChoice, setTimelineShapeChoice] = useState('')
+  // 720p matches the videos as they are made; 1080p scales them up to fit.
+  const [timelineSize, setTimelineSize] = useState('720p')
+  // 'layers' puts every pass on its own layer, to edit by hand. 'ready' makes
+  // one layer that already plays as a finished video.
+  const [timelineCut, setTimelineCut] = useState('layers')
+  const timelineShapeRef = useRef('wide')
   const handleAssembleTimeline = async () => {
     if (!handleAssembleMusicVideoTimeline) return
     setIsAssemblingTimeline(true)
     setTimelineStatus('')
     try {
-      const result = await handleAssembleMusicVideoTimeline()
+      const result = await handleAssembleMusicVideoTimeline({ shape: timelineShapeRef.current, size: timelineSize, cut: timelineCut })
       setTimelineStatus(result?.message || 'Timeline assembled.')
+      if (result?.ok !== false) setTimelinePlaced(true)
     } catch (error) {
       setTimelineStatus(`Could not assemble timeline: ${error?.message || 'Unknown error'}`)
     } finally {
@@ -1731,6 +2422,19 @@ export default function MusicVideoEasyMode({
     }
   }
 
+  const handlePeopleWizardImportPicture = async () => {
+    if (!handleImportYoloMusicCastImage || yoloMusicCastImageImporting) return
+    const asset = await handleImportYoloMusicCastImage({ addToCast: false })
+    if (!asset) return
+    const fromFile = String(asset.name || '').replace(/\.[a-z0-9]{1,8}$/i, '').replace(/[_-]+/g, ' ').trim()
+    updatePeopleWizard({
+      assetId: asset.id,
+      sheetAssetId: '',
+      step: peopleWizard?.advanced ? 'image' : (peopleWizard?.step || 'image'),
+      ...(String(peopleWizard?.name || '').trim() ? {} : { name: fromFile }),
+    })
+  }
+
   const handlePeopleWizardFieldChange = (field, value) => {
     updatePeopleWizard({ [field]: value })
   }
@@ -1751,13 +2455,14 @@ export default function MusicVideoEasyMode({
   }
 
   const handlePeopleWizardCreateImage = () => {
+    if (cloudPicturesOn) { void askPersonPrice(); return }
     if (!peopleWizardGenerationEnabled) return
     if (!queuePeopleWizardJob) return
     const prompt = String(peopleWizard?.imagePrompt || '').trim() || `${peopleWizard?.name || 'Character'} portrait`
     const resolution = resolvePeopleWizardImageResolution(peopleWizard?.imageSize, peopleWizard?.imageOrientation)
     const job = queuePeopleWizardJob({
-      workflowId: 'z-image-turbo',
-      workflowLabel: 'Z Image Turbo',
+      workflowId: FLUX2_KLEIN_WORKFLOW_ID,
+      workflowLabel: 'FLUX.2 klein',
       prompt,
       seed: peopleWizard?.imageSeed,
       resolution,
@@ -1826,11 +2531,11 @@ export default function MusicVideoEasyMode({
   const handlePeopleWizardSave = () => {
     if (!peopleWizard) return
     const trimmedName = String(peopleWizard.name || '').trim()
-    const normalizedSlug = normalizeCastSlug(String(peopleWizard.slug || '').trim())
+    const normalizedSlug = normalizeCastSlug(String(peopleWizard.slug || '').trim()) || normalizeCastSlug(trimmedName)
     const finalAssetId = peopleWizard.step === 'sheet'
       ? peopleWizardSelectedSheetAsset?.id || peopleWizardSheetAsset?.id || ''
       : peopleWizard.step === 'image'
-        ? peopleWizardGeneratedImageAsset?.id || ''
+        ? peopleWizardGeneratedImageAsset?.id || peopleWizardSelectedAsset?.id || ''
       : peopleWizardSelectedAsset?.id || peopleWizardSheetAsset?.id || peopleWizardGeneratedImageAsset?.id || ''
     if (!trimmedName || !normalizedSlug || !finalAssetId) return
     const nextEntry = {
@@ -1881,282 +2586,182 @@ export default function MusicVideoEasyMode({
     </div>
   )
 
+  // The song screen. The earlier Song step's other settings (resolution, frame
+  // rate, audio type, style, ComfyUI transcription) were removed 2026-11-11:
+  // the video model, the listening engine and the Idea box replaced them.
   const renderSongStep = () => (
-    <div className="space-y-4">
-      {renderStepHeader(
-        'Choose the song source.',
-        'Import your song or vocal stem in the Assets panel first, then select it here. Advanced audio modes are available when needed.'
-      )}
+    <SongStep
+      audioAsset={yoloMusicAudioAsset}
+      audioAssets={yoloMusicAudioAssets}
+      onSelectAudioAsset={setYoloMusicAudioAssetId}
+      onImportAudio={handleImportYoloMusicAudio}
+      importing={Boolean(yoloMusicAudioImporting)}
+      lyrics={yoloMusicParsedLyrics?.isTimed ? yoloMusicLyrics : ''}
+      onLyricsChange={setYoloMusicLyrics}
+      songMap={yoloMusicSongMap}
+      onSongMapChange={setYoloMusicSongMap}
+      onDone={() => setStep('people')}
+    />
+  )
 
-      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-          <div>
-            <FieldLabel>Output Settings</FieldLabel>
-            <div className="mt-1 text-sm font-semibold text-sf-text-primary">
-              {outputResolutionLabel} / {videoFps} fps
-            </div>
-            <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-              These settings apply to both keyframes and videos.
-            </p>
-          </div>
-        </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-3">
-          <div>
-            <FieldLabel>Aspect Ratio</FieldLabel>
-            <div className="mt-2 grid grid-cols-3 gap-2">
-              {ASPECT_RATIO_OPTIONS.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  title={option.helper}
-                  onClick={() => setAspectRatio(option.id)}
-                  className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${buttonClass(aspectRatio === option.id)}`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <FieldLabel>Resolution</FieldLabel>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              {RESOLUTION_OPTIONS.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => handleResolutionPresetChange(option.id)}
-                  className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${buttonClass(resolutionPreset === option.id)}`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <FieldLabel>Frames Per Second</FieldLabel>
-            <div className="mt-2 grid grid-cols-3 gap-2">
-              {FPS_OPTIONS.map((fpsOption) => (
-                <button
-                  key={fpsOption}
-                  type="button"
-                  onClick={() => setVideoFps(fpsOption)}
-                  className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${buttonClass(videoFps === fpsOption)}`}
-                >
-                  {fpsOption} fps
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+  // The one choice left from the earlier Song step: the shape of the video.
+  // It is asked here because keyframes and videos are both made in it.
+  // Asked at the top of Keyframes, where the shape first matters. Once pictures
+  // exist it shrinks to one line with a Change link.
+  // Says so when the pictures are a mix of wide and tall: each video takes its
+  // own picture's shape, so a mix of pictures becomes a mix of videos.
+  const renderMixedShapesNote = () => {
+    const sizes = flatShots.map(({ scene, shot }) => {
+      const variant = getVariantForShot(scene.id, shot.id)
+      const asset = variant ? yoloStoryboardAssetMap?.get(variant.key) : null
+      if (!asset) return null
+      const seen = runtimeImageDimensions[asset.id]
+      return {
+        width: normalizeDimension(seen?.width ?? asset.width ?? asset.settings?.width),
+        height: normalizeDimension(seen?.height ?? asset.height ?? asset.settings?.height),
+      }
+    })
+    const shapes = countPictureShapes(sizes)
+    if (!shapes.mixed) return null
+    const wantTall = aspectRatio === 'vertical_9x16'
+    const others = wantTall ? shapes.wide : shapes.tall
+    return (
+      <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-100" role="status">
+        {plural(shapes.wide, 'picture')} {shapes.wide === 1 ? 'is' : 'are'} 16:9 and {shapes.tall} {shapes.tall === 1 ? 'is' : 'are'} 9:16. Each video takes the shape of its own picture.
+        {' '}For a {wantTall ? '9:16' : '16:9'} video all the way through, make the {others} {wantTall ? '16:9' : '9:16'} {others === 1 ? 'one' : 'ones'} again in Keyframes.
       </div>
+    )
+  }
 
-      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div>
-            <FieldLabel>Audio Mode</FieldLabel>
-            <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
-              <Music className="h-4 w-4 text-sf-accent" />
-              {selectedAudioKindOption?.label || 'Finished song (full mix)'}
-            </div>
-            <p className="mt-2 max-w-3xl text-xs leading-5 text-sf-text-secondary">
-              {selectedAudioModeHelper}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setAdvancedAudioOpen((open) => !open)}
-            className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
-          >
-            {advancedAudioOpen ? 'Hide Advanced' : 'Advanced Audio'}
-          </button>
+  const renderShapePicker = () => {
+    const chosen = ASPECT_RATIO_OPTIONS.find((option) => option.id === aspectRatio) || ASPECT_RATIO_OPTIONS[0]
+    const hasPictures = yoloStoryboardReadyCount > 0
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 px-4 py-3">
+        <span className="text-sm font-semibold text-sf-text-primary">Video shape</span>
+        <div role="group" aria-label="Shape of the video" className="inline-flex overflow-hidden rounded-lg border border-sf-dark-600">
+          {ASPECT_RATIO_OPTIONS.map((option) => {
+            const active = aspectRatio === option.id
+            const tall = option.id === 'vertical_9x16'
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setAspectRatio(option.id)}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold transition-colors ${active ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+              >
+                <span aria-hidden="true" className={`rounded-[2px] border-[1.5px] border-current ${tall ? 'h-3.5 w-2' : 'h-2 w-3.5'}`} />
+                {option.label}
+              </button>
+            )
+          })}
         </div>
-        {advancedAudioOpen && (
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            {MUSIC_VIDEO_AUDIO_KIND_OPTIONS.map((option) => {
-              const selected = yoloMusicAudioKind === option.id
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => setYoloMusicAudioKind(option.id)}
-                  className={`rounded-lg border p-3 text-left transition-colors ${buttonClass(selected)}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Music className="h-4 w-4 text-sf-accent" />
-                    <span className="text-sm font-semibold">{option.label}</span>
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-sf-text-muted">{option.description}</p>
-                </button>
-              )
-            })}
-          </div>
-        )}
+        <span className="text-xs text-sf-text-muted">
+          {chosen.helper}.{hasPictures ? ' Pictures already made keep the shape they were made in.' : ''}
+        </span>
       </div>
+    )
+  }
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.75fr)]">
-        <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-          <div>
-            <FieldLabel>Song Audio</FieldLabel>
-            <div className="mt-1 text-sm font-semibold text-sf-text-primary">
-              {yoloMusicAudioAsset?.name || 'Select audio from Assets panel'}
-            </div>
-            <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-              Add audio in the Assets panel, then pick it from the list below.
-            </p>
-          </div>
+  const renderIdeaCard = () => (
+      <div className="flex h-full flex-col rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-5">
+        <div className="text-sm font-semibold text-sf-text-primary">What's the idea?</div>
+        <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
+          Say it the way you would tell a friend. It steers the whole script, and you can change anything afterwards.
+        </p>
+        <textarea
+          value={yoloMusicConcept || ''}
+          onChange={(event) => setYoloMusicConcept?.(event.target.value)}
+          rows={3}
+          placeholder="She sings on a rooftop at night. In the verses we follow her walking home through the city."
+          className="mt-3 min-h-[96px] w-full flex-1 resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-4 py-3 text-sm leading-6 text-sf-text-primary outline-none placeholder:text-sf-text-muted focus:border-sf-accent"
+        />
+      </div>
+  )
 
-          <div className="mt-4">
-            <FieldLabel>Choose Existing Audio</FieldLabel>
-            <select
-              value={yoloMusicAudioAssetId || ''}
-              onChange={(event) => setYoloMusicAudioAssetId(event.target.value || null)}
-              className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-            >
-              <option value="">Select audio from this project</option>
-              {yoloMusicAudioAssets.map((asset) => (
-                <option key={asset.id} value={asset.id}>{asset.name || asset.id}</option>
-              ))}
-            </select>
-            {yoloMusicAudioAssets.length === 0 && (
-              <p className="mt-2 text-xs text-sf-text-muted">No audio assets in this project yet. Import song audio in Assets first.</p>
-            )}
-          </div>
-
-          <div className="mt-4">
-            <FieldLabel>Song Style / Genre</FieldLabel>
-            <textarea
-              value={yoloMusicStyleNotes || ''}
-              onChange={(event) => setYoloMusicStyleNotes?.(event.target.value)}
-              rows={3}
-              className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent resize-y"
-              placeholder="e.g. symphonic metal, operatic female vocal, dark fantasy, huge drums, gothic cathedral atmosphere."
-            />
-            <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-              Included in the copied Director Script brief so the LLM does not infer the visual style from lyrics alone.
-            </p>
-          </div>
-
-          <div className="mt-4 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3">
-            <div className="text-xs font-semibold text-amber-200">Preparing lyric timing might take a moment.</div>
-            <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-              Wait for this step to finish before copying the LLM brief so the script uses the real song timings.
-            </p>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-          <FieldLabel>Lyrics Timing</FieldLabel>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+  const renderWriteCard = () => {
+    const writing = veloScript.status === 'writing'
+    const timedLines = Array.isArray(yoloMusicParsedLyrics?.lines) ? yoloMusicParsedLyrics.lines.length : 0
+    return (
+      <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
             <button
               type="button"
-              onClick={handleYoloMusicTranscribeSrt}
-              disabled={!yoloMusicAudioAsset || yoloMusicTranscribingSrt}
-              className="inline-flex items-center gap-2 rounded-lg border border-sf-accent/50 bg-sf-accent/10 px-3 py-2 text-xs font-semibold text-sf-accent transition-colors hover:bg-sf-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={handleWriteWithVelo}
+              disabled={writing}
+              className="inline-flex items-center gap-2 rounded-lg bg-sf-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-70"
             >
-              {yoloMusicTranscribingSrt ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-              {yoloMusicTranscribingSrt ? 'Preparing' : 'Prepare Timing'}
+              {writing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+              {writing ? (veloScript.shots > 0 ? `Writing… ${plural(veloScript.shots, 'shot')} so far` : 'Writing the script…') : 'Write the script'}
             </button>
-            {timedLineCount > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200">
-                <CheckCircle2 className="h-3 w-3" />
-                {plural(timedLineCount, 'timed line')}
-              </span>
-            )}
-          </div>
-          <div className="mt-3 max-w-xs">
-            <label className="block">
-              <span className="text-[10px] uppercase text-sf-text-muted">ASR Language</span>
-              <select
-                value={yoloMusicAsrLanguage || 'English'}
-                onChange={(event) => setYoloMusicAsrLanguage?.(event.target.value || 'English')}
-                className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
+            {writing && (
+              <button
+                type="button"
+                onClick={handleStopVelo}
+                className="ml-2 inline-flex items-center rounded-lg border border-sf-dark-600 px-4 py-2 text-sm font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
               >
-                {ASR_LANGUAGE_OPTIONS.map((language) => (
-                  <option key={language} value={language}>{language}</option>
-                ))}
-              </select>
-            </label>
+                Stop
+              </button>
+            )}
+            <p className="mt-2 max-w-xl text-xs leading-5 text-sf-text-secondary">
+              Velo writes it from your song{timedLines > 0 ? `, its ${plural(timedLines, 'timed line')}` : ''}, your people, your idea and the coverage above.
+              {' '}This sends them to the Velorn service and uses your Velo allowance.
+            </p>
+            {writing && (
+              <div className="mt-3 max-w-xl rounded-lg border border-sf-accent/30 bg-sf-accent/5 p-3" role="status" aria-live="polite">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-semibold text-sf-text-primary">
+                    {veloScript.shots > 0 ? `Velo is writing: ${plural(veloScript.shots, 'shot')} so far` : 'Velo is reading your song and planning the shots'}
+                  </span>
+                  <span className="tabular-nums text-sf-text-muted">{formatClock(veloSeconds)}</span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sf-dark-800">
+                  <div className="h-full w-full animate-pulse rounded-full bg-sf-accent" />
+                </div>
+                {veloScript.latest && <div className="mt-2 truncate text-xs text-sf-text-secondary">Now: {veloScript.latest}</div>}
+                <p className="mt-2 text-xs leading-5 text-sf-text-muted">
+                  This takes a few minutes for a whole song, and the first shot can take a minute to appear. You can look at the other steps while you wait.
+                </p>
+              </div>
+            )}
+            {veloScript.status === 'done' && (
+              <p className="mt-2 text-xs text-emerald-200">Velo wrote {plural(veloScript.shots, 'shot')}. Read it below, change what you like, then press Use this script.</p>
+            )}
+            {veloScript.status === 'stopped' && (
+              <p className="mt-2 text-xs text-sf-text-secondary">Stopped. {yoloMusicScript.trim() ? 'Your script was not changed.' : 'Nothing was written.'} What Velo had already written may still count against your allowance.</p>
+            )}
+            {veloScript.status === 'error' && <p className="mt-2 text-xs text-sf-error">{veloScript.message}</p>}
           </div>
-          <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/70 p-3">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="text-xs leading-5 text-sf-text-secondary">
-                <div className="font-semibold text-sf-text-primary">Lyrics source</div>
-                {yoloMusicAlignProvidedLyrics
-                  ? 'Paste plain lyrics below. Velorn listens to the selected audio for timing, then writes your lyrics as SRT.'
-                  : 'Velorn listens to the selected audio and writes timed SRT output.'}
-              </div>
-              <div className="inline-flex rounded-lg border border-sf-dark-600 bg-sf-dark-900 p-1">
-                <button
-                  type="button"
-                  aria-pressed={!yoloMusicAlignProvidedLyrics}
-                  onClick={() => setYoloMusicAlignProvidedLyrics?.(false)}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    !yoloMusicAlignProvidedLyrics
-                      ? 'bg-sf-accent text-white'
-                      : 'text-sf-text-secondary hover:text-sf-text-primary'
-                  }`}
-                >
-                  Transcribe Song
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={Boolean(yoloMusicAlignProvidedLyrics)}
-                  onClick={() => setYoloMusicAlignProvidedLyrics?.(true)}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    yoloMusicAlignProvidedLyrics
-                      ? 'bg-sf-accent text-white'
-                      : 'text-sf-text-secondary hover:text-sf-text-primary'
-                  }`}
-                >
-                  Align My Lyrics
-                </button>
-              </div>
-            </div>
-          </div>
-          {yoloMusicAlignProvidedLyrics && (
-            <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/70 p-3">
-              <div className="mb-2 text-[10px] text-sf-text-muted">
-                Plain lyrics - {providedLyricsLineCount} lines
-              </div>
-              <label className="block">
-                <span className="text-[10px] uppercase text-sf-text-muted">Plain Lyrics Input</span>
-                <textarea
-                  value={yoloMusicProvidedLyrics || ''}
-                  onChange={(event) => setYoloMusicProvidedLyrics?.(event.target.value)}
-                  placeholder={'Paste plain lyrics here, one line per row.\n\n[Rose]\nYou paint your eyelids with correction fluid moons\nChewed up saints on the floor\n\n[Jake]\nSwollen sound inside my head'}
-                  className="mt-1 min-h-[160px] w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
-                />
-              </label>
-            </div>
-          )}
-          {(yoloMusicTranscribingSrt || yoloMusicTranscriptionStatus) && (
-            <div className="mt-2 text-xs text-sf-text-secondary">
-              {yoloMusicTranscriptionStatus || 'Preparing lyrics timing. This might take a moment.'}
-            </div>
-          )}
-          <div className="mt-3">
-            <label className="block">
-              <span className="text-[10px] uppercase text-sf-text-muted">SRT Output</span>
-              <textarea
-                value={yoloMusicLyrics}
-                onChange={(event) => setYoloMusicLyrics(event.target.value)}
-                placeholder="Timed lyrics will appear here after transcription or alignment."
-                readOnly={!yoloMusicAlignProvidedLyrics}
-                className={`mt-1 min-h-[220px] w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent ${!yoloMusicAlignProvidedLyrics ? 'opacity-90' : ''}`}
-              />
-            </label>
+          <div className="w-full flex-shrink-0 md:w-56">
+            <VeloAllowance result={veloAllowance.result} checking={veloAllowance.checking} />
           </div>
         </div>
+
+        {/* Writing with your own AI: one link that copies the brief. The panel
+            it used to open (status boxes and a second button) was removed 2026-11-12. */}
+        <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <button type="button" onClick={handleCopyBrief} className="inline-flex items-center gap-1.5 text-sf-text-muted underline hover:text-sf-text-primary">
+            <Clipboard className="h-3.5 w-3.5" />
+            Copy the brief for my own AI
+          </button>
+          {briefStatus && <span className="text-emerald-200" role="status">{briefStatus}</span>}
+        </div>
+        {timedLines === 0 && (
+          <p className="mt-2 text-xs text-amber-200">The Song step isn't finished yet, so a script written now won't follow the lyrics.</p>
+        )}
       </div>
-    </div>
-  )
+    )
+  }
 
   const renderPeopleWizardModal = () => {
     if (!peopleWizard) return null
 
     const wizardStep = peopleWizard.step || 'person'
+    const advanced = Boolean(peopleWizard.advanced)
     const trimmedName = String(peopleWizard.name || '').trim()
-    const normalizedSlug = normalizeCastSlug(String(peopleWizard.slug || '').trim())
+    const normalizedSlug = normalizeCastSlug(String(peopleWizard.slug || '').trim()) || normalizeCastSlug(trimmedName)
     const selectedPreviewAsset = wizardStep === 'sheet'
       ? peopleWizardSelectedSheetAsset || peopleWizardSheetAsset || peopleWizardGeneratedImageAsset || peopleWizardSelectedAsset || null
       : wizardStep === 'image'
@@ -2179,7 +2784,7 @@ export default function MusicVideoEasyMode({
     ]
     const previewJob = peopleWizardActiveJob
       && (
-        peopleWizardActiveJob.workflowId === 'z-image-turbo'
+        [FLUX2_KLEIN_WORKFLOW_ID, 'z-image-turbo'].includes(peopleWizardActiveJob.workflowId)
         || peopleWizardActiveJob.workflowId === 'multi-angles'
       )
       ? peopleWizardActiveJob
@@ -2188,7 +2793,13 @@ export default function MusicVideoEasyMode({
     const statusText = previewJob
       ? `${getWorkflowDisplayLabel(previewJob.workflowId)} is ${previewJob.status || 'running'}...`
       : ''
-    const wizardPrimaryAction = wizardStep === 'person'
+    const wizardPrimaryAction = !advanced
+      ? {
+          label: peopleWizardActiveJob ? 'Making the picture…' : peopleWizard.mode === 'edit' ? 'Save' : 'Add to cast',
+          onClick: handlePeopleWizardSave,
+          disabled: !canSavePeopleWizard,
+        }
+      : wizardStep === 'person'
       ? {
           label: 'Continue to image step',
           onClick: () => updatePeopleWizard({ step: 'image' }),
@@ -2217,9 +2828,9 @@ export default function MusicVideoEasyMode({
         <div className="relative z-10 flex max-h-[calc(100vh-6rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-sf-dark-700 bg-sf-dark-950 shadow-2xl">
           <div className="flex items-center justify-between gap-3 border-b border-sf-dark-700 px-4 py-3">
             <div>
-              <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">People Wizard</div>
+              <div className="text-[10px] uppercase tracking-[0.14em] text-sf-accent">Cast</div>
               <h3 className="text-base font-semibold text-sf-text-primary">
-                {peopleWizard.mode === 'edit' ? 'Edit person' : 'Add person'}
+                {peopleWizard.mode === 'edit' ? 'Edit cast member' : 'Add to cast'}
               </h3>
             </div>
             <button
@@ -2233,7 +2844,7 @@ export default function MusicVideoEasyMode({
 
           <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
             <div className="space-y-4 overflow-y-auto p-4">
-              <div className="rounded-2xl border border-sf-dark-700 bg-sf-dark-900/70 p-3">
+              <div hidden={!advanced} className="rounded-2xl border border-sf-dark-700 bg-sf-dark-900/70 p-3">
                 <div className="grid gap-2 md:grid-cols-3">
                   {wizardStages.map((stage, index) => {
                     const active = wizardStep === stage.id
@@ -2276,7 +2887,21 @@ export default function MusicVideoEasyMode({
                 </div>
               </div>
 
-              {wizardStep === 'person' && (
+              {!advanced && (
+                <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4">
+                  <FieldLabel>Name</FieldLabel>
+                  <input
+                    type="text"
+                    value={peopleWizard.name}
+                    autoFocus
+                    onChange={(event) => handlePeopleWizardFieldChange('name', event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-sm text-sf-text-primary outline-none focus:border-sf-accent"
+                    placeholder="Ava, The Grinch, the drummer"
+                  />
+                </div>
+              )}
+
+              {advanced && wizardStep === 'person' && (
                 <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4 space-y-3">
                   <div className="text-sm font-semibold text-sf-text-primary">1. Person data</div>
                   <p className="text-xs text-sf-text-secondary">
@@ -2347,17 +2972,19 @@ export default function MusicVideoEasyMode({
                 </div>
               )}
 
-              {wizardStep === 'image' && (
+              {(wizardStep === 'image' || !advanced) && (
                 <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4 space-y-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="text-sm font-semibold text-sf-text-primary">2. Image selection / creation</div>
+                      <div className="text-sm font-semibold text-sf-text-primary">{advanced ? '2. Image selection / creation' : 'Their picture'}</div>
                       <p className="mt-1 text-xs text-sf-text-secondary">
-                        Choose an existing portrait or create a new one. Once an image is selected, you can continue to the sheet step.
+                        {advanced
+                          ? 'Choose an existing portrait or create a new one. Once an image is selected, you can continue to the sheet step.'
+                          : 'One clear picture is enough. Use your own, or have Velorn make one.'}
                       </p>
                     </div>
                     <div className="text-[10px] text-sf-text-muted">
-                      {canUsePeopleWizardGeneration ? 'Portrait generation enabled' : 'Portrait generation unavailable'}
+                      {canUsePeopleWizardGeneration ? (advanced ? 'Portrait generation enabled' : '') : 'Making a picture needs ComfyUI running'}
                     </div>
                   </div>
 
@@ -2365,8 +2992,18 @@ export default function MusicVideoEasyMode({
                     <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-3 space-y-3">
                       <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
                         <ImageIcon className="h-4 w-4 text-sf-accent" />
-                        Select existing image
+                        Use my own picture
                       </div>
+                      <button
+                        type="button"
+                        onClick={handlePeopleWizardImportPicture}
+                        disabled={!handleImportYoloMusicCastImage || yoloMusicCastImageImporting}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs font-semibold text-sf-text-primary transition-colors hover:border-sf-accent disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {yoloMusicCastImageImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                        {yoloMusicCastImageImporting ? 'Adding…' : 'Choose a file'}
+                      </button>
+                      <div className="text-[11px] text-sf-text-muted">Or one already in this project:</div>
                       <select
                         value={peopleWizard.assetId || ''}
                         onChange={(event) => handlePeopleWizardSelectAsset(event.target.value || '')}
@@ -2385,7 +3022,7 @@ export default function MusicVideoEasyMode({
                     <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-3 space-y-3">
                       <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
                         <Wand2 className="h-4 w-4 text-sf-accent" />
-                        Create new image
+                        Make one here
                       </div>
                       <div>
                         <FieldLabel>Prompt</FieldLabel>
@@ -2397,6 +3034,7 @@ export default function MusicVideoEasyMode({
                           placeholder="Describe the character portrait."
                         />
                       </div>
+                      {advanced && (<>
                       <div className="grid gap-3 md:grid-cols-2">
                         <div>
                           <FieldLabel>Image Size</FieldLabel>
@@ -2467,9 +3105,13 @@ export default function MusicVideoEasyMode({
                           </button>
                         </div>
                       </div>
+                      </>)}
+                      {personCloudError && <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200" role="alert">{personCloudError}</div>}
+                      {personQuote && renderPicturePrice(personQuote, confirmPersonQuote, () => setPersonQuote(null))}
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
+                          hidden={!advanced}
                           onClick={() => updatePeopleWizard({ step: 'person' })}
                           className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
                         >
@@ -2478,10 +3120,12 @@ export default function MusicVideoEasyMode({
                         <button
                           type="button"
                           onClick={handlePeopleWizardCreateImage}
-                          disabled={!peopleWizardGenerationEnabled || Boolean(peopleWizardActiveJob)}
+                          disabled={cloudPicturesOn ? (personQuoteBusy || personCloudBusy) : (!peopleWizardGenerationEnabled || Boolean(peopleWizardActiveJob))}
                           className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {peopleWizardActiveJob && peopleWizardActiveJob.workflowId === 'z-image-turbo' ? 'Generating…' : 'Generate image'}
+                          {cloudPicturesOn
+                            ? (personCloudBusy ? 'Making it…' : personQuoteBusy ? 'Asking the price…' : 'See the price')
+                            : peopleWizardActiveJob && [FLUX2_KLEIN_WORKFLOW_ID, 'z-image-turbo'].includes(peopleWizardActiveJob.workflowId) ? 'Making it…' : 'Make the picture'}
                         </button>
                       </div>
                     </div>
@@ -2490,7 +3134,7 @@ export default function MusicVideoEasyMode({
                 </div>
               )}
 
-              {wizardStep === 'sheet' && (
+              {advanced && wizardStep === 'sheet' && (
                 <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-4 space-y-3">
                   <div>
                     <div className="text-sm font-semibold text-sf-text-primary">3. Character sheet</div>
@@ -2611,6 +3255,13 @@ export default function MusicVideoEasyMode({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => updatePeopleWizard(advanced ? { advanced: false, step: 'image' } : { advanced: true, step: 'person' })}
+                  className="mr-auto text-xs text-sf-text-muted hover:text-sf-text-primary"
+                >
+                  {advanced ? 'Fewer options' : 'More options'}
+                </button>
+                <button
+                  type="button"
                   onClick={closePeopleWizard}
                   className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
                 >
@@ -2638,281 +3289,382 @@ export default function MusicVideoEasyMode({
     )
   }
 
+  // Cast as picture cards: the face is the card. Name, role and notes are
+  // changed in the Edit window; the script's short name is made from the name.
   const renderPeopleStep = () => (
     <div className="space-y-4">
-      {renderStepHeader(
-        'Define who appears on camera.',
-        'Add reference images for artists, band members, or performers so the script can route shots by Artist fields.'
+      {renderPictureMakerRow()}
+      {placeCloudError && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200" role="alert">{placeCloudError}</div>
       )}
-
-      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <FieldLabel>Cast References</FieldLabel>
-            <div className="mt-1 text-sm font-semibold text-sf-text-primary">
-              {plural(yoloMusicResolvedCast.length, 'resolved person', 'resolved people')}
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleImportCastReferenceImage}
-              disabled={!handleImportYoloMusicCastImage || yoloMusicCastImageImporting}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-              title="Import an existing portrait, character sheet, or reference image into the cast."
-            >
-              {yoloMusicCastImageImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              {yoloMusicCastImageImporting ? 'Importing' : 'Import Image'}
-            </button>
-            <button
-              type="button"
-              onClick={() => handleOpenPeopleWizard(null)}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90"
-            >
-              <UserPlus className="h-4 w-4" />
-              Create Person
-            </button>
-          </div>
+      <div>
+        <h3 className="text-lg font-semibold text-sf-text-primary">Who is in it?</h3>
+        <p className="mt-1 text-xs leading-5 text-sf-text-secondary">Add everyone who appears on camera: a singer, a band, a character. One picture each is enough.</p>
+      </div>
+      {/* The FLUX download card is only needed when FLUX makes the pictures. */}
+      {!cloudPicturesOn && (
+        <LocalModelSetup
+          key={FLUX2_KLEIN_WORKFLOW_ID}
+          workflowId={FLUX2_KLEIN_WORKFLOW_ID}
+          name="FLUX.2 klein"
+          about="It makes the cast pictures and keyframes on your own computer."
+        />
+      )}
+      {peopleStatus && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+          {peopleStatus}
         </div>
-
-        <div className="mt-4 space-y-3">
-          {peopleStatus && (
-            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-              {peopleStatus}
-            </div>
-          )}
-          {(yoloMusicCast || []).length === 0 && (
-            <div className="rounded-lg border border-dashed border-sf-dark-600 px-3 py-6 text-center text-xs text-sf-text-muted">
-              Import an existing image or create a person if the video has lip-sync performance shots.
-            </div>
-          )}
-          {(yoloMusicCast || []).map((entry, index) => {
-            const entryAsset = imageAssets.find((asset) => asset?.id === entry?.assetId) || null
-            return (
-              <div key={entry.id || index} className="grid gap-2 rounded-lg border border-sf-dark-700 bg-sf-dark-950/50 p-3 lg:grid-cols-[1fr_1fr_1fr_auto_auto]">
-                <div>
-                  <FieldLabel>Name</FieldLabel>
-                  <input
-                    type="text"
-                    value={entry?.label || ''}
-                    onChange={(event) => handleYoloMusicCastLabelChange(entry.id, event.target.value)}
-                    placeholder="Ava"
-                    className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Script Slug</FieldLabel>
-                  <input
-                    type="text"
-                    value={entry?.slug || ''}
-                    onChange={(event) => handleYoloMusicCastSlugChange(entry.id, event.target.value)}
-                    placeholder="ava"
-                    className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                  />
-                </div>
-                <div>
-                  <FieldLabel>Reference</FieldLabel>
-                  <div className="mt-1 rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary">
-                    {entryAsset?.name || 'No reference image'}
-                  </div>
-                </div>
-                <div className="flex items-end gap-2">
-                  <select
-                    value={entry?.role || 'lead'}
-                    onChange={(event) => handleYoloMusicCastRoleChange(entry.id, event.target.value)}
-                    className="w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                  >
-                    {MUSIC_VIDEO_CAST_ROLE_OPTIONS.map((role) => (
-                      <option key={role.id} value={role.id}>{role.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex items-end gap-2">
+      )}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {(yoloMusicCast || []).map((entry, index) => {
+          const entryAsset = imageAssets.find((asset) => asset?.id === entry?.assetId) || null
+          const pictureUrl = entryAsset ? (getAssetUrl(entryAsset) || entryAsset.url) : ''
+          const role = MUSIC_VIDEO_CAST_ROLE_OPTIONS.find((option) => option.id === (entry?.role || 'lead'))
+          return (
+            <div key={entry.id || index} className="flex overflow-hidden rounded-xl border border-sf-dark-700 bg-sf-dark-900/70">
+              <div className="flex aspect-[4/5] w-40 flex-shrink-0 items-center justify-center overflow-hidden bg-sf-dark-950">
+                {pictureUrl
+                  ? (
+                    <button
+                      type="button"
+                      onClick={() => setMediaPreview({ kind: 'image', url: pictureUrl, title: entry?.label || 'Cast picture', subtitle: role?.label || '' })}
+                      title="See it large"
+                      aria-label={`See the picture of ${entry?.label || 'this person'} large`}
+                      className="h-full w-full cursor-zoom-in"
+                    >
+                      <img src={pictureUrl} alt="" className="h-full w-full object-cover object-top" loading="lazy" decoding="async" />
+                    </button>
+                  )
+                  : <span className="px-3 text-center text-xs text-sf-text-muted">No picture yet</span>}
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col p-4">
+                <div className="truncate text-base font-semibold text-sf-text-primary">{entry?.label || 'No name yet'}</div>
+                {role && <div className="mt-1.5"><span className="rounded-full bg-sf-accent/20 px-2 py-0.5 text-[11px] text-sf-text-primary">{role.label}</span></div>}
+                <p className="mt-2 line-clamp-3 flex-1 text-xs leading-5 text-sf-text-muted">{entry?.notes || ''}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={() => handleOpenPeopleWizard(entry)}
-                    className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-muted transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
-                    title="Edit person"
+                    className="inline-flex items-center gap-1 rounded-md border border-sf-dark-600 px-2.5 py-1 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
                   >
-                    <Edit3 className="h-3.5 w-3.5" />
+                    <Edit3 className="h-3 w-3" />
+                    Edit
                   </button>
                   <button
                     type="button"
                     onClick={() => handleYoloMusicCastRemove(entry.id)}
-                    className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-muted transition-colors hover:border-red-400/60 hover:text-red-200"
+                    className="rounded-md border border-sf-dark-600 px-2.5 py-1 text-xs text-sf-text-secondary transition-colors hover:border-red-500/60 hover:text-red-200"
                   >
                     Remove
                   </button>
                 </div>
-                <div className="lg:col-span-5">
-                  <FieldLabel>Notes for Director Script</FieldLabel>
-                  <input
-                    type="text"
-                    value={entry?.notes || ''}
-                    onChange={(event) => handleYoloMusicCastNotesChange?.(entry.id, event.target.value)}
-                    placeholder="Optional: female voice, harsh vocal, guitarist, never sings"
-                    className="mt-1 w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                  />
+              </div>
+            </div>
+          )
+        })}
+        <div className="flex min-h-[200px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-sf-dark-600 p-4 text-center">
+          <UserPlus className="h-5 w-5 text-sf-text-secondary" />
+          <div className="text-sm font-semibold text-sf-text-primary">Add someone</div>
+          <button
+            type="button"
+            onClick={() => handleOpenPeopleWizard(null)}
+            className="w-56 max-w-full rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent-hover"
+          >
+            Make a new person
+          </button>
+          <button
+            type="button"
+            onClick={handleImportCastReferenceImage}
+            disabled={!handleImportYoloMusicCastImage || yoloMusicCastImageImporting}
+            className="inline-flex w-56 max-w-full items-center justify-center gap-2 rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {yoloMusicCastImageImporting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {yoloMusicCastImageImporting ? 'Adding…' : 'Use my own picture'}
+          </button>
+        </div>
+      </div>
+      <div className="pt-2">
+        <h3 className="text-lg font-semibold text-sf-text-primary">Where does it happen?</h3>
+        <p className="mt-1 text-xs leading-5 text-sf-text-secondary">Add a place and every shot filmed there starts from the same picture, so the room stays the same. You can skip this.</p>
+      </div>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {(yoloMusicPlaces || []).map((entry) => {
+          const entryAsset = imageAssets.find((asset) => asset?.id === entry?.assetId) || null
+          const pictureUrl = entryAsset ? (getAssetUrl(entryAsset) || entryAsset.url) : ''
+          const making = Boolean(entry.pendingJobTag) && !entry.assetId
+          const stillMaking = Boolean(placeCloudBusy[entry.id]) || Boolean(entry.pendingJobTag) && generationQueue.some((job) => job?.peopleWizard?.wizardId === entry.pendingJobTag && !['done', 'error', 'cancelled'].includes(job.status))
+          return (
+            <div key={entry.id} className="flex overflow-hidden rounded-xl border border-sf-dark-700 bg-sf-dark-900/70">
+              <div className="flex h-[200px] w-56 flex-shrink-0 items-center justify-center overflow-hidden bg-sf-dark-950">
+                {pictureUrl
+                  ? (
+                    <button
+                      type="button"
+                      onClick={() => setMediaPreview({ kind: 'image', url: pictureUrl, title: entry.label || 'Place', subtitle: entry.notes || '' })}
+                      title="See it large"
+                      aria-label={`See the picture of ${entry.label || 'this place'} large`}
+                      className="h-full w-full cursor-zoom-in"
+                    >
+                      <img src={pictureUrl} alt="" className={`h-full w-full object-cover ${stillMaking ? 'opacity-40' : ''}`} loading="lazy" decoding="async" />
+                    </button>
+                  )
+                  : stillMaking
+                    ? <span className="inline-flex items-center gap-2 text-xs text-sf-text-secondary"><Loader2 className="h-4 w-4 animate-spin" />Making the picture…</span>
+                    : <span className="px-3 text-center text-xs text-sf-text-muted">{making ? 'The picture did not arrive. Remove this place and try again.' : 'No picture yet'}</span>}
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col gap-2 p-4">
+                <input
+                  type="text"
+                  value={entry.label}
+                  onChange={(event) => changePlace(entry.id, { label: event.target.value })}
+                  aria-label="Name of this place"
+                  placeholder="Name of this place"
+                  className="w-full rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-sm font-semibold text-sf-text-primary outline-none focus:border-sf-accent"
+                />
+                <textarea
+                  value={entry.notes}
+                  onChange={(event) => changePlace(entry.id, { notes: event.target.value })}
+                  aria-label="Notes about this place"
+                  placeholder="Describe the place: night, snow outside, warm firelight"
+                  rows={2}
+                  className="w-full flex-1 resize-none rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
+                />
+                {placeQuote?.key === entry.id && renderPlacePrice()}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleRemakePlace(entry)}
+                    disabled={stillMaking || placeQuoteBusy || (!cloudPicturesOn && !queuePeopleWizardJob) || !(entry.notes || entry.label)}
+                    title="Makes a new picture from what is written above"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-sf-dark-600 px-2.5 py-1 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {stillMaking && <Loader2 className="h-3 w-3 animate-spin" />}
+                    {stillMaking ? 'Making a new picture…' : 'Make the picture again'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removePlace(entry.id)}
+                    className="rounded-md border border-sf-dark-600 px-2.5 py-1 text-xs text-sf-text-secondary transition-colors hover:border-red-500/60 hover:text-red-200"
+                  >
+                    Remove
+                  </button>
                 </div>
               </div>
-            )
-          })}
+            </div>
+          )
+        })}
+        <div className="flex min-h-[200px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-sf-dark-600 p-4 text-center">
+          <ImageIcon className="h-5 w-5 text-sf-text-secondary" />
+          <div className="text-sm font-semibold text-sf-text-primary">Add a place</div>
+          {placeIdeaOpen ? (
+            <div className="w-full max-w-sm space-y-2">
+              {placeQuote?.key === 'new' && renderPlacePrice()}
+              <textarea
+                autoFocus
+                value={placeIdea}
+                onChange={(event) => setPlaceIdea(event.target.value)}
+                aria-label="Describe the place"
+                placeholder="A cosy cave living room with a stone fireplace and a red armchair"
+                rows={3}
+                className="w-full resize-none rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
+              />
+              <div className="flex justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleMakePlace}
+                  disabled={!placeIdea.trim() || placeQuoteBusy || (!cloudPicturesOn && !queuePeopleWizardJob)}
+                  className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent-hover disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {placeQuoteBusy ? 'Asking the price…' : cloudPicturesOn ? 'See the price' : 'Make the picture'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setPlaceIdeaOpen(false); setPlaceQuote(null) }}
+                  className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => setPlaceIdeaOpen(true)}
+                className="w-56 max-w-full rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent-hover"
+              >
+                Make a new place
+              </button>
+              <button
+                type="button"
+                onClick={handleAddPlaceFromPicture}
+                disabled={!handleImportYoloMusicCastImage || yoloMusicCastImageImporting}
+                className="w-56 max-w-full rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Use my own picture
+              </button>
+            </>
+          )}
         </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-sf-dark-700 pt-3">
+        <span className="text-xs text-sf-text-muted">No one on camera? You can skip this step.</span>
+        <button
+          type="button"
+          onClick={() => setStep('script')}
+          className="rounded-lg bg-sf-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent-hover"
+        >
+          Looks good
+        </button>
       </div>
       {renderPeopleWizardModal()}
     </div>
   )
 
-  const renderScriptStep = () => (
-    <div className="space-y-4">
-      {renderStepHeader(
-        'Create the director script.',
-        'Copy a ready-made LLM brief with timing, cast, and format rules, then paste the returned script here.'
-      )}
-      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <FieldLabel>Coverage Plan</FieldLabel>
-            <div className="mt-1 text-sm font-semibold text-sf-text-primary">
-              {plural(coveragePlan.sections.length, 'section')}: {coverageSummary}
-            </div>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-sf-text-secondary">
-              The LLM brief will return one combined director script with labeled coverage sections. B-roll sections are guided to share one start-middle-end story, with environment and detail shots supporting the same arc.
-            </p>
-          </div>
-          {coveragePreset === 'custom' && (
-            <span className="rounded-full border border-sf-accent/40 bg-sf-accent/10 px-2 py-1 text-[10px] font-semibold uppercase text-sf-accent">
-              Custom
-            </span>
-          )}
-        </div>
-        <div className="mt-4 grid gap-2 md:grid-cols-3">
-          {COVERAGE_PRESET_OPTIONS.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => applyCoveragePreset(option.id)}
-              className={`rounded-lg border p-3 text-left transition-colors ${buttonClass(coveragePreset === option.id)}`}
-            >
-              <div className="text-sm font-semibold">{option.label}</div>
-              <p className="mt-1 text-xs leading-5 text-sf-text-muted">{option.helper}</p>
-            </button>
-          ))}
-        </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto] lg:items-end">
-          <div>
-            <FieldLabel>Performance Passes</FieldLabel>
-            <div className="mt-2 grid grid-cols-4 gap-2">
+  // What gets filmed besides the video itself: one row per extra part, each
+  // with a plain explanation. The video itself is always filmed, so it is not
+  // listed. (Simple / Standard / Editorial cards were tried and removed
+  // 2026-11-12: the list alone is clearer.)
+  const renderCoverageCard = () => {
+    const timesOver = 1 + performancePassCount + [includeStoryBroll, includeEnvironmentalBroll, includeDetailBroll].filter(Boolean).length
+    return (
+      <div className="h-full rounded-xl border border-sf-dark-700 bg-sf-dark-900/70 p-5">
+        <div className="text-sm font-semibold text-sf-text-primary">What else do you want to film?</div>
+        <p className="mt-1 text-xs leading-5 text-sf-text-secondary">The main shots are always filmed. Extras give you more to cut with, and take longer to make.</p>
+        <div className="mt-3 divide-y divide-sf-dark-700 rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 px-4">
+          <div className="flex items-center gap-3 py-3">
+            <span className={`h-2.5 w-2.5 flex-shrink-0 rounded-sm ${COVERAGE_PARTS[1].colour}`} />
+            <span className="flex-1 text-xs"><span className="block text-sm font-semibold text-sf-text-primary">Extra takes</span><span className="text-sf-text-muted">The whole song again in a different look</span></span>
+            <span className="inline-flex overflow-hidden rounded-lg border border-sf-dark-600" role="group" aria-label="Extra takes">
               {PERFORMANCE_PASS_OPTIONS.map((count) => (
                 <button
                   key={count}
                   type="button"
+                  aria-pressed={performancePassCount === count}
                   onClick={() => updatePerformancePassCount(count)}
-                  className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${buttonClass(performancePassCount === count)}`}
+                  className={`px-3 py-1.5 text-xs font-semibold transition-colors ${performancePassCount === count ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
                 >
                   {count}
                 </button>
               ))}
-            </div>
+            </span>
           </div>
-          <label className={`flex min-h-[38px] items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${buttonClass(includeStoryBroll)}`}>
-            <input
-              type="checkbox"
-              checked={includeStoryBroll}
-              onChange={(event) => updateStoryBroll(event.target.checked)}
-              className="h-4 w-4 accent-sf-accent"
-            />
-            Story b-roll
-          </label>
-          <label className={`flex min-h-[38px] items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${buttonClass(includeEnvironmentalBroll)}`}>
-            <input
-              type="checkbox"
-              checked={includeEnvironmentalBroll}
-              onChange={(event) => updateEnvironmentalBroll(event.target.checked)}
-              className="h-4 w-4 accent-sf-accent"
-            />
-            Environmental
-          </label>
-          <label className={`flex min-h-[38px] items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${buttonClass(includeDetailBroll)}`}>
-            <input
-              type="checkbox"
-              checked={includeDetailBroll}
-              onChange={(event) => updateDetailBroll(event.target.checked)}
-              className="h-4 w-4 accent-sf-accent"
-            />
-            Detail inserts
-          </label>
+          {[
+            { part: COVERAGE_PARTS[2], helper: 'A small story to cut away to', on: includeStoryBroll, set: updateStoryBroll },
+            { part: COVERAGE_PARTS[3], helper: 'Rooms, streets, weather, with nobody in them', on: includeEnvironmentalBroll, set: updateEnvironmentalBroll },
+            { part: COVERAGE_PARTS[4], helper: 'Hands, objects, small moments', on: includeDetailBroll, set: updateDetailBroll },
+          ].map((row) => (
+            <label key={row.part.label} className="flex cursor-pointer items-center gap-3 py-3">
+              <span className={`h-2.5 w-2.5 flex-shrink-0 rounded-sm ${row.part.colour}`} />
+              <span className="flex-1 text-xs"><span className="block text-sm font-semibold text-sf-text-primary">{row.part.label}</span><span className="text-sf-text-muted">{row.helper}</span></span>
+              <input type="checkbox" checked={row.on} onChange={(event) => row.set(event.target.checked)} className="h-4 w-4 accent-sf-accent" />
+            </label>
+          ))}
         </div>
+        <div className="mt-3 text-xs text-sf-text-muted">{timesOver === 1 ? 'Films the song once.' : `Films the song ${timesOver} times over.`}</div>
       </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
-                <Clipboard className="h-4 w-4 text-sf-accent" />
-                Copy LLM brief
-              </div>
-              <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-                The brief includes song timing, cast slugs, required script format, b-roll story guidance, camera motion, character movement, and emotion cues.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleCopyBrief}
-              className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90"
-            >
-              Copy Brief
-            </button>
-          </div>
-          <div className="mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
-            <div className="text-xs font-semibold text-emerald-200">
-              {timedLineCount > 0 ? 'SRT timing included' : 'Timing not ready yet'}
-            </div>
-            <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-              {timedLineCount > 0
-                ? `The brief can reference ${plural(timedLineCount, 'timed lyric line')}.`
-                : 'Prepare timing in Step 1 before you ask for a timing-accurate script.'}
-            </p>
-          </div>
-          <div className="mt-4 rounded-lg border border-sf-dark-700 bg-sf-dark-950/70 p-3 text-xs leading-5 text-sf-text-secondary">
-            <div><span className="text-sf-text-muted">Audio:</span> {getMusicVideoAudioKindOption(yoloMusicAudioKind)?.label || 'Not selected'}</div>
-            <div><span className="text-sf-text-muted">Cast:</span> {yoloMusicResolvedCast.length > 0 ? yoloMusicResolvedCast.map((entry) => entry.slug || entry.label).join(', ') : 'No resolved cast yet'}</div>
-          </div>
-          {briefStatus && <div className="mt-3 text-xs text-emerald-200">{briefStatus}</div>}
-        </div>
+    )
+  }
 
+  const renderScriptStep = () => (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-lg font-semibold text-sf-text-primary">What happens in it?</h3>
+        <p className="mt-1 text-xs leading-5 text-sf-text-secondary">Tell Velorn the idea and let Velo write the script, or write it with your own AI. Every shot stays editable.</p>
+      </div>
+      {/* Idea and extras side by side on a wide window; stacked on a narrow one. */}
+      <div className="grid items-stretch gap-4 lg:grid-cols-2">
+        {renderIdeaCard()}
+        {renderCoverageCard()}
+      </div>
+      {renderWriteCard()}
+      <div>
         <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
                 <FileText className="h-4 w-4 text-sf-accent" />
-                Paste director script
+                Director script
               </div>
               <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-                This script becomes the plan. Shot type, start time, keyframe prompt, and motion prompt drive the next steps.
+                This script becomes the plan for the pictures and videos.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (!yoloMusicScript.trim() || window.confirm('Replace the current director script with the template?')) {
-                  setYoloMusicScript(MUSIC_VIDEO_SCRIPT_TEMPLATE)
-                }
-              }}
-              className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
-            >
-              Template
-            </button>
           </div>
-          <textarea
+          {scriptShots.length > 0 && (
+            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-sf-text-secondary">
+              <span>{plural(scriptShots.length, 'shot')}</span>
+              <button type="button" onClick={() => setScriptTextOpen((open) => !open)} className="text-sf-text-muted underline hover:text-sf-text-primary">
+                {scriptTextOpen ? 'Show the shots' : 'Edit the text'}
+              </button>
+            </div>
+          )}
+          {scriptParts.length > 1 && !scriptTextOpen && (
+            <div role="tablist" aria-label="Parts of the script" className="mt-2 flex flex-wrap gap-1 rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-1">
+              {[...scriptParts.map((part) => ({ key: part.key, label: part.label, count: part.rows.length })), { key: 'all', label: 'All', count: scriptShots.length }].map((tab) => {
+                const active = tab.key === 'all' ? scriptTab === 'all' : scriptPartShown?.key === tab.key
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setScriptTab(tab.key)}
+                    className={`rounded-md px-3 py-1.5 text-xs transition-colors ${active ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+                  >
+                    <span className="font-semibold">{tab.label}</span>
+                    <span className={`ml-2 tabular-nums ${active ? 'text-white/80' : 'text-sf-text-muted'}`}>{tab.count}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {scriptShots.length > 0 && !scriptTextOpen ? (
+            <ol className="mt-2 space-y-2">
+              {scriptRowsShown.map(({ shot, index }) => {
+                const who = String(shot.artistRaw || '').trim()
+                const where = String(shot.placeRaw || '').trim()
+                const whereName = where ? ((yoloMusicPlaces || []).find((entry) => entry.slug === placeSlug(where) || placeSlug(entry.label) === placeSlug(where))?.label || where) : ''
+                const whoName = who ? who.split(/[,&+]/).map((name) => {
+                  const wanted = normalizeCastSlug(name)
+                  return (yoloMusicCast || []).find((entry) => normalizeCastSlug(entry.slug || entry.label) === wanted)?.label || name.trim()
+                }).filter(Boolean).join(', ') : ''
+                return (
+                  <li key={shot.id || index} className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 px-3 py-2.5">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      <span className="font-semibold text-sf-text-primary">Shot {index + 1}</span>
+                      {shot.startAtRaw && <span className="tabular-nums text-sf-text-muted">{shot.startAtRaw}</span>}
+                      {whoName && <span className="rounded-full bg-sf-accent/20 px-2 py-0.5 text-[11px] text-sf-text-primary">{whoName}</span>}
+                      {whereName && <span className="rounded-full border border-sf-dark-500 px-2 py-0.5 text-[11px] text-sf-text-secondary">{whereName}</span>}
+                      {shot.part && <span className="text-[11px] text-sf-text-muted">{shot.part}</span>}
+                    </div>
+                    {shot.lyricMoment && <div className="mt-1 text-xs italic text-sf-text-secondary">“{shot.lyricMoment}”</div>}
+                    {(shot.keyframePromptRaw || shot.imageBeat) && <p className="mt-1 text-xs leading-5 text-sf-text-primary">{shot.keyframePromptRaw || shot.imageBeat}</p>}
+                    {(shot.motionPromptRaw || shot.videoBeat) && <p className="mt-1 text-xs leading-5 text-sf-text-muted">{shot.motionPromptRaw || shot.videoBeat}</p>}
+                  </li>
+                )
+              })}
+            </ol>
+          ) : (
+            <textarea
             value={yoloMusicScript}
             onChange={(event) => setYoloMusicScript(event.target.value)}
-            placeholder="Paste the LLM director script here."
+            placeholder="The script appears here. You can also paste one you wrote elsewhere."
             className="mt-4 min-h-[330px] w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-950 px-3 py-2 font-mono text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
           />
+          )}
+          {!yoloMusicScript.trim() && (
+            <button
+              type="button"
+              onClick={() => { setYoloMusicScript(MUSIC_VIDEO_SCRIPT_TEMPLATE); setScriptTextOpen(true) }}
+              className="mt-2 text-xs text-sf-text-muted underline hover:text-sf-text-primary"
+            >
+              Writing it yourself? Start from an example.
+            </button>
+          )}
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs text-sf-text-muted">
-              {parseStatus || (yoloActivePlanIsStale ? 'Script changed since the last parse.' : 'Ready when the script has shots.')}
+              {parseStatus || (scriptHasUnusedChanges ? 'You changed the script. Press Use the changes to update the shots.' : yoloActivePlanIsStale ? 'Read the script, then press Use this script.' : 'Ready when the script has shots.')}
             </div>
             <button
               type="button"
@@ -2920,7 +3672,7 @@ export default function MusicVideoEasyMode({
               disabled={!canBuildPlan}
               className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Parse Script
+              {scriptHasUnusedChanges ? 'Use the changes' : 'Use this script'}
             </button>
           </div>
         </div>
@@ -2928,130 +3680,215 @@ export default function MusicVideoEasyMode({
     </div>
   )
 
-  const renderKeyframesStep = () => (
-    <div className="space-y-4">
-      {renderStepHeader(
-        'Create keyframes from the script.',
-        'Each parsed script shot gets one starting image. The script, not a separate shot preset list, controls what gets made.'
-      )}
-      <div className="grid gap-3 md:grid-cols-3">
-        <Stat label="Script shots" value={plannedShotCount} />
-        <Stat label="Queue variants" value={queueVariantCount} />
-        <Stat label="Ready keyframes" value={yoloStoryboardReadyCount} />
-      </div>
-      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
-              <Film className="h-4 w-4 text-sf-accent" />
-              Keyframe jobs from your director script
+  // The Keyframes step (redesigned 2026-11-12): a plain heading, the model and
+  // shape, ONE main button that says what it will do, then the shots as clean
+  // cards. Clicking a shot opens its panel under that row.
+  const renderKeyframesStep = () => {
+    const missingCount = Math.max(0, plannedShotCount - yoloStoryboardReadyCount)
+    const missingPrice = cloudPicturesOn && cloudPictureModel?.usd != null && missingCount > 0
+      ? ` · about ${dollars(missingCount * cloudPictureModel.usd)}`
+      : ''
+    // What the big preview needs for one shot.
+    const previewFor = (index) => {
+      const { scene, shot } = flatShots[index]
+      const variant = getVariantForShot(scene.id, shot.id)
+      const asset = variant ? yoloStoryboardAssetMap?.get(variant.key) : null
+      const url = getAssetUrl(asset)
+      if (!url) return null
+      // The caption says the picture's real size and what really made it.
+      const sizeParts = buildActualImageResolutionParts(asset, runtimeImageDimensions, '')
+      const placedFrom = asset?.yolo?.workflowId === 'manual-keyframe-replacement'
+        ? imageAssets.find((entry) => entry?.id === asset.yolo?.manualReplacement?.sourceAssetId) || null
+        : null
+      const madeWith = asset?.yolo?.workflowId === 'manual-keyframe-replacement'
+        ? (placedFrom?.routerGeneration ? (cloudPictureModel?.name || 'Cloud picture model') : 'Your own picture')
+        : getGeneratedKeyframeWorkflowLabel(asset, selectedKeyframeWorkflowLabel)
+      return {
+        kind: 'image',
+        url,
+        title: shot.scriptShotLabel ? `Shot ${index + 1}: ${shot.scriptShotLabel}` : `Shot ${index + 1}`,
+        subtitle: [plainPartName(getCoverageLabel(scene, shot)), madeWith, ...sizeParts].filter(Boolean).join(' / '),
+        prompt: String(shot.imageBeat || shot.beat || shot.referenceImagePrompt || '').trim(),
+        editablePrompt: true,
+        sceneId: scene.id,
+        shotId: shot.id,
+        shotIndex: index,
+      }
+    }
+    const openPreview = (index) => {
+      const preview = previewFor(index)
+      if (!preview) return
+      setSelectedShotIndex(index)
+      setMediaPreview(preview)
+    }
+    // The panel for the shot (or shots) picked, drawn under the row they are in.
+    const renderPickedPanel = () => {
+      if (!selectedShotRow) return null
+      const hasPicture = !hasMultipleSelectedShots && Boolean(previewFor(selectedShotIndex))
+      return (
+        <div className="rounded-lg border border-sf-accent/50 bg-sf-dark-950/70 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm font-semibold text-sf-text-primary">
+              {hasMultipleSelectedShots ? `${selectedShotCount} shots picked` : `Shot ${selectedShotIndex + 1}`}
             </div>
-            <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-              The keyframe prompt on each shot becomes the still-image prompt for that exact beat.
-            </p>
-          </div>
-          <div className="flex flex-col gap-2 md:items-end">
-            <div className="flex flex-wrap items-center gap-1.5 md:justify-end">
-              <span className="mr-1 text-[10px] uppercase tracking-wider text-sf-text-muted">Keyframe model</span>
-              {keyframeWorkflowOptions.map((option) => (
+            <div className="flex flex-wrap items-center gap-2">
+              {hasPicture && (
                 <button
-                  key={`music-keyframe-model-${option.id}`}
                   type="button"
-                  onClick={() => handleKeyframeWorkflowChange(option.id)}
-                  title={option.description}
-                  className={`rounded-lg border px-2.5 py-1.5 text-left text-[10px] font-semibold transition-colors ${buttonClass(selectedKeyframeWorkflowId === option.id)}`}
+                  onClick={() => openPreview(selectedShotIndex)}
+                  className="rounded-lg border border-sf-dark-600 px-3 py-1.5 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
                 >
-                  <span>{option.label}</span>
-                  {option.runtimeLabel && <span className="ml-1 text-sf-text-muted">({option.runtimeLabel})</span>}
+                  See it large
                 </button>
-              ))}
+              )}
+              <button
+                type="button"
+                onClick={handleRegenerateSelectedKeyframe}
+                disabled={singleKeyframeActionDisabled || cloudKeyframesBusy}
+                className="rounded-lg bg-sf-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {hasMultipleSelectedShots ? `Make these ${selectedShotCount}` : hasPicture ? 'Make again' : 'Make it'}
+              </button>
+              {!hasMultipleSelectedShots && renderReplaceKeyframeButton(selectedShotRow, selectedShotIndex, 'Use my own picture')}
             </div>
-            <button
-              type="button"
-              onClick={handleQueueKeyframes}
-              disabled={!canQueueKeyframes || isQueuingKeyframes || yoloDependencyCheckInProgress}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isQueuingKeyframes ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-              Create Keyframes
-            </button>
           </div>
-        </div>
-        <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3 text-xs leading-5 text-sf-text-secondary">
-          <span className="font-semibold text-sf-text-primary">{selectedKeyframeWorkflowLabel}</span>
-          {selectedKeyframeWorkflow?.description
-            ? `: ${selectedKeyframeWorkflow.description} New keyframe jobs and rerenders use this model.`
-            : ' is used for new or regenerated keyframes.'}
-          {selectedKeyframeWorkflowId === 'image-edit' && yoloMusicResolvedCast.length === 0 && (
-            <span className="mt-1 block text-amber-200">
-              Qwen Image Edit needs a cast/reference image for performer shots. Reference-free b-roll automatically uses local Z-Image Turbo.
-            </span>
-          )}
-          {customKeyframeWorkflowSelected && (
-            <CustomWorkflowSlotCard
-              kind="keyframe"
-              workflowName={customKeyframeWorkflowName}
-              workflowLoaded={customKeyframeWorkflowLoaded}
-              validation={customKeyframeValidation}
-              canOpenInComfyUi={canOpenCustomKeyframeWorkflow}
-              onOpenInComfyUi={handleOpenYoloMusicCustomKeyframeWorkflowInComfyUi}
-              onImportJson={handleImportYoloMusicCustomKeyframeWorkflow}
-              onClear={handleClearYoloMusicCustomKeyframeWorkflow}
-              onPickLibrary={(id) => handleUseYoloMusicLibraryWorkflow?.(id, 'keyframe')}
-              bridgeStatus={customKeyframeBridgeStatus}
-              bridgeBusy={customKeyframeBridgeBusy}
-              bridgeIntro="Adds a Send to Velorn button inside ComfyUI. Import JSON stays available as the fallback."
-              onInstallBridge={handleInstallYoloMusicCustomKeyframeBridge}
-              onCheckBridge={handleCheckYoloMusicCustomKeyframeBridge}
-            />
+          {hasMultipleSelectedShots ? (
+            <p className="mt-2 text-xs leading-5 text-sf-text-muted">Pick one shot to change what its picture shows.</p>
+          ) : (
+            <label className="mt-2 block text-xs text-sf-text-secondary">
+              What the picture shows
+              <textarea
+                value={selectedShotRow.shot.imageBeat || selectedShotRow.shot.beat || ''}
+                onChange={(event) => handleYoloShotImageBeatChange?.(selectedShotRow.scene.id, selectedShotRow.shot.id, event.target.value)}
+                rows={4}
+                className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
+              />
+            </label>
           )}
         </div>
-        {yoloActivePlanIsStale && (
-          <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
-            The director script changed after the plan was parsed. Parse the script again before queueing.
-          </div>
-        )}
-        {keyframeStatus && (
-          <div className={`mt-3 rounded-lg text-xs ${
-            keyframeStatusIsWarning
-              ? 'border border-amber-400/30 bg-amber-400/10 p-3 text-amber-100'
-              : 'text-sf-text-secondary'
-          }`}>
-            {keyframeStatus}
-          </div>
+      )
+    }
+    return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-lg font-semibold text-sf-text-primary">Make the pictures</h3>
+        <p className="mt-1 text-xs leading-5 text-sf-text-secondary">Each shot gets one picture. The video starts from it.</p>
+      </div>
+      {renderPictureMakerRow()}
+      {pictureMaker === 'custom' && (
+        <CustomWorkflowSlotCard
+          kind="keyframe"
+          workflowName={customKeyframeWorkflowName}
+          workflowLoaded={customKeyframeWorkflowLoaded}
+          validation={customKeyframeValidation}
+          canOpenInComfyUi={canOpenCustomKeyframeWorkflow}
+          onOpenInComfyUi={handleOpenYoloMusicCustomKeyframeWorkflowInComfyUi}
+          onClear={handleClearYoloMusicCustomKeyframeWorkflow}
+          onPickLibrary={(id) => handleUseYoloMusicLibraryWorkflow?.(id, 'keyframe')}
+          onOpenStarter={() => handleOpenYoloMusicCustomStarter?.('keyframe')}
+        />
+      )}
+      {!cloudPicturesOn && selectedKeyframeWorkflowId === FLUX2_KLEIN_WORKFLOW_ID && (
+        <LocalModelSetup
+          key={FLUX2_KLEIN_WORKFLOW_ID}
+          workflowId={FLUX2_KLEIN_WORKFLOW_ID}
+          name="FLUX.2 klein"
+          about="It makes the cast pictures and keyframes on your own computer."
+        />
+      )}
+      {renderShapePicker()}
+      {renderMixedShapesNote()}
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={handleQueueKeyframes}
+          disabled={!canQueueKeyframes || isQueuingKeyframes || yoloDependencyCheckInProgress || cloudKeyframesBusy || missingCount === 0}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isQueuingKeyframes ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
+          {missingCount > 0 ? `Make the ${missingCount} missing ${missingCount === 1 ? 'picture' : 'pictures'}${missingPrice}` : 'All the pictures are made'}
+        </button>
+        <span className="text-sm text-sf-text-secondary">
+          <span className="font-semibold text-sf-text-primary">{yoloStoryboardReadyCount} of {plannedShotCount}</span> ready
+        </span>
+        <span className="flex-1" />
+        {plannedShotCount > 0 && (
+          <button
+            type="button"
+            onClick={handleRegenerateAllKeyframes}
+            disabled={isQueuingKeyframes || yoloDependencyCheckInProgress || !customKeyframeReady || cloudKeyframesBusy}
+            className="text-xs text-sf-text-muted underline transition-colors hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Make them all again
+          </button>
         )}
       </div>
+      {yoloActivePlanIsStale && (
+        <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+          You changed the director script. Go back to Director Script and press Use the changes first.
+        </div>
+      )}
+      {keyframeStatus && (
+        <div className={`rounded-lg text-xs ${
+          keyframeStatusIsWarning
+            ? 'border border-amber-400/30 bg-amber-400/10 p-3 text-amber-100'
+            : 'text-sf-text-secondary'
+        }`}>
+          {keyframeStatus}
+        </div>
+      )}
       {plannedShotCount > 0 && (
-        <div className="space-y-3 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-sf-text-primary">Shot keyframes</div>
-              <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-                Preview a shot to inspect the image, edit its prompt, or rerun that keyframe at the current output settings.
-              </p>
+        <div className="space-y-3">
+          {shotPasses.length > 1 && (
+            <div role="tablist" aria-label="Parts of the script" className="flex flex-wrap gap-1 rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-1">
+              {shotPasses.map((pass) => {
+                const ready = pass.indexes.filter((shotIndex) => {
+                  const entry = flatShots[shotIndex]
+                  const passVariant = getVariantForShot(entry.scene.id, entry.shot.id)
+                  return Boolean(passVariant && yoloStoryboardAssetMap?.get(passVariant.key))
+                }).length
+                const active = activeShotPass?.key === pass.key
+                return (
+                  <button
+                    key={pass.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setShotPassKey(pass.key)}
+                    className={`rounded-md px-3 py-1.5 text-xs transition-colors ${active ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+                  >
+                    <span className="font-semibold">{plainPartName(pass.label)}</span>
+                    <span className={`ml-2 tabular-nums ${active ? 'text-white/80' : 'text-sf-text-muted'}`}>{ready}/{pass.indexes.length}</span>
+                  </button>
+                )
+              })}
             </div>
-            <button
-              type="button"
-              onClick={handleRegenerateAllKeyframes}
-              disabled={isQueuingKeyframes || yoloDependencyCheckInProgress || !customKeyframeReady}
-              className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Regenerate All
-            </button>
-          </div>
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
-            {flatShots.map(({ scene, shot }, index) => {
+          )}
+          <p className="text-xs text-sf-text-muted">
+            Click a shot to work on it. To make several at once, hold {/Mac/i.test(globalThis.navigator?.platform || '') ? 'Cmd' : 'Ctrl'} and click each one, or hold Shift and click to pick a whole range.
+          </p>
+          {activeShotSections.map((section) => (
+          <div key={`keyframe-section-${section.key}`} className="space-y-2">
+          {section.label && (
+            <div className="flex items-baseline gap-2 pt-2">
+              <span className="text-xs font-semibold text-sf-text-primary">{section.label}</span>
+              {Number.isFinite(section.start) && <span className="text-[11px] tabular-nums text-sf-text-muted">{formatClock(section.start)}</span>}
+              <span className="text-[11px] text-sf-text-muted">{plural(section.indexes.length, 'shot')}</span>
+            </div>
+          )}
+          <div className="grid grid-flow-row-dense grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+            {section.indexes.map((index) => {
+              const { scene, shot } = flatShots[index]
               const variant = getVariantForShot(scene.id, shot.id)
               const asset = variant ? yoloStoryboardAssetMap?.get(variant.key) : null
               const url = getAssetUrl(asset)
-              const cardState = getKeyframeCardState(variant, asset)
-              const coverageLabel = getCoverageLabel(scene, shot)
+              const cloudMaking = Boolean(cloudMakingShots[`${scene.id}|${shot.id}`])
+              // A shot being made in the cloud reads the same as one being made here.
+              const cardState = cloudMaking ? { state: 'generating', label: 'Making the picture…' } : getKeyframeCardState(variant, asset)
               const keyframePrompt = String(shot.imageBeat || shot.beat || shot.referenceImagePrompt || '').trim()
-              const keyframeResolutionParts = buildActualImageResolutionParts(asset, runtimeImageDimensions, outputResolutionLabel)
-              const generatedKeyframeWorkflowLabel = getGeneratedKeyframeWorkflowLabel(asset, selectedKeyframeWorkflowLabel)
               return (
+                <Fragment key={`music-keyframe-${scene.id}-${shot.id}`}>
                 <div
-                  key={`music-keyframe-${scene.id}-${shot.id}`}
                   role="button"
                   tabIndex={0}
                   onClick={(event) => handleShotSelection(event, index)}
@@ -3082,43 +3919,29 @@ export default function MusicVideoEasyMode({
                         {cardState.state === 'generating' && (
                           <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/10 to-transparent" />
                         )}
-                        <span className={`relative text-[10px] ${
+                        <span className={`relative text-[11px] ${
                           cardState.state === 'error' ? 'text-red-200' : 'text-sf-text-muted'
                         }`}>
                           {cardState.label}
                         </span>
                       </>
                     )}
-                    {url && renderPreviewButton(() => {
-                      setSelectedShotIndex(index)
-                      setMediaPreview({
-                        kind: 'image',
-                        url,
-                        title: `Shot ${index + 1}: ${shot.scriptShotLabel || scene.label || shot.id}`,
-                        subtitle: [coverageLabel, generatedKeyframeWorkflowLabel, ...keyframeResolutionParts, `${videoFps} fps`].filter(Boolean).join(' / '),
-                        prompt: keyframePrompt,
-                        editablePrompt: true,
-                        sceneId: scene.id,
-                        shotId: shot.id,
-                        shotIndex: index,
-                      })
-                    })}
+                    {url && renderPreviewButton(() => openPreview(index))}
+                    {url && cloudMaking && (
+                      <span className="absolute bottom-2 left-2 inline-flex items-center gap-1.5 rounded-full bg-black/70 px-2 py-1 text-[11px] text-white backdrop-blur">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Making a new one…
+                      </span>
+                    )}
                   </div>
                   <div className="p-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 text-xs font-semibold text-sf-text-primary">Shot {index + 1}: {shot.scriptShotLabel || scene.label || shot.id}</div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        {renderKeyframeRunButton({ scene, shot }, index)}
-                        {renderReplaceKeyframeButton({ scene, shot }, index)}
-                        {renderCopyPromptButton(keyframePrompt, `Shot ${index + 1} keyframe prompt copied.`, setKeyframeStatus)}
-                      </div>
+                    <div className="text-xs font-semibold text-sf-text-primary">
+                      <span className="tabular-nums text-sf-text-muted">{formatClock(Number(shot?.audioStart) || 0)}</span>
+                      <span className="ml-1.5">Shot {index + 1}</span>
                     </div>
-                    {coverageLabel && (
-                      <div className="mt-1 inline-flex rounded-full border border-sf-dark-600 px-2 py-0.5 text-[10px] text-sf-text-muted">
-                        {coverageLabel}
-                      </div>
-                    )}
-                    <div className="mt-1 line-clamp-2 text-[10px] text-sf-text-muted">{keyframePrompt}</div>
+                    <div className={`mt-0.5 line-clamp-1 text-[11px] text-sf-text-secondary ${shot.lyricMoment ? 'italic' : ''}`}>
+                      {shot.lyricMoment ? `“${shot.lyricMoment}”` : (keyframePrompt || 'No description yet')}
+                    </div>
                     {cardState.job?.progress > 0 && (
                       <div className="mt-1 h-1 overflow-hidden rounded-full bg-sf-dark-700">
                         <div className="h-full rounded-full bg-sf-accent" style={{ width: `${Math.min(100, Math.max(0, cardState.job.progress || 0))}%` }} />
@@ -3126,265 +3949,261 @@ export default function MusicVideoEasyMode({
                     )}
                   </div>
                 </div>
+                {/* The picked shot's panel, right under the row that shot is in. */}
+                {selectedShotRow && index === selectedShotIndex && <div className="col-span-full">{renderPickedPanel()}</div>}
+                </Fragment>
               )
             })}
           </div>
-          {selectedShotRow && (
-            <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3">
-              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-sf-text-primary">
-                    {hasMultipleSelectedShots
-                      ? `${selectedShotCount} shots selected`
-                      : `Shot ${selectedShotIndex + 1}: ${selectedShotRow.shot.scriptShotLabel || selectedShotRow.scene.label || selectedShotRow.shot.id}`}
-                  </div>
-                  <div className="mt-1 text-[10px] text-sf-text-muted">
-                    {[outputResolutionLabel, `${videoFps} fps`, getCoverageLabel(selectedShotRow.scene, selectedShotRow.shot)].filter(Boolean).join(' / ')}
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {!hasMultipleSelectedShots && renderReplaceKeyframeButton(selectedShotRow, selectedShotIndex, 'Replace Keyframe')}
-                  <button
-                    type="button"
-                    onClick={handleRegenerateSelectedKeyframe}
-                    disabled={singleKeyframeActionDisabled}
-                    className="rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {hasMultipleSelectedShots ? `Regenerate ${selectedShotCount} Selected` : 'Regenerate Selected Shot'}
-                  </button>
-                </div>
-              </div>
-              {hasMultipleSelectedShots ? (
-                <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-secondary">
-                  Prompt editing is available when a single shot is selected.
-                </div>
-              ) : (
-                <div className="mt-3 text-xs text-sf-text-secondary">
-                  <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Keyframe prompt</span>
-                  <textarea
-                    value={selectedShotRow.shot.imageBeat || selectedShotRow.shot.beat || ''}
-                    onChange={(event) => handleYoloShotImageBeatChange?.(selectedShotRow.scene.id, selectedShotRow.shot.id, event.target.value)}
-                    rows={4}
-                    className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs text-sf-text-primary outline-none focus:border-sf-accent"
-                  />
-                  {renderNanoBananaShotReferences(selectedShotRow)}
-                </div>
-              )}
-            </div>
-          )}
+          </div>
+          ))}
         </div>
       )}
     </div>
-  )
+    )
+  }
 
-  const renderAdvancedVideoSettings = () => (
-    <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-semibold text-sf-text-primary">
-            <Play className="h-4 w-4 text-sf-accent" />
-            Video jobs from your director script
-          </div>
-          <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-            The script decides each shot's motion, while the selected video model renders from its matching keyframe.
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 md:items-end">
-          <div className="flex flex-wrap items-center gap-1.5 md:justify-end">
-            <span className="mr-1 text-[10px] uppercase tracking-wider text-sf-text-muted">Video model</span>
-            {videoWorkflowOptions.map((option) => (
+  // The Videos step (redesigned 2026-11-12 to match Keyframes): a plain
+  // heading, the model and quality as rows, ONE main button, then the shots as
+  // clean cards. Clicking a shot opens its panel under that row.
+  // The older settings block (video size, frame rate, Custom Workflow) is
+  // gone. MiniMax H3 is the one video model offered: LTX 2.3 Music, WAN 2.2
+  // and Custom Workflow are hidden (not deleted) since 2026-11-12.
+  const renderVideosStep = () => {
+    const missingCount = Math.max(0, plannedShotCount - videoReadyCount)
+    const withPicture = Math.max(0, Math.min(missingCount, yoloStoryboardReadyCount - videoReadyCount))
+    const previewFor = (index) => {
+      const { scene, shot } = flatShots[index]
+      const videoUrl = getAssetUrl(getVideoAssetForVariant(getVariantForShot(scene.id, shot.id)))
+      if (!videoUrl) return null
+      const length = Number(shot?.length ?? shot?.durationSeconds ?? 0) || 0
+      return {
+        kind: 'video',
+        url: videoUrl,
+        title: shot.scriptShotLabel ? `Shot ${index + 1}: ${shot.scriptShotLabel}` : `Shot ${index + 1}`,
+        subtitle: [plainPartName(getCoverageLabel(scene, shot)), `starts at ${formatClock(Number(shot?.audioStart) || 0)}`, length > 0 ? `${length.toFixed(1)} s long` : '', selectedVideoWorkflowLabel].filter(Boolean).join(' / '),
+        prompt: String(shot.videoBeat || shot.beat || shot.shotPrompt || '').trim(),
+        editablePrompt: true,
+        sceneId: scene.id,
+        shotId: shot.id,
+        shotIndex: index,
+      }
+    }
+    const openPreview = (index) => {
+      const preview = previewFor(index)
+      if (!preview) return
+      setSelectedShotIndex(index)
+      setMediaPreview(preview)
+    }
+    const renderPickedPanel = () => {
+      if (!selectedShotRow) return null
+      const hasVideo = !hasMultipleSelectedShots && Boolean(previewFor(selectedShotIndex))
+      const start = Number(selectedShotRow.shot.audioStart) || 0
+      const length = Number(selectedShotRow.shot.length || selectedShotRow.shot.durationSeconds) || 0
+      return (
+        <div className="rounded-lg border border-sf-accent/50 bg-sf-dark-950/70 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm font-semibold text-sf-text-primary">
+              {hasMultipleSelectedShots ? `${selectedShotCount} shots picked` : `Shot ${selectedShotIndex + 1}`}
+              {!hasMultipleSelectedShots && (
+                <span className="ml-2 text-xs font-normal text-sf-text-muted">
+                  starts at {formatClock(start)}{length > 0 ? ` · ${length.toFixed(1)} s long` : ''}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {hasVideo && (
+                <button
+                  type="button"
+                  onClick={() => openPreview(selectedShotIndex)}
+                  className="rounded-lg border border-sf-dark-600 px-3 py-1.5 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary"
+                >
+                  See it large
+                </button>
+              )}
               <button
-                key={`music-video-model-${option.id}`}
                 type="button"
-                onClick={() => handleVideoWorkflowChange(option.id)}
-                title={option.description}
-                className={`rounded-lg border px-2.5 py-1.5 text-left text-[10px] font-semibold transition-colors ${buttonClass(selectedVideoWorkflowId === option.id)}`}
+                onClick={handleRegenerateSelectedVideo}
+                disabled={singleVideoActionDisabled}
+                className="inline-flex items-center gap-2 rounded-lg bg-sf-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span>{option.label}</span>
-                {option.runtimeLabel && <span className="ml-1 text-sf-text-muted">({option.runtimeLabel})</span>}
+                {isQueuingVideos && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {hasMultipleSelectedShots ? `Make these ${selectedShotCount}` : hasVideo ? 'Make again' : 'Make it'}
+              </button>
+              {!hasMultipleSelectedShots && renderReplaceVideoButton(selectedShotRow, selectedShotIndex, 'Use my own video')}
+            </div>
+          </div>
+          {hasMultipleSelectedShots ? (
+            <p className="mt-2 text-xs leading-5 text-sf-text-muted">Pick one shot to change how it moves.</p>
+          ) : (
+            <label className="mt-2 block text-xs text-sf-text-secondary">
+              How it moves
+              <textarea
+                value={selectedShotRow.shot.videoBeat || selectedShotRow.shot.beat || selectedShotRow.shot.shotPrompt || ''}
+                onChange={(event) => handleYoloShotVideoBeatChange?.(selectedShotRow.scene.id, selectedShotRow.shot.id, event.target.value)}
+                rows={4}
+                className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
+              />
+            </label>
+          )}
+          {!hasMultipleSelectedShots && selectedShotRow.shot.scriptLyricMoment && (
+            <p className="mt-1 text-xs italic text-sf-text-muted">“{selectedShotRow.shot.scriptLyricMoment}”</p>
+          )}
+        </div>
+      )
+    }
+    return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-lg font-semibold text-sf-text-primary">Make the videos</h3>
+        <p className="mt-1 text-xs leading-5 text-sf-text-secondary">Each shot becomes a short clip that starts from its picture and follows your song.</p>
+      </div>
+      {/* The same kind of choice as "Pictures are made with" in Keyframes. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 px-4 py-3">
+        <span className="text-sm font-semibold text-sf-text-primary">Videos are made with</span>
+        <div role="group" aria-label="What makes the videos" className="inline-flex overflow-hidden rounded-lg border border-sf-dark-600">
+          {[{ id: 'h3', label: 'MiniMax H3', title: 'Free, on this computer.' }, { id: 'custom', label: 'My own workflow', title: 'For people who build their own ComfyUI workflows.' }].map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              aria-pressed={videoMaker === option.id}
+              title={option.title}
+              onClick={() => chooseVideoMaker(option.id)}
+              className={`px-3 py-1.5 text-xs font-semibold transition-colors ${videoMaker === option.id ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-sf-text-muted">
+          {videoMaker === 'custom'
+            ? 'A ComfyUI workflow of your own makes the videos. Whether the lips follow the song is up to that workflow.'
+            : 'Free, on this computer.'}
+        </span>
+      </div>
+      {videoMaker === 'custom' && (
+        <CustomWorkflowSlotCard
+          kind="video"
+          workflowName={customVideoWorkflowName}
+          workflowLoaded={customVideoWorkflowLoaded}
+          validation={customVideoValidation}
+          canOpenInComfyUi={canOpenCustomVideoWorkflow}
+          onOpenInComfyUi={handleOpenYoloMusicCustomVideoWorkflowInComfyUi}
+          onClear={handleClearYoloMusicCustomVideoWorkflow}
+          onPickLibrary={(id) => handleUseYoloMusicLibraryWorkflow?.(id, 'video')}
+          onOpenStarter={() => handleOpenYoloMusicCustomStarter?.('video')}
+        />
+      )}
+      {selectedVideoWorkflowId === MINIMAX_H3_LOCAL_WORKFLOW_ID && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 px-4 py-3">
+          <span className="text-sm font-semibold text-sf-text-primary">Quality</span>
+          <div role="group" aria-label="Video quality" className="inline-flex overflow-hidden rounded-lg border border-sf-dark-600">
+            {[...MINIMAX_H3_QUALITY_LEVELS].reverse().map((level) => (
+              <button
+                key={`music-video-quality-${level.id}`}
+                type="button"
+                aria-pressed={yoloMusicVideoQuality === level.id}
+                onClick={() => setYoloMusicVideoQuality?.(level.id)}
+                className={`px-3 py-1.5 text-xs font-semibold transition-colors ${yoloMusicVideoQuality === level.id ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+              >
+                {level.label}
               </button>
             ))}
           </div>
-          <div className="flex flex-wrap items-center gap-1.5 md:justify-end">
-            <span className="mr-1 text-[10px] uppercase tracking-wider text-sf-text-muted">
-              {customVideoWorkflowSelected ? 'Size input' : 'Video size'}
-            </span>
-            {RESOLUTION_OPTIONS.map((option) => {
-              const disabled = getResolutionFallbackForWorkflow(selectedVideoWorkflowId, option.id) !== option.id
-              return (
-                <button
-                  key={`music-video-resolution-${option.id}`}
-                  type="button"
-                  onClick={() => handleResolutionPresetChange(option.id)}
-                  disabled={disabled}
-                  title={customVideoWorkflowSelected
-                    ? 'Sent to your graph only when it uses VELORN_WIDTH and VELORN_HEIGHT.'
-                    : disabled ? 'This video model is limited to 720p here.' : ''}
-                  className={`rounded-lg border px-2.5 py-1.5 text-[10px] font-semibold transition-colors ${
-                    disabled
-                      ? 'cursor-not-allowed border-sf-dark-700 bg-sf-dark-950/50 text-sf-text-muted/40'
-                      : buttonClass(resolutionPreset === option.id)
-                  }`}
-                >
-                  {option.label}
-                </button>
-              )
-            })}
-            <span className="rounded-lg border border-sf-dark-600 px-2.5 py-1.5 text-[10px] font-semibold text-sf-text-muted">
-              {videoFps} fps
-            </span>
-            {customVideoWorkflowSelected && (
-              <span
-                className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-2.5 py-1.5 text-[10px] font-semibold text-amber-200"
-                title="Custom graphs may use these values, ignore them, or use their own model/provider settings."
-              >
-                Graph-dependent
-              </span>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 md:justify-end">
-            <button
-              type="button"
-              onClick={handleQueueVideos}
-              disabled={!canQueueVideos || isQueuingVideos || yoloDependencyCheckInProgress}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Generate Videos
-            </button>
-            <button
-              type="button"
-              onClick={handleAssembleTimeline}
-              disabled={!handleAssembleMusicVideoTimeline || videoReadyCount === 0 || yoloActivePlanIsStale || isAssemblingTimeline}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-              title={videoReadyCount === 0 ? 'Generate at least one ready video first.' : 'Place ready videos on timeline tracks using their script timing.'}
-            >
-              {isAssemblingTimeline ? <Loader2 className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}
-              Assemble Timeline
-            </button>
-          </div>
+          <span className="text-xs text-sf-text-muted">Fast is about twice as quick and good for close-ups. Best is for wide shots and the final video.</span>
         </div>
-      </div>
-      <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3 text-xs leading-5 text-sf-text-secondary">
-        <span className="font-semibold text-sf-text-primary">{selectedVideoWorkflowLabel}</span>
-        {customVideoWorkflowSelected
-          ? ': Velorn sends the generated keyframe image, motion prompt, seed, and available video settings into your ComfyUI graph.'
-          : selectedVideoWorkflow?.description
-          ? `: ${selectedVideoWorkflow.description} New video jobs and rerenders use ${outputResolutionLabel} / ${videoFps} fps.`
-          : ` is used for new or regenerated videos at ${outputResolutionLabel} / ${videoFps} fps.`}
-        {customVideoWorkflowSelected && (
-          <span className="mt-1 block">
-            Resolution and FPS are controlled by Velorn only when your graph uses <span className="font-mono text-sf-text-primary">VELORN_WIDTH</span>, <span className="font-mono text-sf-text-primary">VELORN_HEIGHT</span>, and <span className="font-mono text-sf-text-primary">VELORN_FPS</span>; otherwise your graph controls the final output.
-          </span>
-        )}
-        {customVideoWorkflowSelected ? (
-          <span className="mt-1 block text-amber-200">
-            Lip-sync is not automatic. Velorn can pass song audio through <span className="font-mono text-amber-100">VELORN_AUDIO</span>, but your graph must use that audio in a lip-sync or audio-conditioned video workflow.
-          </span>
-        ) : selectedVideoWorkflowSupports1080 ? (
-          <span className="mt-1 block text-sf-text-muted">
-            1080p is available for this model, with 720p kept as the default reliability setting.
-          </span>
-        ) : (
-          <span className="mt-1 block text-sf-text-muted">
-            This model is limited to 720p here, so higher sizes are disabled.
-          </span>
-        )}
-        {customVideoWorkflowSelected && (
-          <CustomWorkflowSlotCard
-            kind="video"
-            workflowName={customVideoWorkflowName}
-            workflowLoaded={customVideoWorkflowLoaded}
-            validation={customVideoValidation}
-            canOpenInComfyUi={canOpenCustomVideoWorkflow}
-            onOpenInComfyUi={handleOpenYoloMusicCustomVideoWorkflowInComfyUi}
-            onImportJson={handleImportYoloMusicCustomVideoWorkflow}
-            onClear={handleClearYoloMusicCustomVideoWorkflow}
-            onPickLibrary={(id) => handleUseYoloMusicLibraryWorkflow?.(id, 'video')}
-            bridgeStatus={customKeyframeBridgeStatus}
-            bridgeBusy={customKeyframeBridgeBusy}
-            bridgeIntro="Open the starter from this video panel before using Send to Velorn so the graph returns to Step 5."
-            onInstallBridge={handleInstallYoloMusicCustomKeyframeBridge}
-            onCheckBridge={handleCheckYoloMusicCustomKeyframeBridge}
-          />
-        )}
-        {selectedVideoWorkflowId !== defaultVideoWorkflowId && !customVideoWorkflowSelected && (
-          <div className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs leading-5 text-yellow-100">
-            {selectedVideoWorkflowLabel} uses the generated keyframes and motion prompts, but it will not use the song audio for lip-sync. Keep the LTX 2.3 Music pass for vocal-sync coverage.
-          </div>
-        )}
-        {yoloStoryboardReadyCount === 0 && (
-          <div className="mt-3 rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3 text-xs text-sf-text-muted">
-            Create keyframes first so each video job has a starting image.
-          </div>
-        )}
-        {customVideoWorkflowSelected && !customVideoReady && (
-          <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
-            {customVideoValidation.message || 'Load and validate a custom video workflow before generating videos.'}
-          </div>
-        )}
-        {yoloActivePlanIsStale && (
-          <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
-            The director script changed after the plan was parsed. Parse the script again before queueing videos.
-          </div>
-        )}
-        {videoStatus && <div className="mt-3 text-xs text-sf-text-secondary">{videoStatus}</div>}
-        {timelineStatus && (
-          <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-100">
-            {timelineStatus}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-
-  const renderVideosStep = () => (
-    <div className="space-y-4">
-      {renderStepHeader(
-        'Generate videos from the script.',
-        'Each parsed shot can be generated or rerun on its own using the matching keyframe and song timing.'
       )}
-      <div className="grid gap-3 md:grid-cols-3">
-        <Stat label="Script shots" value={plannedShotCount} />
-        <Stat label="Ready keyframes" value={yoloStoryboardReadyCount} />
-        <Stat label="Ready videos" value={videoReadyCount} />
+      {selectedVideoWorkflowId === MINIMAX_H3_LOCAL_WORKFLOW_ID && (
+        <LocalModelSetup
+          key={MINIMAX_H3_LOCAL_WORKFLOW_ID}
+          workflowId={MINIMAX_H3_LOCAL_WORKFLOW_ID}
+          name="MiniMax H3"
+          about="It makes the video shots on your own computer, with the lips following your song. It needs a strong graphics card with about 32 GB of memory."
+          terms={{ text: 'MiniMax H3 has its own licence.', label: 'Read it on its model page', url: 'https://huggingface.co/Comfy-Org/MiniMax-H3' }}
+        />
+      )}
+      {renderMixedShapesNote()}
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={handleQueueVideos}
+          disabled={!canQueueVideos || isQueuingVideos || yoloDependencyCheckInProgress || missingCount === 0}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+          {missingCount === 0 ? 'All the videos are made' : withPicture === missingCount ? `Make the ${missingCount} missing ${missingCount === 1 ? 'video' : 'videos'}` : `Make ${withPicture === 1 ? 'the 1 video' : `the ${withPicture} videos`} that ${withPicture === 1 ? 'has' : 'have'} a picture`}
+        </button>
+        <span className="text-sm text-sf-text-secondary">
+          <span className="font-semibold text-sf-text-primary">{videoReadyCount} of {plannedShotCount}</span> ready
+        </span>
+        <span className="flex-1" />
+        {plannedShotCount > 0 && (
+          <button
+            type="button"
+            onClick={handleRegenerateAllVideos}
+            disabled={!canQueueVideos || isQueuingVideos || yoloDependencyCheckInProgress}
+            className="text-xs text-sf-text-muted underline transition-colors hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Make them all again
+          </button>
+        )}
       </div>
-      {renderAdvancedVideoSettings()}
+      {yoloStoryboardReadyCount < plannedShotCount && plannedShotCount > 0 && (
+        <div className="text-xs text-sf-text-muted">
+          {yoloStoryboardReadyCount === 0
+            ? 'Make the pictures first, in Keyframes: every video starts from one.'
+            : `${yoloStoryboardReadyCount} of ${plannedShotCount} shots have a picture so far. The rest need one from Keyframes before their video can be made.`}
+        </div>
+      )}
+      {yoloActivePlanIsStale && (
+        <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+          You changed the director script. Go back to Director Script and press Use the changes first.
+        </div>
+      )}
+      {videoStatus && <div className="text-xs text-sf-text-secondary">{videoStatus}</div>}
       {plannedShotCount > 0 && (
-        <div className="space-y-3 rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 p-4">
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-sf-text-primary">Shot videos</div>
-              <p className="mt-1 text-xs leading-5 text-sf-text-secondary">
-                Preview a shot to inspect the video, edit its motion prompt, or rerun it through {selectedVideoWorkflowLabel}.
-              </p>
+        <div className="space-y-3">
+          {shotPasses.length > 1 && (
+            <div role="tablist" aria-label="Parts of the script" className="flex flex-wrap gap-1 rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-1">
+              {shotPasses.map((pass) => {
+                const ready = pass.indexes.filter((shotIndex) => {
+                  const entry = flatShots[shotIndex]
+                  return Boolean(getVideoAssetForVariant(getVariantForShot(entry.scene.id, entry.shot.id)))
+                }).length
+                const active = activeShotPass?.key === pass.key
+                return (
+                  <button
+                    key={pass.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setShotPassKey(pass.key)}
+                    className={`rounded-md px-3 py-1.5 text-xs transition-colors ${active ? 'bg-sf-accent text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+                  >
+                    <span className="font-semibold">{plainPartName(pass.label)}</span>
+                    <span className={`ml-2 tabular-nums ${active ? 'text-white/80' : 'text-sf-text-muted'}`}>{ready}/{pass.indexes.length}</span>
+                  </button>
+                )
+              })}
             </div>
-            <button
-              type="button"
-              onClick={handleRegenerateAllVideos}
-              disabled={!canQueueVideos || isQueuingVideos || yoloDependencyCheckInProgress}
-              className="rounded-lg border border-sf-dark-600 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Regenerate All
-            </button>
-          </div>
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
-            {flatShots.map(({ scene, shot }, index) => {
+          )}
+          <p className="text-xs text-sf-text-muted">
+            Click a shot to work on it. To make several at once, hold {/Mac/i.test(globalThis.navigator?.platform || '') ? 'Cmd' : 'Ctrl'} and click each one, or hold Shift and click to pick a whole range.
+          </p>
+          {activeShotSections.map((section) => (
+          <div key={`video-section-${section.key}`} className="grid grid-flow-row-dense grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+            {section.indexes.map((index) => {
+              const { scene, shot } = flatShots[index]
               const variant = getVariantForShot(scene.id, shot.id)
               const keyframeAsset = variant ? yoloStoryboardAssetMap?.get(variant.key) : null
               const videoAsset = getVideoAssetForVariant(variant)
               const keyframeUrl = getAssetUrl(keyframeAsset)
               const videoUrl = getAssetUrl(videoAsset)
               const cardState = getVideoCardState(variant, videoAsset)
-              const shotTypeId = getShotTypeId(shot)
-              const shotTypeOption = getMusicVideoShotTypeOption(shotTypeId)
-              const start = Number(shot?.audioStart ?? 0) || 0
-              const length = Number(shot?.length ?? shot?.durationSeconds ?? 0) || 0
-              const coverageLabel = getCoverageLabel(scene, shot)
               const videoPrompt = String(shot.videoBeat || shot.beat || shot.shotPrompt || '').trim()
               return (
+                <Fragment key={`music-video-${scene.id}-${shot.id}`}>
                 <div
-                  key={`music-video-${scene.id}-${shot.id}`}
                   role="button"
                   tabIndex={0}
                   onClick={(event) => handleShotSelection(event, index)}
@@ -3407,20 +4226,7 @@ export default function MusicVideoEasyMode({
                     {cardState.state === 'generating' && (
                       <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/10 to-transparent" />
                     )}
-                    {videoUrl && renderPreviewButton(() => {
-                      setSelectedShotIndex(index)
-                      setMediaPreview({
-                        kind: 'video',
-                        url: videoUrl,
-                        title: `Shot ${index + 1}: ${shot.scriptShotLabel || scene.label || shot.id}`,
-                        subtitle: [coverageLabel, shotTypeOption?.label || shotTypeId || 'Script shot', `${start.toFixed(2)}s`, length > 0 ? `${length.toFixed(1)}s` : '', selectedVideoWorkflowLabel].filter(Boolean).join(' / '),
-                        prompt: videoPrompt,
-                        editablePrompt: true,
-                        sceneId: scene.id,
-                        shotId: shot.id,
-                        shotIndex: index,
-                      })
-                    })}
+                    {videoUrl && renderPreviewButton(() => openPreview(index))}
                     <div className={`absolute left-2 top-2 rounded-full px-2 py-1 text-[10px] ${
                       cardState.state === 'ready'
                         ? 'bg-emerald-500/80 text-white'
@@ -3434,21 +4240,13 @@ export default function MusicVideoEasyMode({
                     </div>
                   </div>
                   <div className="p-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 text-xs font-semibold text-sf-text-primary">Shot {index + 1}: {shot.scriptShotLabel || scene.label || shot.id}</div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        {renderVideoRunButton({ scene, shot }, index)}
-                        {renderReplaceVideoButton({ scene, shot }, index)}
-                        {renderCopyPromptButton(videoPrompt, `Shot ${index + 1} video prompt copied.`, setVideoStatus)}
-                      </div>
+                    <div className="text-xs font-semibold text-sf-text-primary">
+                      <span className="tabular-nums text-sf-text-muted">{formatClock(Number(shot?.audioStart) || 0)}</span>
+                      <span className="ml-1.5">Shot {index + 1}</span>
                     </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-sf-text-muted">
-                      {coverageLabel && <span>{coverageLabel}</span>}
-                      <span>{shotTypeOption?.label || shotTypeId || 'Script shot'}</span>
-                      <span>{start.toFixed(2)}s</span>
-                      {length > 0 && <span>{length.toFixed(1)}s</span>}
+                    <div className={`mt-0.5 line-clamp-1 text-[11px] text-sf-text-secondary ${shot.lyricMoment ? 'italic' : ''}`}>
+                      {shot.lyricMoment ? `“${shot.lyricMoment}”` : (videoPrompt || 'No description yet')}
                     </div>
-                    <div className="mt-1 line-clamp-2 text-[10px] text-sf-text-muted">{videoPrompt}</div>
                     {cardState.job?.progress > 0 && (
                       <div className="mt-1 h-1 overflow-hidden rounded-full bg-sf-dark-700">
                         <div className="h-full rounded-full bg-sf-accent" style={{ width: `${Math.min(100, Math.max(0, cardState.job.progress || 0))}%` }} />
@@ -3456,89 +4254,141 @@ export default function MusicVideoEasyMode({
                     )}
                   </div>
                 </div>
+                {selectedShotRow && index === selectedShotIndex && <div className="col-span-full">{renderPickedPanel()}</div>}
+                </Fragment>
               )
             })}
           </div>
-          {selectedShotRow && (
-            <div className="space-y-3">
-              <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs leading-5 text-yellow-100">
-                Not happy with a shot? Select it here, adjust the motion prompt if needed, then rerun just that shot. Use this area for fixes, alternate takes, or trying a different model or resolution without rebuilding the whole music video.
-              </div>
-              <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-950/60 p-3">
-                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <div className="text-sm font-semibold text-sf-text-primary">
-                      {hasMultipleSelectedShots
-                        ? `${selectedShotCount} shots selected`
-                        : `Shot ${selectedShotIndex + 1}: ${selectedShotRow.shot.scriptShotLabel || selectedShotRow.scene.label || selectedShotRow.shot.id}`}
-                    </div>
-                    <div className="mt-1 text-[10px] text-sf-text-muted">
-                      {[selectedVideoWorkflowLabel, outputResolutionLabel, `${videoFps} fps`, getCoverageLabel(selectedShotRow.scene, selectedShotRow.shot)].filter(Boolean).join(' / ')}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleRegenerateSelectedVideo}
-                      disabled={singleVideoActionDisabled}
-                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-sf-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {isQueuingVideos ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                      {hasMultipleSelectedShots
-                        ? `Run ${selectedShotCount} Selected With ${selectedVideoWorkflowLabel}`
-                        : `Run Selected With ${selectedVideoWorkflowLabel}`}
-                    </button>
-                    {!hasMultipleSelectedShots && (
+          ))}
+        </div>
+      )}
+      {plannedShotCount > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-sf-dark-700 pt-3">
+          <span className="text-xs text-sf-text-muted">When the videos you want are made, put them on a timeline to edit.</span>
+          <button
+            type="button"
+            onClick={() => setStep('timeline')}
+            className="rounded-lg bg-sf-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-sf-accent-hover"
+          >
+            Next: Timeline
+          </button>
+        </div>
+      )}
+    </div>
+    )
+  }
+
+  // The last step: the ready videos go onto a new timeline at their song times.
+  const renderTimelineStep = () => (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-lg font-semibold text-sf-text-primary">Put it on the timeline</h3>
+        <p className="mt-1 text-xs leading-5 text-sf-text-secondary">Your videos are lined up with the song on a new timeline, ready to edit. You can come back and do this again after making more.</p>
+      </div>
+      <div className="text-sm text-sf-text-secondary">
+        <span className="font-semibold text-sf-text-primary">{videoReadyCount} of {plannedShotCount}</span> videos ready
+      </div>
+      {plannedShotCount > 0 && (
+        <div className="flex flex-col gap-3 rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-5 md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm leading-6 text-sf-text-secondary">
+              {videoReadyCount === 0
+                ? 'Make at least one video first.'
+                : `Velorn places the ${plural(videoReadyCount, 'ready video')} on a new timeline at their song times. You can do this again after making more.`}
+            </p>
+            {(() => {
+              // The shapes of the videos that are ready, read from their pictures.
+              const sizes = flatShots.map(({ scene, shot }) => {
+                const variant = getVariantForShot(scene.id, shot.id)
+                if (!variant || !getVideoAssetForVariant(variant)) return null
+                const picture = yoloStoryboardAssetMap?.get(variant.key)
+                if (!picture) return null
+                const seen = runtimeImageDimensions[picture.id]
+                return {
+                  width: normalizeDimension(seen?.width ?? picture.width ?? picture.settings?.width),
+                  height: normalizeDimension(seen?.height ?? picture.height ?? picture.settings?.height),
+                }
+              })
+              const shapes = countPictureShapes(sizes)
+              const suggested = shapes.wide + shapes.tall > 0
+                ? (shapes.tall > shapes.wide ? 'tall' : 'wide')
+                : (aspectRatio === 'vertical_9x16' ? 'tall' : 'wide')
+              const chosen = timelineShapeChoice || suggested
+              timelineShapeRef.current = chosen
+              return (
+                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <span className="text-xs font-semibold text-sf-text-primary">Timeline shape</span>
+                  <div role="group" aria-label="Shape of the timeline" className="inline-flex overflow-hidden rounded-lg border border-sf-dark-600">
+                    {[{ id: 'wide', label: '16:9', tall: false }, { id: 'tall', label: '9:16', tall: true }].map((option) => (
                       <button
+                        key={option.id}
                         type="button"
-                        onClick={() => openReplaceVideoDialog(selectedShotRow, selectedShotIndex)}
-                        disabled={replaceVideoActionDisabled}
-                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-sf-dark-600 px-3 py-2 text-xs font-semibold text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-pressed={chosen === option.id}
+                        onClick={() => setTimelineShapeChoice(option.id)}
+                        className={`inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold transition-colors ${chosen === option.id ? 'bg-emerald-600 text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
                       >
-                        <Upload className="h-4 w-4" />
-                        Replace Video
+                        <span aria-hidden="true" className={`rounded-[2px] border-[1.5px] border-current ${option.tall ? 'h-3.5 w-2' : 'h-2 w-3.5'}`} />
+                        {option.label}
                       </button>
-                    )}
+                    ))}
                   </div>
+                  <span className="text-xs font-semibold text-sf-text-primary">Size</span>
+                  <div role="group" aria-label="Size of the timeline" className="inline-flex overflow-hidden rounded-lg border border-sf-dark-600">
+                    {['720p', '1080p'].map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        aria-pressed={timelineSize === size}
+                        title={size === '720p' ? 'The size the videos are made in.' : 'The videos are scaled up to fit. Common for YouTube.'}
+                        onClick={() => setTimelineSize(size)}
+                        className={`px-3 py-1.5 text-xs font-semibold transition-colors ${timelineSize === size ? 'bg-emerald-600 text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="text-xs text-sf-text-muted">
+                    {shapes.mixed
+                      ? `${plural(shapes.wide, 'ready video')} ${shapes.wide === 1 ? 'is' : 'are'} 16:9 and ${shapes.tall} ${shapes.tall === 1 ? 'is' : 'are'} 9:16.`
+                      : shapes.wide + shapes.tall > 0
+                        ? `Your ready videos are ${shapes.tall > 0 ? '9:16' : '16:9'}.`
+                        : ''}
+                  </span>
                 </div>
-                <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                  <div>
-                    {hasMultipleSelectedShots ? (
-                      <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-secondary">
-                        Motion prompt editing is available when a single shot is selected.
-                      </div>
-                    ) : (
-                      <>
-                        <label className="block text-xs text-sf-text-secondary">
-                          <span className="text-[10px] uppercase tracking-wider text-sf-text-muted">Edit shot motion prompt</span>
-                          <textarea
-                            value={selectedShotRow.shot.videoBeat || selectedShotRow.shot.beat || selectedShotRow.shot.shotPrompt || ''}
-                            onChange={(event) => handleYoloShotVideoBeatChange?.(selectedShotRow.scene.id, selectedShotRow.shot.id, event.target.value)}
-                            rows={5}
-                            className="mt-1 w-full resize-y rounded-lg border border-sf-dark-600 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-primary outline-none focus:border-sf-accent"
-                            placeholder="Describe the motion/action for this one video rerun..."
-                          />
-                        </label>
-                        <p className="mt-1 text-[10px] leading-4 text-sf-text-muted">
-                          This changes the selected shot's video prompt for new renders only. It does not rewrite the original director script.
-                        </p>
-                      </>
-                    )}
-                  </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider text-sf-text-muted">Timing</div>
-                    <div className="mt-1 rounded-lg border border-sf-dark-700 bg-sf-dark-900 px-3 py-2 text-xs leading-5 text-sf-text-secondary">
-                      <div>Start: {(Number(selectedShotRow.shot.audioStart) || 0).toFixed(2)}s</div>
-                      <div>Length: {(Number(selectedShotRow.shot.length || selectedShotRow.shot.durationSeconds) || 0).toFixed(1)}s</div>
-                      {selectedShotRow.shot.scriptLyricMoment && (
-                        <div className="mt-1 italic text-sf-text-muted">"{selectedShotRow.shot.scriptLyricMoment}"</div>
-                      )}
-                    </div>
-                  </div>
-                </div>
+              )
+            })()}
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+              <span className="text-xs font-semibold text-sf-text-primary">Cut</span>
+              <div role="group" aria-label="How the timeline is laid out" className="inline-flex overflow-hidden rounded-lg border border-sf-dark-600">
+                {[{ id: 'layers', label: 'Layers to edit' }, { id: 'ready', label: 'Ready cut' }].map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-pressed={timelineCut === option.id}
+                    onClick={() => setTimelineCut(option.id)}
+                    className={`px-3 py-1.5 text-xs font-semibold transition-colors ${timelineCut === option.id ? 'bg-emerald-600 text-white' : 'text-sf-text-secondary hover:bg-sf-dark-800 hover:text-sf-text-primary'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
               </div>
+              <span className="text-xs text-sf-text-muted">
+                {timelineCut === 'ready'
+                  ? 'One layer that plays as a finished video. Velorn picks a take for each sung line and fills the gaps with shots that have no singing.'
+                  : 'Each pass gets its own layer. You choose the takes and place the shots.'}
+              </span>
             </div>
-          )}
+            {timelineStatus && <p className="mt-2 text-xs text-emerald-100">{timelineStatus}</p>}
+          </div>
+          <button
+            type="button"
+            onClick={handleAssembleTimeline}
+            disabled={!handleAssembleMusicVideoTimeline || videoReadyCount === 0 || yoloActivePlanIsStale || isAssemblingTimeline}
+            className="inline-flex flex-shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {isAssemblingTimeline ? <Loader2 className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}
+            {isAssemblingTimeline ? 'Placing…' : 'Put it on the timeline'}
+          </button>
         </div>
       )}
     </div>
@@ -3555,6 +4405,13 @@ export default function MusicVideoEasyMode({
       ? flatShots[previewShotIndex] || null
       : null
     const previewShot = previewShotRow?.shot || null
+    // Follow the shot, not the picture that was showing when the preview
+    // opened: after a remake the newest keyframe or video appears here too.
+    const previewVariant = previewShotRow ? getVariantForShot(previewShotRow.scene.id, previewShotRow.shot.id) : null
+    const previewLiveAsset = !previewVariant ? null
+      : editableKeyframePrompt ? yoloStoryboardAssetMap?.get(previewVariant.key)
+        : editableVideoPrompt ? getVideoAssetForVariant(previewVariant) : null
+    const previewUrl = getAssetUrl(previewLiveAsset) || mediaPreview.url
     const hasImageBeat = previewShot && Object.prototype.hasOwnProperty.call(previewShot, 'imageBeat')
     const previewPromptFallback = editableKeyframePrompt
       ? String(hasImageBeat ? previewShot.imageBeat : (previewShot?.beat || previewShot?.referenceImagePrompt || ''))
@@ -3610,8 +4467,8 @@ export default function MusicVideoEasyMode({
             <div className="flex max-h-[72vh] items-center justify-center bg-black">
               {mediaPreview.kind === 'video' ? (
                 <video
-                  key={mediaPreview.url}
-                  src={mediaPreview.url}
+                  key={previewUrl}
+                  src={previewUrl}
                   className="max-h-[72vh] max-w-full object-contain"
                   controls
                   autoPlay
@@ -3619,7 +4476,7 @@ export default function MusicVideoEasyMode({
                 />
               ) : (
                 <img
-                  src={mediaPreview.url}
+                  src={previewUrl}
                   alt={mediaPreview.title || 'Preview'}
                   className="max-h-[72vh] max-w-full object-contain"
                 />
@@ -3908,45 +4765,58 @@ export default function MusicVideoEasyMode({
     script: renderScriptStep,
     keyframes: renderKeyframesStep,
     videos: renderVideosStep,
+    timeline: renderTimelineStep,
   }[step] || renderSongStep
 
   return (
-    <>
+    <div className="dh-colours" style={{ '--dh-top': `${fixedTopHeight}px` }}>
       <div className="space-y-4">
-        <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/40 p-2">
-          <div className="grid gap-2 md:grid-cols-5">
-            {STEPS.map((entry) => {
-              const selected = step === entry.id
-              const disabled = isStepDisabled(entry.id)
-              return (
+        {/* The heading, pictures and step bar stay put; only the step below scrolls. */}
+        <div ref={fixedTopRef} className="sticky -top-4 z-30 -mx-5 -mt-4 space-y-4 bg-sf-dark-950 px-5 pb-3 pt-4" style={{ marginBottom: Math.max(0, fullTopHeight - fixedTopHeight) }}>
+        <DirectorHero small={scrolledDown} />
+        <nav aria-label="Steps" className="flex items-start justify-center pb-1">
+          {STEPS.map((entry, index) => {
+            const selected = step === entry.id
+            const disabled = isStepDisabled(entry.id)
+            const done = !selected && stepDone[entry.id]
+            return (
+              <Fragment key={entry.id}>
+                {index > 0 && <span aria-hidden="true" className={`mt-[19px] h-px w-10 flex-shrink-0 md:w-12 ${stepDone[STEPS[index - 1].id] ? 'dh-step-line-done' : 'bg-sf-dark-600'}`} />}
                 <button
-                  key={entry.id}
                   type="button"
                   onClick={() => setStep(entry.id)}
                   disabled={disabled}
-                  className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                    selected
-                      ? 'border-sf-accent bg-sf-accent/20 text-sf-text-primary ring-1 ring-sf-accent/40'
-                      : disabled
-                        ? 'border-sf-dark-700 bg-sf-dark-950/40 text-sf-text-muted/50'
-                        : 'border-sf-dark-700 bg-sf-dark-950/70 text-sf-text-secondary hover:border-sf-dark-500 hover:text-sf-text-primary'
-                  }`}
+                  aria-current={selected ? 'step' : undefined}
+                  className="group flex w-24 flex-col items-center gap-2 disabled:cursor-not-allowed md:w-[120px]"
                 >
-                  <div className="text-[10px] uppercase text-sf-text-muted">Step {entry.number}</div>
-                  <div className="mt-1 text-xs font-semibold">{entry.label}</div>
+                  <span className={`flex h-10 w-10 items-center justify-center rounded-full border text-sm font-semibold transition-colors ${
+                    selected
+                      ? 'dh-step-now'
+                      : done
+                        ? 'dh-step-done'
+                        : disabled
+                          ? 'border-sf-dark-700 text-sf-text-muted/50'
+                          : 'border-sf-dark-500 text-sf-text-secondary group-hover:border-[#9D86FF]/70 group-hover:text-sf-text-primary'
+                  }`}>
+                    {done ? <Check className="h-5 w-5" aria-label="Done" /> : entry.number}
+                  </span>
+                  <span className={`text-sm ${selected ? 'font-semibold text-sf-text-primary' : disabled ? 'text-sf-text-muted/50' : 'text-sf-text-secondary group-hover:text-sf-text-primary'}`}>{entry.label}</span>
                 </button>
-              )
-            })}
-          </div>
+              </Fragment>
+            )
+          })}
+        </nav>
         </div>
 
         <div className="rounded-xl border border-sf-dark-700 bg-sf-dark-950/60 p-4 md:p-5">
           {stepRenderer()}
         </div>
       </div>
+      {/* In view from every step, so a batch can be followed while looking elsewhere. */}
+      {renderCloudKeyframes()}
       {renderMediaPreviewModal()}
       {renderReplaceKeyframeModal()}
       {renderReplaceVideoModal()}
-    </>
+    </div>
   )
 }

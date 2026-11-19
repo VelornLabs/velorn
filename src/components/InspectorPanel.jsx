@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo, useContext } from 'react'
+import { createClipSpeedGesture } from '../utils/clipSpeedGesture.mjs'
 import { 
   Move, RotateCw, Maximize2, Clock, Layers,
   ChevronDown, ChevronRight, ChevronLeft, Sparkles,
@@ -38,6 +39,8 @@ import {
   TONAL_ADJUSTMENT_GROUP_KEYS,
 } from '../utils/adjustments'
 import { clearDiskCacheUrl } from './VideoLayerRenderer'
+import { useTimelineFields } from '../hooks/useTimelineFields'
+import { useDisplayPlayhead } from '../hooks/useDisplayPlayhead'
 import EffectsStack from './effects/EffectsStack'
 import ColorWheels from './ColorWheels'
 import { AudioVolumeEnvelopeInspector, getSingleAudioEnvelopeTarget } from './AudioVolumeEnvelope'
@@ -514,6 +517,8 @@ function DraggableNumberInput({ inspectorProperty, value, onChange, onCommit, mi
  * Keyframe button component - shows diamond icon that can be clicked to toggle keyframes
  * Yellow = keyframe at current time, Gray = no keyframe, Blue outline = property has keyframes
  */
+const KEYFRAME_BUTTON_TIMELINE_FIELDS = ['toggleKeyframe', 'goToNextKeyframe', 'goToPrevKeyframe', 'timelineFps']
+
 function KeyframeButton({ clipId, property, clip, playheadPosition }) {
   const multiSelection = useContext(InspectorSelectionContext)
   const {
@@ -521,7 +526,7 @@ function KeyframeButton({ clipId, property, clip, playheadPosition }) {
     goToNextKeyframe,
     goToPrevKeyframe,
     timelineFps,
-  } = useTimelineStore()
+  } = useTimelineFields(KEYFRAME_BUTTON_TIMELINE_FIELDS)
 
   // Calculate clip-relative time
   const clipTime = playheadPosition - (clip?.startTime || 0)
@@ -601,7 +606,21 @@ function KeyframeButton({ clipId, property, clip, playheadPosition }) {
   )
 }
 
-function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, onToggleFullHeight, fullHeightDisabled = false }) {
+const INSPECTOR_TIMELINE_FIELDS = [
+  'selectedClipIds', 'selectedTransitionId', 'clips', 'tracks', 'transitions', 'updateClipTransform',
+  'updateClipCompositeMode', 'updateClipTrackMatte', 'updateClipAdjustments', 'updateClipShapeMask',
+  'maskDrawActive', 'setMaskDrawActive', 'setClipBypass', 'resetClipTransform', 'updateTextProperties',
+  'updateShapeProperties', 'applyTextAnimationPreset', 'clearTextAnimationPreset', 'removeClip',
+  'resizeClip', 'updateClipSpeed', 'updateClipReverse', 'updateClipFrameSampling',
+  'updateAudioClipProperties', 'toggleKeyframe', 'setKeyframe', 'removeKeyframe', 'goToNextKeyframe',
+  'goToPrevKeyframe', 'saveToHistory', 'addEffect', 'removeEffect', 'updateEffect', 'toggleEffect',
+  'reorderEffect', 'addMaskEffect', 'getClipEffects', 'updateTransition', 'setTransitionAlignment',
+  'removeTransition', 'getMaxTransitionDurationForAlignment', 'getMaxEdgeTransitionDuration',
+  'lockSyncClips', 'unlockSyncLockedClips', 'setCacheStatus', 'setCacheUrl', 'clearClipCache',
+  'maskPickerRequest', 'clearMaskPickerRequest', 'textEditRequest', 'clearTextEditRequest',
+]
+
+function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, onToggleFullHeight, fullHeightDisabled = false, embedded = false }) {
   const { t } = useI18n()
   const [clipInfoMenuOpen, setClipInfoMenuOpen] = useState(false)
   const [expandedSections, setExpandedSections] = useState(() => {
@@ -652,14 +671,14 @@ function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, on
   })
   const textContentInputRef = useRef(null)
   
-  // Get selected clip from timeline store
+  // Get selected clip from timeline store. The playhead is not in this slice:
+  // it is written every animation frame during playback (see useDisplayPlayhead).
   const { 
     selectedClipIds, 
     selectedTransitionId,
     clips, 
     tracks,
     transitions,
-    playheadPosition,
     updateClipTransform,
     updateClipCompositeMode,
     updateClipTrackMatte,
@@ -708,7 +727,8 @@ function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, on
     clearMaskPickerRequest,
     textEditRequest,
     clearTextEditRequest,
-  } = useTimelineStore()
+  } = useTimelineFields(INSPECTOR_TIMELINE_FIELDS)
+  const playheadPosition = useDisplayPlayhead()
   
   // Get assets store functions (needed for render cache)
   const { assets, getAssetById, getAllMasks, updateAsset } = useAssetsStore()
@@ -761,6 +781,21 @@ function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, on
   const isMultiSelection = orderedSelectedClips.length > 1 && !linkedInspectorPair
   const multiSelection = useMemo(() => getMultiClipSelection(clips, tracks, selectedClipIds), [clips, tracks, selectedClipIds])
   const batchSessionRef = useRef(null)
+  const speedGesture = useMemo(() => createClipSpeedGesture(useTimelineStore), [])
+  const speedTimelineSession = useTimelineStore(state => state.timelineSessionId)
+  useEffect(() => {
+    speedGesture.end()
+    const end = () => speedGesture.end()
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
+    window.addEventListener('blur', end)
+    return () => {
+      end()
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
+      window.removeEventListener('blur', end)
+    }
+  }, [speedGesture, selectionSignature, speedTimelineSession])
   const [batchError, setBatchError] = useState('')
   const endBatchGesture = useCallback(() => { batchSessionRef.current = null }, [])
   const applyBatchRequest = useCallback((request, keepSessionOpen = false, effects = false) => {
@@ -4265,8 +4300,10 @@ function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, on
                       max="1"
                       step="0.001"
                       value={speedToSliderPosition(selectedClip.speed)}
-                      onChange={(e) => updateClipSpeed(selectedClip.id, sliderPositionToSpeed(parseFloat(e.target.value)), false)}
-                      onMouseUp={(e) => updateClipSpeed(selectedClip.id, sliderPositionToSpeed(parseFloat(e.target.value)), true)}
+                      aria-label="Playback speed slider"
+                      onChange={(e) => speedGesture.apply(selectedClip.id, sliderPositionToSpeed(parseFloat(e.target.value)))}
+                      onBlur={() => speedGesture.end()}
+                      onKeyUp={() => speedGesture.end()}
                       className="flex-1"
                     />
                     <input
@@ -4275,8 +4312,9 @@ function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, on
                       max={CLIP_SPEED_MAX}
                       step="0.01"
                       value={(Number.isFinite(Number(selectedClip.speed)) ? Number(selectedClip.speed) : 1).toFixed(2)}
-                      onChange={(e) => updateClipSpeed(selectedClip.id, parseFloat(e.target.value) || 1, false)}
-                      onBlur={(e) => updateClipSpeed(selectedClip.id, parseFloat(e.target.value) || 1, true)}
+                      aria-label="Playback speed"
+                      onChange={(e) => speedGesture.apply(selectedClip.id, parseFloat(e.target.value) || 1)}
+                      onBlur={() => speedGesture.end()}
                       className="w-16 bg-sf-dark-700 border border-sf-dark-600 rounded px-2 py-1 text-xs text-sf-text-primary focus:outline-none focus:border-sf-accent"
                     />
                     <span className="text-[9px] text-sf-text-muted">x</span>
@@ -4288,7 +4326,7 @@ function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, on
                       return (
                         <button
                           key={preset}
-                          onClick={() => updateClipSpeed(selectedClip.id, preset, true)}
+                          onClick={() => speedGesture.apply(selectedClip.id, preset, false)}
                           className={`px-1.5 py-0.5 rounded text-[9px] border transition-colors ${
                             isActive
                               ? 'bg-sf-accent/20 border-sf-accent text-sf-accent'
@@ -7003,7 +7041,7 @@ function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, on
       )}
       
       {/* Icon Toolbar - Always Visible (on the right edge) */}
-      <div className="w-12 flex-shrink-0 bg-sf-dark-950 border-l border-sf-dark-700 flex flex-col">
+      {!embedded && <div className="w-12 flex-shrink-0 bg-sf-dark-950 border-l border-sf-dark-700 flex flex-col">
         {/* Inspector Icon */}
         <div className="flex-1 flex flex-col pt-2">
           <button
@@ -7065,7 +7103,7 @@ function InspectorPanel({ isExpanded, onToggleExpanded, isFullHeight = false, on
             )}
           </button>
         </div>
-      </div>
+      </div>}
     </div>
   )
 }

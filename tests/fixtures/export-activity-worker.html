@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Velorn synthetic export activity worker</title>
+<script>
+  window.fixture = { job: null, cancelled: false }
+  window.electronAPI.onExportCancel(() => {
+    window.fixture.cancelled = true
+    if (window.fixture.job) window.electronAPI.sendExportError('Export cancelled')
+  })
+  window.electronAPI.onExportJob(job => {
+    window.fixture.job = job
+    window.electronAPI.sendExportProgress({ progress: 25, stage: 'synthetic-ipc-test' })
+  })
+  // The fixture triggers the real ready IPC explicitly so early-cancellation
+  // coverage is deterministic even on a loaded CI host. No external media loads.
+  window.fixture.sendReady = () => window.electronAPI.sendExportWorkerReady()
+</script>

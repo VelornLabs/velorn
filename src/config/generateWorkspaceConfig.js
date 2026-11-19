@@ -61,7 +61,8 @@ export const WORKFLOWS = {
     { id: 'longcat-image-edit', label: 'LongCat Image Edit', needsImage: true, description: 'Edit image with local LongCat' },
   ],
   audio: [
-    { id: 'music-gen', label: 'Music Generation', needsImage: false, description: 'Generate music from tags and lyrics' },
+    { id: 'music-gen-yue2', label: 'Music Generation (YuE2)', needsImage: false, description: 'Generate local songs from style and lyrics with YuE2' },
+    { id: 'music-gen', label: 'Music Generation (ACE-Step)', needsImage: false, description: 'Generate music from tags and lyrics with ACE-Step' },
     { id: 'sonilo-v2m', label: 'Video to Music (Sonilo)', needsImage: true, description: 'Cloud video-to-music generation with Sonilo' },
   ],
 }
@@ -127,17 +128,15 @@ export const CUSTOM_MUSIC_VIDEO_WORKFLOW_ID = 'custom-music-video'
 
 export const YOLO_MUSIC_KEYFRAME_WORKFLOW_OPTIONS = Object.freeze([
   {
-    id: 'image-edit',
-    label: 'Qwen Image Edit',
+    id: 'flux2-klein',
+    label: 'FLUX.2 klein',
     runtimeLabel: 'Local',
-    description: 'Fully local keyframes using Qwen Image Edit 2509. Uses the resolved cast/reference image as the edit source.',
+    description: 'Light and fast local keyframes. Keeps the cast from their pictures and also makes shots with nobody in them.',
   },
-  {
-    id: 'nano-banana-2',
-    label: 'Nano Banana 2',
-    runtimeLabel: 'Cloud',
-    description: 'Cloud keyframes with stronger reference-image and identity consistency.',
-  },
+  // Qwen Image Edit was offered here until 2026-11-12. A project that had it
+  // chosen falls back to FLUX.2 klein.
+  // Cloud keyframes now go through Comfy Router (the "Pictures are made with"
+  // choice in the Director), not through a ComfyUI cloud node.
   {
     id: CUSTOM_MUSIC_KEYFRAME_WORKFLOW_ID,
     label: 'Custom Workflow',
@@ -147,6 +146,15 @@ export const YOLO_MUSIC_KEYFRAME_WORKFLOW_OPTIONS = Object.freeze([
 ])
 
 export const YOLO_MUSIC_VIDEO_WORKFLOW_OPTIONS = Object.freeze([
+  {
+    id: 'minimax-h3-local-music',
+    label: 'MiniMax H3',
+    runtimeLabel: 'Local',
+    description: 'Best lip sync. Starts from the keyframe and follows the song. Needs a strong graphics card.',
+  },
+  // Cloud video is parked (2026-11-11): no cloud model gave both movement and
+  // lip sync that stays on the song. The H3 Lip Sync and Reference code is kept
+  // but not offered. See docs/DIRECTOR_DIRECTION.md.
   {
     id: MUSIC_VIDEO_SHOT_WORKFLOW_ID,
     label: 'LTX 2.3 Music',
@@ -332,6 +340,7 @@ export const YOLO_VIDEO_WORKFLOW_TARGET_OPTIONS = Object.freeze([
 
 const WORKFLOW_DISPLAY_LABELS = Object.freeze({
   'z-image-turbo': 'Z-Image Turbo',
+  'flux2-klein': 'FLUX.2 klein',
   'image-edit': 'Qwen Image Edit 2509',
   'nano-banana-2': 'Nano Banana 2 Image Edit (Cloud)',
   'wan22-i2v': 'WAN 2.2',
@@ -343,6 +352,7 @@ const WORKFLOW_DISPLAY_LABELS = Object.freeze({
   [SHORT_FILM_DIALOGUE_VIDEO_WORKFLOW_ID]: 'Short Film Dialogue (LTX 2.3)',
   'frame-interpolation': 'Frame Interpolation',
   'kling-o3-i2v': 'Kling O3 Omni',
+  'minimax-h3-lip-sync': 'MiniMax H3 Lip Sync (cloud)',
   'grok-video-i2v': 'Grok Imagine Video',
   'vidu-q2-i2v': 'Vidu Q2',
   'seedance2-t2v': 'Seedance 2.0 Text to Video',
@@ -350,6 +360,7 @@ const WORKFLOW_DISPLAY_LABELS = Object.freeze({
   'seedance2-flf2v': 'Seedance 2.0 First/Last Frame',
   'seedance2-r2v': 'Seedance 2.0 Reference to Video',
   [TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID]: 'Topaz Video Upscale',
+  'minimax-h3-local-music': 'MiniMax H3 (local)',
   [MUSIC_VIDEO_SHOT_WORKFLOW_ID]: 'LTX 2.3 Music Video (Image + Audio)',
   [CUSTOM_GENERATE_IMAGE_WORKFLOW_ID]: 'Custom Image Workflow',
   [CUSTOM_GENERATE_VIDEO_WORKFLOW_ID]: 'Custom Video Workflow',
@@ -369,6 +380,8 @@ const WORKFLOW_DISPLAY_LABELS = Object.freeze({
   'longcat-image-edit': 'LongCat Image Edit',
   'google-gemini-flash-lite': 'Prompt Helper (Gemini 3.1 Flash Lite)',
   'sonilo-v2m': 'Sonilo Video to Music',
+  'music-gen-yue2': 'Music Generation (YuE2)',
+  'music-gen': 'Music Generation (ACE-Step)',
   'seedream-5-lite-image-edit': 'Seedream 5.0 Lite',
   'image-edit-model-product': 'Qwen Image Edit 2509 (Model + Product)',
   'mask-gen': 'Mask Generation',
@@ -404,6 +417,12 @@ export const HARDWARE_TIERS = Object.freeze({
 })
 
 const WORKFLOW_HARDWARE = Object.freeze({
+  'flux2-klein': {
+    tierId: 'lite',
+    runtime: 'local',
+    minimumVramGb: 8,
+    recommendedVramGb: 12,
+  },
   'z-image-turbo': {
     tierId: 'lite',
     runtime: 'local',
@@ -439,6 +458,11 @@ const WORKFLOW_HARDWARE = Object.freeze({
     runtime: 'local',
     minimumVramGb: 4,
     recommendedVramGb: 8,
+  },
+  // No cross-platform minimum is claimed until the bundled INT8 model is
+  // measured on more than the verified local NVIDIA configuration.
+  'music-gen-yue2': {
+    runtime: 'local',
   },
   'image-edit': {
     tierId: 'standard',
@@ -530,6 +554,10 @@ const WORKFLOW_HARDWARE = Object.freeze({
     tierId: 'cloud',
     runtime: 'cloud',
   },
+  'minimax-h3-lip-sync': {
+    tierId: 'cloud',
+    runtime: 'cloud',
+  },
   'grok-video-i2v': {
     tierId: 'cloud',
     runtime: 'cloud',
@@ -557,6 +585,12 @@ const WORKFLOW_HARDWARE = Object.freeze({
   [TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID]: {
     tierId: 'cloud',
     runtime: 'cloud',
+  },
+  'minimax-h3-local-music': {
+    tierId: 'pro',
+    runtime: 'local',
+    minimumVramGb: 24,
+    recommendedVramGb: 32,
   },
   [MUSIC_VIDEO_SHOT_WORKFLOW_ID]: {
     tierId: 'pro',

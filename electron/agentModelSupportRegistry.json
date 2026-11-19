@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "revision": "2026-10-01-local-qualification-foundation",
+  "localTiers": [
+    { "id": "small", "label": "Light", "description": "Prioritize responsiveness and memory available for generation." },
+    { "id": "medium", "label": "Balanced", "description": "An everyday editing candidate, subject to the same acceptance tests." },
+    { "id": "large", "label": "Advanced", "description": "A higher-memory candidate, recommended only when tests establish a benefit." }
+  ],
+  "providers": [
+    { "id": "codex", "availability": "available", "qualification": "separate-integration" },
+    { "id": "lmstudio", "availability": "available", "qualification": "exact-local-configuration" },
+    { "id": "claude", "availability": "planned", "qualification": "not-integrated" }
+  ],
+  "localProfiles": []
+}

@@ -1,0 +1,20 @@
+const assert=require('node:assert/strict')
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE_PATH||'playwright')
+;(async()=>{
+ const browser=await chromium.launch({executablePath:'/usr/bin/google-chrome',headless:true})
+ try {
+  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message))
+  await page.addInitScript(()=>{window.__connectedAgentFixtureFullAccessRemembered=true;window.__connectedAgentFixtureRestoreFailures=2})
+  await page.goto((process.env.VELORN_TEST_URL||'http://127.0.0.1:5209')+'/tests/fixtures/connected-agent.html?strict=1')
+  await page.waitForFunction(()=>window.connectedAgentTest?.snapshot().fullAccessGrant?.restoreOnly===true)
+  let snapshot=await page.evaluate(()=>window.connectedAgentTest.snapshot())
+  assert.equal(snapshot.calls.filter(call=>call.method==='setFullAccess'&&call.enabled).length,3)
+  assert.ok(snapshot.calls.filter(call=>call.method==='setFullAccess'&&call.enabled).every(call=>call.restoreOnly===true))
+  await page.reload()
+  await page.waitForFunction(()=>window.connectedAgentTest?.snapshot().fullAccessGrant?.restoreOnly===true)
+  snapshot=await page.evaluate(()=>window.connectedAgentTest.snapshot())
+  assert.equal(snapshot.calls.filter(call=>call.method==='setFullAccess'&&call.enabled).length,3)
+  assert.deepEqual(errors,[])
+  console.log('PASS: remembered Full access restores after transient startup errors and renderer restart without confirmation or tool replay.')
+ }finally{await browser.close()}
+})().catch(error=>{console.error(error);process.exitCode=1})

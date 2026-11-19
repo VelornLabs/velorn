@@ -1,0 +1,65 @@
+const string = description => ({ type: 'string', description })
+const number = description => ({ type: 'number', description })
+const boolean = description => ({ type: 'boolean', description })
+const enumeration = values => ({ type: 'string', enum: values })
+const previewOnly = { type: 'boolean', default: true, description: 'Defaults to true: plan only, no files/settings/jobs changed. Explicit false applies.' }
+const settings = {
+  format: enumeration(['mp4', 'webm', 'prores', 'audio', 'png-seq', 'gif']),
+  videoCodec: enumeration(['h264', 'h265', 'vp9', 'prores']), audioCodec: enumeration(['aac', 'opus', 'wav', 'mp3']),
+  proresProfile: enumeration(['0', '1', '2', '3', '4']),
+  useHardwareEncoder: boolean('Request hardware encoding where supported, with the existing software fallback.'),
+  nvencPreset: enumeration(['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7']),
+  preset: enumeration(['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow']),
+  qualityMode: enumeration(['crf', 'bitrate']), crf: number('CRF 0–51 for H.264/H.265; up to 63 for VP9.'),
+  bitrateKbps: number('100–200000 kbps.'), keyframeMode: enumeration(['auto', 'manual']), keyframeInterval: number('Positive frame interval for manual keyframes.'),
+  resolution: string('project, custom, youtube-hd, youtube-uhd, timeline-half/third/quarter, UI resolution name, or legacy 1080p/720p/square_720/vertical_720 etc.'),
+  customWidth: number('Custom width in pixels.'), customHeight: number('Custom height in pixels.'),
+  fps: { oneOf: [{ type: 'number', minimum: 1, maximum: 240 }, { type: 'string', enum: ['project'] }] },
+  includeAudio: boolean('Audio exports always include audio; PNG/GIF never do.'),
+  audioBitrateKbps: number('32–512 kbps.'), audioSampleRate: { type: 'integer', enum: [44100, 48000] }, audioChannels: { type: 'integer', enum: [1, 2] },
+  normalizeAudio: boolean('Use existing loudness normalization.'), loudnessTarget: { type: 'number', enum: [-14, -16, -23] },
+  useProxyMedia: boolean('Use ready proxies for review renders.'), useDirectFramePipe: boolean('Use the normal direct frame export pipe.'),
+  transparent: boolean('Alpha output is supported by VP9 WebM or ProRes 4444 only.'),
+  postProcessUpscale: enumeration(['none', 'rtx-4k']), rtxUpscaleQuality: enumeration(['LOW', 'MEDIUM', 'HIGH', 'ULTRA']),
+}
+const exportProperties = { ...settings,
+  exportPlanToken: string('Opaque token from a preview’s suggested apply payload. Freezes reviewed settings and output paths for 15 minutes; one use. Preserve the original request arguments.'),
+  presetId: string('Built-in delivery or custom preset ID from list_export_presets. Overrides are validated.'),
+  target: string('Backward-compatible h264_hd, h264_720p, h264_square_720, h264_vertical_720, h264_project, h264_review_proxy and their aliases.'),
+  overrides: { type: 'object', properties: settings, additionalProperties: false },
+  filename: string('Base filename. A unique suffix is added in project/renders unless outputPath is explicit.'),
+  outputPath: string('Absolute new output file (or new PNG sequence folder). Existing paths are never overwritten.'),
+  width: number('Legacy alias for customWidth; selects custom resolution.'), height: number('Legacy alias for customHeight; selects custom resolution.'),
+  aspectRatio: enumeration(['16:9', '1:1', '1x1', 'square', '9:16', '9x16', 'vertical']),
+  deliveryFraming: enumeration(['fit', 'fill', 'center_crop']),
+  range: enumeration(['full', 'inout', 'custom']),
+  rangeStart: number('Custom start in seconds.'), rangeEnd: number('Custom end in seconds (exclusive).'),
+  startSeconds: number('Legacy alias for rangeStart.'), endSeconds: number('Legacy alias for rangeEnd.'), previewOnly,
+}
+const tool = (name, description, properties = {}, required = []) => ({ name, description,
+  inputSchema: { type: 'object', properties, ...(required.length ? { required } : {}) } })
+const tools = [
+  tool('list_export_presets', 'List the real Export workspace delivery presets and local custom preset library. Read-only.'),
+  tool('save_export_preset', 'Preview/save a reusable custom Export preset using the same validated local library as the UI. Does not store output paths, ranges, or project data.',
+    { name: string('Unique preset name, up to 64 characters.'), settings: { type: 'object', properties: settings, required: ['format'], additionalProperties: false }, previewOnly }, ['name', 'settings']),
+  tool('rename_export_preset', 'Preview/rename a custom Export preset. Built-in presets are read-only. Carry expectedPreset from preview to reject stale changes.',
+    { id: string('Custom preset ID.'), name: string('Unique new name.'), expectedPreset: { type: 'object' }, previewOnly }, ['id', 'name']),
+  tool('delete_export_preset', 'Preview/delete one custom Export preset. Carry expectedPreset from preview. Does not delete rendered files.',
+    { id: string('Custom preset ID.'), expectedPreset: { type: 'object' }, previewOnly }, ['id']),
+  tool('check_export_readiness', 'Read-only checks from the actual Export workspace: used media, masks, optical-flow caches, compound contents, picture gaps, and audible audio. Warnings are advisory; intentional black/silence is not a blocker.', exportProperties),
+  tool('export_timeline', 'Preview or start a tracked export with all Export workspace formats and presets. Defaults to preview only. Full/In-Out/custom range; freezes authored timeline and mixer state. Use get_export_status until completed, then inspect_export_file. Never overwrites an existing destination.', exportProperties),
+  tool('export_delivery_batch', 'Preview or queue up to 12 exports of one frozen authored snapshot. Starts the next target only after native completion of the previous target. Returns batchId promptly, not a claim of completed renders. Queue survives project edits but not renderer/app restart. Never interrupts or auto-retries a busy UI export.',
+    { ...exportProperties, targets: { type: 'array', minItems: 1, maxItems: 12, items: { oneOf: [{ type: 'string' }, { type: 'object', properties: exportProperties }] } },
+      presets: { type: 'array', items: { type: 'string' }, description: 'Legacy alias for targets.' },
+      filenamePrefix: string('Base prefix for unique per-target names.'), limit: { type: 'integer', minimum: 1, maximum: 12 }, stopOnError: { type: 'boolean', default: true } }),
+  tool('get_export_status', 'Read native export progress/completion/failure and renderer-owned batch queues. Omit IDs to list recent jobs including UI exports (read-only). Native history lasts until app exit; pending batches are renderer-session-local.',
+    { jobId: string('Specific native job.'), batchId: string('Specific MCP batch.') }),
+  tool('cancel_export', 'Preview/cancel only an explicit MCP-owned export job. Cannot cancel unrelated UI jobs. Cancellation is requested, not complete, until terminal job status confirms it.', { jobId: string('Exact MCP-owned job ID.'), previewOnly }, ['jobId']),
+  tool('control_export_batch', 'Preview/pause-after-current, resume, or cancel an MCP-owned batch. Cancel stops pending targets and requests cancellation of this batch’s running job only. Does not manage the UI Export queue.',
+    { batchId: string('Exact batch ID.'), operation: enumeration(['pause', 'resume', 'cancel']), previewOnly }, ['batchId', 'operation']),
+  tool('inspect_export_file', 'Read export file metadata using Velorn’s packaged ffprobe (not a system PATH dependency). Supports explicit filePath or tracked jobId; without either selects the latest completed tracked export for the open project. Metadata checks cannot certify perceptual quality. PNG sequences require individual-frame paths.',
+    { filePath: string('Absolute rendered media file.'), path: string('Alias for filePath.'), outputPath: string('Alias for filePath.'), jobId: string('Native export job ID.'),
+      width: number('Expected width.'), height: number('Expected height.'), fps: number('Expected FPS.'), videoCodec: string('Expected codec.'), durationSeconds: number('Expected duration.'), includeAudio: boolean('Expected audio presence.'),
+      expectedWidth: number('Alias for width.'), expectedHeight: number('Alias for height.'), expectedFps: number('Alias for fps.'), expectedVideoCodec: string('Alias for videoCodec.'), expectedDurationSeconds: number('Alias for durationSeconds.') }),
+]
+module.exports = { tools, writableTools: ['save_export_preset', 'rename_export_preset', 'delete_export_preset', 'export_timeline', 'export_delivery_batch', 'cancel_export', 'control_export_batch'] }

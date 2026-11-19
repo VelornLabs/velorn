@@ -57,7 +57,7 @@ function harness(patch = {}) {
       update(stopPlayAroundPatch(state))
       return true
     }, ...patch }
-  const store = () => state
+  const store = selector => (typeof selector === 'function' ? selector(state) : state)
   store.getState = () => state
   store.subscribe = callback => { subscribers.add(callback); return () => subscribers.delete(callback) }
   const react = { useRef: value => ({ current: value }), useCallback: callback => callback,

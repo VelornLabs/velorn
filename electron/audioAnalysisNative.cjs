@@ -95,7 +95,7 @@ function createAudioAnalysisService({
 function registerAudioAnalysisHandlers({ ipcMain, app, ...options }) {
   const service = createAudioAnalysisService(options)
   ipcMain.handle('media:analyzeAudio', (event, request) => service.analyze(request, event.sender))
-  app?.on('before-quit', () => service.cancelAll())
+  app?.on('will-quit', () => service.cancelAll())
   return service
 }
 

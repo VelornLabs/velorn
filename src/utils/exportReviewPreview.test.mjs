@@ -102,7 +102,7 @@ function clockHarness(options = {}, patch = {}) {
     cancelPlayAround: () => { cancelCalls += 1 }, failPlaybackJump: (token, reason) => {
       failures.push({ token, reason }); update({ playbackJump: null, isPlaying: false })
     }, ...patch }
-  const store = () => state
+  const store = selector => (typeof selector === 'function' ? selector(state) : state)
   store.getState = () => state
   store.subscribe = callback => { subscribers.add(callback); return () => subscribers.delete(callback) }
   const module = { exports: {} }

@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "pricesAsOf": "2026-11-09",
+  "creditsPerUsd": 211,
+  "models": [
+    {
+      "id": "seedance-2-0-mini", "kind": "video", "name": "Seedance 2.0 Mini",
+      "note": "Lowest cost. Good for trying ideas.",
+      "model": "byteplus/dreamina-seedance-2-0-mini", "format": "seedance",
+      "refusalCharged": "no", "quote": "firm", "priceSource": "quote",
+      "seconds": { "min": 4, "max": 15, "offered": [5, 10] },
+      "usdPerSecond": { "720p": 0.10856 }
+    },
+    {
+      "id": "seedance-2-0-fast", "kind": "video", "name": "Seedance 2.0 Fast",
+      "note": "A step up from Mini, still quick.",
+      "model": "byteplus/dreamina-seedance-2-0-fast-260128", "format": "seedance",
+      "refusalCharged": "no", "quote": "firm", "priceSource": "quote",
+      "seconds": { "min": 4, "max": 15, "offered": [5, 10] },
+      "usdPerSecond": { "720p": 0.17369 }
+    },
+    {
+      "id": "seedance-2-0", "kind": "video", "name": "Seedance 2.0",
+      "note": "Dependable quality for finished shots.",
+      "model": "byteplus/dreamina-seedance-2-0-260128", "format": "seedance",
+      "refusalCharged": "no", "quote": "firm", "priceSource": "quote",
+      "seconds": { "min": 4, "max": 15, "offered": [5, 10] },
+      "usdPerSecond": { "720p": 0.21712 }
+    },
+    {
+      "id": "seedance-2-5", "kind": "video", "name": "Seedance 2.5", "default": true,
+      "note": "Best quality. The newest model.",
+      "model": "byteplus/dreamina-seedance-2-5-260628", "format": "seedance",
+      "refusalCharged": "no", "quote": "firm", "priceSource": "quote",
+      "seconds": { "min": 4, "max": 30, "offered": [5, 10] },
+      "usdPerSecond": { "720p": 0.33188, "1080p": 0.81651 }
+    },
+    {
+      "id": "nano-banana-2-1", "kind": "image", "name": "Nano Banana 2.1", "default": true,
+      "note": "Newest from Google. A strong all-rounder.",
+      "model": "vertexai/gemini-nano-banana-2.1", "format": "gemini-image",
+      "refusalCharged": "yes", "quote": "range", "priceSource": "paid-test",
+      "usdPerImage": { "1K": 0.055, "2K": 0.0785, "4K": null }
+    },
+    {
+      "id": "nano-banana-pro", "kind": "image", "name": "Nano Banana Pro",
+      "note": "Google's best. Detailed edits and text.",
+      "model": "vertexai/gemini-3-pro-image", "format": "gemini-image",
+      "refusalCharged": "yes", "quote": "range", "priceSource": "paid-test",
+      "usdPerImage": { "1K": 0.165, "2K": null, "4K": null }
+    },
+    {
+      "id": "nano-banana-2", "kind": "image", "name": "Nano Banana 2",
+      "note": "Follows instructions closely.",
+      "model": "vertexai/gemini-3.1-flash-image", "format": "gemini-image",
+      "refusalCharged": "yes", "quote": "range", "priceSource": "paid-test",
+      "usdPerImage": { "1K": 0.08, "2K": null, "4K": null }
+    },
+    {
+      "id": "seedream-5-0-pro", "kind": "image", "name": "Seedream 5.0 Pro",
+      "note": "Rich detail. Blends several pictures well.",
+      "model": "byteplus/seedream-5-0-pro-260628", "format": "seedream",
+      "refusalCharged": "yes", "quote": "firm", "priceSource": "quote",
+      "usdPerImage": { "1K": 0.045, "2K": 0.09 }
+    },
+    {
+      "id": "seedream-5-0-flash", "kind": "image", "name": "Seedream 5.0 Flash",
+      "note": "Lowest cost. Good for trying ideas.",
+      "model": "byteplus/seedream-5-0-flash-260915", "format": "seedream",
+      "refusalCharged": "yes", "quote": "firm", "priceSource": "quote",
+      "usdPerImage": { "1K": 0.02574, "2K": 0.02574 }
+    },
+    {
+      "id": "seedream-4-0", "kind": "image", "name": "Seedream 4.0",
+      "note": "Sharp detail at a low cost.",
+      "model": "byteplus/seedream-4-0-250828", "format": "seedream",
+      "refusalCharged": "yes", "quote": "firm", "priceSource": "quote",
+      "usdPerImage": { "1K": 0.03, "2K": 0.03, "4K": 0.03 }
+    },
+    {
+      "id": "gpt-image-2-5", "kind": "image", "name": "GPT Image 2.5",
+      "note": "Good with layouts and lettering.",
+      "model": "openai/gpt-image-2.5-sunburst", "format": "gpt-image",
+      "refusalCharged": "unknown", "quote": "firm", "editQuote": false, "priceSource": "quote",
+      "usdPerImage": { "1K": 0.0193, "2K": 0.0387, "4K": 0.0376 }
+    },
+    {
+      "id": "flux-3-image", "kind": "image", "name": "FLUX 3 Image",
+      "note": "Natural, photographic look.",
+      "model": "bfl/flux-3-image", "format": "flux",
+      "refusalCharged": "no", "quote": "firm", "priceSource": "quote",
+      "usdPerImage": { "1K": 0.06864, "2K": 0.143, "4K": 0.86801 }
+    },
+    {
+      "id": "eleven-v4", "kind": "voice", "name": "Eleven V4", "default": true,
+      "note": "Most natural and expressive speech.",
+      "model": "elevenlabs/eleven_v4", "format": "eleven-dialogue", "delivery": "sync",
+      "refusalCharged": "unknown", "quote": "firm", "priceSource": "paid-test",
+      "characters": { "max": 3000 },
+      "usdPer1kCharacters": 0.1144
+    },
+    {
+      "id": "eleven-v4-turbo", "kind": "voice", "name": "Eleven V4 Turbo",
+      "note": "Half the cost and faster. Good for drafts.",
+      "model": "elevenlabs/eleven_v4_turbo", "format": "eleven-dialogue", "delivery": "sync",
+      "refusalCharged": "unknown", "quote": "firm", "priceSource": "paid-test",
+      "characters": { "max": 3000 },
+      "usdPer1kCharacters": 0.0572
+    },
+    {
+      "id": "eleven-sfx-v2", "kind": "sound", "name": "Eleven Sound Effects", "default": true,
+      "note": "Detailed effects and ambience, up to 30 seconds.",
+      "model": "elevenlabs/eleven_sfx_v2", "format": "eleven-sfx", "delivery": "sync",
+      "refusalCharged": "unknown", "quote": "firm", "priceSource": "paid-test",
+      "seconds": { "min": 1, "max": 30, "offered": [3, 5, 10, 20] },
+      "usdPerAudioSecond": 0.002334
+    },
+    {
+      "id": "pika-music", "kind": "music", "name": "Pika Music", "default": true,
+      "note": "Instrumental, or sung from your lyrics.",
+      "model": "pika/pika-music", "format": "pika-music", "delivery": "sync", "pending": true,
+      "refusalCharged": "unknown", "quote": "range", "priceSource": "list",
+      "seconds": { "min": 10, "max": 360, "offered": [30, 60, 120, 180] },
+      "lyrics": { "max": 3000 },
+      "usdPerAudioSecond": 0.0003575
+    }
+  ],
+  "voices": [
+    { "id": "rachel", "name": "Rachel", "note": "Calm, American", "voiceId": "21m00Tcm4TlvDq8ikWAM", "verified": true },
+    { "id": "george", "name": "George", "note": "Warm, British", "voiceId": "JBFqnCBsd6RMkjVDRZzb", "verified": true },
+    { "id": "sarah", "name": "Sarah", "note": "Soft, American", "voiceId": "EXAVITQu4vr4xnSDxMaL", "verified": true },
+    { "id": "brian", "name": "Brian", "note": "Deep, American", "voiceId": "nPczCjzI2devNBz1zQrb", "verified": true },
+    { "id": "alice", "name": "Alice", "note": "Confident, British", "voiceId": "Xb7hH8MSUJpSbSDYk0k2", "verified": true },
+    { "id": "daniel", "name": "Daniel", "note": "Newsreader, British", "voiceId": "onwK4e9ZLuTAKqWW03F9", "verified": true },
+    { "id": "lily", "name": "Lily", "note": "Gentle, British", "voiceId": "pFZP5JQG7iQjIQuC4Bku", "verified": true },
+    { "id": "charlie", "name": "Charlie", "note": "Easygoing, Australian", "voiceId": "IKne3meq5aSn9XLyUdCD", "verified": true },
+    { "id": "liam", "name": "Liam", "note": "Clear, American", "voiceId": "TX3LPaxmHKxFdv7VOQHJ", "verified": true },
+    { "id": "jessica", "name": "Jessica", "note": "Lively, American", "voiceId": "cgSgspJ2msm6clMCkdW9", "verified": true }
+  ]
+}

@@ -401,3 +401,13 @@ html[data-input-modality="pointer"] [role="button"]:focus {
 .inspector-tab-tinted:hover {
   color: color-mix(in srgb, var(--tab-hue) 70%, rgb(var(--sf-text-primary)));
 }
+
+/* While an export runs (class set by ExportProgressOverlay), freeze every
+   looping animation in this window. A repaint 60 times a second makes the
+   graphics card wait for the monitor each time, and the export's frames
+   queue behind those waits. */
+.velorn-export-busy *,
+.velorn-export-busy *::before,
+.velorn-export-busy *::after {
+  animation-play-state: paused !important;
+}

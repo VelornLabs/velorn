@@ -1,15 +1,19 @@
 import { useState, useRef, useEffect } from 'react'
-import { Settings, LogOut, Save, FolderOpen, Minus, Maximize2, BookOpen, ChevronDown } from 'lucide-react'
+import { Settings, LogOut, Save, FolderOpen, Minus, Maximize2, BookOpen, ChevronDown, Clapperboard } from 'lucide-react'
 import useTimelineStore from '../stores/timelineStore'
 import useProjectStore from '../stores/projectStore'
+import { useTimelineFields } from '../hooks/useTimelineFields'
 import { useI18n } from '../i18n/I18nContext'
 
-function BottomBar({ onOpenSettings, onOpenGettingStarted, projectName }) {
+// Undo availability is derived from these; nothing here follows the playhead.
+const BOTTOM_BAR_TIMELINE_FIELDS = ['undo', 'redo', 'canUndo', 'canRedo', 'history', 'historyIndex']
+
+function BottomBar({ onOpenSettings, onOpenGettingStarted, onOpenStoryboard, projectName }) {
   const { t } = useI18n()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
 
-  const { undo, redo, canUndo, canRedo } = useTimelineStore()
+  const { undo, redo, canUndo, canRedo } = useTimelineFields(BOTTOM_BAR_TIMELINE_FIELDS)
   const timelineHistoryLastChangedAt = useTimelineStore((state) => state.historyLastChangedAt)
   const {
     saveProject,
@@ -180,6 +184,16 @@ function BottomBar({ onOpenSettings, onOpenGettingStarted, projectName }) {
               {t('bottomBar.leave')}
             </button>
             <div className="h-px bg-sf-dark-600 my-0.5 mx-2" />
+            {onOpenStoryboard && <>
+              <button
+                onClick={() => { setMenuOpen(false); onOpenStoryboard() }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 transition-colors"
+              >
+                <Clapperboard className="w-3.5 h-3.5 text-sf-text-muted" />
+                {t('bottomBar.openStoryboard', undefined, 'Open storyboard')}
+              </button>
+              <div className="h-px bg-sf-dark-600 my-0.5 mx-2" />
+            </>}
             <button
               onClick={handleOpenGettingStarted}
               className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 transition-colors"

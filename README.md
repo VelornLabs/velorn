@@ -27,7 +27,7 @@ English · [Español](docs/i18n/README.es.md) · [简体中文](docs/i18n/README
 
 Velorn is an open-source desktop video editor and AI video workstation. It brings planning, generation, asset management, timeline editing, captions, effects, and export into one project-based app.
 
-Editing, captions, export, project management, and MCP editorial tools work without ComfyUI. All current generation features require a locally running ComfyUI instance.
+Editing, captions, export, project management, and MCP editorial tools work without ComfyUI. So do the **Visuals** and **Sound** tabs, which make pictures, video, voices and sound effects through Comfy Router with your own Comfy key. Local models and custom workflows run on a local ComfyUI instance.
 
 Use built-in local and cloud workflows, bring your own ComfyUI API workflow JSON, or install the bundled Velorn Bridge so a graph open in ComfyUI can be sent back into Velorn.
 
@@ -44,7 +44,7 @@ Use built-in local and cloud workflows, bring your own ComfyUI API workflow JSON
 - Editing generated clips with tracks, transitions, effects, captions, proxy/cache tools, and export.
 - Keeping generated media, prompts, workflow outputs, and timelines organized inside a project.
 
-For generation, Velorn is not a replacement for ComfyUI. It is the production layer around ComfyUI: plan the work, send jobs to ComfyUI, collect the outputs, and finish the edit.
+Velorn is not a replacement for ComfyUI. It is the production layer around generation: plan the work, send jobs to Comfy Router, a shared GPU or your own ComfyUI, collect the outputs, and finish the edit.
 
 <p align="center">
   <img src="docs/readme/create-workflows.png" alt="Velorn Create workspace with UGC, business ad, music video, and short film creators" />
@@ -66,6 +66,38 @@ Release assets include:
 Ignore GitHub's auto-generated source-code archives unless you plan to build Velorn from source.
 
 ## Main Features
+
+### Visuals
+
+Visuals makes pictures and video clips through Comfy Router. Paste your Comfy key once and pick a model. No ComfyUI is needed.
+
+- The price is shown before anything is charged, and the cost afterwards.
+- Several pictures from one click; a picture as the start of an edit or a clip.
+- Results are saved into the open project.
+
+### Sound
+
+Sound makes spoken voice and sound effects through Comfy Router, with the same key.
+
+- Every voice can be heard for free before you spend anything.
+- A finished sound goes to the timeline with one click.
+
+Visuals and Sound use Comfy credits. For local models, use the ComfyUI tab.
+
+### GPU sharing (Beta)
+
+Creators can lend their graphics card to each other when it is idle, for free.
+
+- Use a workflow someone shares: write a description, and the result is made on their computer and saved into your project.
+- Share your own: add a ComfyUI workflow you saved to Velorn, test it, and share it with the people you invite, or offer it to everyone after a review.
+- Shared workflows can make pictures, video and music.
+- Only the workflows an owner added run on that owner's computer. A sender provides a description and, where the workflow takes them, a picture, lyrics and a song length.
+
+This is experimental and off until you switch it on.
+
+### Velo
+
+Sign in to a Velorn account and Velo, the built-in assistant, can answer questions about your project and make edits for you. With Full access switched on, Velo can also run commands and work with files on Windows, macOS and Linux. Stop, or closing Velorn, ends everything a command started.
 
 ### Generate
 
@@ -226,7 +258,9 @@ Normal editing:
 
 Generation:
 
-- A separately installed local ComfyUI running on the same machine is required for all current generation workflows.
+- Visuals and Sound need only a Comfy key and Comfy credits. No ComfyUI.
+- GPU sharing needs a Velorn account. Using a shared GPU needs no ComfyUI; sharing your own needs ComfyUI with the workflow you share.
+- A separately installed local ComfyUI running on the same machine is required for local models, custom workflows and the Generate workflows.
 - Local workflows may require compatible hardware, models, and custom nodes.
 - Partner-node workflows require the appropriate Comfy.org credentials and credits.
 
@@ -244,7 +278,7 @@ Local workflow requirements vary by model. Some workflows can run on modest GPUs
 3. Create or open a project.
 4. Use `Velorn > Getting Started` from the bottom menu if you want the guided setup path.
 
-To use generation, configure your local ComfyUI instance in `Settings > ComfyUI Connection`. This step is optional for editing, captions, export, project management, and MCP editorial tools. If ComfyUI is running on a non-default port, update the endpoint in Settings and run the connection test.
+To make pictures, video or sound without ComfyUI, open Visuals or Sound and paste your Comfy key. To use local and custom workflows, configure your local ComfyUI instance in `Settings > ComfyUI Connection`. This step is optional for editing, captions, export, project management, and MCP editorial tools. If ComfyUI is running on a non-default port, update the endpoint in Settings and run the connection test.
 
 ## ComfyUI Setup Notes
 

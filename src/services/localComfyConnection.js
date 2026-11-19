@@ -11,6 +11,7 @@ let cachedPort = DEFAULT_COMFY_PORT
 let hydrated = false
 let hydrationPromise = null
 let connectionVersion = 0
+let connectionSaveQueue = Promise.resolve()
 
 function normalizePort(value) {
   const parsed = Number(value)
@@ -208,23 +209,35 @@ export async function hydrateLocalComfyConnection() {
   return hydrationPromise
 }
 
-export async function saveLocalComfyConnectionPort(input) {
+export function saveLocalComfyConnectionPort(input, { isCurrent } = {}) {
+  const operation = connectionSaveQueue.then(() => persistLocalComfyConnectionPort(input, isCurrent))
+  connectionSaveQueue = operation.catch(() => {})
+  return operation
+}
+
+async function persistLocalComfyConnectionPort(input, isCurrent) {
   const parsed = parseLocalComfyPortInput(input)
   if (!parsed.success) {
     return { success: false, error: parsed.error }
   }
 
+  const config = buildConnection(parsed.port)
+  // The guide may close while an earlier settings write holds the queue.
+  // This synchronous check is immediately before persistence, not enqueue.
+  if (isCurrent !== undefined) {
+    try {
+      if (typeof isCurrent !== 'function' || isCurrent() !== true) return { success: false, cancelled: true }
+    } catch { return { success: false, cancelled: true } }
+  }
   connectionVersion += 1
-  cachedPort = parsed.port
-  const config = getLocalComfyConnectionSync()
-  writeLocalStoragePort(config.port)
 
   try {
     if (typeof window !== 'undefined' && window?.electronAPI?.setSetting) {
-      await window.electronAPI.setSetting(COMFY_CONNECTION_SETTING_KEY, {
+      const result = await window.electronAPI.setSetting(COMFY_CONNECTION_SETTING_KEY, {
         host: config.host,
         port: config.port,
       })
+      if (result?.success === false) throw new Error(result.error || 'Could not save the ComfyUI connection.')
     }
   } catch (err) {
     return {
@@ -233,6 +246,10 @@ export async function saveLocalComfyConnectionPort(input) {
     }
   }
 
+  // Do not relabel an already-started IPC save as cancelled: it may have
+  // committed, and the shared cache/event must reflect that actual result.
+  cachedPort = config.port
+  writeLocalStoragePort(config.port)
   dispatchConnectionChanged(config)
   return { success: true, config }
 }
@@ -320,4 +337,3 @@ export async function checkLocalComfyConnection(options = {}) {
     clearTimeout(timer)
   }
 }
-

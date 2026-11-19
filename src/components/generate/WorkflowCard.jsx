@@ -11,20 +11,26 @@ export default function WorkflowCard({ workflow, selected = false, onSelect, sho
       ? 'bg-amber-400/15 text-amber-200 border-amber-300/25'
       : 'bg-emerald-400/15 text-emerald-200 border-emerald-300/25'
   const routeLabel = workflow.route === 'cloud' ? 'Cloud' : workflow.route === 'custom' ? 'Custom' : 'Local'
+  // Not ready yet: shown greyed out, marked "Coming soon", and it cannot be opened.
+  const comingSoon = workflow.comingSoon === true
 
   return (
     <button
       type="button"
-      onClick={() => onSelect?.(workflow)}
-      className={`group overflow-hidden rounded-xl border bg-sf-dark-900 text-left transition-all hover:-translate-y-0.5 hover:border-sf-dark-400 hover:shadow-lg hover:shadow-black/20 ${
-        selected ? 'border-sf-accent ring-1 ring-sf-accent/70' : 'border-sf-dark-700'
+      disabled={comingSoon}
+      aria-disabled={comingSoon}
+      onClick={() => { if (!comingSoon) onSelect?.(workflow) }}
+      className={`group overflow-hidden rounded-xl border bg-sf-dark-900 text-left transition-all ${
+        comingSoon ? 'cursor-not-allowed opacity-50 grayscale' : 'hover:-translate-y-0.5 hover:border-sf-dark-400 hover:shadow-lg hover:shadow-black/20'
+      } ${
+        selected && !comingSoon ? 'border-sf-accent ring-1 ring-sf-accent/70' : 'border-sf-dark-700'
       }`}
     >
       <div className="relative aspect-[4/3] overflow-hidden bg-sf-dark-800">
         {workflow.cover && coverIsVideo ? (
           <video
             src={workflow.cover}
-            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+            className={`h-full w-full object-cover transition-transform duration-500 ${comingSoon ? '' : 'group-hover:scale-105'}`}
             style={{ objectPosition: coverPosition }}
             autoPlay
             muted
@@ -35,7 +41,7 @@ export default function WorkflowCard({ workflow, selected = false, onSelect, sho
           <img
             src={workflow.cover}
             alt=""
-            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+            className={`h-full w-full object-cover transition-transform duration-500 ${comingSoon ? '' : 'group-hover:scale-105'}`}
             style={{ objectPosition: coverPosition }}
           />
         ) : (
@@ -51,9 +57,9 @@ export default function WorkflowCard({ workflow, selected = false, onSelect, sho
           </span>
         )}
         <span className="absolute bottom-2 right-2 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
-          {workflow.badge || workflow.provider}
+          {comingSoon ? 'Coming soon' : workflow.badge || workflow.provider}
         </span>
-        {!workflow.runnable && (
+        {!workflow.runnable && !comingSoon && (
           <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-yellow-400/15 px-2 py-0.5 text-[10px] font-semibold text-yellow-200">
             <Play className="h-2.5 w-2.5" />
             Preview

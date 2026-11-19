@@ -20,6 +20,14 @@ build/*
 .env
 .env.local
 .env.*.local
+.env.*
+*.p12
+*.pfx
+*.pem
+*.key
+remote-phone/
+remote-relay/
+.private-build-artifacts/
 
 # IDE
 .vscode/

@@ -1,17 +1,19 @@
 import { Upload, FolderOpen, Image, Video, Music, Search, Grid, List, Trash2, Edit3, Play, FileVideo, FileAudio, FileImage, Loader2, FolderPlus, ChevronRight, ChevronDown, ChevronLeft, Home, Minus, Plus, MoreVertical, FolderInput, Wand2, Layers, Film, VolumeX, Volume2, ArrowUpDown, ArrowUp, ArrowDown, Copy, Type, RefreshCcw } from 'lucide-react'
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
+import useAssetBrowserStore from '../../stores/assetBrowserStore.mjs'
 import useAssetsStore from '../../stores/assetsStore'
 import useProjectStore from '../../stores/projectStore'
 import useTimelineStore from '../../stores/timelineStore'
-import { getAbsoluteFileUrl, importAsset, isElectron, writeGeneratedOverlayToProject, deleteProjectFile } from '../../services/fileSystem'
+import { getAbsoluteFileUrl, importAsset, isElectron, writeGeneratedOverlayToProject } from '../../services/fileSystem'
 import { canImportGifMedia, importGifAsset, isGifFilename } from '../../services/gifImport'
 import parseFcpXml from '../../services/fcpxmlImporter'
 import { enqueuePlaybackTranscode, generatePlaybackCachesForAllVideos, isPlaybackCacheableVideoAsset } from '../../services/playbackCache'
 import { enqueueProxyTranscode, isProxyPlaybackEnabled } from '../../services/proxyCache'
 import { unstitchSequenceAsset } from '../../services/comfyAutoImport'
 import { checkCompoundAssetDeletion } from '../../services/compoundAssetProtection'
-import { deleteSpriteFromProject } from '../../services/thumbnailSprites'
-import { deleteVideoPosterFromProject } from '../../services/thumbnailPosters'
+import { getAssetRemovalMode } from '../../services/assetRemovalPreferences.mjs'
+import { buildAssetRemovalPlan, describeAssetRemovalPlan, trashAssetRemovalPlan, claimAssetRemoval } from '../../services/assetRemovalPlan.mjs'
+import { getProjectAssetReferences } from '../../utils/projectAssetReferences.mjs'
 import MaskGenerationDialog from '../MaskGenerationDialog'
 import OverlayGeneratorModal from '../OverlayGeneratorModal'
 import TopazVideoUpscaleDialog from '../TopazVideoUpscaleDialog'
@@ -29,9 +31,6 @@ const THUMBNAIL_SIZES = {
   large: { minWidth: 200, iconSize: 'w-8 h-8', playSize: 'w-8 h-8', badgeSize: 'text-[8px]', nameSize: 'text-[11px]', infoSize: 'text-[10px]' },
 }
 const THUMBNAIL_SIZE_ORDER = ['xs', 'small', 'medium', 'large']
-const ASSET_DELETE_MODE_KEY = 'assetsDeleteMode'
-const ASSET_DELETE_MODE_DISK = 'disk'
-const ASSET_DELETE_MODE_PROJECT_ONLY = 'project-only'
 const FOLDER_TILE_ICON_SIZES = {
   xs: 'w-10 h-10',
   small: 'w-12 h-12',
@@ -146,16 +145,26 @@ function VideoAssetThumbnail({
 }
 
 function AssetsPanel({ isActive = true }) {
-  const [viewMode, setViewMode] = useState('grid')
-  const [thumbnailSize, setThumbnailSize] = useState('medium')
-  const [assetDeleteMode, setAssetDeleteMode] = useState(() => {
+  const viewMode = useAssetBrowserStore(state => state.viewMode)
+  const currentFolderId = useAssetBrowserStore(state => state.currentFolderId)
+  const searchQuery = useAssetBrowserStore(state => state.searchQuery)
+  const expandedFolderIds = useAssetBrowserStore(state => state.expandedFolderIds)
+  const projectSession = useAssetBrowserStore(state => state.projectSession)
+  const { setViewMode, setCurrentFolderId, setSearchQuery, setExpandedFolderIds, setScrollTop } = useAssetBrowserStore.getState()
+  const browserScrollRef = useRef(null)
+  // Read scroll imperatively: scrolling must not rerender every asset tile.
+  useLayoutEffect(() => {
+    if (browserScrollRef.current) browserScrollRef.current.scrollTop = useAssetBrowserStore.getState().scrollTop
+  }, [currentFolderId, searchQuery, viewMode, projectSession])
+  const [thumbnailSize, setThumbnailSize] = useState(() => {
     try {
-      const saved = localStorage.getItem(ASSET_DELETE_MODE_KEY)
-      if (saved === ASSET_DELETE_MODE_DISK || saved === ASSET_DELETE_MODE_PROJECT_ONLY) return saved
+      const saved = localStorage.getItem('assetsThumbnailSize')
+      if (saved && THUMBNAIL_SIZES[saved]) return saved
     } catch (_) {}
-    return ASSET_DELETE_MODE_DISK
+    return 'medium'
   })
-  const [searchQuery, setSearchQuery] = useState('')
+  const mountedRef = useRef(true)
+  const nativeTrashBusyRef = useRef(false)
   const [editingId, setEditingId] = useState(null)
   const [editingType, setEditingType] = useState(null)
   const [editName, setEditName] = useState('')
@@ -167,7 +176,6 @@ function AssetsPanel({ isActive = true }) {
   const activeAssetDragIdRef = useRef(null)
   
   // Folder state
-  const [currentFolderId, setCurrentFolderId] = useState(null) // null = root
   const [showNewFolderInput, setShowNewFolderInput] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [contextMenu, setContextMenu] = useState(null) // { x, y, assetId?, folderId?, sequenceId? }
@@ -189,8 +197,6 @@ function AssetsPanel({ isActive = true }) {
   const [selectedSequenceId, setSelectedSequenceId] = useState(null)
   const [openingSequenceId, setOpeningSequenceId] = useState(null)
   const [dragOverFolderId, setDragOverFolderId] = useState(null) // 'root' | folderId for drop highlight
-  // List view: which folder IDs are expanded to show contents inline
-  const [expandedFolderIds, setExpandedFolderIds] = useState(() => new Set())
   // List details view: sort by column (name | type | source | date), sortDir (asc | desc)
   const LIST_SORT_KEY = 'assetsListSort'
   const [listSortBy, setListSortBy] = useState(() => {
@@ -348,6 +354,9 @@ function AssetsPanel({ isActive = true }) {
     setAssetAudioEnabled,
   } = useAssetsStore()
   const { currentProject, currentProjectHandle, currentTimelineId, createTimeline, switchTimeline, saveProject, renameTimeline, setTimelineColor, moveTimelineToFolder, duplicateTimeline, deleteTimeline, getCurrentTimelineSettings } = useProjectStore()
+  useEffect(() => {
+    useAssetBrowserStore.getState().pruneFolders(folders)
+  }, [folders])
   // Narrow selectors, not a bare useTimelineStore(): the bare subscription
   // re-rendered this entire panel on every store write — including per-frame
   // playhead writes during playback, which at hundreds of assets was a real
@@ -357,31 +366,12 @@ function AssetsPanel({ isActive = true }) {
   const removeAudioClipsForAsset = useTimelineStore((s) => s.removeAudioClipsForAsset)
   const clearTimelineSelection = useTimelineStore((s) => s.clearSelection)
   
-  // Load thumbnail size from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('assetsThumbnailSize')
-    if (saved && THUMBNAIL_SIZES[saved]) {
-      setThumbnailSize(saved)
-    }
-  }, [])
-  
   // Save thumbnail size to localStorage
   const setAndSaveThumbnailSize = (size) => {
     setThumbnailSize(size)
-    localStorage.setItem('assetsThumbnailSize', size)
+    try { localStorage.setItem('assetsThumbnailSize', size) } catch (_) {}
   }
 
-  const setAndSaveAssetDeleteMode = useCallback((mode) => {
-    const normalized = mode === ASSET_DELETE_MODE_PROJECT_ONLY
-      ? ASSET_DELETE_MODE_PROJECT_ONLY
-      : ASSET_DELETE_MODE_DISK
-    setAssetDeleteMode(normalized)
-    try {
-      localStorage.setItem(ASSET_DELETE_MODE_KEY, normalized)
-    } catch (_) {}
-  }, [])
-
-  const shouldDeleteFromDisk = assetDeleteMode === ASSET_DELETE_MODE_DISK
   
   // Supported file types
   const SUPPORTED_VIDEO = ['.mp4', '.webm', '.mov']
@@ -914,97 +904,6 @@ function AssetsPanel({ isActive = true }) {
     return assetCount + timelineCount
   }, [assets, folderDescendantIdsByFolderId, projectTimelines])
 
-  const deleteAssetFilesOnly = useCallback(async (assetIds = []) => {
-    const ids = Array.from(new Set((assetIds || []).filter(Boolean)))
-    const guard = checkCompoundAssetDeletion(ids)
-    if (!guard.ok) return guard
-    if (ids.length === 0) return { ok: true }
-    const deleteSet = new Set(ids)
-    const liveAssets = useAssetsStore.getState().assets
-    const assetsToDelete = liveAssets.filter((asset) => deleteSet.has(asset.id))
-    if (assetsToDelete.length === 0) return { ok: true }
-
-    const remainingAssets = liveAssets.filter((asset) => !deleteSet.has(asset.id))
-    const remainingRelativePaths = new Set()
-    const remainingAbsolutePaths = new Set()
-    const addPath = (setRef, value) => {
-      if (typeof value !== 'string') return
-      const normalized = value.trim()
-      if (!normalized) return
-      setRef.add(normalized)
-    }
-
-    for (const asset of remainingAssets) {
-      addPath(remainingRelativePaths, asset?.path)
-      addPath(remainingRelativePaths, asset?.playbackCachePath)
-      addPath(remainingRelativePaths, asset?.proxyPath)
-      if (!asset?.path) addPath(remainingAbsolutePaths, asset?.absolutePath)
-      addPath(remainingAbsolutePaths, asset?.sprite?.spritePath)
-      addPath(remainingAbsolutePaths, asset?.poster?.posterPath)
-    }
-
-    const deleteRelativePath = async (relativePath) => {
-      const normalized = typeof relativePath === 'string' ? relativePath.trim() : ''
-      if (!normalized || !currentProjectHandle) return
-      if (remainingRelativePaths.has(normalized)) return
-      try {
-        await deleteProjectFile(currentProjectHandle, normalized)
-      } catch (_) {
-        // Best effort: file may have already been removed or moved.
-      }
-    }
-
-    const deleteAbsolutePath = async (absolutePath) => {
-      const normalized = typeof absolutePath === 'string' ? absolutePath.trim() : ''
-      if (!normalized || !isElectron() || !window.electronAPI?.deleteFile) return
-      if (remainingAbsolutePaths.has(normalized)) return
-      try {
-        await window.electronAPI.deleteFile(normalized)
-      } catch (_) {
-        // Best effort for external/derived files.
-      }
-    }
-
-    for (const asset of assetsToDelete) {
-      // Native deletion yields. Recheck before each asset so an intervening
-      // compound edit cannot make another queued asset unsafe to remove.
-      const latestGuard = checkCompoundAssetDeletion(ids)
-      if (!latestGuard.ok) return latestGuard
-      const relativeCandidates = new Set([
-        asset?.path,
-        asset?.playbackCachePath,
-        asset?.proxyPath,
-      ].filter(Boolean))
-      for (const relativePath of relativeCandidates) {
-        await deleteRelativePath(relativePath)
-      }
-
-      if (!asset?.path && asset?.absolutePath) {
-        await deleteAbsolutePath(asset.absolutePath)
-      }
-
-      if (isElectron() && typeof currentProjectHandle === 'string' && asset?.sprite) {
-        try {
-          await deleteSpriteFromProject(currentProjectHandle, asset.id)
-        } catch (_) {
-          // Ignore sprite cleanup failures.
-        }
-      } else if (asset?.sprite?.spritePath) {
-        await deleteAbsolutePath(asset.sprite.spritePath)
-      }
-
-      if (isElectron() && typeof currentProjectHandle === 'string' && asset?.poster) {
-        try {
-          await deleteVideoPosterFromProject(currentProjectHandle, asset.id)
-        } catch (_) {
-          // Ignore poster cleanup failures.
-        }
-      } else if (asset?.poster?.posterPath) {
-        await deleteAbsolutePath(asset.poster.posterPath)
-      }
-    }
-    return { ok: true }
-  }, [currentProjectHandle])
 
   // Get folder breadcrumb path
   const getFolderPath = () => {
@@ -1337,6 +1236,7 @@ function AssetsPanel({ isActive = true }) {
     cancelLabel = 'Cancel',
     tone = 'danger',
   }) => {
+    if (!mountedRef.current) return Promise.resolve(false)
     if (confirmResolverRef.current) {
       confirmResolverRef.current(false)
       confirmResolverRef.current = null
@@ -1348,6 +1248,7 @@ function AssetsPanel({ isActive = true }) {
   }, [])
 
   const resolveConfirmDialog = useCallback((accepted) => {
+    if (nativeTrashBusyRef.current) return
     setConfirmDialog(null)
     const resolve = confirmResolverRef.current
     confirmResolverRef.current = null
@@ -1370,27 +1271,88 @@ function AssetsPanel({ isActive = true }) {
     return guard.ok
   }, [showAssetDeletionBlock])
 
-  const prepareAssetDeletion = useCallback(async (assetIds) => {
-    // Confirmation can stay open while the timeline changes. Never rely on
-    // its earlier check for either project-only removal or native deletion.
-    if (!await allowAssetDeletion(assetIds)) return false
-    if (shouldDeleteFromDisk) {
-      const result = await deleteAssetFilesOnly(assetIds)
-      if (!result.ok) { await showAssetDeletionBlock(result.reason); return false }
+  // Read the preference at invocation so an already-mounted panel follows Settings.
+  // Confirmation is tied to an exact snapshot, never to a later selection.
+  const requestAssetRemoval = useCallback(async (assetIds, mode = getAssetRemovalMode(), options = {}) => {
+    const release = claimAssetRemoval()
+    if (!release) return false
+    let movedCount = 0
+    const ids = [...new Set(assetIds)]
+    const root = useProjectStore.getState().currentProjectHandle
+    const originalAssets = useAssetsStore.getState().assets.filter(asset => ids.includes(asset.id))
+    const unchanged = () => root === useProjectStore.getState().currentProjectHandle
+      && JSON.stringify(originalAssets) === JSON.stringify(useAssetsStore.getState().assets.filter(asset => ids.includes(asset.id)))
+      && (!options.isCurrent || options.isCurrent())
+    const getPlan = () => buildAssetRemovalPlan({ assets: useAssetsStore.getState().assets, assetIds: ids, projectRoot: root })
+    const check = () => {
+      if (!unchanged()) throw new Error('The project or selection changed. Please review the removal again.')
+      const guard = checkCompoundAssetDeletion(ids)
+      if (!guard.ok) throw new Error(guard.reason)
+      if (mode === 'trash') {
+        const refs = getProjectAssetReferences(useProjectStore.getState(), useTimelineStore.getState())
+        if (ids.some(id => refs.has(id))) throw new Error('This media is still used on a timeline. Remove its timeline uses before moving its files to Trash, or choose Remove from project to keep the files.')
+      }
     }
-    return allowAssetDeletion(assetIds)
-  }, [allowAssetDeletion, deleteAssetFilesOnly, shouldDeleteFromDisk, showAssetDeletionBlock])
+    try {
+      check()
+      const plan = mode === 'trash' ? getPlan() : null
+      const message = mode === 'trash' ? describeAssetRemovalPlan(plan)
+        : `Remove ${ids.length} asset${ids.length === 1 ? '' : 's'} from this project?\n\nAll files on disk will be kept. Existing timeline uses may become unavailable.`
+      const confirmed = await requestConfirm({
+        title: options.folderName ? `Remove folder “${options.folderName}”?` : mode === 'trash' ? 'Remove assets and move files to Trash?' : 'Remove from project?',
+        message: options.folderName ? `The bin folder and its subfolders will be removed. Timelines in them will be moved to the parent folder.\n\n${message}` : message,
+        confirmLabel: mode === 'trash' ? 'Move files to Trash' : 'Remove from project',
+        cancelLabel: 'Keep', tone: 'danger',
+      })
+      if (!confirmed) return false
+      check()
+      if (plan) {
+        if (JSON.stringify(plan) !== JSON.stringify(getPlan())) throw new Error('Media paths or shared-file references changed. Please review the removal again.')
+        nativeTrashBusyRef.current = true
+        setConfirmDialog({ title: 'Moving files to Trash…', message: 'Please wait. Keep Velorn open until this finishes.', confirmLabel: 'Working…', cancelLabel: 'Please wait', tone: 'info', busy: true })
+        let result
+        try { result = await trashAssetRemovalPlan(plan) }
+        finally {
+          nativeTrashBusyRef.current = false
+          if (mountedRef.current) setConfirmDialog(null)
+        }
+        movedCount = result.results.filter(file => file.success && !file.missing).length
+        check()
+        if (JSON.stringify(plan) !== JSON.stringify(getPlan())) throw new Error('The project changed while files were moved. Project entries were kept; moved files can be recovered from Trash.')
+      }
+      // No await between the final check and the metadata update.
+      if (options.apply) options.apply()
+      else ids.forEach(id => removeAsset(id))
+      if (mountedRef.current) setSelectedAssetIds(selection => selection.filter(id => !ids.includes(id)))
+      return true
+    } catch (error) {
+      const message = `${movedCount ? `${movedCount} file(s) were already moved to Trash. Project entries were kept; restore those files from your operating system’s Trash / Recycle Bin if needed.\n\n` : ''}${error?.message || 'Could not safely remove assets.'}`
+      if (mountedRef.current) await requestConfirm({ title: 'Asset removal stopped', message, confirmLabel: 'OK', cancelLabel: 'Close', tone: 'info' })
+      // A native operation can finish after this panel is gone. Do not await
+      // a dialog in an unmounted component or silently lose a partial result.
+      if (!mountedRef.current) window.alert(`Asset removal stopped\n\n${message}`)
+      return false
+    } finally { release() }
+  }, [removeAsset, requestConfirm])
 
-  useEffect(() => () => {
-    if (confirmResolverRef.current) {
-      confirmResolverRef.current(false)
-      confirmResolverRef.current = null
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (confirmResolverRef.current) {
+        confirmResolverRef.current(false)
+        confirmResolverRef.current = null
+      }
     }
   }, [])
   
   // Keyboard handler for Delete/Backspace (and Escape to clear selection)
   useEffect(() => {
     const handleKeyDown = async (e) => {
+      if (nativeTrashBusyRef.current) {
+        e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.()
+        return
+      }
       if (!panelRef.current?.contains(document.activeElement) && document.activeElement !== panelRef.current) return
       if (confirmDialog) return
       const active = document.activeElement
@@ -1405,35 +1367,12 @@ function AssetsPanel({ isActive = true }) {
         e.preventDefault()
         e.stopPropagation()
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation()
-        if (!await allowAssetDeletion(selectedAssetIds)) return
-        const count = selectedAssetIds.length
-        const confirmed = await requestConfirm({
-          title: count === 1 ? 'Delete asset?' : 'Delete selected assets?',
-          message: shouldDeleteFromDisk
-            ? (
-                count === 1
-                  ? 'Delete this asset?\n\nThis also deletes its local file from the project folder (when available). This cannot be undone.'
-                  : `Delete ${count} selected assets?\n\nThis also deletes their local files from the project folder (when available). This cannot be undone.`
-              )
-            : (
-                count === 1
-                  ? 'Delete this asset from the project?\n\nThe source file on disk will be kept.'
-                  : `Delete ${count} selected assets from the project?\n\nSource files on disk will be kept.`
-              ),
-          confirmLabel: count === 1 ? 'Delete asset' : 'Delete assets',
-          cancelLabel: 'Keep',
-          tone: 'danger',
-        })
-        if (confirmed) {
-          if (!await prepareAssetDeletion(selectedAssetIds)) return
-          selectedAssetIds.forEach(id => removeAsset(id))
-          setSelectedAssetIds([])
-        }
+        await requestAssetRemoval(selectedAssetIds)
       }
     }
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [selectedAssetIds, editingId, removeAsset, requestConfirm, confirmDialog, clearTimelineSelection, allowAssetDeletion, prepareAssetDeletion, shouldDeleteFromDisk])
+  }, [selectedAssetIds, editingId, confirmDialog, clearTimelineSelection, requestAssetRemoval])
 
   // After an asset is dropped onto the timeline, the source tile still holds
   // panel selection and keyboard focus, so the next Delete press would ask to
@@ -1505,56 +1444,44 @@ function AssetsPanel({ isActive = true }) {
     setEditName('')
   }
 
-  // Handle delete
-  const handleDelete = async (e, id) => {
-    e.stopPropagation()
-    if (!await allowAssetDeletion([id])) return
-    const confirmed = await requestConfirm({
-      title: 'Delete asset?',
-      message: shouldDeleteFromDisk
-        ? 'Delete this asset?\n\nThis also deletes its local file from the project folder (when available). This cannot be undone.'
-        : 'Delete this asset from the project?\n\nThe source file on disk will be kept.',
-      confirmLabel: 'Delete asset',
-      cancelLabel: 'Keep',
-      tone: 'danger',
-    })
-    if (confirmed) {
-      if (!await prepareAssetDeletion([id])) return
-      removeAsset(id)
-    }
+  // All entry points share the same review and exact-target checks.
+  const handleDelete = async (e, id, mode) => {
+    e?.stopPropagation()
+    setContextMenu(null)
+    return requestAssetRemoval([id], mode)
   }
 
-  const handleDeleteFolder = useCallback(async (folderId, folderName) => {
-    const folder = (folders || []).find((entry) => entry.id === folderId) || null
+  const handleDeleteFolder = useCallback(async (folderId, folderName, mode) => {
+    const snapshot = () => JSON.stringify({
+      folders: useAssetsStore.getState().folders,
+      assets: useAssetsStore.getState().assets.map(asset => [asset.id, asset.folderId]),
+      timelines: useProjectStore.getState().currentProject?.timelines?.map(timeline => [timeline.id, timeline.folderId]),
+    })
+    const before = snapshot()
+    const liveAssets = useAssetsStore.getState()
+    const liveTimelines = useProjectStore.getState().currentProject?.timelines || []
+    const folder = (liveAssets.folders || []).find(entry => entry.id === folderId)
+    if (!folder) return false
     const parentFolderId = folder?.parentId || null
-    const descendantIds = folderDescendantIdsByFolderId.get(folderId) || new Set([folderId])
-    const folderIds = new Set(descendantIds)
-    const assetIdsInFolderTree = assets
-      .filter((asset) => folderIds.has(asset.folderId || null))
-      .map((asset) => asset.id)
-    const timelineIdsInFolderTree = projectTimelines
-      .filter((timeline) => folderIds.has(timeline?.folderId || null))
-      .map((timeline) => timeline.id)
-    const assetCount = assetIdsInFolderTree.length
-    if (!await allowAssetDeletion(assetIdsInFolderTree)) return false
-    const confirmed = await requestConfirm({
-      title: 'Delete folder?',
-      message: shouldDeleteFromDisk
-        ? `Delete folder "${folderName}" and all its contents?\n\n${assetCount} asset${assetCount === 1 ? '' : 's'} will be removed from the project and deleted from local disk (when available). This cannot be undone.`
-        : `Delete folder "${folderName}" and all its contents from the project?\n\n${assetCount} asset${assetCount === 1 ? '' : 's'} will be removed from the project. Source files on disk will be kept.`,
-      confirmLabel: 'Delete folder',
-      cancelLabel: 'Keep',
-      tone: 'danger',
+    const folderIds = new Set([folderId]), queue = [folderId]
+    while (queue.length) {
+      const parent = queue.shift()
+      for (const child of liveAssets.folders || []) {
+        if (child.parentId === parent && !folderIds.has(child.id)) { folderIds.add(child.id); queue.push(child.id) }
+      }
+    }
+    const assetIds = liveAssets.assets.filter(asset => folderIds.has(asset.folderId || null)).map(asset => asset.id)
+    const timelineIds = liveTimelines.filter(timeline => folderIds.has(timeline?.folderId || null)).map(timeline => timeline.id)
+    return requestAssetRemoval(assetIds, mode, {
+      folderName,
+      isCurrent: () => before === snapshot(),
+      apply: () => {
+        const result = removeFolder(folderId)
+        if (result?.ok === false) throw new Error(result.reason)
+        timelineIds.forEach(id => moveTimelineToFolder(id, parentFolderId))
+      },
     })
-    if (!confirmed) return false
-    if (!await prepareAssetDeletion(assetIdsInFolderTree)) return false
-    const result = removeFolder(folderId)
-    if (result?.ok === false) { await showAssetDeletionBlock(result.reason); return false }
-    timelineIdsInFolderTree.forEach((timelineId) => {
-      moveTimelineToFolder(timelineId, parentFolderId)
-    })
-    return true
-  }, [assets, allowAssetDeletion, prepareAssetDeletion, showAssetDeletionBlock, folderDescendantIdsByFolderId, folders, moveTimelineToFolder, projectTimelines, removeFolder, requestConfirm, shouldDeleteFromDisk])
+  }, [removeFolder, moveTimelineToFolder, requestAssetRemoval])
 
   // Toggle audio on a video asset
   const handleToggleVideoAudio = (assetId) => {
@@ -2207,31 +2134,6 @@ function AssetsPanel({ isActive = true }) {
             </button>
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-sf-text-muted">Delete:</span>
-          <div className="flex items-center gap-0.5 bg-sf-dark-800 rounded p-0.5">
-            <button
-              type="button"
-              onClick={() => setAndSaveAssetDeleteMode(ASSET_DELETE_MODE_DISK)}
-              className={`px-2 py-1 rounded text-[10px] transition-colors ${
-                shouldDeleteFromDisk ? 'bg-sf-dark-600 text-sf-text-primary' : 'text-sf-text-muted hover:text-sf-text-primary'
-              }`}
-              title="Delete from project and local disk"
-            >
-              Delete Disk
-            </button>
-            <button
-              type="button"
-              onClick={() => setAndSaveAssetDeleteMode(ASSET_DELETE_MODE_PROJECT_ONLY)}
-              className={`px-2 py-1 rounded text-[10px] transition-colors ${
-                !shouldDeleteFromDisk ? 'bg-sf-dark-600 text-sf-text-primary' : 'text-sf-text-muted hover:text-sf-text-primary'
-              }`}
-              title="Remove from project only (keep local files)"
-            >
-              Project Only
-            </button>
-          </div>
-        </div>
         
         {/* Folder breadcrumb navigation */}
         {(currentFolderId || subFolders.length > 0 || folders?.length > 0) && (
@@ -2319,6 +2221,9 @@ function AssetsPanel({ isActive = true }) {
       
       {/* Assets Grid/List */}
       <div 
+        ref={browserScrollRef}
+        data-testid="asset-browser-scroll"
+        onScroll={event => setScrollTop(event.currentTarget.scrollTop)}
         className="flex-1 p-2 overflow-auto relative"
         onContextMenu={handleEmptyAreaContextMenu}
         onDoubleClick={(e) => {
@@ -2803,15 +2708,23 @@ function AssetsPanel({ isActive = true }) {
                 onClick={async () => {
                   const folder = folders?.find(f => f.id === contextMenu.folderId)
                   if (folder) {
-                    await handleDeleteFolder(contextMenu.folderId, folder.name)
+                    await handleDeleteFolder(contextMenu.folderId, folder.name, 'project-only')
                   }
                   setContextMenu(null)
                 }}
                 className="w-full px-3 py-1.5 text-left text-xs text-sf-error hover:bg-sf-dark-700 flex items-center gap-2"
               >
                 <Trash2 className="w-3 h-3" />
-                Delete folder
+                Remove folder from project…
               </button>
+              <button
+                onClick={() => {
+                  const folder = folders?.find(f => f.id === contextMenu.folderId)
+                  setContextMenu(null)
+                  if (folder) void handleDeleteFolder(folder.id, folder.name, 'trash')
+                }}
+                className="w-full px-3 py-1.5 text-left text-xs text-sf-error hover:bg-sf-dark-700 flex items-center gap-2"
+              ><Trash2 className="w-3 h-3" />Remove folder and move files to Trash…</button>
             </>
           ) : contextMenu.sequenceId ? (
             <>
@@ -2959,6 +2872,23 @@ function AssetsPanel({ isActive = true }) {
           ) : (
             /* Asset menu */
             <>
+          <button
+            onClick={() => {
+              const ids = selectedAssetIds.includes(contextMenu.assetId) ? selectedAssetIds : [contextMenu.assetId]
+              setContextMenu(null)
+              void requestAssetRemoval(ids, 'project-only')
+            }}
+            className="w-full px-3 py-1.5 text-left text-xs text-sf-text-primary hover:bg-sf-dark-700 flex items-center gap-2"
+          ><Minus className="w-3 h-3" />Remove from project…</button>
+          <button
+            onClick={() => {
+              const ids = selectedAssetIds.includes(contextMenu.assetId) ? selectedAssetIds : [contextMenu.assetId]
+              setContextMenu(null)
+              void requestAssetRemoval(ids, 'trash')
+            }}
+            className="w-full px-3 py-1.5 text-left text-xs text-sf-error hover:bg-sf-dark-700 flex items-center gap-2"
+          ><Trash2 className="w-3 h-3" />Remove and move files to Trash…</button>
+          <div className="border-t border-sf-dark-600 my-1" />
           {/* Video/Image specific options */}
           {(() => {
             const asset = assets.find(a => a.id === contextMenu.assetId)
@@ -3162,6 +3092,7 @@ function AssetsPanel({ isActive = true }) {
         confirmLabel={confirmDialog?.confirmLabel || 'Confirm'}
         cancelLabel={confirmDialog?.cancelLabel || 'Cancel'}
         tone={confirmDialog?.tone || 'danger'}
+        busy={confirmDialog?.busy || false}
         onConfirm={() => resolveConfirmDialog(true)}
         onCancel={() => resolveConfirmDialog(false)}
       />

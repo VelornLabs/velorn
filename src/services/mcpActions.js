@@ -1,6 +1,13 @@
 import useTimelineStore, { isSyncLockedClip } from '../stores/timelineStore'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useAssetsStore from '../stores/assetsStore'
+import { queueLocalVoice, getLocalVoiceJobs, localVoiceAvailable, localVoiceStatus } from './localVoice'
+import { planLocalVoice, localVoiceList } from './localVoiceTool.mjs'
+import useGenerationMonitorStore from '../stores/generationMonitorStore'
+import { generationQueueOwner, readGenerationQueueStatus } from './generationQueueStatus.mjs'
+import { importGenerationRunResults } from './generationRuns'
+import { importRouterImage } from './comfyRouterImages'
+import { getShowGenerateTab } from './generateTabVisibilitySettings.mjs'
 import { useFrameForAIStore } from '../stores/frameForAIStore'
 import { captureTimelineFrameAt, getTopmostVideoOrImageClipAtTime } from '../utils/captureTimelineFrame'
 import { generateColorMatteBlob } from '../utils/overlayGenerators'
@@ -12,21 +19,26 @@ import { DEFAULT_SHAPE_MASK, DEFAULT_SPLINE_POINTS, SHAPE_MASK_TYPES, normalizeS
 import { clampTrackPan, clampTrackVolume } from '../utils/audioTrackAudibility'
 import { normalizeAudioInserts } from '../utils/audioInserts'
 import { buildAudioClipSplitState } from '../utils/audioClipSplit'
+import { buildSplitLeftPieceUpdates, buildSplitRightPieceCarryOver } from '../utils/clipSplit.mjs'
 import { getProjectAssetReferences } from '../utils/projectAssetReferences.mjs'
 import {
   MUSIC_KEY_SCALES,
   MUSIC_TIME_SIGNATURES,
   MUSIC_VARIATIONS_MAX,
+  getMusicBackend,
   getMusicJobs,
+  normalizeMusicBackend,
   normalizeMusicBpm,
-  normalizeMusicDuration,
+  resolveMusicLength,
+  YUE2_AUTOMATIC_DURATION,
+  YUE2_CUSTOM_DURATION_MAX,
   queueMusicGeneration,
   refreshMusicJobs,
 } from './musicGeneration'
 import { analyzeAudioSource } from './audioAnalysis'
 import { comfyui } from './comfyui'
 import { analyzeWorkflowForImport, buildMcpImportTemplate, importComfyTemplate } from './templateImporter'
-import { IMPORTED_WORKFLOW_ID_PREFIX, getImportedWorkflowEntry } from '../config/importedWorkflowRegistry'
+import { IMPORTED_WORKFLOW_ID_PREFIX, getImportedWorkflowEntry, registerImportedWorkflow } from '../config/importedWorkflowRegistry'
 import {
   buildInstallPlanForWorkflow,
   getWorkflowInstallJobs,
@@ -63,8 +75,40 @@ import {
   handleUpdateCaptionCues,
   handleGenerateCaptions,
 } from './mcpCaptions'
+import { MCP_EDITING_ACTIONS } from './mcpEditingParity'
+import { MCP_AUDIO_ACTIONS } from './mcpAudioParity'
+import { MCP_EXPORT_ACTIONS } from './mcpExportParity'
+import { MCP_REVIEW_ACTIONS } from './mcpReviewParity'
+import { MCP_STORYBOARD_ACTIONS } from './mcpStoryboard'
+import { handleOpenComfyUiWorkflow } from './mcpWorkflowOpening'
+import { assertMcpContext, captureMcpContext, captureAgentInteractionContext, assertAgentInteractionContext } from './mcpContext'
+import { buildMcpSnapshot } from './mcpSnapshot'
+import { isExportBusy } from '../stores/exportActivityStore'
+import { assertMcpActionAllowedDuringExport } from '../../electron/exportPriorityPolicy.mjs'
+import { buildStagedGenerationSettings } from '../../electron/generationHandoff.mjs'
+import { assertAssetRemovalAllowsMcp } from './assetRemovalPlan.mjs'
 
-export const MCP_ACTION_BRIDGE_VERSION = 6
+export const MCP_ACTION_BRIDGE_VERSION = 15
+const MCP_PARITY_ACTIONS = {
+  ...MCP_EDITING_ACTIONS, ...MCP_AUDIO_ACTIONS, ...MCP_EXPORT_ACTIONS, ...MCP_REVIEW_ACTIONS,
+  ...MCP_STORYBOARD_ACTIONS,
+  open_comfyui_workflow: handleOpenComfyUiWorkflow,
+  import_comfyui_run_outputs: payload => importGenerationRunResults(payload.runId, { previewOnly: payload.previewOnly !== false }),
+  import_comfy_router_image: async payload => {
+    const preview = await importRouterImage(payload.jobId, { previewOnly: true })
+    if (!preview.success || payload.previewOnly !== false) return preview
+    // Project assets are not timeline Undo entries. Preserve the normal MCP
+    // checkpoint route before this explicitly approved asset import instead.
+    const checkpoint = preview.alreadyImported ? null : handleCreateProjectCheckpoint({ label: 'Before Router image import', previewOnly: false })
+    const result = await importRouterImage(payload.jobId, { previewOnly: false })
+    return { ...result, ...(checkpoint?.checkpointId ? { checkpointId: checkpoint.checkpointId,
+      restoreNote: 'Restoring the checkpoint restores project references; it does not refund generation or remove the downloaded file.' } : {}) }
+  },
+  update_caption_cues: handleUpdateCaptionCues,
+  get_caption_status: handleGetCaptionStatus,
+  transcribe_captions: handleTranscribeCaptions,
+  generate_captions: handleGenerateCaptions,
+}
 
 const MCP_PROJECT_CHECKPOINTS = new Map()
 const MCP_PROJECT_CHECKPOINT_LIMIT = 20
@@ -1597,6 +1641,8 @@ function handleSetClipKeyframes(payload = {}) {
   if (payload.previewOnly === true) {
     return {
       previewOnly: true,
+      applied: false,
+      changed: false,
       action: 'set_clip_keyframes',
       message: 'Clip keyframe plan only. No timeline change was made.',
       clip: buildClipKeyframeSummary(currentClip),
@@ -1608,13 +1654,23 @@ function handleSetClipKeyframes(payload = {}) {
     }
   }
 
+  // The store clamps key times and may replace identical values. Compare the
+  // actual affected curves, not the requested key count or new object identity.
+  const affectedProperties = [...new Set([...clearProperties, ...keyframes.map((keyframe) => keyframe.property)])]
+  const keyframeValues = (clip) => JSON.stringify(affectedProperties.map((property) =>
+    (clip.keyframes?.[property] || []).map((keyframe) => [keyframe.time, keyframe.value, keyframe.easing])))
+  const beforeKeyframes = keyframeValues(currentClip)
   state.saveToHistory?.()
   const clearedKeyframes = clearClipKeyframes(currentClip.id, clearProperties, currentClip)
   const appliedKeyframes = applyClipKeyframes(useTimelineStore.getState(), currentClip.id, keyframes, payload.replaceKeyframes === true)
   const updatedClip = (useTimelineStore.getState().clips || []).find((clip) => clip.id === currentClip.id)
+  if (!updatedClip) throw new Error('Could not verify the clip after setting keyframes.')
+  const changed = keyframeValues(updatedClip) !== beforeKeyframes
 
   return {
-    updated: true,
+    updated: changed,
+    applied: changed,
+    changed,
     action: 'set_clip_keyframes',
     clip: buildClipKeyframeSummary(updatedClip),
     requested: {
@@ -1837,12 +1893,16 @@ function handleSetClipLabelColor(payload = {}) {
 
   state.setClipLabelColor(targetClips.map((clip) => clip.id), color)
 
+  const updatedClipsById = new Map(
+    (useTimelineStore.getState().clips || []).map((clip) => [clip.id, clip]),
+  )
+
   return {
     color,
     cleared: !color,
     clipCount: targetClips.length,
     missingClipIds,
-    clips: targetClips.map(summarizeClip),
+    clips: targetClips.map((clip) => summarizeClip(updatedClipsById.get(clip.id) || clip)),
   }
 }
 
@@ -1890,6 +1950,8 @@ async function handlePrepareGenerationFromTimelineContext(payload = {}) {
   const prompt = String(payload.prompt || '').trim().slice(0, 5000)
   const negativePrompt = String(payload.negativePrompt || '').trim().slice(0, 2000)
   const requestedResolution = resolveMcpGenerationResolution(payload)
+  const generationSettings = buildStagedGenerationSettings({ ...payload, workflowId, resolution: requestedResolution }, useAssetsStore.getState().assets)
+  const preparationContext = captureMcpContext()
   const timeSeconds = Number(payload.timeSeconds ?? payload.time)
   const frame = Number(payload.frame)
   const fps = Number(state.timelineFps) || 24
@@ -1914,6 +1976,12 @@ async function handlePrepareGenerationFromTimelineContext(payload = {}) {
   if (!captured?.file) {
     throw new Error('Could not capture the timeline frame for Generate.')
   }
+  try {
+    assertMcpContext(preparationContext, 'generation preparation')
+  } catch (error) {
+    if (captured.blobUrl) URL.revokeObjectURL(captured.blobUrl)
+    throw error
+  }
 
   const framePayload = {
     ...captured,
@@ -1924,6 +1992,8 @@ async function handlePrepareGenerationFromTimelineContext(payload = {}) {
     category,
     prompt,
     negativePrompt,
+    generationSettings,
+    preparationId: globalThis.crypto.randomUUID(),
     source: 'mcp',
     sourceClipId: top.clip.id,
     sourceTrackId: top.track?.id || null,
@@ -1940,6 +2010,7 @@ async function handlePrepareGenerationFromTimelineContext(payload = {}) {
         category,
         prompt,
         negativePrompt,
+        generationSettings,
         duration: Number.isFinite(Number(payload.durationSeconds ?? payload.duration))
           ? Number(payload.durationSeconds ?? payload.duration)
           : null,
@@ -1958,13 +2029,20 @@ async function handlePrepareGenerationFromTimelineContext(payload = {}) {
   return {
     success: true,
     action: 'prepare_generation_from_timeline_context',
-    message: 'Timeline frame captured and sent to the Generate tab. No generation was queued.',
+    message: getShowGenerateTab()
+      ? 'Timeline frame captured and opened in the Director tab for review. No generation was queued.'
+      : 'Timeline frame captured and prepared for generation in the background. The Director tab remains hidden; no generation was queued.',
     mode,
     workflowId,
     category,
     promptApplied: Boolean(prompt),
     negativePromptApplied: Boolean(negativePrompt),
-    openedGenerateTab: payload.openGenerateTab !== false,
+    stagedSettings: generationSettings,
+    conditioningAudio: generationSettings.audio || null,
+    audioNote: generationSettings.audio
+      ? 'Uses the explicitly selected audio asset and source range, not an automatically matched timeline audio segment.'
+      : 'Capturing a timeline picture does not select or match conditioning audio.',
+    openedGenerateTab: payload.openGenerateTab !== false && getShowGenerateTab(),
     capturedFrame: {
       timeSeconds: captureTime,
       width: captured.width,
@@ -1993,7 +2071,7 @@ async function handleQueuePreparedGeneration(payload = {}) {
     }
 
     const timeout = setTimeout(() => {
-      finish(reject, new Error('Generate workspace did not respond to the MCP queue request. Open the Generate tab and try again.'))
+      finish(reject, new Error('Generate workspace did not respond to the MCP queue request. Open the Director tab and try again.'))
     }, timeoutMs)
 
     window.dispatchEvent(new CustomEvent('comfystudio-mcp-queue-prepared-generation', {
@@ -2117,7 +2195,7 @@ async function handleInspectMusicVideoVideo(payload = {}) {
   return await dispatchMusicVideoWorkspaceRequest(payload, {
     operation: 'inspect-video',
     eventName: 'comfystudio-mcp-music-video-workflow',
-    errorLabel: 'Music Video Step 5 inspection',
+    errorLabel: 'Music Video Videos step inspection',
   })
 }
 
@@ -2125,7 +2203,7 @@ async function handleRegenerateMusicVideoVideo(payload = {}) {
   return await dispatchMusicVideoWorkspaceRequest(payload, {
     operation: 'regenerate-video',
     eventName: 'comfystudio-mcp-music-video-workflow',
-    errorLabel: 'Music Video Step 5 regeneration',
+    errorLabel: 'Music Video Videos step regeneration',
   })
 }
 
@@ -2261,7 +2339,7 @@ async function handleQueueTimelineGenerationBatch(payload = {}) {
     }
 
     const timeout = setTimeout(() => {
-      finish(reject, new Error('Generate workspace did not respond to the MCP batch queue request. Open the Generate tab and try again.'))
+      finish(reject, new Error('Generate workspace did not respond to the MCP batch queue request. Open the Director tab and try again.'))
     }, timeoutMs)
 
     window.dispatchEvent(new CustomEvent('comfystudio-mcp-queue-timeline-generation-batch', {
@@ -2296,7 +2374,7 @@ async function handleQueueTimelineTemplateGeneration(payload = {}) {
     }
 
     const timeout = setTimeout(() => {
-      finish(reject, new Error('Generate workspace did not respond to the MCP template generation request. Open the Generate tab and try again.'))
+      finish(reject, new Error('Generate workspace did not respond to the MCP template generation request. Open the Director tab and try again.'))
     }, timeoutMs)
 
     window.dispatchEvent(new CustomEvent('comfystudio-mcp-queue-template-generation', {
@@ -2304,6 +2382,16 @@ async function handleQueueTimelineTemplateGeneration(payload = {}) {
         ...payload,
         respond: (result = {}) => {
           if (result?.success === false) {
+            // Preserve only the explicit dependency guard receipt. Generic
+            // failures/timeouts still reject because they may be partial.
+            if (result.action === 'queue_timeline_template_generation'
+              && result.code === 'WORKFLOW_DEPENDENCIES_MISSING' && result.generationSubmitted === false
+              && ['not-started', 'setup-changed'].includes(result.outcome)
+              && result.dependencyCheck?.hasBlockingIssues === true
+              && result.dependencyCheck.workflowId === result.workflowId) {
+              finish(resolve, result)
+              return
+            }
             finish(reject, new Error(result.error || result.message || 'Could not queue template generation.'))
             return
           }
@@ -2315,40 +2403,22 @@ async function handleQueueTimelineTemplateGeneration(payload = {}) {
 }
 
 async function handleGetGenerationQueueStatus(payload = {}) {
-  if (typeof window === 'undefined') {
-    throw new Error('Generation queue status is only available in the renderer.')
-  }
-
-  const timeoutMs = Math.min(30000, Math.max(1000, Number(payload.timeoutMs) || 10000))
-  await waitForGenerateWorkspaceReady(timeoutMs)
-  return await new Promise((resolve, reject) => {
-    let settled = false
-    const finish = (callback, value) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      callback(value)
-    }
-    const timeout = setTimeout(() => {
-      finish(reject, new Error('Generate workspace did not respond to the MCP queue-status request.'))
-    }, timeoutMs)
-
-    window.dispatchEvent(new CustomEvent('comfystudio-mcp-get-generation-queue-status', {
-      detail: {
-        ...payload,
-        respond: (result = {}) => {
-          if (result?.success === false) {
-            finish(reject, new Error(result.error || result.message || 'Could not inspect the generation queue.'))
-            return
-          }
-          finish(resolve, result)
-        },
-      },
-    }))
-  })
+  const { currentProjectHandle, currentProject } = useProjectStore.getState()
+  return readGenerationQueueStatus(useGenerationMonitorStore.getState(), payload, undefined,
+    generationQueueOwner(currentProjectHandle, currentProject))
 }
 
 async function handleImportComfyUiWorkflow(payload = {}) {
+  // Native managed API import already validated and atomically saved this entry.
+  // This bridge only refreshes the normal registry; it never executes the graph.
+  if (payload.registerManagedApiEntry) {
+    const entry = payload.registerManagedApiEntry
+    if (payload.previewOnly !== false || entry?.source?.format !== 'api' || !/^tpl-mcp-[a-z0-9][a-z0-9-]{0,47}$/.test(entry.workflowId || '')) {
+      throw new Error('Invalid managed API workflow registration.')
+    }
+    registerImportedWorkflow(entry)
+    return { success: true, previewOnly: false, workflowId: entry.workflowId, message: 'Managed API workflow registered; no generation started.' }
+  }
   const uiWorkflow = payload.uiWorkflow
   if (!Array.isArray(uiWorkflow?.nodes)) {
     throw new Error('No UI-format workflow was provided to import.')
@@ -2642,61 +2712,184 @@ async function handleGetAudioAnalysis(payload = {}) {
 }
 
 async function handleGenerateMusic(payload = {}) {
+  if (payload.backend !== undefined && !['ace-step', 'yue2'].includes(payload.backend)) {
+    throw new Error('Unknown music backend. Choose "ace-step" or "yue2"; omit backend to use ACE-Step.')
+  }
+  const backend = normalizeMusicBackend(payload.backend === undefined ? 'ace-step' : payload.backend)
+  const backendInfo = getMusicBackend(backend)
+  const isMaximumDuration = backendInfo.durationMode === 'maximum'
+  if (isMaximumDuration) {
+    const unsupportedControls = ['bpm', 'keyScale', 'timeSignature', 'language']
+      .filter((key) => Object.prototype.hasOwnProperty.call(payload, key))
+    if (unsupportedControls.length > 0) {
+      throw new Error(`YuE 2 does not support native ${unsupportedControls.join(', ')} controls. Remove these fields; describe musical preferences in tags instead (best effort).`)
+    }
+  }
+  if (payload.lengthMode !== undefined) {
+    if (!isMaximumDuration) {
+      throw new Error('lengthMode is supported only for YuE 2. ACE-Step uses an exact duration; omit lengthMode.')
+    }
+    if (!['automatic', 'custom'].includes(payload.lengthMode)) {
+      throw new Error('Unknown YuE 2 lengthMode. Choose "automatic" or "custom".')
+    }
+  }
+  // Do not supply a 30-second default before resolving length: an omitted YuE 2
+  // length is Automatic, while older explicit-duration calls stay Custom.
+  const requestedDuration = payload.durationSeconds !== undefined ? payload.durationSeconds : payload.duration
+  if (payload.lengthMode === 'custom'
+    && (typeof requestedDuration !== 'number' || !Number.isFinite(requestedDuration)
+      || requestedDuration < 5 || requestedDuration > YUE2_CUSTOM_DURATION_MAX)) {
+    throw new Error(`YuE 2 Custom maximum requires durationSeconds from 5 to ${YUE2_CUSTOM_DURATION_MAX}.`)
+  }
+  if (payload.lengthMode === 'automatic' && requestedDuration !== undefined && requestedDuration !== YUE2_AUTOMATIC_DURATION) {
+    throw new Error(`YuE 2 Automatic uses a ${YUE2_AUTOMATIC_DURATION}-second safety limit. Omit durationSeconds or choose lengthMode="custom" for a different maximum.`)
+  }
   const tags = String(payload.tags || payload.prompt || '').trim()
   if (!tags) {
     throw new Error('Provide style tags for the music, e.g. "warm lo-fi hip hop, mellow keys, 85 bpm".')
   }
-  const instrumental = payload.instrumental !== false && !String(payload.lyrics || '').trim()
-  const lyrics = String(payload.lyrics || '').trim()
-  const durationSeconds = normalizeMusicDuration(payload.durationSeconds ?? payload.duration ?? 30)
+  const requestedLyrics = String(payload.lyrics || '').trim()
+  const instrumental = payload.instrumental === true || (payload.instrumental !== false && !requestedLyrics)
+  const lyrics = instrumental ? '' : requestedLyrics
+  const { lengthMode, durationSeconds } = resolveMusicLength({ backend, durationSeconds: requestedDuration, lengthMode: payload.lengthMode })
   const variations = Math.max(1, Math.min(MUSIC_VARIATIONS_MAX, Math.round(Number(payload.variations) || 1)))
-  const seed = Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : null
-  const bpm = normalizeMusicBpm(payload.bpm ?? 120)
-  const keyScale = MUSIC_KEY_SCALES.includes(String(payload.keyScale)) ? String(payload.keyScale) : 'C major'
-  const timeSignature = MUSIC_TIME_SIGNATURES.includes(String(payload.timeSignature)) ? String(payload.timeSignature) : '4'
+  const seed = payload.seed != null && Number.isFinite(Number(payload.seed)) ? Number(payload.seed) : null
+  const musicalControls = isMaximumDuration ? {} : {
+    bpm: normalizeMusicBpm(payload.bpm ?? 120),
+    keyScale: MUSIC_KEY_SCALES.includes(String(payload.keyScale)) ? String(payload.keyScale) : 'C major',
+    timeSignature: MUSIC_TIME_SIGNATURES.includes(String(payload.timeSignature)) ? String(payload.timeSignature) : '4',
+  }
+  const durationDescription = isMaximumDuration
+    ? `${lengthMode === 'automatic' ? 'Automatic' : 'Custom maximum'}, up to ${durationSeconds}s${lengthMode === 'automatic' ? ' safety limit' : ''}`
+    : `${durationSeconds}s`
+  const notes = isMaximumDuration
+    ? ['Duration is a maximum; YuE 2 may finish earlier. Use the measured duration of the completed audio when placing it on the timeline.',
+      ...(lengthMode === 'automatic' ? [`Automatic lets YuE 2 stop itself within a ${durationSeconds}-second safety limit; it does not guarantee a complete ending.`] : []),
+      'Check completion warnings: a measured safety/maximum-limit hit is not proof of a natural ending, and no warning is not proof of one either.',
+      ...(instrumental ? ['Instrumental is best effort: lyrics are empty and an instrumental style hint is used; vocals are not guaranteed to be absent.'] : [])]
+    : []
 
   const plan = {
     action: 'generate_music',
+    backend,
+    workflowId: backendInfo.workflowId,
     tags,
     lyrics: instrumental ? '(instrumental)' : lyrics,
     instrumental,
+    lengthMode,
     durationSeconds,
+    durationMode: backendInfo.durationMode,
     variations,
     seed,
-    bpm,
-    keyScale,
-    timeSignature,
-    model: 'ACE-Step 1.5 turbo',
+    ...musicalControls,
+    model: backendInfo.label,
     outputFolder: 'Generated Music',
+    notes,
   }
 
   if (payload.previewOnly !== false) {
     return {
       previewOnly: true,
-      message: `Music generation plan only (${variations} take${variations > 1 ? 's' : ''}, ${durationSeconds}s, ${bpm} BPM, ${keyScale}). Nothing was queued. Requires the ACE-Step 1.5 models installed in ComfyUI (the timeline Music popover has a one-click download).`,
+      message: `${backendInfo.label} music generation plan only (${variations} take${variations > 1 ? 's' : ''}, ${durationDescription}${isMaximumDuration ? '' : `, ${musicalControls.bpm} BPM, ${musicalControls.keyScale}`}). Nothing was queued. Requires this backend's nodes and models installed in ComfyUI; inspect setup in the timeline Music popover. ${notes.join(' ')}`.trim(),
       plan,
-      suggestedApplyPayload: { ...payload, previewOnly: false },
+      suggestedApplyPayload: { ...payload, backend, durationSeconds, ...(isMaximumDuration ? { lengthMode } : {}), previewOnly: false },
     }
   }
 
-  const jobs = await queueMusicGeneration({
-    tags,
-    lyrics,
-    instrumental,
-    durationSeconds,
-    variations,
-    seed,
-    bpm,
-    keyScale,
-    timeSignature,
-  })
+  const projectState = useProjectStore.getState()
+  if (!projectState.currentProject || !projectState.currentProjectHandle) {
+    throw new Error('Open a saved Velorn project before queueing music generation.')
+  }
+  let jobs
+  let warning = null
+  try {
+    jobs = await queueMusicGeneration({
+      backend,
+      tags,
+      lyrics,
+      instrumental,
+      lengthMode,
+      durationSeconds,
+      variations,
+      seed,
+      ...musicalControls,
+    })
+  } catch (error) {
+    // ComfyUI may accept earlier variations before a later request fails.
+    // Expose those prompt ids so agents do not accidentally queue duplicates.
+    if (!Array.isArray(error?.queuedJobs) || error.queuedJobs.length === 0) throw error
+    jobs = error.queuedJobs
+    warning = `Only ${jobs.length} of ${variations} requested takes were queued: ${error?.message || 'Queueing stopped.'} Poll these accepted promptIds before retrying any missing takes.`
+  }
 
   return {
     success: true,
     action: 'generate_music',
-    message: `Queued ${jobs.length} ACE-Step music job${jobs.length > 1 ? 's' : ''}. Poll get_music_generation_status with these promptIds; completed takes import into the "Generated Music" asset folder, then place one with add_asset_to_timeline.`,
+    backend,
+    lengthMode,
+    durationSeconds,
+    durationMode: backendInfo.durationMode,
+    partial: Boolean(warning),
+    ...(warning ? { warning } : {}),
+    message: `Queued ${jobs.length} ${backendInfo.label} music job${jobs.length > 1 ? 's' : ''}. Poll get_music_generation_status with these promptIds; completed takes import into the "Generated Music" asset folder, then place one with add_asset_to_timeline using its measured duration.`,
     jobs,
     promptIds: jobs.map((job) => job.promptId),
+  }
+}
+
+// Speech with the built-in local voice, the same one as the Sound tab. It runs
+// on this computer and costs nothing. Like music it is queued and then polled:
+// a long text takes longer than one tool call may wait.
+async function handleGenerateLocalVoice(payload = {}) {
+  const plan = planLocalVoice(payload)
+  if (!localVoiceAvailable()) throw new Error('The built-in voice needs the Velorn desktop app.')
+  const status = await localVoiceStatus()
+  const installed = status?.installed === true
+  if (payload.previewOnly !== false) {
+    return {
+      previewOnly: true,
+      message: `${plan.model} voice plan only: ${plan.characters} characters in the voice ${plan.voiceName} (${plan.voiceNote}). Nothing was made. It runs on this computer and costs nothing.${installed ? '' : ' The voice model is not downloaded yet: the person has to download it once in the Sound tab (Local, Voice) before this can run.'}`,
+      plan: { ...plan, installed, voices: localVoiceList() },
+      suggestedApplyPayload: { text: plan.text, voice: plan.voice, previewOnly: false },
+    }
+  }
+  if (!installed) throw new Error('The built-in voice model is not downloaded yet. Ask the person to download it once in the Sound tab (Local, Voice). An agent cannot start that download.')
+  const projectState = useProjectStore.getState()
+  if (!projectState.currentProject || !projectState.currentProjectHandle) throw new Error('Open a saved Velorn project before making a voice, so the audio can be saved with it.')
+  const jobs = await queueLocalVoice({ text: plan.text, voice: plan.voice, label: 'Voice' })
+  return {
+    success: true,
+    action: 'generate_local_voice',
+    voice: plan.voice,
+    characters: plan.characters,
+    message: `Started one ${plan.model} voice recording (${plan.voiceName}). Poll get_local_voice_status with this promptId; the finished audio is saved in the "Generated Sound" asset folder, then place it with add_asset_to_timeline using its assetId.`,
+    jobs,
+    promptIds: jobs.map((job) => job.promptId),
+  }
+}
+
+async function handleGetLocalVoiceStatus(payload = {}) {
+  const promptIds = Array.isArray(payload.promptIds)
+    ? payload.promptIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : []
+  const jobs = getLocalVoiceJobs(promptIds.length > 0 ? promptIds : null)
+  const assetsState = useAssetsStore.getState()
+  let installed = false
+  try { installed = (await localVoiceStatus())?.installed === true } catch { installed = false }
+  return {
+    success: true,
+    installed,
+    voices: localVoiceList(),
+    jobCount: jobs.length,
+    jobs: jobs.map((job) => ({
+      ...job,
+      assets: (job.assetIds || [])
+        .map((assetId) => {
+          const asset = assetsState.getAssetById?.(assetId)
+          return asset ? summarizeAsset(asset) : null
+        })
+        .filter(Boolean),
+    })),
   }
 }
 
@@ -2744,7 +2937,7 @@ async function handleQueuePromptGenerationBatch(payload = {}) {
     }
 
     const timeout = setTimeout(() => {
-      finish(reject, new Error('Generate workspace did not respond to the MCP prompt batch queue request. Open the Generate tab and try again.'))
+      finish(reject, new Error('Generate workspace did not respond to the MCP prompt batch queue request. Open the Director tab and try again.'))
     }, timeoutMs)
 
     window.dispatchEvent(new CustomEvent('comfystudio-mcp-queue-prompt-generation-batch', {
@@ -3168,9 +3361,31 @@ function getClipEndTime(clip) {
 }
 
 // Mirrors the Timeline razor (splitClipAtTime): resize the original down to the
-// left piece and add a new right piece. Effects/keyframes stay on the left
-// piece, matching in-app razor behavior. Caller owns history.
+// left piece and add a new right piece, which then inherits everything else
+// authored on the uncut clip (speed, keyframes, colour, mask, name, label).
+// Caller owns history.
 function splitTimelineClipAtTime(clip, splitPosition) {
+  const splitTime = splitPosition - clip.startTime
+  const rightClip = addSplitRightPiece(clip, splitPosition)
+  if (!rightClip?.id) return rightClip
+  const remainder = clip.duration - splitTime
+  const carryOver = buildSplitRightPieceCarryOver(clip, splitTime, { remainder })
+  const leftUpdates = buildSplitLeftPieceUpdates(clip, splitTime, remainder)
+  let finished = rightClip
+  useTimelineStore.setState((state) => ({
+    clips: state.clips.map((candidate) => {
+      if (candidate.id === rightClip.id) {
+        finished = { ...candidate, ...carryOver }
+        return finished
+      }
+      if (leftUpdates && candidate.id === clip.id) return { ...candidate, ...leftUpdates }
+      return candidate
+    }),
+  }))
+  return finished
+}
+
+function addSplitRightPiece(clip, splitPosition) {
   const splitTime = splitPosition - clip.startTime
   const remainder = clip.duration - splitTime
   const enabled = clip.enabled !== false
@@ -3241,10 +3456,15 @@ function splitTimelineClipAtTime(clip, splitPosition) {
       trimStart: sourceTimeAtCut,
       trimEnd: sourceTrimEnd,
       enabled,
-      // The in-app razor drops these on the right piece; carry them so split
-      // media clips keep their layout and label.
       ...(clip.transform ? { transform: safeClone(clip.transform) } : {}),
       ...(clip.labelColor ? { labelColor: clip.labelColor } : {}),
+      // Retiming goes in with the add so the piece is measured against its
+      // source at the right speed.
+      sourceTimeScale: clip.sourceTimeScale,
+      sourceFps: clip.sourceFps,
+      timelineFps: clip.timelineFps,
+      speed: clip.speed,
+      reverse: clip.reverse === true,
       ...(audioSplitState?.rightClipOptions || {}),
       saveHistory: false,
     }
@@ -4076,12 +4296,15 @@ async function handleCreateTimeline(payload = {}) {
   if (payload.previewOnly !== false) {
     return {
       previewOnly: true,
+      applied: false,
+      changed: false,
       action: 'create_timeline',
       message: 'Sequence creation plan only. No timeline was created.',
       plan,
     }
   }
 
+  const previousTimelineIds = new Set((projectState.currentProject?.timelines || []).map((timeline) => timeline.id))
   const timeline = projectState.createTimeline?.({
     name: plan.name,
     width: plan.width,
@@ -4092,6 +4315,10 @@ async function handleCreateTimeline(payload = {}) {
     folderId: plan.folderId,
   })
   if (!timeline) throw new Error('Could not create the sequence.')
+  if (!timeline.id || previousTimelineIds.has(timeline.id)
+    || !(useProjectStore.getState().currentProject?.timelines || []).some((candidate) => candidate.id === timeline.id)) {
+    throw new Error('Could not confirm the new sequence in the project.')
+  }
 
   let switched = false
   if (plan.switchToTimeline && timeline.id) {
@@ -4099,9 +4326,12 @@ async function handleCreateTimeline(payload = {}) {
   }
 
   const nextProjectState = useProjectStore.getState()
-  const createdTimeline = (nextProjectState.currentProject?.timelines || []).find((candidate) => candidate.id === timeline.id) || timeline
+  const createdTimeline = (nextProjectState.currentProject?.timelines || []).find((candidate) => candidate.id === timeline.id)
+  if (!createdTimeline) throw new Error('Could not confirm the new sequence in the project.')
   return {
     created: true,
+    applied: true,
+    changed: true,
     action: 'create_timeline',
     timeline: summarizeTimeline(createdTimeline, nextProjectState.currentProject?.settings || {}),
     switchToTimeline: plan.switchToTimeline,
@@ -5260,14 +5490,31 @@ function buildLinkedAudioPlan(state, asset, payload = {}) {
   }
 }
 
-function resolveMcpTimelineTrack(state, asset, payload = {}) {
+function resolveMcpTimelineTrack(state, asset, payload = {}, { recoverMissingTrack = false } = {}) {
   const targetType = getCompatibleTrackTypeForAsset(asset)
   const trackId = String(payload.trackId || '').trim()
   const createTrack = payload.createTrack === true || payload.newTrack === true || ['new', 'newtop', 'newtrack', 'newtoptrack'].includes(String(payload.trackStrategy || payload.placementTrack || '').trim().toLowerCase().replace(/[\s_-]+/g, ''))
 
   if (trackId) {
     const track = (state.tracks || []).find((candidate) => candidate.id === trackId)
-    if (!track) throw new Error(`Track ${trackId} was not found.`)
+    if (!track) {
+      const candidates = (state.tracks || []).filter((candidate) => (
+        candidate.type === targetType && !candidate.locked && candidate.visible !== false && candidate.role !== 'captions'
+      ))
+      // Asset insertion can recover a stale/invented ID only when the current
+      // timeline has one unambiguous destination. Never remap an existing ID,
+      // a locked/incompatible track, or an explicit new-track request.
+      if (recoverMissingTrack && !createTrack && candidates.length === 1) {
+        const resolved = candidates[0]
+        return { track: resolved, createTrack: false, targetType, trackResolution: {
+          reason: 'missing_track_single_compatible', requestedTrackId: trackId,
+          resolvedTrackId: resolved.id, resolvedTrackName: resolved.name || '',
+          message: `Track ${trackId} was not found; used the only available ${targetType} track, ${resolved.name || resolved.id} (${resolved.id}).`,
+        } }
+      }
+      const choices = candidates.map((candidate) => `${candidate.name || targetType} (${candidate.id})`).join(', ')
+      throw new Error(`Track ${trackId} was not found. ${choices ? `Available ${targetType} tracks: ${choices}. Use an exact ID, or omit trackId for automatic placement.` : `No available ${targetType} track. Omit trackId to allow automatic track creation.`}`)
+    }
     if (track.type !== targetType) throw new Error(`Asset ${asset.name || asset.id} is ${asset.type}; it needs a ${targetType} track.`)
     if (track.locked) throw new Error(`Track ${trackId} is locked.`)
     return { track, createTrack: false, targetType }
@@ -5517,7 +5764,7 @@ async function handleAddSolidColor(payload = {}) {
 function handleAddAssetToTimeline(payload = {}) {
   const initialState = useTimelineStore.getState()
   const asset = resolveMcpTimelineAsset(payload)
-  const target = resolveMcpTimelineTrack(initialState, asset, payload)
+  const target = resolveMcpTimelineTrack(initialState, asset, payload, { recoverMissingTrack: true })
   const linkedAudioPlan = buildLinkedAudioPlan(initialState, asset, payload)
   const plannedTrack = target.track || {
     id: null,
@@ -5563,6 +5810,7 @@ function handleAddAssetToTimeline(payload = {}) {
   const plan = {
     asset: summarizeAsset(asset),
     track: summarizeTrack(plannedTrack),
+    ...(target.trackResolution ? { trackResolution: target.trackResolution } : {}),
     createTrack: target.createTrack,
     startSeconds: startTime,
     durationSeconds: options.duration || (asset.type === 'image' ? 5 : (Number(asset.duration ?? asset.settings?.duration) || 5)),
@@ -5655,6 +5903,7 @@ function handleAddAssetToTimeline(payload = {}) {
     audioClip: audioClip ? summarizeClip(audioClip) : null,
     asset: summarizeAsset(asset),
     track: summarizeTrack(track),
+    ...(target.trackResolution ? { trackResolution: target.trackResolution } : {}),
     audioTrack: audioTrack ? summarizeTrack(audioTrack) : null,
     createdTrack: target.createTrack,
     createdAudioTrack: Boolean(linkedAudioPlan?.createTrack && audioTrack),
@@ -5720,7 +5969,8 @@ function buildMcpAssetBatchPlacementPlan(state, payload = {}) {
   const includeLinkedAudio = shouldAddBatchLinkedVideoAudio(payload, layout)
   const spacingSeconds = Math.max(0, Number(payload.spacingSeconds ?? payload.spacing) || 0)
   const fps = Number(state.timelineFps) || 24
-  const baseStartSeconds = resolveMcpAssetPlacementStart(state, String(payload.trackId || '').trim(), payload)
+  let baseStartSeconds = resolveMcpAssetPlacementStart(state, String(payload.trackId || '').trim(), payload)
+  let trackResolution
   const trackNamePrefix = String(payload.trackNamePrefix || payload.trackPrefix || 'MCP Review').trim() || 'MCP Review'
   const trackNameTemplate = payload.trackNameTemplate || payload.trackTemplate || ''
   const placements = []
@@ -5735,7 +5985,10 @@ function buildMcpAssetBatchPlacementPlan(state, payload = {}) {
       ...payload,
       createTrack: payload.createTrack !== false && payload.newTrack !== false && !payload.trackId,
       newTrack: payload.createTrack !== false && payload.newTrack !== false && !payload.trackId,
-    })
+    }, { recoverMissingTrack: true })
+    trackResolution = sharedTarget.trackResolution
+    // track_end must follow the resolved destination, not the missing ID.
+    baseStartSeconds = resolveMcpAssetPlacementStart(state, sharedTarget.track?.id || '', payload)
     const sharedPlannedTrack = sharedTarget.track || {
       id: null,
       name: String(payload.trackName || '').trim() || `${trackNamePrefix} Batch`,
@@ -5810,6 +6063,7 @@ function buildMcpAssetBatchPlacementPlan(state, payload = {}) {
     assetCount: placements.length,
     layout,
     trackStrategy,
+    ...(trackResolution ? { trackResolution } : {}),
     includeAudio: includeLinkedAudio,
     baseStartSeconds,
     spacingSeconds,
@@ -5991,6 +6245,7 @@ function handleAddAssetsToTimeline(payload = {}) {
     trackCount: createdTracks.length,
     layout: plan.layout,
     trackStrategy: plan.trackStrategy,
+    ...(plan.trackResolution ? { trackResolution: plan.trackResolution } : {}),
     includeAudio: plan.includeAudio,
     clips: finalClips.map(summarizeClip),
     tracks: createdTracks.map(summarizeTrack),
@@ -7485,6 +7740,7 @@ function handleUndoRedo(payload = {}) {
   if (payload.previewOnly === true) {
     return {
       previewOnly: true,
+      applied: false,
       action: direction,
       chosenScope: scope,
       availability,
@@ -7494,6 +7750,7 @@ function handleUndoRedo(payload = {}) {
   if (scope === 'none') {
     return {
       success: false,
+      applied: false,
       action: direction,
       chosenScope: scope,
       availability,
@@ -7513,6 +7770,7 @@ function handleUndoRedo(payload = {}) {
 
   return {
     success: applied,
+    applied,
     action: direction,
     scope,
     availabilityBefore: availability,
@@ -7697,6 +7955,7 @@ async function handleRestoreProjectCheckpoint(payload = {}) {
   if (payload.previewOnly !== false) {
     return {
       previewOnly: true,
+      applied: false,
       action: 'restore_project_checkpoint',
       message: 'Checkpoint restore plan only. No project state was changed.',
       checkpoint: {
@@ -7719,8 +7978,10 @@ async function handleRestoreProjectCheckpoint(payload = {}) {
   const folders = safeClone(checkpoint.assetsState?.folders || [])
   const currentTimelineId = checkpoint.currentTimelineId || project?.currentTimelineId || project?.timelines?.[0]?.id || null
   const timeline = (project?.timelines || []).find((candidate) => candidate.id === currentTimelineId) || project?.timelines?.[0] || null
-  if (!project || !timeline) throw new Error('Checkpoint is missing project or timeline data.')
+  if (!project || !timeline || timeline.id !== currentTimelineId) throw new Error('Checkpoint is missing project or timeline data.')
 
+  const before = captureAgentInteractionContext()
+  const previousClips = useTimelineStore.getState().clips
   const currentPreview = assets.find((asset) => asset.id === checkpoint.assetsState?.currentPreviewId) || null
   useAssetsStore.setState({
     assets,
@@ -7744,16 +8005,37 @@ async function handleRestoreProjectCheckpoint(payload = {}) {
     selectedMarkerId: checkpoint.timelineUi?.selectedMarkerId || null,
   })
 
+  const restoredProject = useProjectStore.getState()
+  const restoredTimeline = useTimelineStore.getState()
+  const restoredAssets = useAssetsStore.getState()
+  if (restoredProject.currentProject !== project || restoredProject.currentProjectHandle !== checkpoint.projectHandle
+    || restoredProject.currentTimelineId !== currentTimelineId
+    || restoredAssets.assets !== assets || restoredAssets.folders !== folders
+    || !Number.isSafeInteger(restoredTimeline.timelineSessionId)
+    || restoredTimeline.timelineSessionId <= before.context.timelineSessionId
+    || restoredTimeline.compoundEditContext != null || restoredTimeline.clips === previousClips
+    || (timeline.tracks && restoredTimeline.tracks !== timeline.tracks)
+    || (timeline.markers && restoredTimeline.markers !== timeline.markers)
+    || (timeline.transitions && restoredTimeline.transitions !== timeline.transitions)) {
+    throw new Error('Checkpoint restore could not be confirmed in the editor. Inspect the project before retrying.')
+  }
+  // Bind the synchronous replacement before optional saving yields control.
+  // Native continuation still requires exact dispatch proof, the approved
+  // checkpoint/destination, and this same guard in the completion and readback.
+  const restoreTransition = { before, after: captureAgentInteractionContext() }
   const savedProject = payload.saveProject === true && typeof useProjectStore.getState().saveProject === 'function'
     ? await useProjectStore.getState().saveProject()
     : null
 
   return {
     success: true,
+    applied: true,
+    restored: true,
     action: 'restore_project_checkpoint',
     checkpointId: checkpoint.id,
     label: checkpoint.label,
     restoredTimelineId: currentTimelineId,
+    restoreTransition,
     savedProject: Boolean(savedProject),
     message: savedProject
       ? 'Restored the MCP checkpoint and saved the project file.'
@@ -8713,6 +8995,23 @@ function handleSetInOutRange(payload = {}) {
 }
 
 async function handleMcpAction(request = {}) {
+  assertAssetRemovalAllowsMcp(request.action)
+  assertMcpActionAllowedDuringExport(request.action, request.payload, isExportBusy())
+  const handler = MCP_PARITY_ACTIONS[request.action]
+  if (handler) {
+    const payload = request.payload || {}
+    assertMcpContext(payload.expectedContext, request.action)
+    const context = captureMcpContext()
+    const result = await handler(payload)
+    if (result?.previewOnly === true) {
+      return { ...result, context: result.context || context,
+        suggestedApplyPayload: {
+          ...payload, ...(result.suggestedApplyPayload || {}), previewOnly: false,
+          expectedContext: result.suggestedApplyPayload?.expectedContext || result.context || context,
+        } }
+    }
+    return result
+  }
   switch (request.action) {
     case 'undo':
     case 'redo':
@@ -8825,6 +9124,10 @@ async function handleMcpAction(request = {}) {
       return handleGenerateMusic(request.payload || {})
     case 'get_music_generation_status':
       return handleGetMusicGenerationStatus(request.payload || {})
+    case 'generate_local_voice':
+      return handleGenerateLocalVoice(request.payload || {})
+    case 'get_local_voice_status':
+      return handleGetLocalVoiceStatus(request.payload || {})
     case 'get_audio_analysis':
       return handleGetAudioAnalysis(request.payload || {})
     case 'inspect_timeline_frame':
@@ -8939,15 +9242,31 @@ export function startMcpActionBridge() {
   if (!api?.onAction || !api?.sendActionResult) return () => {}
 
   return api.onAction(async (request = {}) => {
+    let response
     try {
+      // Native-only envelope survives legacy MCP handlers that do not forward
+      // expectedContext in their payload. Never trust a model-supplied guard.
+      assertAgentInteractionContext(request.agentGuard, request.action)
       const result = await runMcpAction(request.action, request.payload || {})
-      api.sendActionResult({ id: request.id, success: true, result })
+      response = { id: request.id, success: true, result }
     } catch (error) {
-      api.sendActionResult({
+      response = {
         id: request.id,
         success: false,
         error: error?.message || String(error),
-      })
+      }
     }
+
+    // Carry state and completion in the SAME IPC message. The background
+    // publisher is throttled for playback; it is not a read-after-write barrier.
+    // Capture even after an error so partially completed work can be inspected.
+    // Do not await between capture and send (another action may run meanwhile).
+    try {
+      response.snapshot = buildMcpSnapshot()
+      response.agentContext = captureAgentInteractionContext()
+    } catch (error) {
+      response.snapshotError = error?.message || String(error)
+    }
+    api.sendActionResult(response)
   })
 }

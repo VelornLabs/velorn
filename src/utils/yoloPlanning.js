@@ -40,6 +40,9 @@ const STRUCTURED_FIELD_PATTERNS = Object.freeze([
   // roster is empty or when no match is found — the planner then falls back
   // to the lyric-tag resolver and finally to the default (first cast entry).
   { key: 'artist', pattern: /^(?:artist|singer|performer|cast|vocalist)\s*:\s*(.*)$/i },
+  // Music-video-only: the place this shot is filmed in, by its short name.
+  // Resolved to a place picture in the music planner.
+  { key: 'place', pattern: /^(?:place|location|environment)\s*:\s*(.*)$/i },
   // Music-video-only: explicit audio offset (Phase 8). Accepted forms include
   // "0:15", "15s", "00:00:15,500" — see parseTimeSpecToSeconds in
   // musicVideoShotConfig.js. When present, the music planner pins audioStart
@@ -361,6 +364,7 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
       // Music-video-only pass-through. Resolved to actual cast asset ids in
       // the music planner (src/components/GenerateWorkspace.jsx).
       artistRaw: sanitizeSnippet(currentShot.artist || '', 120),
+      placeRaw: sanitizeSnippet(currentShot.place || '', 120),
       // Music-video-only pass-through (Phase 8). The music planner calls
       // parseTimeSpecToSeconds on this to pin audioStart, bypassing the
       // Lyric-moment fuzzy lookup when it's present and parseable.
@@ -504,6 +508,7 @@ export function parseStructuredDirectorScript(script = '', options = {}) {
         // structured-field matcher — see STRUCTURED_FIELD_PATTERNS above.
         lyricMoment: '',
         artist: '',
+        place: '',
         startAt: '',
         notes: '',
       }
@@ -735,6 +740,9 @@ export function flattenYoloPlanVariants(plan = []) {
             resolvedArtistAssetIds: Array.isArray(shot?.resolvedArtistAssetIds)
               ? shot.resolvedArtistAssetIds.filter(Boolean).slice(0, 2)
               : [],
+            // The picture of the place this shot is filmed in, for a person's
+            // own workflow that has an input just for it.
+            placeAssetId: String(shot?.shotPlaceAssetId || shot?.resolvedPlaceAssetId || ''),
             nanoBananaReferenceOverride: shot?.nanoBananaReferenceOverrideEnabled
               ? {
                   enabled: true,

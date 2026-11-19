@@ -72,6 +72,18 @@ function CreditsChip({ className = '', size = 'sm' }) {
         }
       }
 
+      // No ComfyUI on this computer, or nobody signed in there: ask with the Comfy key
+      // the person pasted in Create. The key stays in the main process; only the number comes back.
+      const routerLookup = typeof window !== 'undefined' ? window?.electronAPI?.comfyRouter?.balance : null
+      if (typeof routerLookup === 'function') {
+        const routerResult = await routerLookup({}).catch(() => null)
+        if (!mountedRef.current) return
+        if (routerResult?.success && routerResult.known && Number.isFinite(routerResult.credits)) {
+          setBalance({ status: 'ok', credits: routerResult.credits })
+          return
+        }
+      }
+
       const key = await getComfyPartnerApiKey()
       if (!key) {
         if (!mountedRef.current) return
@@ -167,27 +179,27 @@ function CreditsChip({ className = '', size = 'sm' }) {
   const labelPieces = useMemo(() => {
     if (balance.status === 'low') {
       return {
-        label: 'Out of credits',
+        label: 'Comfy credits empty',
         tooltip: 'A recent job failed because your Comfy.org credit balance is exhausted.',
       }
     }
     if (balance.status === 'ok' && Number.isFinite(balance.credits)) {
       return {
-        label: `${formatCreditCount(balance.credits)} credits`,
+        label: `${formatCreditCount(balance.credits)} Comfy credits`,
         tooltip: isRefreshing
           ? 'Refreshing your Comfy.org credit balance...'
-          : 'Click to refresh your Comfy.org credit balance.',
+          : 'Comfy.org generation credits — separate from Velo’s allowance. Click to refresh.',
       }
     }
     if (balance.status === 'loading') {
       return {
-        label: 'Credits',
+        label: 'Comfy credits',
         tooltip: 'Checking your Comfy.org credit balance...',
       }
     }
     return {
-      label: 'Credits',
-      tooltip: 'Log in through the embedded ComfyUI account settings to show your live balance.',
+      label: 'Comfy credits',
+      tooltip: 'Generation credits, not Velo’s allowance. Sign in through ComfyUI account settings to show the balance.',
     }
   }, [balance, isRefreshing])
 

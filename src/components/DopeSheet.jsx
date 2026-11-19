@@ -8,6 +8,7 @@ import { normalizeShapeMask } from '../utils/shapeMask'
 import BezierEasingEditor from './BezierEasingEditor'
 import { getSpriteFramePosition } from '../services/thumbnailSprites'
 import { anchoredKeyframeScroll, keyframeZoomBounds } from '../utils/keyframeViewport'
+import { isNativeTextKeyboardEvent } from '../utils/transportKeyboardGuards.mjs'
 
 const LEFT_COLUMN_WIDTH = 148
 const END_PADDING = 10 // Keep the last diamond accessible at the clip boundary.
@@ -1133,6 +1134,7 @@ function DopeSheet() {
     if (!selectedClip || dragState || marqueeState) return undefined
 
     const handleKeyDown = (event) => {
+      if (isNativeTextKeyboardEvent(event)) return
       const target = event.target
       const isTypingField = target instanceof HTMLElement
         && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)

@@ -84,6 +84,26 @@ test('main-frame reload, window destruction and app quit cancel owned work; subf
   assert.equal(f.shutdown, 1)
 })
 
+test('renderer crashes cancel only that owner and retain one registration across reloads', async () => {
+  const f = fixture(), first = f.sender(1), second = f.sender(2)
+  await f.call('playback:transcode', first, { inputPath: '/a.mov', outputPath: '/cache/a.mp4' })
+  await f.call('proxy:transcode', second, { inputPath: '/b.mov', outputPath: '/cache/b.mp4' })
+  first.emit('render-process-gone', {}, { reason: 'crashed' })
+  assert.deepEqual(f.cancelled, [1])
+  first.emit('did-start-navigation', {}, 'url', false, true)
+  f.call('mediaPreparation:getStatus', first)
+  await f.call('playback:transcode', first, { inputPath: '/c.mov', outputPath: '/cache/c.mp4' })
+  assert.equal(first.listenerCount('render-process-gone'), 1)
+  assert.equal(first.listenerCount('did-start-navigation'), 1)
+  assert.equal(first.listenerCount('destroyed'), 1)
+  f.notify()
+  assert.equal(first.messages.length, 1, 'Surviving WebContents can receive status after reload')
+  first.emit('render-process-gone', {}, { reason: 'crashed' })
+  assert.deepEqual(f.cancelled, [1, 1, 1])
+  second.emit('render-process-gone', {}, { reason: 'crashed' })
+  assert.deepEqual(f.cancelled, [1, 1, 1, 2])
+})
+
 test('preload preserves legacy transcode methods and exposes a removable read-only status subscription', async () => {
   const renderer = new EventEmitter(), calls = [], exposed = {}
   renderer.invoke = async (...args) => { calls.push(args); return { jobs: [] } }

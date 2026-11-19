@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   X,
   KeyRound,
@@ -20,6 +20,7 @@ import {
   validateComfyPartnerApiKey,
 } from '../services/comfyPartnerAuth'
 import { useI18n } from '../i18n/I18nContext'
+import { trapDialogFocus } from '../utils/dialogFocus.mjs'
 
 function maskKey(value) {
   const raw = String(value || '').trim()
@@ -35,12 +36,19 @@ function maskKey(value) {
  * the Workflow Setup gallery, and Generate so the experience is identical no
  * matter where the user first hits a "needs API key" prompt.
  */
-export default function ApiKeyDialog({
-  open,
+export default function ApiKeyDialog(props) {
+  // Closing unmounts the key-bearing content, even when callers keep this
+  // shared dialog mounted. No raw draft survives a closed/reopened session.
+  return props.open ? <ApiKeyDialogContent {...props} /> : null
+}
+
+function ApiKeyDialogContent({
   onClose,
   onSaved,
   headline,
   subhead,
+  guided = false,
+  onPersist,
 }) {
   const { t } = useI18n()
   const [existingKey, setExistingKey] = useState('')
@@ -50,59 +58,55 @@ export default function ApiKeyDialog({
   const [validating, setValidating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
   const inputRef = useRef(null)
   const abortRef = useRef(null)
-
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
-    const load = async () => {
-      try {
-        const stored = await getComfyPartnerApiKey()
-        if (cancelled) return
-        setExistingKey(stored)
-        setDraftKey('')
-        setShowKey(false)
-        setValidation({ state: 'idle', message: '' })
-        setError('')
-      } catch (err) {
-        if (!cancelled) {
-          setError(err?.message || t('apiKey.readFailed'))
-        }
-      }
-    }
-    void load()
-    return () => {
-      cancelled = true
-    }
-  }, [open, t])
-
-  useEffect(() => {
-    if (!open) return
-    const focusTimer = setTimeout(() => {
-      try { inputRef.current?.focus() } catch (_) { /* ignore */ }
-    }, 40)
-    return () => clearTimeout(focusTimer)
-  }, [open])
-
-  useEffect(() => {
-    if (!open) return
-    const handler = (event) => {
-      if (event.key === 'Escape') onClose?.()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [open, onClose])
-
-  useEffect(() => () => {
-    try { abortRef.current?.abort() } catch (_) { /* ignore */ }
+  const dialogRef = useRef(null), alive = useRef(true), version = useRef(0), operation = useRef(null)
+  const closeRef = useRef(onClose), titleId = useId(), descriptionId = useId(), inputId = useId()
+  closeRef.current = onClose
+  const current = token => alive.current && token === version.current
+  const invalidate = () => { version.current++; abortRef.current?.abort(); abortRef.current = null }
+  const close = useCallback(() => {
+    alive.current = false; invalidate()
+    setDraftKey(''); setExistingKey(''); setShowKey(false)
+    closeRef.current?.({ outcome: 'cancelled', validation: 'unknown' })
   }, [])
 
-  const handleGetKey = useCallback(async () => {
-    const result = await openComfyPartnerDashboard()
-    if (!result?.success) {
-      setError(t('apiKey.openFailed'))
+  useEffect(() => {
+    alive.current = true
+    const token = version.current
+    const load = async () => {
+      try {
+        const stored = await getComfyPartnerApiKey({ nativeOnly: guided })
+        if (!current(token)) return
+        setExistingKey(stored)
+      } catch { if (current(token)) setError(t('apiKey.readFailed')) }
+      finally { if (current(token)) setLoading(false) }
     }
+    void load()
+    return () => { alive.current = false; invalidate(); operation.current = null }
+  }, [guided])
+
+  useEffect(() => {
+    const previous = document.activeElement
+    const focusTimer = setTimeout(() => { if (alive.current) inputRef.current?.focus() }, 0)
+    const handler = (event) => {
+      if (!alive.current) return
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
+      else if (event.key === 'Tab') { trapDialogFocus(event, dialogRef.current); event.stopPropagation() }
+    }
+    window.addEventListener('keydown', handler, true)
+    return () => {
+      clearTimeout(focusTimer); window.removeEventListener('keydown', handler, true)
+      if (previous?.isConnected) previous.focus?.()
+    }
+  }, [close])
+
+  useEffect(() => { if (!loading && alive.current) inputRef.current?.focus() }, [loading])
+
+  const handleGetKey = useCallback(async () => {
+    const token = version.current, result = await openComfyPartnerDashboard()
+    if (current(token) && !result?.success) setError(t('apiKey.openFailed'))
   }, [t])
 
   const runValidation = useCallback(async (candidate) => {
@@ -111,113 +115,130 @@ export default function ApiKeyDialog({
       setValidation({ state: 'invalid', message: t('apiKey.pasteFirst') })
       return null
     }
+    if (/[\s\x00-\x1f\x7f]/.test(value) || value.length > 4096) {
+      setValidation({ state: 'invalid', message: 'Copy the full API key without spaces or control characters.' })
+      return { status: 'invalid' }
+    }
+    invalidate()
+    const token = version.current
     setValidating(true)
     setValidation({ state: 'checking', message: t('apiKey.checking') })
-    try {
-      abortRef.current?.abort?.()
-    } catch (_) { /* ignore */ }
     const controller = new AbortController()
     abortRef.current = controller
     try {
       const result = await validateComfyPartnerApiKey(value, { signal: controller.signal })
+      if (!current(token) || controller.signal.aborted) return null
       setValidation({
         state: result.status === 'valid' ? 'valid'
           : result.status === 'invalid' ? 'invalid'
           : 'unknown',
-        message: result.status === 'valid' ? t('apiKey.accepted') : (result.message || ''),
+        message: result.status === 'valid' ? t('apiKey.accepted') : result.status === 'invalid'
+          ? 'Comfy.org rejected that key. Check the full value and try again.'
+          : 'Could not verify this key. Retry Test, or explicitly save without verification.',
       })
       return result
-    } catch (err) {
-      setValidation({ state: 'unknown', message: err?.message || t('apiKey.validateFailed') })
+    } catch {
+      if (!current(token) || controller.signal.aborted) return null
+      setValidation({ state: 'unknown', message: t('apiKey.validateFailed') })
       return { status: 'unknown' }
     } finally {
-      setValidating(false)
+      if (current(token)) setValidating(false)
     }
   }, [t])
 
   const handleTest = useCallback(() => {
-    void runValidation(draftKey)
-  }, [draftKey, runValidation])
+    if (!operation.current && !loading) void runValidation(draftKey.trim() ? draftKey : existingKey)
+  }, [draftKey, existingKey, loading, runValidation])
 
   const handleSave = useCallback(async () => {
-    const value = String(draftKey || '').trim()
+    if (operation.current || loading || validating) return
+    const useExisting = guided && !String(draftKey || '').trim() && Boolean(existingKey)
+    const value = String(useExisting ? existingKey : draftKey || '').trim()
     if (!value) {
       setError(t('apiKey.pasteBeforeSave'))
       return
     }
+    const request = {}; operation.current = request
     setSaving(true)
     setError('')
-    // If we haven't validated yet, try once — but don't block save on
-    // "unknown" outcomes (offline, ambiguous endpoint, etc.).
-    let finalState = validation.state
-    if (validation.state === 'idle' || validation.state === 'checking') {
-      const result = await runValidation(value)
-      finalState = result?.status === 'valid' ? 'valid'
-        : result?.status === 'invalid' ? 'invalid'
-        : 'unknown'
-    }
-    if (finalState === 'invalid') {
-      setSaving(false)
-      return
-    }
     try {
-      await saveComfyPartnerApiKey(value)
-      setSaving(false)
-      onSaved?.(value)
-      onClose?.()
-    } catch (err) {
-      setSaving(false)
-      setError(err?.message || t('apiKey.saveFailed'))
+      let finalState = validation.state
+      if (finalState === 'idle' || finalState === 'checking') {
+        const result = await runValidation(value)
+        if (!result || !alive.current) return
+        finalState = result.status === 'valid' ? 'valid' : result.status === 'invalid' ? 'invalid' : 'unknown'
+        // An ambiguous validation never silently becomes a verified save.
+        // A second explicit click, labelled accordingly, may save unknown.
+        if (finalState === 'unknown') return
+      }
+      if (finalState === 'invalid' || !alive.current) return
+      const token = version.current
+      const result = onPersist ? await onPersist({ key: value, validation: finalState, useExisting }) : await saveComfyPartnerApiKey(value)
+      if (!current(token)) return
+      if (result?.success !== true) throw new Error('Save failed')
+      if (!onPersist) onSaved?.(value)
+      setDraftKey(''); setExistingKey(''); setShowKey(false)
+      alive.current = false; invalidate()
+      closeRef.current?.({ outcome: 'saved', validation: finalState })
+    } catch { if (alive.current) setError(t('apiKey.saveFailed')) }
+    finally {
+      if (operation.current === request) operation.current = null
+      if (alive.current) setSaving(false)
     }
-  }, [draftKey, onClose, onSaved, runValidation, t, validation.state])
+  }, [draftKey, existingKey, guided, loading, validating, onPersist, onSaved, runValidation, t, validation.state])
 
   const handleRemove = useCallback(async () => {
+    if (operation.current || loading) return
+    invalidate(); setValidating(false)
+    const token = version.current, request = {}; operation.current = request
     setSaving(true)
     setError('')
     try {
-      await clearComfyPartnerApiKey()
+      const result = onPersist ? await onPersist({ key: '', validation: 'unknown' }) : await clearComfyPartnerApiKey()
+      if (!current(token)) return
+      if (result?.success !== true) throw new Error('Remove failed')
       setExistingKey('')
       setDraftKey('')
       setValidation({ state: 'idle', message: '' })
-      setSaving(false)
-      onSaved?.('')
-    } catch (err) {
-      setSaving(false)
-      setError(err?.message || t('apiKey.removeFailed'))
+      if (!onPersist) onSaved?.('')
+      else { alive.current = false; invalidate(); closeRef.current?.({ outcome: 'removed', validation: 'unknown' }) }
+    } catch { if (current(token)) setError(t('apiKey.removeFailed')) }
+    finally {
+      if (operation.current === request) operation.current = null
+      if (alive.current) setSaving(false)
     }
-  }, [onSaved, t])
-
-  if (!open) return null
+  }, [loading, onPersist, onSaved, t])
 
   const hasDraft = Boolean(String(draftKey || '').trim())
   const hasExisting = Boolean(String(existingKey || '').trim())
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 px-4"
-      onClick={onClose}
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 px-3 py-4"
+      onClick={close}
     >
       <div
-        className="w-full max-w-lg rounded-2xl border border-sf-dark-600 bg-sf-dark-950 shadow-2xl"
+        ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} tabIndex={-1}
+        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-sf-dark-600 bg-sf-dark-950 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-sf-dark-700 px-5 py-4">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-sf-dark-700 px-4 py-4">
           <div className="flex items-start gap-3">
             <div className="rounded-lg bg-sf-dark-800 p-2">
               <KeyRound className="h-4 w-4 text-sf-accent" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-sf-text-primary">
+              <h2 id={titleId} className="text-base font-semibold text-sf-text-primary">
                 {headline || t('apiKey.title')}
               </h2>
-              <p className="mt-1 text-xs text-sf-text-muted">
+              <p id={descriptionId} className="mt-1 text-xs text-sf-text-muted">
                 {subhead || t('apiKey.subtitle')}
               </p>
             </div>
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={close}
             className="rounded-lg p-1.5 text-sf-text-muted transition-colors hover:bg-sf-dark-800 hover:text-sf-text-primary"
             aria-label={t('common.close')}
           >
@@ -225,8 +246,8 @@ export default function ApiKeyDialog({
           </button>
         </div>
 
-        <div className="space-y-4 px-5 py-4">
-          <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 px-3 py-3">
+        <div className="min-h-0 space-y-4 overflow-y-auto px-4 py-4">
+          {guided ? <p className="text-xs text-sf-text-muted">This key enables paid Partner/API nodes through your local ComfyUI server. It is optional for local editing. Saving it does not buy credits, start a generation, or change your spending settings.</p> : <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/70 px-3 py-3">
             <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sf-text-muted">
               {t('apiKey.unlocks')}
             </div>
@@ -241,17 +262,19 @@ export default function ApiKeyDialog({
             <p className="mt-2 text-[11px] text-sf-text-muted">
               {t('apiKey.coverage')}
             </p>
-          </div>
+          </div>}
+
+          {loading && <p role="status" className="text-xs text-sf-text-muted">Reading saved key…</p>}
 
           {hasExisting && !hasDraft && (
-            <div className="rounded-lg border border-green-500/30 bg-green-500/5 px-3 py-2.5">
+            <div className="rounded-lg border border-sf-dark-600 bg-sf-dark-900/70 px-3 py-2.5">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-2">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-400" />
+                  <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-sf-text-muted" aria-hidden="true" />
                   <div>
                     <div className="text-sm text-sf-text-primary">{t('apiKey.alreadySaved')}</div>
                     <div className="mt-0.5 font-mono text-[11px] text-sf-text-muted">
-                      {maskKey(existingKey)}
+                      {guided ? 'Saved on this computer. Test it before continuing.' : maskKey(existingKey)}
                     </div>
                   </div>
                 </div>
@@ -270,7 +293,7 @@ export default function ApiKeyDialog({
 
           <div>
             <div className="flex items-center justify-between gap-2">
-              <label className="text-xs font-medium text-sf-text-secondary" htmlFor="comfy-partner-key">
+              <label className="text-xs font-medium text-sf-text-secondary" htmlFor={inputId}>
                 {hasExisting ? t('apiKey.replacePrompt') : t('apiKey.pastePrompt')}
               </label>
               <button
@@ -285,20 +308,24 @@ export default function ApiKeyDialog({
             <div className="mt-1.5 flex gap-2">
               <div className="relative flex-1">
                 <input
-                  id="comfy-partner-key"
+                  id={inputId}
                   ref={inputRef}
                   type={showKey ? 'text' : 'password'}
                   autoComplete="off"
+                  maxLength={4096}
                   spellCheck={false}
+                  disabled={loading || saving}
                   value={draftKey}
                   onChange={(e) => {
+                    invalidate(); setValidating(false); setError('')
                     setDraftKey(e.target.value)
                     if (validation.state !== 'idle') {
                       setValidation({ state: 'idle', message: '' })
                     }
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !validating && !saving && hasDraft) {
+                    e.stopPropagation()
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing && !validating && !saving && hasDraft) {
                       e.preventDefault()
                       void handleSave()
                     }
@@ -319,34 +346,34 @@ export default function ApiKeyDialog({
               <button
                 type="button"
                 onClick={handleTest}
-                disabled={!hasDraft || validating || saving}
+                disabled={(!hasDraft && !hasExisting) || validating || saving || loading}
                 className="inline-flex items-center gap-1.5 rounded border border-sf-dark-600 bg-sf-dark-800 px-3 py-2 text-xs text-sf-text-secondary transition-colors hover:border-sf-dark-500 hover:text-sf-text-primary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                {t('apiKey.test')}
+                {!hasDraft && hasExisting ? 'Test saved key' : t('apiKey.test')}
               </button>
             </div>
 
             {validation.state === 'checking' && (
-              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-sf-text-muted">
+              <div role="status" className="mt-2 flex items-center gap-1.5 text-[11px] text-sf-text-muted">
                 <Loader2 className="h-3 w-3 animate-spin" />
                 {validation.message || t('apiKey.checkingShort')}
               </div>
             )}
             {validation.state === 'valid' && (
-              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-green-400">
+              <div role="status" className="mt-2 flex items-center gap-1.5 text-[11px] text-green-400">
                 <CheckCircle2 className="h-3 w-3" />
                 {validation.message}
               </div>
             )}
             {validation.state === 'invalid' && (
-              <div className="mt-2 flex items-start gap-1.5 text-[11px] text-sf-error">
+              <div role="alert" className="mt-2 flex items-start gap-1.5 text-[11px] text-sf-error">
                 <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
                 <span>{validation.message}</span>
               </div>
             )}
             {validation.state === 'unknown' && (
-              <div className="mt-2 flex items-start gap-1.5 text-[11px] text-yellow-300">
+              <div role="status" className="mt-2 flex items-start gap-1.5 text-[11px] text-yellow-300">
                 <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
                 <span>{validation.message}</span>
               </div>
@@ -354,19 +381,19 @@ export default function ApiKeyDialog({
           </div>
 
           {error && (
-            <div className="rounded border border-sf-error/40 bg-sf-error/10 px-3 py-2 text-[11px] text-sf-error">
+            <div role="alert" className="rounded border border-sf-error/40 bg-sf-error/10 px-3 py-2 text-[11px] text-sf-error">
               {error}
             </div>
           )}
 
           <div className="rounded-lg border border-sf-dark-700 bg-sf-dark-900/40 px-3 py-2.5 text-[11px] text-sf-text-muted">
-            {t('apiKey.storagePrefix')}{' '}
+            {guided ? 'Saved in Velorn’s settings on this computer. Used for Comfy key checks and Partner/API requests; never included in chat or agent tool results.' : <>{t('apiKey.storagePrefix')}{' '}
             <code className="rounded bg-sf-dark-800 px-1">api_key_comfy_org</code>{' '}
-            {t('apiKey.storageSuffix')}
+            {t('apiKey.storageSuffix')}</>}
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-t border-sf-dark-700 bg-sf-dark-900/40 px-5 py-3">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-sf-dark-700 bg-sf-dark-900/40 px-4 py-3">
           <a
             href={COMFY_PARTNER_DASHBOARD_URL}
             onClick={(event) => {
@@ -378,10 +405,10 @@ export default function ApiKeyDialog({
             <ExternalLink className="h-3 w-3" />
             platform.comfy.org
           </a>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={close}
               className="rounded border border-sf-dark-600 px-3 py-1.5 text-xs text-sf-text-secondary transition-colors hover:text-sf-text-primary hover:border-sf-dark-500"
             >
               {t('common.cancel')}
@@ -389,11 +416,12 @@ export default function ApiKeyDialog({
             <button
               type="button"
               onClick={() => { void handleSave() }}
-              disabled={!hasDraft || saving || validating || validation.state === 'invalid'}
+              disabled={(!hasDraft && !(guided && hasExisting)) || loading || saving || validating || validation.state === 'invalid'}
               className="inline-flex items-center gap-1.5 rounded bg-sf-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-sf-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              {hasExisting ? t('apiKey.replace') : t('apiKey.save')}
+              {validation.state === 'unknown' ? (!hasDraft && guided && hasExisting ? 'Use without verification' : 'Save without verification')
+                : !hasDraft && guided && hasExisting ? 'Use saved key' : hasExisting ? t('apiKey.replace') : t('apiKey.save')}
             </button>
           </div>
         </div>

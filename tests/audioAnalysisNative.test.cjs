@@ -152,7 +152,7 @@ test('IPC takes owner only from Electron, cancels on quit and preload exposes na
   const f = workerFixture(), app = new EventEmitter(), handlers = new Map(), sender = owner()
   registerAudioAnalysisHandlers({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, app, WorkerClass: f.FakeWorker })
   const pending = handlers.get('media:analyzeAudio')({ sender }, { source, ownerId: 999 })
-  app.emit('before-quit')
+  app.emit('will-quit')
   assert.equal((await pending).code, 'AUDIO_ANALYSIS_CANCELLED')
   const calls = [], exposed = {}, renderer = new EventEmitter()
   renderer.invoke = (...args) => { calls.push(args); return Promise.resolve({ success: true, analysis: { duration: 1 } }) }

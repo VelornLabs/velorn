@@ -1,0 +1,20 @@
+{
+  "76": { "class_type": "LoadImage", "_meta": { "title": "Reference image" }, "inputs": { "image": "reference.png" } },
+  "80": { "class_type": "ImageScaleToTotalPixels", "inputs": { "upscale_method": "nearest-exact", "megapixels": 1, "resolution_steps": 1, "image": ["76", 0] } },
+  "70": { "class_type": "UNETLoader", "inputs": { "unet_name": "flux-2-klein-4b-fp8.safetensors", "weight_dtype": "default" } },
+  "71": { "class_type": "CLIPLoader", "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "flux2", "device": "default" } },
+  "72": { "class_type": "VAELoader", "inputs": { "vae_name": "flux2-vae.safetensors" } },
+  "74": { "class_type": "CLIPTextEncode", "_meta": { "title": "Prompt" }, "inputs": { "text": "", "clip": ["71", 0] } },
+  "82": { "class_type": "ConditioningZeroOut", "inputs": { "conditioning": ["74", 0] } },
+  "122": { "class_type": "VAEEncode", "inputs": { "pixels": ["80", 0], "vae": ["72", 0] } },
+  "123": { "class_type": "ReferenceLatent", "inputs": { "conditioning": ["74", 0], "latent": ["122", 0] } },
+  "121": { "class_type": "ReferenceLatent", "inputs": { "conditioning": ["82", 0], "latent": ["122", 0] } },
+  "63": { "class_type": "CFGGuider", "inputs": { "cfg": 1, "model": ["70", 0], "positive": ["123", 0], "negative": ["121", 0] } },
+  "61": { "class_type": "KSamplerSelect", "inputs": { "sampler_name": "euler" } },
+  "62": { "class_type": "Flux2Scheduler", "inputs": { "steps": 4, "width": 1280, "height": 720 } },
+  "66": { "class_type": "EmptyFlux2LatentImage", "inputs": { "width": 1280, "height": 720, "batch_size": 1 } },
+  "73": { "class_type": "RandomNoise", "inputs": { "noise_seed": 0 } },
+  "64": { "class_type": "SamplerCustomAdvanced", "inputs": { "noise": ["73", 0], "guider": ["63", 0], "sampler": ["61", 0], "sigmas": ["62", 0], "latent_image": ["66", 0] } },
+  "65": { "class_type": "VAEDecode", "inputs": { "samples": ["64", 0], "vae": ["72", 0] } },
+  "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "image/Velorn_klein", "images": ["65", 0] } }
+}

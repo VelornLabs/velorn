@@ -6,6 +6,7 @@ import ExportWorkspaceLayout from './ExportWorkspaceLayout'
 import ExportPresetPicker from './ExportPresetPicker'
 import ExportReadinessPanel from './ExportReadinessPanel'
 import { DELIVERY_PRESETS, resolveDeliveryPresetSettings, resolveDeliveryResolution } from '../utils/exportDeliveryPresets.mjs'
+import { LEGACY_EXPORT_PRESETS as EXPORT_PRESETS } from '../utils/exportLegacyPresets.mjs'
 import { validateCustomExportPresetSettings } from '../utils/exportPresetLibrary.mjs'
 import { timeToFrameIndex } from '../utils/timelineFrames'
 import { formatExportOverviewTimecode } from '../utils/exportTimelineOverview.mjs'
@@ -13,6 +14,7 @@ import './ExportWorkspace.css'
 import useProjectStore, { RESOLUTION_PRESETS, FPS_PRESETS } from '../stores/projectStore'
 import useTimelineStore from '../stores/timelineStore'
 import useAssetsStore from '../stores/assetsStore'
+import useExportActivityStore, { beginLocalExportActivity, isExportBusy } from '../stores/exportActivityStore'
 import exportTimeline from '../services/exporter'
 import buildFcpXml from '../services/fcpxmlExporter'
 import buildPremiereXml from '../services/premiereXmlExporter'
@@ -209,109 +211,6 @@ const createDefaultExportSettings = (filename) => ({
   transparent: false,
 })
 
-const EXPORT_PRESETS = [
-  {
-    id: 'balanced-mp4',
-    label: 'Balanced MP4',
-    summary: 'Clean everyday export, project size, H.264.',
-    settings: {
-      format: 'mp4',
-      videoCodec: 'h264',
-      audioCodec: 'aac',
-      useHardwareEncoder: false,
-      preset: 'medium',
-      qualityMode: 'crf',
-      crf: 18,
-      resolution: 'project',
-      fps: 'project',
-      includeAudio: true,
-      audioBitrateKbps: 192,
-      useProxyMedia: false,
-      useDirectFramePipe: true,
-    },
-  },
-  {
-    id: 'fast-nvenc',
-    label: 'Fast NVENC',
-    summary: 'Fast H.264 delivery for NVIDIA systems.',
-    settings: {
-      format: 'mp4',
-      videoCodec: 'h264',
-      audioCodec: 'aac',
-      useHardwareEncoder: true,
-      nvencPreset: 'p5',
-      preset: 'fast',
-      qualityMode: 'crf',
-      crf: 19,
-      resolution: 'project',
-      fps: 'project',
-      includeAudio: true,
-      audioBitrateKbps: 192,
-      useProxyMedia: false,
-      useDirectFramePipe: true,
-    },
-  },
-  {
-    id: 'proxy-review',
-    label: 'Proxy Review',
-    summary: 'Quick review file using proxies and half-res.',
-    settings: {
-      format: 'mp4',
-      videoCodec: 'h264',
-      audioCodec: 'aac',
-      useHardwareEncoder: true,
-      nvencPreset: 'p3',
-      preset: 'veryfast',
-      qualityMode: 'crf',
-      crf: 23,
-      resolution: 'timeline-half',
-      fps: 'project',
-      includeAudio: true,
-      audioBitrateKbps: 160,
-      useProxyMedia: true,
-      useDirectFramePipe: true,
-    },
-  },
-  {
-    id: 'small-h265',
-    label: 'Small H.265',
-    summary: 'Smaller MP4 for sharing, slower decode.',
-    settings: {
-      format: 'mp4',
-      videoCodec: 'h265',
-      audioCodec: 'aac',
-      useHardwareEncoder: true,
-      nvencPreset: 'p5',
-      preset: 'medium',
-      qualityMode: 'crf',
-      crf: 22,
-      resolution: 'project',
-      fps: 'project',
-      includeAudio: true,
-      audioBitrateKbps: 192,
-      useProxyMedia: false,
-      useDirectFramePipe: true,
-    },
-  },
-  {
-    id: 'prores-hq',
-    label: 'ProRes HQ',
-    summary: 'Large editor-friendly MOV master.',
-    settings: {
-      format: 'prores',
-      videoCodec: 'prores',
-      audioCodec: 'aac',
-      proresProfile: '3',
-      useHardwareEncoder: false,
-      resolution: 'project',
-      fps: 'project',
-      includeAudio: true,
-      audioBitrateKbps: 320,
-      useProxyMedia: false,
-      useDirectFramePipe: true,
-    },
-  },
-]
 
 // FFmpeg prores_ks profile: 0=proxy, 1=lt, 2=standard, 3=hq, 4=4444
 const PRORES_PROFILES = [
@@ -387,6 +286,7 @@ function ExportField({ id, label, children }) {
 }
 
 function ExportPanel({ active = true }) {
+  const globalExportBusy = useExportActivityStore(state => Boolean(state.activeJob || state.localActivity))
   const { t } = useI18n()
   const {
     currentProject,
@@ -430,6 +330,17 @@ function ExportPanel({ active = true }) {
   const [externalExportNotice, setExternalExportNotice] = useState(null)
   const [etaSeconds, setEtaSeconds] = useState(null)
   const [renderFps, setRenderFps] = useState(null)
+  const activityLeasesRef = useRef(new Set())
+  const exportStopRequestedRef = useRef(false)
+  useEffect(() => {
+    for (const lease of activityLeasesRef.current) lease.update({
+      status: exportStatus, progress: { status: exportStatus, progress: exportProgress }, etaSeconds,
+    })
+  }, [exportStatus, exportProgress, etaSeconds])
+  useEffect(() => () => {
+    for (const lease of activityLeasesRef.current) lease.end()
+    activityLeasesRef.current.clear()
+  }, [])
   const [rtxReadiness, setRtxReadiness] = useState({
     status: 'idle',
     ready: false,
@@ -701,11 +612,30 @@ function ExportPanel({ active = true }) {
   // worker exports are cancelled through the main process instead.
   const exportAbortRef = useRef(null)
   const handleStopExport = async () => {
+    exportStopRequestedRef.current = true
+    if (queueControllerRef.current.running) {
+      queueControllerRef.current.paused = true
+      setQueuePauseRequested(true)
+    }
     setExportStatus('Stopping export...')
     exportAbortRef.current?.abort()
-    try {
-      await window.electronAPI?.cancelExport?.()
-    } catch { /* worker already finished or gone */ }
+    const result = await window.electronAPI?.cancelExport?.()
+    if (result?.success === false) throw new Error(result.error || 'Could not stop export.')
+    return result
+  }
+
+  const acquireExportActivity = (status) => {
+    const pauseAfterCurrent = queueControllerRef.current.running ? () => {
+      queueControllerRef.current.paused = true
+      setQueuePauseRequested(true)
+      for (const item of activityLeasesRef.current) item.update({ pauseRequested: true })
+    } : null
+    const lease = beginLocalExportActivity({ status, cancel: handleStopExport, pauseAfterCurrent })
+    activityLeasesRef.current.add(lease)
+    return () => { activityLeasesRef.current.delete(lease); lease.end() }
+  }
+  const checkExportStopped = () => {
+    if (exportStopRequestedRef.current) throw new Error('Export cancelled')
   }
 
   const handleSettingChange = (key, value) => {
@@ -943,6 +873,7 @@ function ExportPanel({ active = true }) {
     setQueueRunning(true)
     setQueuePaused(false)
     setQueuePauseRequested(false)
+    const releaseActivity = acquireExportActivity('Preparing export queue…')
     
     try {
       while (true) {
@@ -964,6 +895,7 @@ function ExportPanel({ active = true }) {
         }
       }
     } finally {
+      releaseActivity()
       queueControllerRef.current.running = false
       setQueueRunning(false)
       setQueuePaused(queueControllerRef.current.paused)
@@ -972,7 +904,7 @@ function ExportPanel({ active = true }) {
   }
 
   const handleStartQueue = () => {
-    if (isExporting || isXmlExporting || queueRunning || !queueRef.current.some(item => item.status === 'queued')) return
+    if (isExporting || isXmlExporting || queueRunning || isExportBusy() || !queueRef.current.some(item => item.status === 'queued')) return
     runQueue()
   }
 
@@ -983,7 +915,7 @@ function ExportPanel({ active = true }) {
   }
 
   const handleResumeQueue = () => {
-    if (isExporting || isXmlExporting || queueRunning || !queueRef.current.some(item => item.status === 'queued')) return
+    if (isExporting || isXmlExporting || queueRunning || isExportBusy() || !queueRef.current.some(item => item.status === 'queued')) return
     queueControllerRef.current.paused = false
     setQueuePaused(false)
     setQueuePauseRequested(false)
@@ -1182,6 +1114,18 @@ function ExportPanel({ active = true }) {
   }, [clips, transitions, tracks, settings, getCurrentTimelineSettings, nvencStatus, proxyCoverage, t])
 
   const runExportJob = async (jobSettings, labelOverride = null) => {
+    exportStopRequestedRef.current = false
+    const releaseActivity = acquireExportActivity('Preparing export…')
+    try {
+      return await runExportJobInternal(jobSettings, labelOverride)
+    } finally {
+      exportAbortRef.current = null
+      setIsExporting(false)
+      releaseActivity()
+    }
+  }
+
+  const runExportJobInternal = async (jobSettings, labelOverride = null) => {
     const isPngSequence = jobSettings.format === 'png-seq'
     const isGif = jobSettings.format === 'gif'
     const isVisualOnlyFormat = isPngSequence || isGif
@@ -1212,11 +1156,14 @@ function ExportPanel({ active = true }) {
     setExportError(null)
     setExportResult(null)
     setExternalExportNotice(null)
+    setExportProgress(0)
+    setExportStatus('Preparing export…')
     setIsExporting(true)
 
     if (shouldRunRtxUpscale) {
       setExportStatus('Checking the direct NVIDIA RTX runtime...')
       const readiness = await handleCheckRtxSetup()
+      checkExportStopped()
       if (!readiness.ready) {
         setIsExporting(false)
         throw new Error(readiness.error || 'The NVIDIA RTX runtime is not ready.')
@@ -1270,6 +1217,7 @@ function ExportPanel({ active = true }) {
         if (createRendersResult?.success === false) {
           throw new Error(createRendersResult.error || 'Could not create the project renders folder.')
         }
+        checkExportStopped()
 
         let finalOutputPath
         if (isPngSequence) {
@@ -1310,6 +1258,7 @@ function ExportPanel({ active = true }) {
             throw new Error('Export cancelled')
           }
         }
+        checkExportStopped()
         const sourceOutputPath = shouldRunRtxUpscale
           ? await window.electronAPI.pathJoin(outputFolder, `.velorn-rtx-source-${Date.now()}.mp4`)
           : finalOutputPath
@@ -1324,7 +1273,10 @@ function ExportPanel({ active = true }) {
             }
           : null
         const state = {
-          timeline: { clips, tracks, transitions },
+          timeline: { clips, tracks, transitions,
+            timelineFps: useTimelineStore.getState().timelineFps,
+            masterAudioVolume: useTimelineStore.getState().masterAudioVolume,
+            masterAudioInserts: useTimelineStore.getState().masterAudioInserts },
           assets: assets.map((a) => ({
             id: a.id,
             path: a.path,
@@ -1350,6 +1302,7 @@ function ExportPanel({ active = true }) {
         // unhandled rejection while we are still awaiting startup.
         workerExportCompletion.catch(() => {})
         const completionRecord = { jobId, resolve: resolveWorkerExport, reject: rejectWorkerExport }
+        checkExportStopped()
         workerExportCompletionRef.current = completionRecord
         const workerStart = await window.electronAPI.runExportInWorker({
           jobId,
@@ -1371,6 +1324,9 @@ function ExportPanel({ active = true }) {
           }
           throw new Error('Could not correlate the export worker job. Restart Velorn and try again.')
         }
+        // Cancel pressed while native startup was in flight still owns this
+        // completion promise; keep the lock until the worker acknowledges it.
+        if (exportStopRequestedRef.current) await window.electronAPI.cancelExport?.()
         return await workerExportCompletion
       } catch (err) {
         workerExportCompletionRef.current = null
@@ -1401,6 +1357,7 @@ function ExportPanel({ active = true }) {
       throw new Error(`${isGif ? 'Animated GIF' : 'PNG image sequence'} export is available in the Velorn desktop app.`)
     }
 
+    checkExportStopped()
     const directAbortController = new AbortController()
     exportAbortRef.current = directAbortController
     const result = await exportTimeline({ ...options, signal: directAbortController.signal }, (progress) => {
@@ -1438,7 +1395,7 @@ function ExportPanel({ active = true }) {
   }
 
   const handleStartExport = async () => {
-    if (isExporting || isXmlExporting || queueRunning) return
+    if (isExporting || isXmlExporting || queueRunning || isExportBusy()) return
     try {
       await runExportJob(settings)
     } catch (err) {
@@ -1450,7 +1407,7 @@ function ExportPanel({ active = true }) {
   }
 
   const handleExportXml = async () => {
-    if (isExporting || queueRunning || isXmlExporting) return
+    if (isExporting || queueRunning || isXmlExporting || isExportBusy()) return
     if (!window.electronAPI?.writeFile || !window.electronAPI?.saveFileDialog || !window.electronAPI?.pathJoin) {
       setExportError(`${xmlExportConfig.progressLabel} export is only available in the desktop app.`)
       return
@@ -1467,6 +1424,8 @@ function ExportPanel({ active = true }) {
     setEtaSeconds(null)
     setRenderFps(null)
     setExportStatus(`Preparing ${xmlExportConfig.progressLabel}...`)
+    exportStopRequestedRef.current = false
+    const releaseActivity = acquireExportActivity(`Preparing ${xmlExportConfig.progressLabel}…`)
 
     try {
       if ((clips || []).some(clip => clip?.type === 'compound' || clip?.compound || clip?.compoundParentId)) {
@@ -1527,6 +1486,7 @@ function ExportPanel({ active = true }) {
         return
       }
 
+      checkExportStopped()
       const writeResult = await window.electronAPI.writeFile(outputPath, xml, { encoding: 'utf8' })
       if (!writeResult?.success) {
         throw new Error(writeResult?.error || `Failed to write ${xmlExportConfig.progressLabel} file.`)
@@ -1543,6 +1503,7 @@ function ExportPanel({ active = true }) {
       setExportStatus(`${xmlExportConfig.progressLabel} export failed`)
     } finally {
       setIsXmlExporting(false)
+      releaseActivity()
     }
   }
 
@@ -1556,7 +1517,7 @@ function ExportPanel({ active = true }) {
   const effectiveRangeMode = settings.range === 'inout' && inPoint !== null && outPoint !== null ? 'inout' : 'full'
   const collapsedMarkedRange = effectiveRangeMode === 'inout' && range.end === range.start
   const hasContent = clips.length > 0 && range.end > range.start
-  const previewBusy = isExporting || isXmlExporting || queueRunning
+  const previewBusy = isExporting || isXmlExporting || queueRunning || globalExportBusy
   const visualOnly = settings.format === 'png-seq' || settings.format === 'gif'
   const visualExport = settings.format !== 'audio'
   const pendingCount = queue.filter(item => item.status === 'queued').length
@@ -1633,7 +1594,8 @@ function ExportPanel({ active = true }) {
           <div className="space-y-3">
             <ExportPresetPicker presets={allExportPresets} activePresetId={activeExportPresetId}
               hardwareLabel={hardwareLabel} onApply={handleApplyExportPreset} settings={settings}
-              active={active} sessionKey={settingsStorageKey} />
+              active={active} sessionKey={settingsStorageKey}
+              tall={presetTimelineSettings.height > presetTimelineSettings.width} />
             <ExportField id="export-filename" label={t('export.filename')}>
               <input id="export-filename" type="text" value={settings.filename} placeholder={defaultFilename}
                 onChange={event => handleSettingChange('filename', event.target.value)} />
@@ -1923,7 +1885,7 @@ function ExportPanel({ active = true }) {
               onClick={handleStartExport} disabled={previewBusy || !hasContent}>
               <Download className="h-3.5 w-3.5" />{isExporting ? t('export.exporting') : queueRunning ? t('export.queueRunning') : t('export.workspace.exportNow', undefined, 'Export now')}
             </button>
-            {isExporting && <button type="button" data-testid="export-stop" onClick={handleStopExport} className="export-action !border-sf-error/50 !text-sf-error">
+            {isExporting && <button type="button" data-testid="export-stop" onClick={() => { void handleStopExport().catch(error => setExportError(error.message)) }} className="export-action !border-sf-error/50 !text-sf-error">
               <Square className="h-3.5 w-3.5" />{t('export.stop')}
             </button>}
           </div>

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useLayoutEffect, useRef } from 'react'
 
 function ResizeHandle({ 
   direction = 'horizontal', // 'horizontal' (left-right) or 'vertical' (up-down)
@@ -6,42 +6,47 @@ function ResizeHandle({
   className = ''
 }) {
   const [isDragging, setIsDragging] = useState(false)
+  const dragRef = useRef(null)
 
-  const handleMouseDown = useCallback((e) => {
-    e.preventDefault()
+  const finishDrag = useCallback((updateState = true) => {
+    const drag = dragRef.current
+    if (!drag) return
+    dragRef.current = null
+    drag.window.removeEventListener('blur', drag.onBlur)
+    for (const [key, value, priority] of drag.previousStyles) {
+      if (value) drag.style.setProperty(key, value, priority)
+      else drag.style.removeProperty(key)
+    }
+    try {
+      if (drag.element.hasPointerCapture(drag.pointerId)) drag.element.releasePointerCapture(drag.pointerId)
+    } catch { /* A workspace change may already have detached the handle. */ }
+    if (updateState) setIsDragging(false)
+  }, [])
+
+  const handlePointerDown = useCallback(event => {
+    if (event.button !== 0 || event.isPrimary === false || dragRef.current) return
+    const element = event.currentTarget
+    // Capture keeps movement/release in this document over embedded ComfyUI,
+    // and supports touch/pen without adding listeners inside another frame.
+    try { element.setPointerCapture(event.pointerId) } catch { return }
+    event.preventDefault()
+    const ownerWindow = element.ownerDocument.defaultView
+    const style = element.ownerDocument.body.style
+    const onBlur = () => finishDrag()
+    dragRef.current = { element, pointerId: event.pointerId, window: ownerWindow, style, onBlur,
+      previousStyles: ['cursor', 'user-select'].map(key => [key, style.getPropertyValue(key), style.getPropertyPriority(key)]) }
+    style.setProperty('user-select', 'none')
+    style.setProperty('cursor', direction === 'horizontal' ? 'col-resize' : 'row-resize')
+    ownerWindow.addEventListener('blur', onBlur)
     setIsDragging(true)
-  }, [])
+  }, [direction, finishDrag])
 
-  const handleMouseMove = useCallback((e) => {
-    if (!isDragging) return
-    
-    if (direction === 'horizontal') {
-      onResize(e.clientX)
-    } else {
-      onResize(e.clientY)
-    }
-  }, [isDragging, direction, onResize])
+  const resizeFromPointer = useCallback(event => {
+    if (dragRef.current?.pointerId !== event.pointerId) return
+    onResize(direction === 'horizontal' ? event.clientX : event.clientY)
+  }, [direction, onResize])
 
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false)
-  }, [])
-
-  useEffect(() => {
-    if (isDragging) {
-      window.addEventListener('mousemove', handleMouseMove)
-      window.addEventListener('mouseup', handleMouseUp)
-      // Prevent text selection while dragging
-      document.body.style.userSelect = 'none'
-      document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize'
-    }
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-      document.body.style.userSelect = ''
-      document.body.style.cursor = ''
-    }
-  }, [isDragging, handleMouseMove, handleMouseUp, direction])
+  useLayoutEffect(() => () => finishDrag(false), [finishDrag])
 
   const baseStyles = direction === 'horizontal' 
     ? 'w-1 cursor-col-resize hover:bg-sf-accent/50 active:bg-sf-accent' 
@@ -49,12 +54,24 @@ function ResizeHandle({
 
   return (
     <div
-      onMouseDown={handleMouseDown}
+      onPointerDown={handlePointerDown}
+      onPointerMove={event => {
+        if (dragRef.current?.pointerId !== event.pointerId) return
+        if (event.pointerType === 'mouse' && event.buttons === 0) { finishDrag(); return }
+        try { resizeFromPointer(event) } catch (error) { finishDrag(); throw error }
+      }}
+      onPointerUp={event => {
+        if (dragRef.current?.pointerId !== event.pointerId) return
+        try { resizeFromPointer(event) } finally { finishDrag() }
+      }}
+      onPointerCancel={event => { if (dragRef.current?.pointerId === event.pointerId) finishDrag() }}
+      onLostPointerCapture={event => { if (dragRef.current?.pointerId === event.pointerId) finishDrag() }}
       className={`
         ${baseStyles}
         ${isDragging ? 'bg-sf-accent' : 'bg-transparent'}
         transition-colors duration-150
         flex-shrink-0
+        touch-none
         z-10
         group
         ${className}

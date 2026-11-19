@@ -446,7 +446,7 @@ export default function WorkflowBrowser({
             )}
             {customLibrary.workflows.length === 0 ? (
               <div className="rounded-xl border border-dashed border-sf-dark-600 bg-sf-dark-800/60 px-4 py-6 text-center text-xs text-sf-text-muted">
-                Open any workflow in the ComfyUI tab and hit "Save to Velorn" — it will show up here
+                Open any workflow in the ComfyUI tab and hit "Save workflow" — it will show up here
                 as a one-click launcher.
               </div>
             ) : (

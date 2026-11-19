@@ -241,6 +241,7 @@ Length: 3
 Shot 2: First verse close-up
 Start at: 0:03
 Artist: rose
+Place: car
 Lyric moment: "You paint your eyelids with correction fluid moons"
 Shot type: performance
 Keyframe prompt: Close-up of the singer in the driver's seat, interior dim, a single warm key light across the face, eyes fixed forward on the road.
@@ -251,6 +252,7 @@ Length: 4
 Shot 3: Pre-chorus build
 Start at: 0:07
 Artist: jake
+Place: car
 Lyric moment: "Swollen sound inside my head"
 Shot type: performance_wide
 Keyframe prompt: Three-quarter wide of the singer framed by the car interior, blurred neon signs streaming past through the rear window.
@@ -276,11 +278,12 @@ Motion prompt: Camera holds steady, taillights extend and fade as the car pulls 
 Camera: Locked overhead, static
 Length: 2
 
-# Tip: "Start at:" is authoritative — if you paste an SRT, use the real
-# timing from it. "Artist:" matches your Cast roster by slug ("rose",
-# "jake") or by "both" / "all" / "band" to feature every cast member.
-# The script is the creative source of truth: put story, setting, wardrobe,
-# lighting, color palette, continuity, and camera style directly in each
+# Tip: "Start at:" decides when a shot begins. Use the times from your lyrics.
+# "Artist:" is the name of someone in your cast ("rose", "jake"), or
+# "both" / "all" / "band" for everyone.
+# "Place:" is the name of one of your places ("car"). Leave the line out
+# for a shot filmed anywhere else.
+# Put the story, setting, clothes, lighting and colours directly in each
 # Keyframe prompt and Motion prompt.
 # You can also drop [Rose] / [Jake] / [Rose, Jake] tag lines above verses
 # in the lyrics and shots pick up the nearest tag automatically.`
@@ -935,12 +938,26 @@ export function parseTimedLyrics(rawText = '') {
  * 4+ consecutive words) but returns the whole timed entry so the planner
  * gets startSec directly. Returns null when no confident match.
  */
-export function findTimedLyricLineByText(hint = '', timedLines = []) {
+export function findTimedLyricLineByText(hint = '', timedLines = [], { nearSeconds = null } = {}) {
   if (!Array.isArray(timedLines) || timedLines.length === 0) return null
   const texts = timedLines.map((l) => l?.text || '')
   const idx = findLyricLineIndex(hint, texts)
   if (idx < 0 || idx >= timedLines.length) return null
-  return timedLines[idx]
+  // A line that is sung more than once (a chorus, a repeated phrase) matches
+  // in several places, and the search above stops at the first. When the
+  // caller knows roughly when the shot belongs (`nearSeconds`, the script's
+  // "Start at"), take the repeat nearest to that moment. Without it, two shots
+  // on a repeated line both landed on its first appearance (found 2026-11-12).
+  const wanted = Number(nearSeconds)
+  if (nearSeconds === null || nearSeconds === undefined || !Number.isFinite(wanted)) return timedLines[idx]
+  const plain = (text) => String(text || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  const same = plain(texts[idx])
+  let best = timedLines[idx]
+  for (const line of timedLines) {
+    if (plain(line?.text) !== same || typeof line?.startSec !== 'number') continue
+    if (typeof best?.startSec !== 'number' || Math.abs(line.startSec - wanted) < Math.abs(best.startSec - wanted)) best = line
+  }
+  return best
 }
 
 /**

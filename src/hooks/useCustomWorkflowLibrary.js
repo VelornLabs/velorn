@@ -19,7 +19,9 @@ export function useCustomWorkflowLibrary(enabled = false) {
 
   useEffect(() => {
     if (!enabled) return undefined
-    void loadCustomWorkflowLibrary().then(refresh)
+    // Read the folder again each time a list opens, so a workflow saved or
+    // removed elsewhere shows without restarting Velorn.
+    void loadCustomWorkflowLibrary({ refresh: true }).then(refresh)
     window.addEventListener(CUSTOM_WORKFLOW_LIBRARY_CHANGED_EVENT, refresh)
     return () => window.removeEventListener(CUSTOM_WORKFLOW_LIBRARY_CHANGED_EVENT, refresh)
   }, [enabled, refresh])

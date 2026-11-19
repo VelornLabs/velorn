@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Play,
   StopCircle,
@@ -14,6 +14,7 @@ import {
   Maximize2,
 } from 'lucide-react'
 import ComfyLauncherLogViewer from './ComfyLauncherLogViewer'
+import ComfyConnectionSetup from './ComfyConnectionSetup'
 import { useI18n } from '../i18n/I18nContext'
 
 import {
@@ -170,7 +171,10 @@ function ComfyLauncherChip() {
   }, [open])
 
   const stateStyle = STATE_STYLES[state.state] || STATE_STYLES.unknown
-  const stateLabel = t(`launcherChip.states.${STATE_STYLES[state.state] ? state.state : 'unknown'}`)
+  const connectedExternally = state.ownership === 'external' || state.state === 'external'
+  const stateLabel = connectedExternally
+    ? t('launcherChip.connectedExternally', {}, 'Connected externally')
+    : t(`launcherChip.states.${STATE_STYLES[state.state] ? state.state : 'unknown'}`)
   const isMacPlatform = window?.electronAPI?.platform === 'darwin'
   const launcherMode = config.launcherMode === 'mac-app' ? 'mac-app' : 'script'
 
@@ -178,14 +182,14 @@ function ComfyLauncherChip() {
     if (!available) return t('launcherChip.summary.unavailable')
     if (state.state === 'running' && state.ownership === 'app') {
       const uptime = formatUptime(state.uptimeMs || Math.max(0, Date.now() - state.startedAt))
-      return `Running via ComfyUI.app${uptime ? ` - up ${uptime}` : ''}`
+      return t('launcherChip.summary.managedApp', { uptime: uptime ? ` · ${uptime}` : '' }, 'Connected · ComfyUI.app managed by Velorn{{uptime}}')
     }
     if (state.state === 'running' && state.ownership === 'ours') {
       const uptime = formatUptime(state.uptimeMs || Math.max(0, Date.now() - state.startedAt))
-      return t('launcherChip.summary.running', { pid: state.pid ?? '?', uptime: uptime ? ` • ${t('launcherChip.summary.up')} ${uptime}` : '' })
+      return t('launcherChip.summary.managed', { uptime: uptime ? ` · ${uptime}` : '' }, 'Connected · managed by Velorn{{uptime}}')
     }
-    if (state.state === 'external') {
-      return t('launcherChip.summary.external', { endpoint: state.httpBase || 'local ComfyUI' })
+    if (connectedExternally) {
+      return t('launcherChip.summary.connectedExternal', { endpoint: state.httpBase || 'ComfyUI' }, 'Connected at {{endpoint}} · startup managed outside Velorn')
     }
     if (state.state === 'starting') return state.statusMessage || 'Starting ComfyUI…'
     if (state.state === 'stopping') return state.statusMessage || 'Stopping ComfyUI…'
@@ -193,7 +197,7 @@ function ComfyLauncherChip() {
     if (state.state === 'stopped') return state.statusMessage || 'ComfyUI is stopped.'
     if (state.state === 'idle') return t('launcherChip.summary.notRunning')
     return t('launcherChip.summary.unknown')
-  }, [available, state, t])
+  }, [available, state, connectedExternally, t])
 
   const wrap = async (action) => {
     setBusy(true)
@@ -231,8 +235,15 @@ function ComfyLauncherChip() {
 
   const handleUseCandidate = async (candidate) => {
     if (!candidate?.path) return
-    await updateComfyLauncherConfig({ launcherMode: 'script', launcherScript: candidate.path })
-    setConfig((prev) => ({ ...prev, launcherMode: 'script', launcherScript: candidate.path }))
+    if (candidate.launcherMode === 'mac-app' && !isMacPlatform) return
+    const partial = candidate.launcherMode === 'mac-app'
+      ? { launcherMode: 'mac-app', macAppPath: candidate.path }
+      : { launcherMode: 'script', launcherScript: candidate.path }
+    await wrap(async () => {
+      const result = await updateComfyLauncherConfig(partial)
+      if (result?.success !== false) setConfig((prev) => ({ ...prev, ...partial, ...(result?.config || {}) }))
+      return result
+    })
   }
 
   const handleOpenLogFile = async () => {
@@ -244,6 +255,10 @@ function ComfyLauncherChip() {
   const canStart = (state.state === 'idle' || state.state === 'stopped' || state.state === 'crashed' || state.state === 'unknown') && hasLauncherTarget
   const canStop = state.state === 'running' && (state.ownership === 'ours' || canControlMacApp)
   const canRestart = state.state === 'running' && (state.ownership === 'ours' || canControlMacApp)
+  const showConnectionSetup = (!hasLauncherTarget || (state.state !== 'running' && !connectedExternally))
+    && state.state !== 'starting' && state.state !== 'stopping'
+  const usableCandidates = candidates.filter(candidate => candidate?.path
+    && (candidate.launcherMode === 'mac-app' ? isMacPlatform : !candidate.launcherMode || candidate.launcherMode === 'script'))
 
   if (!available) return null
 
@@ -262,7 +277,7 @@ function ComfyLauncherChip() {
       </button>
 
       {open && (
-        <div className={`absolute ${popoverAnchor === 'left' ? 'left-0' : 'right-0'} top-[110%] z-50 w-[380px] bg-sf-dark-900 border border-sf-dark-700 rounded-lg shadow-2xl overflow-hidden`}>
+        <div className={`absolute ${popoverAnchor === 'left' ? 'left-0' : 'right-0'} top-[110%] z-50 w-[380px] max-w-[calc(100vw-16px)] max-h-[calc(100vh-80px)] overflow-y-auto bg-sf-dark-900 border border-sf-dark-700 rounded-lg shadow-2xl`}>
           <div className="px-3.5 py-3 border-b border-sf-dark-700 flex items-start gap-2">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
@@ -281,6 +296,12 @@ function ComfyLauncherChip() {
               <Loader2 className={`w-3.5 h-3.5 ${busy ? 'animate-spin' : ''}`} />
             </button>
           </div>
+
+          {showConnectionSetup && (
+            <div className="px-3.5 py-3 border-b border-sf-dark-700">
+              <ComfyConnectionSetup compact />
+            </div>
+          )}
 
           <div className="px-3.5 py-3 space-y-2.5 border-b border-sf-dark-700">
             <div className="flex gap-2">
@@ -313,12 +334,12 @@ function ComfyLauncherChip() {
               </button>
             </div>
 
-            {state.state === 'external' && (
+            {connectedExternally && (
               <div className="flex items-start gap-2 rounded-md bg-sky-500/10 border border-sky-500/30 px-2.5 py-2 text-[11px] text-sky-200">
                 <ExternalLink className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <div>
-                    ComfyUI is already running but Velorn can't identify its process, so Stop and Restart are disabled. This usually means netstat/lsof isn't available. Try "Take control" to retry, or stop it from the window you started it from.
+                    {t('launcherChip.externalConnectionHelp', {}, 'ComfyUI is connected. You can generate normally. Use its app or terminal to stop or restart it, or recheck whether Velorn can safely manage it.')}
                   </div>
                   <div className="mt-1.5">
                     <button
@@ -327,7 +348,7 @@ function ComfyLauncherChip() {
                       disabled={busy}
                       className="px-2 py-1 rounded bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/40 text-sky-50 text-[10.5px] font-semibold disabled:opacity-50"
                     >
-                      Take control
+                      {t('launcherChip.recheckControls', {}, 'Recheck controls')}
                     </button>
                   </div>
                 </div>
@@ -384,6 +405,13 @@ function ComfyLauncherChip() {
             )}
           </div>
 
+          <details open={hasLauncherTarget} className="border-b border-sf-dark-700">
+            <summary className="cursor-pointer px-3.5 py-3 text-xs font-medium text-sf-text-primary">
+              {t('launcherChip.optionalStartup', {}, 'Let Velorn start ComfyUI (optional)')}
+            </summary>
+            <p className="px-3.5 pb-2 text-[11px] text-sf-text-muted">
+              {t('launcherChip.optionalStartupHelp', {}, 'Choose an installation only if you want to start it from Velorn. Otherwise, open ComfyUI yourself and use Find running ComfyUI to connect.')}
+            </p>
           {isMacPlatform && (
             <div className="px-3.5 py-3 space-y-2 border-b border-sf-dark-700">
               <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold">Launcher mode</div>
@@ -435,9 +463,9 @@ function ComfyLauncherChip() {
                   </button>
                 </div>
               </div>
-              <div className="text-[11px] text-sf-text-primary truncate" title={config.macAppPath}>
+              <div className="text-[11px] text-sf-text-primary break-words" title={config.macAppPath}>
                 {config.macAppPath || (
-                  <span className="italic text-sf-text-muted">No app configured. Pick ComfyUI.app to open it from Velorn.</span>
+                  <span className="italic text-sf-text-muted">{t('launcherChip.noAppOptional', {}, 'No app selected. Browse for ComfyUI.app, or open it yourself and connect.')}</span>
                 )}
               </div>
               <div className="text-[10px] text-sf-text-muted">Velorn opens the Mac app and waits for the configured endpoint.</div>
@@ -460,26 +488,28 @@ function ComfyLauncherChip() {
                 </button>
               </div>
             </div>
-            <div className="text-[11px] text-sf-text-primary truncate" title={config.launcherScript}>
+            <div className="text-[11px] text-sf-text-primary break-words" title={config.launcherScript}>
               {config.launcherScript || (
-                <span className="italic text-sf-text-muted">No launcher configured. Pick your run_nvidia_gpu.bat to let Velorn start ComfyUI for you.</span>
+                <span className="italic text-sf-text-muted">{t('launcherChip.noScriptOptional', {}, 'No launch script selected. Open ComfyUI yourself and connect, or browse for the .bat or .sh script you normally use.')}</span>
               )}
             </div>
-
-            {candidates.length > 0 && (
-              <div className="mt-1 space-y-1">
+          </div>
+          )}
+            {usableCandidates.length > 0 && (
+              <div className="px-3.5 py-3 space-y-1">
                 <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold flex items-center gap-1">
                   <FolderSearch className="w-3 h-3" />
-                  Detected near your ComfyUI folder
+                  {t('launcherChip.detectedInstallations', {}, 'Detected installations')}
                 </div>
-                {candidates.map((candidate) => {
-                  const isCurrent = candidate.path === config.launcherScript
+                {usableCandidates.map((candidate) => {
+                  const candidateMode = candidate.launcherMode === 'mac-app' ? 'mac-app' : 'script'
+                  const isCurrent = candidateMode === launcherMode && candidate.path === (candidateMode === 'mac-app' ? config.macAppPath : config.launcherScript)
                   return (
                     <button
                       key={candidate.path}
                       type="button"
                       onClick={() => handleUseCandidate(candidate)}
-                      disabled={isCurrent}
+                      disabled={busy || isCurrent}
                       className={`w-full text-left px-2 py-1.5 rounded border text-[11px] transition-colors ${isCurrent
                         ? 'bg-sf-accent/20 border-sf-accent/40 text-sf-text-primary cursor-default'
                         : 'bg-sf-dark-800 border-sf-dark-700 hover:bg-sf-dark-700 text-sf-text-primary'
@@ -492,10 +522,17 @@ function ComfyLauncherChip() {
                 })}
               </div>
             )}
-          </div>
-          )}
+          </details>
 
-          <div className="px-3.5 py-2.5">
+          <details className="px-3.5 py-2.5" onToggle={event => {
+            if (event.currentTarget.open && logTailRef.current) {
+              logTailRef.current.scrollTop = logTailRef.current.scrollHeight
+            }
+          }}>
+            <summary className="cursor-pointer text-xs font-medium text-sf-text-muted">
+              {t('launcherChip.troubleshootingLogs', {}, 'Troubleshooting and logs')}
+            </summary>
+            <div className="mt-3">
             <div className="flex items-center justify-between mb-1.5">
               <div className="text-[10px] uppercase tracking-wider text-sf-text-muted font-semibold flex items-center gap-1">
                 <FileText className="w-3 h-3" />
@@ -539,7 +576,8 @@ function ComfyLauncherChip() {
                 ))
               )}
             </div>
-          </div>
+            </div>
+          </details>
 
           <div className="px-3.5 py-2 bg-sf-dark-950/50 border-t border-sf-dark-700 flex items-center justify-between text-[10px] text-sf-text-muted">
             <span>{state.httpBase || '—'}</span>

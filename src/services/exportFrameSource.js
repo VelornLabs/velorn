@@ -229,7 +229,7 @@ class ClipFrameCursor {
     this._waiters = []
     this._warnedBackward = false
     this._servedFrame = null
-    this._ctsOffsetMicros = 0
+    this._ctsOffsetUnits = 0
   }
 
   /**
@@ -308,9 +308,8 @@ class ClipFrameCursor {
     const editEntry = Array.isArray(elstEntries)
       ? elstEntries.find((entry) => Number.isFinite(entry?.media_time) && entry.media_time >= 0)
       : null
-    const mediaTimescale = Number(track.timescale) || 1
-    this._ctsOffsetMicros = editEntry && editEntry.media_time > 0
-      ? Math.round((editEntry.media_time / mediaTimescale) * MICROS)
+    this._ctsOffsetUnits = editEntry && editEntry.media_time > 0
+      ? editEntry.media_time
       : 0
 
     const codec = String(track.codec || '')
@@ -542,8 +541,15 @@ class ClipFrameCursor {
     for (const sample of samples) {
       this._lastSampleNumber = Math.max(this._lastSampleNumber, sample.number || 0)
       if (this._pastEnd || !sample.data) continue
-      const ctsMicros = Math.round((sample.cts / sample.timescale) * MICROS) - this._ctsOffsetMicros
-      const durationMicros = Math.max(0, Math.round((sample.duration / sample.timescale) * MICROS))
+      // Normalize in the container timebase before rounding. Separately
+      // rounding CTS and edit offset can move a presentation boundary by 1us.
+      // Derive duration from rounded boundaries too: a rounded 24fps duration
+      // otherwise overlaps every third next frame by 1us, making seek() choose
+      // the previous frame only when the decoder has not delivered the next.
+      const normalizedCts = sample.cts - this._ctsOffsetUnits
+      const ctsMicros = Math.round((normalizedCts / sample.timescale) * MICROS)
+      const endMicros = Math.round(((normalizedCts + sample.duration) / sample.timescale) * MICROS)
+      const durationMicros = Math.max(0, endMicros - ctsMicros)
       if (this._started && this.endMicros != null && ctsMicros > this.endMicros) {
         // Past the clip's needed range: stop decoding (and stop reading).
         this._pastEnd = true

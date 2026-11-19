@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useTimelineStore from '../stores/timelineStore'
+import { useShallow } from 'zustand/react/shallow'
 import useAssetsStore from '../stores/assetsStore'
 import { getCompoundRenderState, isClipInPlaybackWindow } from '../utils/compoundPlayback.mjs'
 import videoCache from '../services/videoCache'
@@ -203,6 +204,30 @@ function applyManagedCanvasEffects(canvas, ctx, width, height, clip, clipTime, f
   }
 }
 
+// One off-screen composite surface per visible preview canvas, reused for
+// every frame. Allocating a fresh timeline-sized canvas on each draw (up to
+// the screen's refresh rate during playback) churned a full frame of memory
+// per draw. `reset()` returns the context to its initial state, including
+// any unbalanced save/clip a clip draw left behind, so a reused surface
+// starts each frame exactly as a new one would. Without `reset()` support a
+// fresh canvas is still created per frame.
+const stageCanvasByOutput = new WeakMap()
+
+function acquireStageCanvas(outputCanvas, width, height) {
+  let stageCanvas = stageCanvasByOutput.get(outputCanvas)
+  let stageCtx = stageCanvas ? stageCanvas.getContext('2d', { alpha: false }) : null
+  if (!stageCtx || typeof stageCtx.reset !== 'function') {
+    stageCanvas = document.createElement('canvas')
+    ensureCanvasSize(stageCanvas, width, height)
+    stageCtx = stageCanvas.getContext('2d', { alpha: false })
+    if (stageCtx && typeof stageCtx.reset === 'function') stageCanvasByOutput.set(outputCanvas, stageCanvas)
+    return { stageCanvas, stageCtx }
+  }
+  ensureCanvasSize(stageCanvas, width, height)
+  stageCtx.reset()
+  return { stageCanvas, stageCtx }
+}
+
 function ensureCanvasSize(canvas, width, height) {
   if (!canvas) return
   if (canvas.width !== width) canvas.width = width
@@ -388,6 +413,22 @@ function isSeekDrivenPlayback(state, clip) {
   return timelineRate < 0 || Math.abs(timelineRate) >= 3.5 || !!clip.reverse
 }
 
+const selectCanvasPreviewSlice = (rawState) => {
+  const state = getCompoundRenderState(rawState)
+  return {
+    clips: state.clips,
+    tracks: state.tracks,
+    transitions: state.transitions,
+    isPlaying: state.isPlaying,
+    playheadPosition: state.isPlaying ? null : state.playheadPosition,
+    playheadSeekIntent: state.isPlaying ? null : state.playheadSeekIntent,
+    playbackRate: state.playbackRate,
+    useProxyPlaybackForAssets: state.useProxyPlaybackForAssets,
+    glslPreviewQuality: state.glslPreviewQuality,
+    compoundRenderErrors: state.compoundRenderErrors,
+  }
+}
+
 function CanvasPreviewRenderer({
   timelineWidth = 1920,
   timelineHeight = 1080,
@@ -423,6 +464,7 @@ function CanvasPreviewRenderer({
   const lastPreloadTimeRef = useRef(0)
   const lastDrawTimeRef = useRef(null)
   const loopSeekHoldUntilRef = useRef(0)
+  const wasPlayingRef = useRef(false)
   const rasterSourceRevisionRef = useRef(0)
   const rasterSourceInputsRef = useRef({
     clips: null,
@@ -432,7 +474,11 @@ function CanvasPreviewRenderer({
   })
   const [assetRevision, setAssetRevision] = useState(0)
 
-  const timelineState = useTimelineStore()
+  // Subscribe to exactly what this component's render and effects consume.
+  // During playback the animation-frame loop below reads the live store
+  // itself, so the playhead is left out of the slice while playing: React
+  // then has nothing to re-render on each playhead write. Paused, the exact
+  // playhead is included so scrubbing and stepping repaint as before.
   const {
     clips,
     tracks,
@@ -444,7 +490,7 @@ function CanvasPreviewRenderer({
     useProxyPlaybackForAssets,
     glslPreviewQuality,
     compoundRenderErrors,
-  } = getCompoundRenderState(timelineState)
+  } = useTimelineStore(useShallow(selectCanvasPreviewSlice))
   const assets = useAssetsStore(state => state.assets)
 
   const previousRasterInputs = rasterSourceInputsRef.current
@@ -1830,9 +1876,7 @@ function CanvasPreviewRenderer({
       ctx.filter = 'none'
       // Keep the visible canvas intact until the staged composite is complete.
 
-      const stageCanvas = document.createElement('canvas')
-      ensureCanvasSize(stageCanvas, width, height)
-      const stageCtx = stageCanvas.getContext('2d', { alpha: false })
+      const { stageCanvas, stageCtx } = acquireStageCanvas(canvas, width, height)
       if (!stageCtx) return
       stageCtx.imageSmoothingEnabled = true
       stageCtx.imageSmoothingQuality = 'high'
@@ -2014,16 +2058,30 @@ function CanvasPreviewRenderer({
   }, [])
 
   useEffect(() => {
-    const currentPlayhead = Number(playheadPosition) || 0
     const scrubState = scrubPreviewStateRef.current
 
     if (isPlaying) {
-      scrubState.lastPlayhead = currentPlayhead
+      wasPlayingRef.current = true
       scrubState.activeUntil = 0
       // Native playback advances cached videos outside the exact seek gate.
       // Drop settled targets so the first paused frame-step must establish a
       // fresh decoder presentation instead of trusting pre-playback state.
       clearAllPreciseVideoSeeks()
+      if (scrubSettleTimerRef.current) {
+        window.clearTimeout(scrubSettleTimerRef.current)
+        scrubSettleTimerRef.current = 0
+      }
+      return
+    }
+
+    const currentPlayhead = Number(playheadPosition) || 0
+    if (wasPlayingRef.current) {
+      // First paused pass after playback: the playhead was not tracked here
+      // while playing, so stopping must not be mistaken for a scrub move.
+      wasPlayingRef.current = false
+      clearAllPreciseVideoSeeks()
+      scrubState.lastPlayhead = currentPlayhead
+      scrubState.activeUntil = 0
       if (scrubSettleTimerRef.current) {
         window.clearTimeout(scrubSettleTimerRef.current)
         scrubSettleTimerRef.current = 0

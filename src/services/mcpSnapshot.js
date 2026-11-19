@@ -3,8 +3,11 @@ import useAssetsStore from '../stores/assetsStore'
 import useTimelineStore from '../stores/timelineStore'
 import { clampTrackPan, clampTrackVolume } from '../utils/audioTrackAudibility'
 import { normalizeAudioInserts } from '../utils/audioInserts'
+import { captureMcpContext } from './mcpContext'
+import { getMcpStoryboardSummary } from './mcpStoryboard'
+import { getClipAgentTiming } from '../utils/clipAgentTiming.mjs'
 
-const SNAPSHOT_VERSION = 1
+const SNAPSHOT_VERSION = 2
 const MAX_TEXT_LENGTH = 2000
 
 function truncateText(value, maxLength = MAX_TEXT_LENGTH) {
@@ -23,6 +26,7 @@ function safeClone(value) {
 }
 
 function safeNumber(value, fallback = null) {
+  if (value === null || value === undefined) return fallback
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
 }
@@ -78,6 +82,8 @@ function sanitizeAsset(asset = {}) {
     sourceTool: settings.sourceTool || asset.sourceTool || '',
     overlayKind: settings.overlayKind || asset.overlayKind || '',
     generatedBy: settings.generatedBy || asset.generatedBy || '',
+    generatedMusic: safeClone(asset.generatedMusic || settings.generatedMusic || null),
+    promptId: asset.promptId || asset.generationRun?.promptId || null,
     solidColor: settings.solidColor || settings.color || asset.solidColor || asset.color || '',
     generationStatus: asset.generationStatus || asset.status || 'none',
     error: truncateText(asset.error || asset.generationError || settings.error || ''),
@@ -109,6 +115,9 @@ function sanitizeTrack(track = {}) {
     type: track.type,
     muted: Boolean(track.muted),
     locked: Boolean(track.locked),
+    syncLocked: Boolean(track.syncLocked),
+    lockMode: track.lockMode || null,
+    syncLock: safeClone(track.syncLock),
     visible: track.visible !== false,
     solo: Boolean(track.solo),
     role: track.role || null,
@@ -123,7 +132,7 @@ function sanitizeTrack(track = {}) {
   }
 }
 
-function sanitizeClip(clip = {}) {
+function sanitizeClip(clip = {}, assetsById = new Map()) {
   return {
     id: clip.id,
     name: clip.name,
@@ -135,16 +144,52 @@ function sanitizeClip(clip = {}) {
     trimStart: safeNumber(clip.trimStart, 0),
     trimEnd: safeNumber(clip.trimEnd),
     sourceDuration: safeNumber(clip.sourceDuration),
+    computedTiming: getClipAgentTiming(clip, { asset: assetsById.get(clip.assetId) || null }),
     speed: safeNumber(clip.speed, 1),
+    reverse: Boolean(clip.reverse),
+    sourceTimeScale: safeNumber(clip.sourceTimeScale, 1),
+    sourceFps: safeNumber(clip.sourceFps),
+    timelineFps: safeNumber(clip.timelineFps),
+    frameSampling: clip.frameSampling || 'frame',
+    opticalFlowCache: clip.opticalFlowCache ? {
+      ...safeClone(clip.opticalFlowCache), url: undefined,
+    } : null,
+    cacheStatus: clip.cacheStatus || 'none',
+    cacheProgress: safeNumber(clip.cacheProgress, 0),
+    cacheKind: clip.cacheKind || null,
+    gainDb: safeNumber(clip.gainDb, 0),
+    fadeIn: safeNumber(clip.fadeIn, 0),
+    fadeOut: safeNumber(clip.fadeOut, 0),
+    volumeEnvelope: safeClone(clip.volumeEnvelope),
+    audioEq: safeClone(clip.audioEq),
+    linkGroupId: clip.linkGroupId || null,
+    linkedVideoClipId: clip.linkedVideoClipId || null,
+    embeddedAudioFromVideoAsset: Boolean(clip.embeddedAudioFromVideoAsset),
     enabled: clip.enabled !== false,
     labelColor: clip.labelColor || '',
     trackMatte: clip.trackMatte || 'none',
     lockMode: clip.lockMode || null,
+    locked: Boolean(clip.locked),
+    syncLocked: Boolean(clip.syncLocked),
     syncLock: safeClone(clip.syncLock),
     transform: safeClone(clip.transform),
     effects: safeClone(clip.effects),
+    bypass: safeClone(clip.bypass),
+    adjustments: safeClone(clip.adjustments),
+    captions: safeClone(clip.captions),
+    compound: clip.compound ? {
+      version: clip.compound.version,
+      name: clip.name,
+      clipCount: clip.compound.document?.clips?.length || 0,
+      trackCount: clip.compound.document?.tracks?.length || 0,
+      duration: safeNumber(clip.compound.document?.duration),
+      childClipIds: (clip.compound.document?.clips || []).map(child => child.id),
+      inspectTool: 'inspect_compound',
+    } : null,
     textProperties: safeClone(clip.textProperties),
     shapeProperties: safeClone(clip.shapeProperties),
+    shapeMask: safeClone(clip.shapeMask),
+    compositeLowerLayers: Boolean(clip.compositeLowerLayers),
     titleAnimation: safeClone(clip.titleAnimation),
     keyframes: safeClone(clip.keyframes),
     metadata: safeClone(clip.metadata),
@@ -171,7 +216,7 @@ function sanitizeTransition(transition = {}) {
   }
 }
 
-function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeClips = true, selectedClipIds = [] } = {}) {
+function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeClips = true, selectedClipIds = [], assetsById = new Map() } = {}) {
   const settings = {
     width: safeNumber(timeline.width ?? projectSettings.width, projectSettings.width || null),
     height: safeNumber(timeline.height ?? projectSettings.height, projectSettings.height || null),
@@ -190,6 +235,12 @@ function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeCli
     height: settings.height,
     fps: settings.fps,
     playheadPosition: safeNumber(timeline.playheadPosition, 0),
+    inPoint: timeline.inPoint == null ? null : safeNumber(timeline.inPoint),
+    outPoint: timeline.outPoint == null ? null : safeNumber(timeline.outPoint),
+    isPlaying: Boolean(timeline.isPlaying),
+    playbackRate: safeNumber(timeline.playbackRate, 1),
+    loopMode: timeline.loopMode || 'normal',
+    playAround: safeClone(timeline.playAround || null),
     duration: safeNumber(timeline.duration, 0),
     trackCount: tracks.length,
     clipCount: clips.length,
@@ -202,7 +253,7 @@ function buildTimelineSnapshot(timeline = {}, projectSettings = {}, { includeCli
       inserts: normalizeAudioInserts(timeline.masterAudioInserts),
     },
     tracks: tracks.map(sanitizeTrack),
-    clips: includeClips ? clips.map(sanitizeClip) : undefined,
+    clips: includeClips ? clips.map(clip => sanitizeClip(clip, assetsById)) : undefined,
     transitions: transitions.map(sanitizeTransition),
     markers: (timeline.markers || []).map((marker) => ({
       id: marker.id,
@@ -224,6 +275,7 @@ export function buildMcpSnapshot() {
     ? assetsState.getProjectData()
     : (assetsState.assets || [])
   const assets = (assetProjectData || []).map(sanitizeAsset)
+  const assetsById = new Map((assetProjectData || []).map(asset => [asset.id, asset]))
   const folders = (assetsState.folders || []).map(sanitizeFolder)
 
   if (!project) {
@@ -231,7 +283,9 @@ export function buildMcpSnapshot() {
       schemaVersion: SNAPSHOT_VERSION,
       generatedAt: new Date().toISOString(),
       app: { name: 'Velorn' },
+      context: captureMcpContext(),
       project: null,
+      storyboard: null,
       timelines: [],
       currentTimeline: null,
       assets: [],
@@ -254,7 +308,31 @@ export function buildMcpSnapshot() {
     height: currentTimelineMeta.height ?? projectSettings.height,
     fps: currentTimelineMeta.fps ?? projectSettings.fps ?? timelineState.timelineFps,
     playheadPosition: timelineState.playheadPosition,
+    inPoint: timelineState.inPoint,
+    outPoint: timelineState.outPoint,
+    isPlaying: timelineState.isPlaying,
+    playbackRate: timelineState.playbackRate,
+    loopMode: timelineState.loopMode,
+    playAround: timelineState.playAround ? {
+      startTime: timelineState.playAround.startTime, endTime: timelineState.playAround.endTime,
+      returnTime: timelineState.playAround.returnTime,
+    } : null,
   }
+
+  // getProjectData projects open compound edits into the parent for saving.
+  // MCP write tools operate on the active child store instead, so expose that
+  // actual editing surface and label the parent/child relationship explicitly.
+  const compoundContext = timelineState.compoundEditContext
+  const editingTimeline = compoundContext ? {
+    ...currentTimeline,
+    id: `${currentTimeline.id}/compound/${compoundContext.compoundClipId}`,
+    name: compoundContext.compoundName,
+    width: compoundContext.originalChildDocument?.width ?? currentTimeline.width,
+    height: compoundContext.originalChildDocument?.height ?? currentTimeline.height,
+    clips: timelineState.clips, tracks: timelineState.tracks, transitions: timelineState.transitions,
+    markers: timelineState.markers, fps: timelineState.timelineFps, duration: timelineState.duration,
+    masterAudioVolume: timelineState.masterAudioVolume, masterAudioInserts: timelineState.masterAudioInserts,
+  } : currentTimeline
 
   const timelines = (project.timelines || []).map((timeline) => {
     const source = timeline.id === currentTimeline.id ? currentTimeline : timeline
@@ -268,6 +346,13 @@ export function buildMcpSnapshot() {
     schemaVersion: SNAPSHOT_VERSION,
     generatedAt: new Date().toISOString(),
     app: { name: 'Velorn' },
+    context: captureMcpContext(),
+    editingContext: {
+      rootTimelineId: currentTimeline.id,
+      kind: compoundContext ? 'compound' : 'timeline',
+      compoundClipId: compoundContext?.compoundClipId || null,
+      timelineSessionId: timelineState.timelineSessionId,
+    },
     project: {
       name: project.name,
       path: projectPath,
@@ -279,10 +364,12 @@ export function buildMcpSnapshot() {
       assetCount: assets.length,
       folderCount: folders.length,
     },
+    storyboard: getMcpStoryboardSummary(),
     timelines,
-    currentTimeline: buildTimelineSnapshot(currentTimeline, projectSettings, {
+    currentTimeline: buildTimelineSnapshot(editingTimeline, projectSettings, {
       includeClips: true,
       selectedClipIds: timelineState.selectedClipIds,
+      assetsById,
     }),
     assets,
     folders,
@@ -307,7 +394,9 @@ export function startMcpSnapshotPublisher({ debounceMs = 350, heartbeatMs = 1000
 
   const schedulePublish = () => {
     if (stopped) return
-    if (publishTimer) clearTimeout(publishTimer)
+    // Throttle rather than debounce: playback updates continuously, so an
+    // always-reset debounce would starve MCP of fresh transport/edit state.
+    if (publishTimer) return
     publishTimer = setTimeout(publish, debounceMs)
   }
 

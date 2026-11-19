@@ -6,6 +6,9 @@ import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import '../../src/index.css'
 import ExportPanel from '../../src/components/ExportPanel'
+import ExportProgressOverlay from '../../src/components/ExportProgressOverlay'
+import useExportActivityStore, { isExportBusy } from '../../src/stores/exportActivityStore'
+import { startExportActivityBridge } from '../../src/services/exportActivity'
 import { I18nProvider } from '../../src/i18n/I18nContext'
 import useTimelineStore from '../../src/stores/timelineStore'
 import useProjectStore from '../../src/stores/projectStore'
@@ -18,6 +21,8 @@ const calls = [], jobs = [], writes = [], forbiddenCalls = [], existingPaths = n
 const listeners = new Map()
 const controls = { nextDialog: undefined, nextDirectory: undefined, workerStartupError: null, hardware: true, imageLoadDelayMs: 0 }
 let activeJob = null
+let activityRevision = 0
+const priorityMode = new URLSearchParams(location.search).has('priority')
 const clone = value => JSON.parse(JSON.stringify(value))
 const validate = path => {
   if (typeof path !== 'string' || !(path === memoryRoot || path.startsWith(`${memoryRoot}/`)) || path.split('/').includes('..')) {
@@ -33,6 +38,11 @@ const subscribe = (name, listener) => {
 const emit = (name, data, jobId = activeJob?.jobId) => {
   for (const listener of [...(listeners.get(name) || [])]) listener(data, { jobId })
 }
+const activity = () => ({ revision: activityRevision, activeJob: activeJob ? {
+  jobId: activeJob.jobId, owner: activeJob.owner || 'ui', batchId: activeJob.batchId || null,
+  progress: activeJob.progress || null, status: activeJob.status || 'running',
+} : null })
+const publishActivity = () => { activityRevision++; emit('activity', activity()) }
 const forbidden = (...args) => {
   forbiddenCalls.push(args)
   calls.push({ method: 'FORBIDDEN', args })
@@ -47,6 +57,7 @@ window.electronAPI = {
     return { success: true }
   },
   saveFileDialog: async options => {
+    if (controls.dialogGate) await controls.dialogGate
     validate(options.defaultPath); calls.push({ method: 'saveFileDialog', options: clone(options) })
     const result = controls.nextDialog === undefined ? options.defaultPath : controls.nextDialog
     controls.nextDialog = undefined
@@ -71,17 +82,25 @@ window.electronAPI = {
     jobs.push(clone(request))
     if (controls.workerStartupError) return { success: false, error: controls.workerStartupError }
     activeJob = request
+    publishActivity()
     return { success: true, jobId: request.jobId }
   },
   cancelExport: async () => {
     calls.push({ method: 'cancelExport', jobId: activeJob?.jobId })
+    if (controls.cancelError) {
+      if (activeJob) { activeJob.status = 'cancelling'; publishActivity() }
+      return { success: false, error: controls.cancelError }
+    }
     const jobId = activeJob?.jobId; activeJob = null
+    publishActivity()
     queueMicrotask(() => emit('error', 'Export cancelled', jobId))
     return { success: true }
   },
   onExportProgress: listener => subscribe('progress', listener),
   onExportComplete: listener => subscribe('complete', listener),
   onExportError: listener => subscribe('error', listener),
+  getExportActivity: async () => activity(),
+  onExportActivity: listener => subscribe('activity', listener),
   onHardwareExportFfmpegChanged: listener => subscribe('hardware', listener),
   checkNvenc: async () => ({ available: controls.hardware, h264: controls.hardware, h265: controls.hardware,
     kind: 'nvenc', gpuName: 'Synthetic encoder capability', ffmpegSource: 'bundled' }),
@@ -144,6 +163,7 @@ function reset({ kind = 'mixed', settings = null } = {}) {
   if (activeJob) throw new Error('Complete/cancel the synthetic worker before resetting its panel')
   calls.length = 0; jobs.length = 0; writes.length = 0; existingPaths.clear()
   controls.nextDialog = undefined; controls.nextDirectory = undefined; controls.workerStartupError = null; controls.imageLoadDelayMs = 0
+  controls.cancelError = null
   localStorage.removeItem(storageKey)
   if (settings) localStorage.setItem(storageKey, JSON.stringify(settings))
   useAssetsStore.setState({ assets, folders: [], selectedAssetIds: [], currentPreview: null, previewMode: 'timeline',
@@ -177,32 +197,43 @@ function snapshot() {
     listenerCounts: Object.fromEntries([...listeners].map(([name, set]) => [name, set.size])),
     timeline: JSON.stringify(state.getProjectData()), history: JSON.stringify(state.history),
     selectedClipIds: [...state.selectedClipIds], isPlaying: state.isPlaying, playheadPosition: state.playheadPosition,
-    inPoint: state.inPoint, outPoint: state.outPoint, dirty: isProjectDirty(),
+    inPoint: state.inPoint, outPoint: state.outPoint, dirty: isProjectDirty(), exportBusy: isExportBusy(),
   }
 }
 window.exportWorkspaceTest = {
   timeline: useTimelineStore, project: useProjectStore, assets: useAssetsStore, memoryRoot, reset, snapshot,
   calls, jobs, writes, controls, existingPaths,
+  nativeStart(jobId = 'external-agent-export') {
+    activeJob = { jobId, owner: 'mcp', options: {}, projectPath: memoryRoot, outputPath: `${memoryRoot}/external.mp4` }
+    jobs.push(activeJob); publishActivity()
+  },
+  holdDialog() { controls.dialogGate = new Promise(resolve => { controls.releaseDialog = () => { controls.dialogGate = null; resolve() } }) },
   previewPixel() {
     const canvas = document.querySelector('[data-testid="export-review-preview"] canvas[data-preview-popout-source="canvas"]')
     if (!canvas?.width || !canvas?.height) return null
     return [...canvas.getContext('2d').getImageData(10, 10, 1, 1).data]
   },
-  progress(progress = 35, jobId = activeJob?.jobId) { emit('progress', { status: `Synthetic render ${progress}%`, progress, frame: progress, totalFrames: 100 }, jobId) },
+  progress(progress = 35, jobId = activeJob?.jobId) {
+    const data = { status: `Synthetic render ${progress}%`, progress, frame: progress, totalFrames: 100 }
+    if (activeJob?.jobId === jobId) { activeJob.progress = data; publishActivity() }
+    emit('progress', data, jobId)
+  },
   complete(jobId = activeJob?.jobId, extras = {}) {
     const job = jobs.find(candidate => candidate.jobId === jobId)
-    if (activeJob?.jobId === jobId) activeJob = null
+    if (activeJob?.jobId === jobId) { activeJob = null; publishActivity() }
     emit('complete', { outputPath: job?.outputPath || `${memoryRoot}/external.mp4`, format: job?.options?.format,
       encoderUsed: 'synthetic-worker', ...extras }, jobId)
   },
   fail(message = 'Synthetic export failure', jobId = activeJob?.jobId) {
-    if (activeJob?.jobId === jobId) activeJob = null
+    if (activeJob?.jobId === jobId) { activeJob = null; publishActivity() }
     emit('error', message, jobId)
   },
 }
 watchStoreForProjectChanges(useTimelineStore, TIMELINE_PROJECT_KEYS)
 reset()
 function Harness() {
+  const busy = useExportActivityStore(state => Boolean(state.activeJob || state.localActivity))
+  React.useLayoutEffect(() => priorityMode ? startExportActivityBridge() : undefined, [])
   const [active, setActive] = React.useState(true), [mounted, setMounted] = React.useState(true), [version, setVersion] = React.useState(0)
   window.exportWorkspaceTest.setActive = value => flushSync(() => setActive(value))
   window.exportWorkspaceTest.setMounted = value => flushSync(() => setMounted(value))
@@ -210,13 +241,15 @@ function Harness() {
   return <div className="h-screen flex flex-col overflow-hidden bg-sf-dark-950 text-sf-text-primary">
     <header className="h-10 shrink-0 flex items-center gap-4 border-b border-sf-dark-700 px-4 text-xs">
       <span>Velorn · isolated export verification</span>
-      <button onClick={() => setActive(true)} aria-pressed={active}>Export workspace</button>
-      <button onClick={() => setActive(false)} aria-pressed={!active}>Other workspace</button>
+      <button disabled={priorityMode && busy} onClick={() => setActive(true)} aria-pressed={active}>Export workspace</button>
+      <button disabled={priorityMode && busy} onClick={() => setActive(false)} aria-pressed={!active}>Other workspace</button>
+      <button data-export-allowed="true" onClick={() => { controls.minimized = true }}>Minimize fixture</button>
     </header>
-    <div data-testid="export-fixture-panel" className="flex-1 min-h-0 min-w-0 flex" style={{ display: active ? 'flex' : 'none' }}>
+    <div inert={priorityMode && busy ? '' : undefined} aria-hidden={priorityMode && busy ? true : undefined} data-testid="export-fixture-panel" className="flex-1 min-h-0 min-w-0 flex" style={{ display: active ? 'flex' : 'none' }}>
       {mounted && <ExportPanel key={version} active={active} />}
     </div>
     {!active && <main className="p-8 text-sm">Another workspace. Export listeners stay mounted behind this tab.</main>}
+    {priorityMode && <ExportProgressOverlay />}
   </div>
 }
 createRoot(document.getElementById('root')).render(<I18nProvider><Harness /></I18nProvider>)
