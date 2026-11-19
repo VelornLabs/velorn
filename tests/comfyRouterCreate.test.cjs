@@ -294,7 +294,7 @@ const openai = bytes => () => response({ data: [{ b64_json: bytes.toString('base
 const gemini = (...parts) => () => response({ candidates: [{ content: { parts } }] })
 const inline = bytes => ({ inlineData: { mimeType: 'image/png', data: bytes.toString('base64') } })
 
-test('GPT Image and Seedream pictures are saved only at the pixel size that was asked for', async t => {
+test('GPT Image and Seedream pictures are saved at the size asked for, and kept when another size comes back', async t => {
   for (const [modelId, width, height] of [['gpt-image-2-5', 1536, 1024], ['seedream-5-0-pro', 1376, 768], ['seedream-4-0', 1376, 768]]) {
     const { f, job } = await finished(t, modelId)
     const bytes = png(width, height)
@@ -306,7 +306,8 @@ test('GPT Image and Seedream pictures are saved only at the pixel size that was 
     assert.equal(f.requests.length, 1)
     assert.match(f.requests[0].url, /\/requests\/provider-job-one$/)
     f.state.result = openai(png(1024, 1024)); f.state.decoded = { width: 1024, height: 1024 }
-    assert.equal((await f.manager.output({ jobId: job.jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED', `${modelId} wrong size`)
+    const other = await f.manager.output({ jobId: job.jobId })
+    assert.deepEqual([other.success, other.width, other.height], [true, 1024, 1024], `${modelId}: a paid picture of another size is kept`)
   }
 })
 
@@ -317,20 +318,23 @@ test('a Nano Banana picture is saved at whatever size it declares, within bounds
   assert.deepEqual([output.success, output.width, output.height], [true, 1376, 768])
 })
 
-test('a picture is refused when the reply holds none, several, or one that does not decode as declared', async t => {
+test('a picture is refused only when the reply holds none or something that is not a picture', async t => {
   const { f, job } = await finished(t, 'nano-banana-2-1')
   const good = png(1376, 768)
   f.state.decoded = { width: 1376, height: 768 }
-  for (const result of [gemini({ text: 'I cannot make that.' }), gemini(inline(good), inline(good)), () => response({ candidates: [] }),
+  for (const result of [gemini({ text: 'I cannot make that.' }), () => response({ candidates: [] }),
     gemini({ inlineData: { mimeType: 'image/png', data: 'not base64!' } }), gemini(inline(Buffer.from('plain text, not a picture'))),
     gemini({ fileData: { fileUri: 'https://example.com/picture.png' } }), () => response({ error: 'failed' })]) {
     f.state.result = result
     assert.equal((await f.manager.output({ jobId: job.jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED')
   }
+  // Several pictures in one reply: the first is kept. A decoder that disagrees, or none at all, loses nothing.
+  f.state.result = gemini(inline(good), inline(png(512, 512)))
+  assert.deepEqual((({ success, width, height }) => [success, width, height])(await f.manager.output({ jobId: job.jobId })), [true, 1376, 768])
   f.state.result = gemini(inline(good))
   for (const decoded of [null, { width: 768, height: 1376 }, { width: 1376, height: 768, valid: false }]) {
     f.state.decoded = decoded
-    assert.equal((await f.manager.output({ jobId: job.jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED')
+    assert.deepEqual((({ success, width, height }) => [success, width, height])(await f.manager.output({ jobId: job.jobId })), [true, 1376, 768])
   }
   assert.ok(f.requests.every(r => r.url.startsWith('https://api.comfy.org/')))
 })
@@ -356,7 +360,7 @@ function mp4(length = 8192, brand = 'isom') {
   return data
 }
 
-test('a FLUX picture is fetched from Comfy\'s result storage without the key, then checked like any other', async t => {
+test('a FLUX picture is fetched from the address given, without the key', async t => {
   const { f, job } = await finished(t, 'flux-3-image')
   const bytes = png(1376, 768), link = `${STORE}.png?Expires=1&GoogleAccessId=x&Signature=y`
   f.state.result = flux(link); f.state.file = raw(bytes); f.state.decoded = { width: 1376, height: 768 }
@@ -367,14 +371,14 @@ test('a FLUX picture is fetched from Comfy\'s result storage without the key, th
   const fetched = f.requests[1]
   assert.equal(fetched.url, link)
   assert.deepEqual(fetched.headers, {})
-  assert.equal(fetched.redirect, 'error')
+  assert.equal(fetched.redirect, 'manual')
   assert.equal(fetched.method, 'GET')
   assert.ok(!JSON.stringify(output, (k, v) => k === 'bytes' ? undefined : v).includes('storage.googleapis.com'))
   const saved = await fs.readFile(path.join(f.storageDir, 'comfy-router-jobs.json'), 'utf8')
   assert.ok(!saved.includes('googleapis') && !saved.includes('Signature'))
 })
 
-test('a Seedance clip is fetched and accepted only as an MP4 or MOV file', async t => {
+test('a Seedance clip is fetched and kept whatever kind of video file it is; only a message or a picture is not a clip', async t => {
   const { f, job } = await finished(t, 'seedance-2-0-mini')
   f.state.result = seedance(`${STORE}.mp4?Signature=y`)
   f.state.file = raw(mp4())
@@ -383,25 +387,49 @@ test('a Seedance clip is fetched and accepted only as an MP4 or MOV file', async
   assert.equal(output.bytes.length, 8192)
   f.state.file = raw(mp4(8192, 'qt  '))
   assert.equal((await f.manager.output({ jobId: job.jobId })).mimeType, 'video/quicktime')
-  for (const bad of [Buffer.from('<html>not a video</html>'.padEnd(8192, ' ')), png(1024, 1024), mp4(64), Buffer.alloc(0)]) {
+  const webm = Buffer.alloc(8192, 1); webm.writeUInt32BE(0x1a45dfa3, 0)
+  f.state.file = raw(webm)
+  assert.deepEqual((({ success, mimeType, filename }) => [success, mimeType, filename])(await f.manager.output({ jobId: job.jobId })), [true, 'video/webm', `velorn-router-${job.jobId}.webm`])
+  // A container this code does not know is still the clip that was paid for.
+  for (const odd of [mp4(64), Buffer.alloc(8192, 7)]) {
+    f.state.file = raw(odd)
+    assert.deepEqual((({ success, kind, mimeType }) => [success, kind, mimeType])(await f.manager.output({ jobId: job.jobId })), [true, 'video', 'video/mp4'])
+  }
+  for (const bad of [Buffer.from('<html>not a video</html>'.padEnd(8192, ' ')), Buffer.from('{"error":"gone"}'), png(1024, 1024), Buffer.alloc(0)]) {
     f.state.file = raw(bad)
     assert.equal((await f.manager.output({ jobId: job.jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED')
   }
 })
 
-test('a link anywhere but Comfy\'s result storage is refused and never fetched', async t => {
+test('a result is fetched from whatever https address Comfy gives, as ComfyUI does', async t => {
+  // Found on 2026-11-19: Comfy answered a paid Seedance job with a link on the model maker's own storage.
+  const { f, job } = await finished(t, 'flux-3-image')
+  const bytes = png(1376, 768)
+  f.state.file = raw(bytes); f.state.decoded = { width: 1376, height: 768 }
+  for (const link of [
+    'https://delivery.bfl.ai/results/picture.png?sig=1',
+    'https://ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com/dreamina-seedance-2-5/1/result.png?X-Tos-Signature=y',
+    'https://storage.googleapis.com/some-other-bucket/a/picture.png',
+    'https://storage.googleapis.com:8443/partner-nodes-assets/a/picture.png',
+    'https://resource2.heygen.ai/audio/1.png#t=0',
+  ]) {
+    f.state.result = flux(link)
+    const output = await f.manager.output({ jobId: job.jobId })
+    assert.equal(output.success, true, link)
+    assert.ok(Buffer.from(output.bytes).equals(bytes))
+    assert.deepEqual(f.requests.at(-1).headers, {}, 'the Comfy key is never sent to the result address')
+  }
+})
+
+test('only a link that is not https, or that points into this computer or its network, is not followed', async t => {
   const { f, job } = await finished(t, 'flux-3-image')
   f.state.file = () => assert.fail('a refused link was fetched')
   for (const link of [
-    'https://delivery.bfl.ai/results/picture.png?sig=1',
     'http://storage.googleapis.com/partner-nodes-assets/a/picture.png',
-    'https://storage.googleapis.com/some-other-bucket/a/picture.png',
-    'https://storage.googleapis.com/partner-nodes-assets/',
-    'https://storage.googleapis.com/partner-nodes-assets/../other-bucket/picture.png',
-    'https://storage.googleapis.com.example.com/partner-nodes-assets/a/picture.png',
     'https://user:pass@storage.googleapis.com/partner-nodes-assets/a/picture.png',
-    'https://storage.googleapis.com:8443/partner-nodes-assets/a/picture.png',
-    'https://partner-nodes-assets.storage.googleapis.com/a/picture.png',
+    'https://localhost/picture.png', 'https://127.0.0.1/picture.png', 'https://10.0.0.5/picture.png', 'https://192.168.1.10/picture.png',
+    'https://172.20.0.3/picture.png', 'https://169.254.169.254/latest/meta-data', 'https://[::1]/picture.png', 'https://[fd00::1]/picture.png',
+    'https://printer.local/picture.png', 'https://nas/picture.png',
     'file:///etc/passwd', 'data:image/png;base64,AAAA', '', 42, null
   ]) {
     f.state.result = flux(link)
@@ -410,7 +438,19 @@ test('a link anywhere but Comfy\'s result storage is refused and never fetched',
   assert.ok(f.requests.every(r => r.url.startsWith('https://api.comfy.org/')))
 })
 
-test('a refused, failed or oversized download imports nothing', async t => {
+test('a result behind a redirect is followed, but never into this computer', async t => {
+  const { f, job } = await finished(t, 'flux-3-image')
+  const bytes = png(1376, 768), hops = []
+  f.state.result = flux('https://cdn.example.com/start.png')
+  f.state.file = url => { hops.push(url); return url.endsWith('start.png') ? new Response(null, { status: 302, headers: { location: '/moved/final.png' } }) : new Response(bytes, { status: 200 }) }
+  const output = await f.manager.output({ jobId: job.jobId })
+  assert.equal(output.success, true)
+  assert.deepEqual(hops, ['https://cdn.example.com/start.png', 'https://cdn.example.com/moved/final.png'])
+  f.state.file = () => new Response(null, { status: 302, headers: { location: 'https://127.0.0.1/secret' } })
+  assert.equal((await f.manager.output({ jobId: job.jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED')
+})
+
+test('a failed download, or a reply that is not a picture, imports nothing; a picture of another size is kept', async t => {
   const { f, job } = await finished(t, 'flux-3-image')
   f.state.decoded = { width: 1376, height: 768 }
   f.state.result = () => response({ id: 'task', status: 'Content Moderated', result: null })
@@ -421,9 +461,9 @@ test('a refused, failed or oversized download imports nothing', async t => {
   f.state.file = async () => { throw new Error('redirect was refused') }
   assert.equal((await f.manager.output({ jobId: job.jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED')
   f.state.file = raw(Buffer.alloc(20 * 1024 * 1024 + 1))
-  assert.equal((await f.manager.output({ jobId: job.jobId })).code, 'COMFY_ROUTER_RESPONSE')
-  f.state.file = raw(png(1024, 1024)); f.state.decoded = { width: 512, height: 512 }
   assert.equal((await f.manager.output({ jobId: job.jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED')
+  f.state.file = raw(png(1024, 1024)); f.state.decoded = { width: 512, height: 512 }
+  assert.deepEqual((({ success, width, height }) => [success, width, height])(await f.manager.output({ jobId: job.jobId })), [true, 1024, 1024])
 })
 
 // ---- one input picture ---------------------------------------------------

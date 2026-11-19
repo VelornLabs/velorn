@@ -419,10 +419,10 @@ test('URL, multiple images, invalid base64 and nonimage outputs fail without any
   }
 })
 
-test('native decoder must verify actual requested image dimensions before import', async t => {
+test('a picture is kept whatever the native decoder says, or when there is none', async t => {
   for (const validateImage of [undefined, () => ({ width: 0, height: 0 }), () => ({ width: 999999, height: 999999 }), () => { throw new Error('invalid codec') }]) {
     const f = await fixture(t, { validateImage }); const jobId = await f.queued(); f.advance(); await f.manager.refresh({ jobId })
-    assert.equal((await f.manager.output({ jobId })).success, false)
+    assert.equal((await f.manager.output({ jobId })).success, true)
   }
 })
 
@@ -439,35 +439,36 @@ function syntheticJpeg(width = 1024, height = 1024) {
   data.writeUInt16BE(height, 7); data.writeUInt16BE(width, 9)
   return data
 }
-test('oversized/truncated/malformed PNG, JPEG and WebP headers never reach a decoder', async t => {
+test('a picture of any size is kept; only a truncated or malformed file is unreadable, and no decoder is asked', async t => {
   const pngBomb = Buffer.from(PNG); pngBomb.writeUInt32BE(1000000, 16)
   const pngLength = Buffer.from(PNG); pngLength.writeUInt32BE(0xffffffff, 33)
   const pngDuplicate = Buffer.concat([PNG.subarray(0, 33), PNG.subarray(8, 33), PNG.subarray(33)])
   const jpegLength = syntheticJpeg(); jpegLength.writeUInt16BE(65535, 4)
   const webpLength = syntheticWebp(); webpLength.writeUInt32LE(0xffffffff, 16)
-  const badImages = [pngBomb, pngLength, pngDuplicate, PNG.subarray(0, 33), PNG.subarray(0, PNG.length - 12), createRouterTestPng({ width: 1, height: 1 }),
-    syntheticJpeg(65535, 65535), jpegLength, Buffer.from([255, 216, 255, 218]),
-    syntheticWebp(16384, 16384), syntheticWebp(2048, 2048, true), webpLength, syntheticWebp().subarray(0, 20)]
-  for (const image of badImages) {
+  // Sizes nobody asked for are still the picture that was paid for.
+  const anySize = [pngBomb, createRouterTestPng({ width: 1, height: 1 }), syntheticJpeg(65535, 65535), syntheticWebp(16384, 16384), syntheticWebp(2048, 2048, true)]
+  const broken = [pngLength, pngDuplicate, PNG.subarray(0, 33), PNG.subarray(0, PNG.length - 12), jpegLength, Buffer.from([255, 216, 255, 218]), webpLength, syntheticWebp().subarray(0, 20)]
+  for (const image of [...anySize, ...broken]) {
     let decoded = 0
     const f = await fixture(t, { validateImage: () => { decoded++; return { width: 1024, height: 1024 } },
       transport: async (url, request) => request.method === 'POST' ? response({ request_id: 'provider-job-one', status: 'IN_QUEUE' }, 201)
         : url.endsWith('/status') ? response({ status: 'COMPLETED' }) : url.endsWith('/provider-job-one') ? response({ data: [{ b64_json: image.toString('base64') }] }) : response({ id: MODEL }) })
     const jobId = await f.queued(); f.advance(); await f.manager.refresh({ jobId })
-    assert.equal((await f.manager.output({ jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED'); assert.equal(decoded, 0)
+    const out = await f.manager.output({ jobId })
+    if (anySize.includes(image)) assert.equal(out.success, true); else assert.equal(out.code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED')
+    assert.equal(decoded, 0)
   }
 })
 
-test('bounded JPEG/WebP headers still require full codec verification', async t => {
-  // These are header stubs, not valid images. A real codec must still reject
-  // them: the parser is a memory-allocation bound, not image attestation.
+test('a picture with a readable header is kept without asking a decoder', async t => {
+  // Header stubs: the size comes from the header, and the paid result is saved as it came.
   for (const image of [syntheticJpeg(), syntheticWebp(), syntheticWebp(1024, 1024, true)]) {
     let decoded = 0
     const f = await fixture(t, { validateImage: () => { decoded++; return null },
       transport: async (url, request) => request.method === 'POST' ? response({ request_id: 'provider-job-one', status: 'IN_QUEUE' }, 201)
         : url.endsWith('/status') ? response({ status: 'COMPLETED' }) : url.endsWith('/provider-job-one') ? response({ data: [{ b64_json: image.toString('base64') }] }) : response({ id: MODEL }) })
     const jobId = await f.queued(); f.advance(); await f.manager.refresh({ jobId })
-    assert.equal((await f.manager.output({ jobId })).code, 'COMFY_ROUTER_OUTPUT_UNVERIFIED'); assert.equal(decoded, 1)
+    assert.equal((await f.manager.output({ jobId })).success, true); assert.equal(decoded, 0)
   }
 })
 

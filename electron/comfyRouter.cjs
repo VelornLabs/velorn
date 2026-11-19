@@ -16,7 +16,7 @@ const WIDTH = 1024, HEIGHT = 1024
 const ESTIMATE = Object.freeze({ currency: 'USD', amount: 0.03, usd: 0.03, credits: 6.33, asOf: '2026-10-01',
   source: 'https://docs.comfy.org/development/comfy-router/pricing.md',
   label: 'Estimated 6.33 Comfy credits ($0.03) for one image. Published October 1, 2026; final provider billing may differ.' })
-const LIMITS = Object.freeze({ prompt: 4000, key: 4096, response: 262144, result: 28 * 1024 * 1024, image: 20 * 1024 * 1024, ledger: 1024 * 1024,
+const LIMITS = Object.freeze({ prompt: 4000, key: 4096, response: 262144, result: 140 * 1024 * 1024, image: 100 * 1024 * 1024, ledger: 1024 * 1024,
   jobs: 500, plans: 32, planMs: 10 * 60 * 1000, timeoutMs: 30000 })
 const STATES = new Set(['SUBMITTING', 'UNCERTAIN', 'IN_QUEUE', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'CANCELLED'])
 const TERMINAL = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -62,7 +62,7 @@ const isAudio = model => AUDIO_KINDS.includes(model.kind)
 // computer until it is added to the project.
 const syncModel = job => Boolean(job?.create) && getModel(job.create.modelId)?.delivery === 'sync'
 const SYNC_SETTLED_MS = 15 * 60 * 1000
-const AUDIO_MAX = 40 * 1024 * 1024
+const AUDIO_MAX = 256 * 1024 * 1024
 function priced(model, usd, firm, basis, asOf) {
   const credits = Math.round(usd * catalog.creditsPerUsd * 100) / 100
   return { currency: 'USD', amount: usd, usd, credits, asOf, firm, basis,
@@ -85,14 +85,41 @@ const LINKED_AUDIO = new Set(['pika-music'])
 // prefix is part of the rule. A link anywhere else (Comfy's docs say a provider's
 // own address can appear when re-hosting fails) is refused, never followed.
 const RESULT_STORAGE = Object.freeze({ host: 'storage.googleapis.com', prefix: '/partner-nodes-assets/' })
-const VIDEO_MAX = 96 * 1024 * 1024
-function storageLink(value, places = [RESULT_STORAGE]) {
-  if (typeof value !== 'string' || value.length > 4096 || /[\s\x00-\x1f\\]/.test(value)) return null
+const VIDEO_MAX = 1024 * 1024 * 1024
+// A finished result is collected from whatever address Comfy's answer gives, exactly as ComfyUI does.
+// Comfy usually re-hosts results on its own storage (RESULT_STORAGE), but it also hands out the model
+// maker's own address, and a result the user paid for must never be left behind because of where it is.
+// Only two kinds of link are not followed, and neither can be a real result: one that is not https, and
+// one that points back into this computer or its local network.
+function localHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '')
+  if (!host || host === 'localhost' || /\.(localhost|local|internal|lan|home)$/.test(host)) return true
+  if (host.includes(':')) return host === '::' || host === '::1' || /^(fc|fd|fe[89ab])/.test(host) || host.startsWith('::ffff:')
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (!v4) return !host.includes('.')
+  const [a, b] = [Number(v4[1]), Number(v4[2])]
+  return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31 || a === 100 && b >= 64 && b <= 127
+}
+function storageLink(value) {
+  if (typeof value !== 'string' || value.length > 8192 || /[\s\x00-\x1f\\]/.test(value)) return null
   let url
   try { url = new URL(value) } catch { return null }
-  return url.protocol === 'https:' && url.port === '' && url.username === '' && url.password === '' && url.hash === ''
-    && places.some(place => url.hostname === place.host && url.pathname.startsWith(place.prefix) && url.pathname.length > place.prefix.length) ? url.href : null
+  return url.protocol === 'https:' && url.username === '' && url.password === '' && !localHost(url.hostname) ? url.href : null
 }
+// A file that is plainly a message (JSON, HTML, XML) and not media: the only kind of result that is not saved.
+function looksLikeText(data) {
+  const head = data.subarray(0, 64).toString('latin1').trimStart()
+  return !data.length || head.startsWith('<') || head.startsWith('{') || head.startsWith('[')
+}
+// Any other video container is kept too; an unknown one is saved as it came, under the usual name.
+function otherVideo(data) {
+  if (looksLikeText(data) || imageHeader(data, () => true)) return null
+  if (data.length >= 4 && data.readUInt32BE(0) === 0x1a45dfa3) return { mimeType: 'video/webm', extension: 'webm' }
+  if (data.length >= 12 && data.toString('latin1', 0, 4) === 'RIFF' && data.toString('latin1', 8, 12) === 'AVI ') return { mimeType: 'video/x-msvideo', extension: 'avi' }
+  return { mimeType: 'video/mp4', extension: 'mp4' }
+}
+// A sound of a kind this list does not know is kept as well.
+function otherSound(data) { return looksLikeText(data) ? null : { mimeType: 'audio/mpeg', extension: 'mp3' } }
 function resultLink(format, result) {
   if (format === 'flux') return result.status === 'Ready' && object(result.result) ? result.result.sample : null
   if (format === 'seedance') return result.status === 'succeeded' && object(result.content) ? result.content.video_url : null
@@ -126,11 +153,12 @@ const MAX_SIDE = 4096
 function inlinePicture(format, result) {
   if (format === 'gemini-image') {
     const candidates = Array.isArray(result.candidates) ? result.candidates : []
-    const parts = candidates.length === 1 && Array.isArray(candidates[0]?.content?.parts) ? candidates[0].content.parts : []
+    // One request asks for one picture. If the model sends more, the first is kept rather than none.
+    const parts = candidates.flatMap(candidate => Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [])
     const pictures = parts.filter(part => object(part) && object(part.inlineData) && typeof part.inlineData.data === 'string')
-    return pictures.length === 1 ? pictures[0].inlineData.data : null
+    return pictures.length ? pictures[0].inlineData.data : null
   }
-  return Array.isArray(result.data) && result.data.length === 1 ? result.data[0]?.b64_json : null
+  return Array.isArray(result.data) && result.data.length ? result.data[0]?.b64_json : null
 }
 function expectedPixels(format, body) {
   const match = format !== 'gemini-image' && /^(\d{2,4})x(\d{2,4})$/.exec(body?.size || '')
@@ -734,17 +762,17 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
           if (length <= AUDIO_MAX) data = Buffer.concat(chunks)
         } catch { data = null }
         // Some models answer with the address of the finished sound instead of the sound itself.
-        // It is collected at once, without the key, and only from Comfy's result storage.
+        // It is collected at once, without the key, from the address given.
         const format = getModel(job.create.modelId)?.format
         if (data && !audioHeader(data) && LINKED_AUDIO.has(format)) {
           let offered = null
           try { const parsed = data.length <= LIMITS.response ? JSON.parse(data.toString('utf8')) : null; offered = object(parsed) ? resultLink(format, parsed) : null } catch { offered = null }
           const link = storageLink(offered)
-          if (allowPending && typeof offered === 'string') { try { const at = new URL(offered); console.warn(`[comfy-router] ${format} result is at ${at.protocol}//${at.host}${at.pathname.split('/').slice(0, 2).join('/')}/… ${link ? '(accepted)' : '(NOT an address Velorn collects from)'}`) } catch {} }
+          if (allowPending && typeof offered === 'string') { try { const at = new URL(offered); console.warn(`[comfy-router] ${format} result is at ${at.protocol}//${at.host}${at.pathname.split('/').slice(0, 2).join('/')}/… ${link ? '(accepted)' : '(not a usable address)'}`) } catch {} }
           data = null
           if (link) {
             try {
-              const file = await fetchImpl(link, { method: 'GET', redirect: 'error', credentials: 'omit', cache: 'no-store', signal: controller.signal, headers: {} })
+              const file = await fetchImpl(link, { method: 'GET', redirect: 'follow', credentials: 'omit', cache: 'no-store', signal: controller.signal, headers: {} })
               if (file?.ok) {
                 const reader = file.body.getReader(), chunks = []; let length = 0
                 while (length <= AUDIO_MAX) { const item = await reader.read(); if (item.done) break; length += item.value.byteLength; chunks.push(Buffer.from(item.value)) }
@@ -754,7 +782,7 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
             } catch { data = null }
           }
         }
-        if (!data || !audioHeader(data)) { settle('FAILED', 'RESULT_UNREADABLE'); return }
+        if (!data || !(audioHeader(data) || otherSound(data))) { settle('FAILED', 'RESULT_UNREADABLE'); return }
         try { await fs.writeFile(resultFile(job), data, { mode: 0o600, flag: 'wx' }) } catch { settle('FAILED', 'RESULT_UNSAVED'); return }
         settle('COMPLETED')
       } catch { settle('UNCERTAIN', 'SUBMISSION_UNCERTAIN') }
@@ -915,29 +943,32 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
       || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The provider did not return one bounded inline image. No URL fallback or media import was attempted.')
     const data = Buffer.from(encoded, 'base64')
     if (!data.length || data.length > LIMITS.image || data.toString('base64') !== encoded) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The provider returned invalid image data. No media was imported.')
-    const header = imageHeader(data)
-    if (!header) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The returned image header is invalid or not 1024 × 1024. No image decoding or media import was attempted.')
-    const { mimeType, extension } = header
-    if (typeof validateImage !== 'function') throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'Native image verification is unavailable. No media was imported.')
-    const decoded = await abortable(op, () => validateImage(data, { mimeType })); await check(op)
-    if (!object(decoded) || decoded.width !== WIDTH || decoded.height !== HEIGHT || decoded.valid === false) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The image could not be decoded at the requested 1024 × 1024 size. No media was imported.')
-    return { success: true, jobId: job.id, bytes: new Uint8Array(data), mimeType, width: decoded.width, height: decoded.height, filename: `velorn-router-${job.id}.${extension}` }
+    return pictureOutput(op, job, data)
   }) }
-  // Fetches one result file from Comfy's result storage. The Comfy key is NOT
-  // sent: the link is already signed. Redirects are refused, the size is capped
-  // while reading, and the link is never stored or returned.
+  // Fetches one result file from the address Comfy gave. The Comfy key is NOT
+  // sent: the link is already signed. Redirects are followed, each one checked
+  // like the first address; the link is never stored or returned.
   async function download(op, link, maximum) {
     if (typeof fetchImpl !== 'function') throw fault('COMFY_ROUTER_UNAVAILABLE', 'Comfy Router transport is unavailable. Restart Velorn.')
     await check(op)
     const timer = setTimeout(() => op.controller.abort('timeout'), timeoutMs * 4)
     try {
-      let response
-      try { response = await abortable(op, () => fetchImpl(link, { method: 'GET', redirect: 'error', credentials: 'omit', cache: 'no-store', signal: op.controller.signal, headers: {} })) }
-      catch (error) { if (faults.has(error)) throw error; throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The finished result could not be downloaded. Nothing was imported and no new request was submitted.') }
+      let response, at = link
+      for (let hop = 0; ; hop++) {
+        try { response = await abortable(op, () => fetchImpl(at, { method: 'GET', redirect: 'manual', credentials: 'omit', cache: 'no-store', signal: op.controller.signal, headers: {} })) }
+        catch (error) { if (faults.has(error)) throw error; throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The finished result could not be downloaded. Nothing was imported and no new request was submitted.') }
+        const next = response && response.status >= 300 && response.status < 400 ? response.headers?.get?.('location') : null
+        if (!next) break
+        try { await response.body?.cancel?.() } catch {}
+        let target = null
+        try { target = storageLink(new URL(next, at).href) } catch { target = null }
+        if (!target || hop >= 5) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The finished result could not be downloaded. Nothing was imported and no new request was submitted.')
+        at = target
+      }
       await check(op)
       if (!response?.ok) {
         try { await response?.body?.cancel?.() } catch {}
-        throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'Comfy\'s result storage did not return the file. The link may have expired. Nothing was imported and no new request was submitted.')
+        throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The finished result could not be downloaded. The link may have expired. Nothing was imported and no new request was submitted.')
       }
       const data = await bytes(response, op, maximum); await check(op)
       return data
@@ -947,8 +978,8 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
   // to Comfy's result storage. The same checks as the original path, with the
   // size taken from what was asked for instead of a fixed 1024.
   const audioOutput = (job, data) => {
-    const header = data.length <= AUDIO_MAX ? audioHeader(data) : null
-    if (!header) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The result is not a sound file Velorn can play. Nothing was imported.')
+    const header = audioHeader(data) || otherSound(data)
+    if (!header) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'Comfy returned a message instead of a sound file. Nothing was imported.')
     return { success: true, jobId: job.id, kind: 'audio', made: getModel(job.create.modelId).kind, bytes: new Uint8Array(data), mimeType: header.mimeType, filename: `velorn-router-${job.id}.${header.extension}` }
   }
   async function createOutput(op, job) {
@@ -977,32 +1008,31 @@ function createComfyRouter({ fetchImpl = globalThis.fetch, storageDir, getContex
       const offered = resultLink(model.format, result)
       if (typeof offered !== 'string') throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The provider did not return a finished result. It may have declined the request. Nothing was imported.')
       const link = storageLink(offered)
-      if (!link) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The finished result is at an address Velorn does not collect from. Nothing was downloaded. It stays on Comfy for 24 hours.')
+      if (!link) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'Comfy did not give a usable download address for the finished result. Nothing was downloaded. It stays on Comfy for 24 hours.')
       data = await download(op, link, model.kind === 'video' ? VIDEO_MAX : isAudio(model) ? AUDIO_MAX : LIMITS.image)
       if (!data.length) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The downloaded result was empty. Nothing was imported.')
     }
     if (isAudio(model)) return audioOutput(job, data)
     if (model.kind === 'video') {
-      const container = videoHeader(data)
-      if (!container) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The downloaded file is not an MP4 or MOV video. Nothing was imported.')
+      const container = videoHeader(data) || otherVideo(data)
+      if (!container) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'Comfy returned a message instead of a video file. Nothing was imported.')
       return { success: true, jobId: job.id, kind: 'video', bytes: new Uint8Array(data), mimeType: container.mimeType, filename: `velorn-router-${job.id}.${container.extension}` }
     }
-    const want = job.create.pixels || null
+    return pictureOutput(op, job, data)
+  }
+  // A picture is kept whatever its size: a model that answers with other dimensions than were asked for
+  // has still made (and charged for) a picture. The size comes from the file's own header.
+  async function pictureOutput(op, job, data) {
     let declared = null
     const header = imageHeader(data, (width, height) => {
-      const ok = Number.isInteger(width) && Number.isInteger(height) && width >= 64 && height >= 64 && width <= MAX_SIDE && height <= MAX_SIDE
-        && (!want || width === want.width && height === want.height)
+      const ok = Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0
       if (ok) declared = { width, height }
       return ok
     })
-    if (!header || !declared) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', want
-      ? `The returned picture is not the ${want.width} × ${want.height} that was asked for, or its header is invalid. No decoding or import was attempted.`
-      : 'The returned picture header is invalid or larger than 4096 pixels a side. No decoding or import was attempted.')
+    if (!header || !declared) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'Comfy returned something that is not a picture Velorn can read. Nothing was imported.')
     const { mimeType, extension } = header
-    if (typeof validateImage !== 'function') throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'Native image verification is unavailable. No media was imported.')
-    const decoded = await abortable(op, () => validateImage(data, { mimeType })); await check(op)
-    if (!object(decoded) || decoded.width !== declared.width || decoded.height !== declared.height || decoded.valid === false) throw fault('COMFY_ROUTER_OUTPUT_UNVERIFIED', 'The picture could not be decoded at its declared size. No media was imported.')
-    return { success: true, jobId: job.id, bytes: new Uint8Array(data), mimeType, width: decoded.width, height: decoded.height, filename: `velorn-router-${job.id}.${extension}` }
+    const size = declared
+    return { success: true, jobId: job.id, bytes: new Uint8Array(data), mimeType, width: size.width, height: size.height, filename: `velorn-router-${job.id}.${extension}` }
   }
   function markImported(payload) { return perform(payload, ['jobId', 'assetId'], async op => {
     const job = owned(op, payload.jobId)

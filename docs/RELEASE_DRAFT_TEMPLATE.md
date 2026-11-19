@@ -12,12 +12,10 @@ Ignore the auto-generated source-code archives unless you plan to build Velorn f
 
 ## Highlights
 
-- **Visuals** and **Sound**: make pictures, video, voices and sound effects through Comfy Router with your own Comfy key.
-- **GPU sharing (Beta)**: lend your graphics card to other creators, or use a shared one, for pictures, video and music.
-- **Director**: start a music video from a song. Velorn listens to it and writes down the lyrics with their timing, much faster on a computer with a graphics card.
-- **Velo**, the built-in assistant, with Full access on Windows, macOS and Linux.
+- **A finished result is always saved.** In 0.4.0 a finished video from Visuals could end with "It finished, but couldn't be saved". Velorn now downloads a result from whatever address Comfy gives, as ComfyUI does, and no longer refuses a file for its size or format.
+- If this happened to you: Comfy keeps a result for 24 hours. Install 0.4.1, open the same project and go to Visuals. Velorn picks the job up and saves it, without a new charge.
 
-Full notes: [docs/RELEASE_NOTES_0.4.0.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.0.md)
+Full notes: [docs/RELEASE_NOTES_0.4.1.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.1.md). Everything new in 0.4.0: [docs/RELEASE_NOTES_0.4.0.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.0.md)
 
 ## Notes
 
