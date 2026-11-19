@@ -1,36 +1,13 @@
-# Velorn v0.4.0 — Make pictures, video and sound without ComfyUI
+# Velorn v0.4.0 — New ways to create: Visuals, Sound, GPU sharing and Velo
 
-This is the biggest Velorn release so far. You can now generate pictures, video
-clips, voices and sound effects with nothing installed but Velorn, share a
-graphics card with other creators, and direct a music video from a song.
+This is the biggest Velorn release so far. You can share your graphics card with
+other creators, reach Velorn from your phone, and work with Velo, the built-in
+assistant. Two new tabs, Visuals and Sound, make pictures, video, voices and sound
+effects through Comfy Router with your own Comfy key.
 
-Editing, captions and export work as before, and ComfyUI is still there for
-everyone who uses it.
-
-## Visuals: pictures and video
-
-The new **Visuals** tab makes pictures and video clips through Comfy Router, with
-your own Comfy key. Paste the key once and pick a model.
-
-- You see the price before anything is charged, and what it cost afterwards.
-- Several pictures from one click, and a picture as the starting point for an
-  edit or a clip.
-- Results are saved into the open project, ready for the timeline.
-- No ComfyUI is needed on your computer.
-
-## Sound: voices and effects
-
-The new **Sound** tab makes spoken voice and sound effects the same way, through
-Comfy Router. Each voice can be heard for free before you spend anything, and a
-finished sound goes to the timeline with one click.
-
-Visuals and Sound say plainly that they run on Comfy Router and use Comfy
-credits. For local models, use the ComfyUI tab.
-
-## Your Comfy credit balance
-
-The balance at the top right now shows even when ComfyUI is not installed. It is
-read with the Comfy key you pasted in Visuals.
+Editing, captions and export work as before. ComfyUI is still at the heart of
+generation: the ComfyUI tab is there for local models and your own workflows,
+and Visuals and Sound run on Comfy's own service.
 
 ## GPU sharing (Beta)
 
@@ -53,6 +30,50 @@ available right now" is a normal answer. Nudity and sexual content are not
 allowed; an owner can report a job, and accounts that break the rules lose
 access.
 
+## Velorn on your phone
+
+Open Velorn in your phone's browser and connect it to a computer that is running
+Velorn. From the phone you can talk to Velo, make pictures and video, and use
+shared GPUs, while the work happens on your computer and lands in your project.
+
+## Velo, the built-in assistant
+
+Sign in to a Velorn account and **Velo** can answer questions about your project
+and make edits for you. With **Full access** switched on, Velo can also run
+commands and work with files on your computer.
+
+- Full access works on Windows, macOS and Linux.
+- Pressing Stop, or closing Velorn, ends everything a command started.
+- Velo tells you when a command will be stopped at the end of its answer.
+
+## Visuals: pictures and video
+
+The new **Visuals** tab makes pictures and video clips through Comfy Router,
+Comfy's service for running models in the cloud. Paste your Comfy key once and
+pick a model.
+
+- You see the price before anything is charged, and what it cost afterwards.
+- Several pictures from one click, and a picture as the starting point for an
+  edit or a clip.
+- Results are saved into the open project, in their own folder, ready for the
+  timeline.
+- It runs on Comfy's service and uses your Comfy credits, so ComfyUI does not
+  have to be installed on your computer for this tab.
+
+## Sound: voices and effects
+
+The new **Sound** tab makes spoken voice and sound effects the same way, through
+Comfy Router. Each voice can be heard for free before you spend anything, and a
+finished sound goes to the timeline with one click.
+
+Both tabs say on screen that they run on Comfy Router and use Comfy credits. For
+local models and your own workflows, use the ComfyUI tab.
+
+## Your Comfy credit balance
+
+The balance at the top right now also shows when ComfyUI is not installed. It is
+read with the Comfy key you pasted in Visuals.
+
 ## Director: a music video from a song
 
 The **Director** tab starts with Music Video. Give it a song and Velorn listens to
@@ -65,19 +86,8 @@ it and writes down the lyrics with their timing, so each line can become a shot.
   and the processor otherwise.
 - You can also bring the lyrics as a file with timings.
 
-## Velo, the built-in assistant
-
-Sign in to a Velorn account and **Velo** can answer questions about your project
-and make edits for you. With **Full access** switched on, Velo can also run
-commands and work with files on your computer.
-
-- Full access works on Windows, macOS and Linux.
-- Pressing Stop, or closing Velorn, ends everything a command started.
-- Velo tells you when a command will be stopped at the end of its answer.
-
 ## Also in this release
 
-- **Your phone:** connect a phone in the browser to a computer running Velorn.
 - **Tutorials** tab.
 - **Faster export.**
 - What you make in Visuals, Sound and GPU sharing is filed in a folder of that
@@ -89,6 +99,8 @@ commands and work with files on your computer.
 
 - **Comfy credits:** Visuals and Sound spend credits from your own Comfy
   account. Velorn shows the price first and never spends without a click.
+- **ComfyUI:** local models, custom workflows and the workflows you share on
+  GPU sharing all run in ComfyUI on your own computer.
 - **Music:** Sound has no music model yet. Music can be made on a shared GPU, or
   in ComfyUI.
 - **Song listening on older computers:** without a graphics card, and on older

@@ -12,7 +12,7 @@ Ignore the auto-generated source-code archives unless you plan to build Velorn f
 
 ## Highlights
 
-- **Visuals** and **Sound**: make pictures, video, voices and sound effects through Comfy Router with your own Comfy key. No ComfyUI needed.
+- **Visuals** and **Sound**: make pictures, video, voices and sound effects through Comfy Router with your own Comfy key.
 - **GPU sharing (Beta)**: lend your graphics card to other creators, or use a shared one, for pictures, video and music.
 - **Director**: start a music video from a song. Velorn listens to it and writes down the lyrics with their timing, much faster on a computer with a graphics card.
 - **Velo**, the built-in assistant, with Full access on Windows, macOS and Linux.
