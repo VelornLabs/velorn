@@ -122,6 +122,7 @@ async function main() {
   let recovery
   const readbackDrainEdges = []
   let finalDrainCancellationRecovered = false
+  let gpuReadbackTested = false
   frameColors = []
   try {
     useAssetsStore.setState({ assets: colorAssets })
@@ -142,6 +143,12 @@ async function main() {
     assert(calls.frames === 5 && recovery.perf.frames === 5, 'Readback recovery lost a frame')
     assert(JSON.stringify(frameColors) === JSON.stringify(expectedColors),
       'Readback recovery duplicated, skipped, or reordered a frame: ' + JSON.stringify(frameColors))
+    // Some machines give a never-shown window no graphics at all (seen on GitHub's Apple Silicon
+    // runners: "Failed to create context"). The exporter then uses its plain path, which the order
+    // checks above already covered, and there is no GPU read-back whose stall could be tested.
+    // Only that case is let through: with working graphics a missing read-back still fails below.
+    gpuReadbackTested = Boolean(recovery.perf.gpuReadback) || Boolean(document.createElement('canvas').getContext('webgl2'))
+    if (gpuReadbackTested) {
     assert(recovery.perf.gpuReadback.fenceWaitFallbacks === 1, 'Stalled GPU fence did not activate one fallback')
     assert(recovery.perf.gpuReadback.syncFrameReads > 0, 'Exporter did not leave the stalled async path')
 
@@ -196,6 +203,7 @@ async function main() {
     assert(calls.finishes === finishesBeforeDrain + 1 && calls.aborts === abortsBeforeDrain + 1,
       'Retry after final-drain cancellation did not finish cleanly')
     finalDrainCancellationRecovered = true
+    }
   } finally {
     WebGL2RenderingContext.prototype.clientWaitSync = savedGlWait
     frameColors = null
@@ -220,7 +228,7 @@ async function main() {
   window.exportSchedulerFixture.report({ success: true, sandboxed: true, visibilityState: document.visibilityState,
     elapsedMs: Math.round(elapsedMs), syntheticFrames: 96, rafRequests, rafDeliberatelySuspended: true,
     timerAndIpcResponsive: true, orderedFrameColors,
-    readbackRecovery: recovery.perf.gpuReadback,
+    readbackRecovery: recovery.perf.gpuReadback, gpuReadbackTested,
     readbackDrainEdges, finalDrainCancellationRecovered,
     cancellationAndFailureRecovered: true, perf: result.perf, nativeEncode })
 }
