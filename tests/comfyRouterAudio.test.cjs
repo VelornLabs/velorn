@@ -181,12 +181,17 @@ test('a refusal is a clear no; a broken connection is unclear and is never sent 
   assert.equal(f.posts().length, 3)
 })
 
-test('an answer that is not a sound file is a failed result, not a saved one', async t => {
+test('a sound of a kind this code does not know is kept; only a message is a failed result', async t => {
   const f = await fixture(t, { answer: () => new Response(Buffer.alloc(400, 1), { status: 200, headers: { 'x-comfy-credits-used': '1.33' } }) })
   const plan = await f.manager.previewCreate({ modelId: 'eleven-v4', choices: { prompt: SAY, voice: 'rachel' } })
   const done = await f.settled((await f.manager.submitCreate({ planId: plan.planId })).job.jobId)
-  assert.deepEqual([done.status, done.errorType, done.chargedCredits], ['FAILED', 'RESULT_UNREADABLE', 1.33])
-  assert.deepEqual(await f.files(), [])
+  assert.deepEqual([done.status, done.errorType, done.chargedCredits], ['COMPLETED', undefined, 1.33])
+  assert.equal((await f.files()).length, 1)
+  const g = await fixture(t, { answer: () => new Response('<html>Service unavailable</html>'.padEnd(400, ' '), { status: 200, headers: { 'x-comfy-credits-used': '1.33' } }) })
+  const again = await g.manager.previewCreate({ modelId: 'eleven-v4', choices: { prompt: SAY, voice: 'rachel' } })
+  const failed = await g.settled((await g.manager.submitCreate({ planId: again.planId })).job.jobId)
+  assert.deepEqual([failed.status, failed.errorType], ['FAILED', 'RESULT_UNREADABLE'])
+  assert.deepEqual(await g.files(), [])
 })
 
 test('recognises the sound files Velorn can play and nothing else', () => {
@@ -264,9 +269,10 @@ test('a Pika Music song is sent once, waits for its answer, and its file is coll
   assert.equal(Buffer.from(output.bytes).equals(MP3), true)
 })
 
-test('a song whose link is elsewhere, missing, not finished or not a sound is a failed result, and nothing else is fetched', async t => {
+test('a song whose link is not https, missing, not finished or not a sound is a failed result, and nothing else is fetched', async t => {
   for (const [answer, file, fetches] of [
-    [() => pikaAnswer('https://cdn.pika.example/audio.mp3'), () => assert.fail('a refused link was fetched'), 0],
+    [() => pikaAnswer('http://cdn.pika.example/audio.mp3'), () => assert.fail('a refused link was fetched'), 0],
+    [() => pikaAnswer('https://192.168.1.20/audio.mp3'), () => assert.fail('a refused link was fetched'), 0],
     [() => pikaAnswer(42), () => assert.fail('nothing to fetch'), 0],
     [() => json({ id: 'media_1', status: 'running' }), () => assert.fail('nothing to fetch'), 0],
     [() => json({ id: 'media_1', status: 'completed', output: { media_type: 'video', video: { url: `${STORE}.mp4` } } }), () => assert.fail('a clip is not a song'), 0],
@@ -279,6 +285,14 @@ test('a song whose link is elsewhere, missing, not finished or not a sound is a 
     assert.equal(f.posts().length, 1) // Never sent a second time.
     assert.deepEqual(await f.files(), [])
   }
+})
+
+test('a song on the model maker\'s own address is collected like any other', async t => {
+  const { f, job, fetched } = await linked(t, 'pika-music', { prompt: 'warm lo-fi' }, () => pikaAnswer('https://cdn.pika.example/audio.mp3?sig=1'), () => new Response(MP3, { status: 200 }))
+  assert.equal(job.status, 'COMPLETED')
+  assert.deepEqual(fetched.map(r => r.url), ['https://cdn.pika.example/audio.mp3?sig=1'])
+  assert.deepEqual(fetched[0].headers, {})
+  assert.equal((await f.manager.output({ jobId: job.jobId })).success, true)
 })
 
 test('the price check for a song carries filler, never the description or the lyrics', async t => {

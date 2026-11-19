@@ -166,6 +166,7 @@ const agentDispatchScope = createAgentDispatchScope()
 // the experimental GPU coordinator: generation must not unload/reload those
 // models, and agent replies must not free ComfyUI's models or wait for its queue.
 let generationRuns = null
+const resultFetch = require('./resultFetch.cjs').createResultFetch(net)
 let comfyRouter = null
 function getComfyRouter() {
   if (!comfyRouter) comfyRouter = createComfyRouter({
@@ -176,7 +177,11 @@ function getComfyRouter() {
     // Remembers the Router key between launches, encrypted by the OS password store.
     // Native-owned: there is no IPC or agent call that returns the key.
     keyStore: createComfyRouterKeyStore({ safeStorage, file: path.join(app.getPath('userData'), 'comfy-router-key.bin') }),
-    fetchImpl: (url, options) => net.fetch(url, { ...options, credentials: 'omit', cache: 'no-store', bypassCustomProtocolHandlers: true }),
+    // Comfy's own service goes through net.fetch. A finished result at any other address goes through
+    // resultFetch, which survives the odd response headers some storage services send (see resultFetch.cjs).
+    fetchImpl: (url, options) => String(url).startsWith('https://api.comfy.org/')
+      ? net.fetch(url, { ...options, credentials: 'omit', cache: 'no-store', bypassCustomProtocolHandlers: true })
+      : resultFetch(url, options),
     validateImage: bytes => {
       const image = nativeImage.createFromBuffer(Buffer.from(bytes))
       return image.isEmpty() ? null : image.getSize()
