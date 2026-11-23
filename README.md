@@ -39,7 +39,7 @@ Use built-in local and cloud workflows, bring your own ComfyUI API workflow JSON
 
 - Creating music videos from lyrics, timing, characters, keyframes, video shots, and timeline edits.
 - Building UGC-style creator ads and small-business ads with editable shot plans.
-- Running curated local and cloud image/video workflows from one Generate workspace.
+- Running curated local and cloud image/video workflows from one workflow browser.
 - Running custom ComfyUI image, video, keyframe, and music-video workflows inside the app.
 - Editing generated clips with tracks, transitions, effects, captions, proxy/cache tools, and export.
 - Keeping generated media, prompts, workflow outputs, and timelines organized inside a project.
@@ -47,7 +47,7 @@ Use built-in local and cloud workflows, bring your own ComfyUI API workflow JSON
 Velorn is not a replacement for ComfyUI. It is the production layer around generation: plan the work, send jobs to Comfy Router, a shared GPU or your own ComfyUI, collect the outputs, and finish the edit.
 
 <p align="center">
-  <img src="docs/readme/create-workflows.png" alt="Velorn Create workspace with UGC, business ad, music video, and short film creators" />
+  <img src="docs/readme/create-workflows.png" alt="Velorn Director tab with UGC, business ad, music video, and short film creators" />
 </p>
 
 ## Download
@@ -99,9 +99,9 @@ This is experimental and off until you switch it on.
 
 Sign in to a Velorn account and Velo, the built-in assistant, can answer questions about your project and make edits for you. With Full access switched on, Velo can also run commands and work with files on Windows, macOS and Linux. Stop, or closing Velorn, ends everything a command started.
 
-### Generate
+### Workflow browser
 
-Generate runs built-in local workflows, cloud/partner workflows, and custom ComfyUI workflows.
+The workflow browser runs one workflow at a time: built-in local workflows, cloud/partner workflows, and custom ComfyUI workflows. Since 0.4 it no longer has its own tab. It opens from the editor's preview with **Extend with AI** or **Starting keyframe for AI**, and agents can open it through MCP.
 
 - Local image, video, image-edit, audio, and utility workflows.
 - Cloud workflows such as Nano Banana 2, GPT Image 2, Seedance, Kling, and other partner-node routes where available.
@@ -112,7 +112,7 @@ Generate runs built-in local workflows, cloud/partner workflows, and custom Comf
 - A Featured / My Workflows / Templates browser with Local and Cloud filters. Imported community workflows appear in Featured next to the built-ins.
 
 <p align="center">
-  <img src="docs/readme/generate-featured.png" alt="Velorn Generate browser with Featured workflows, Local and Cloud filters, and the dependency checker" />
+  <img src="docs/readme/generate-featured.png" alt="Velorn workflow browser with Featured workflows, Local and Cloud filters, and the dependency checker" />
 </p>
 
 The Templates tab browses the official ComfyUI template catalog (500+ templates with size and popularity info) and launches any of them into the embedded ComfyUI tab.
@@ -121,9 +121,9 @@ The Templates tab browses the official ComfyUI template catalog (500+ templates 
   <img src="docs/readme/generate-templates.png" alt="Velorn Templates browser showing the official ComfyUI template catalog with categories and filters" />
 </p>
 
-### Create
+### Director
 
-Create contains guided creator workflows built on Velorn's Director Mode engine.
+The Director tab holds the guided creator workflows.
 
 - **Music Video Creation** - turns a song, lyric timing, characters, references, and a director script into keyframes, video shots, and an editable timeline.
 - **UGC Creator** - builds creator-style social ads with hooks, dialogue, product demos, try-ons, testimonials, and editable shot-by-shot outputs.
@@ -226,7 +226,7 @@ Advanced users can:
 2. Modify it in ComfyUI.
 3. Keep the required Velorn endpoint nodes.
 4. Send it back with the Velorn Bridge or import the API workflow JSON manually.
-5. Run that graph from Velorn as part of a creator flow or from Generate.
+5. Run that graph from Velorn as part of a Director creator flow or from the workflow browser.
 
 Common Velorn endpoint node titles include:
 
@@ -260,7 +260,7 @@ Generation:
 
 - Visuals and Sound run on Comfy's service: they need a Comfy key and Comfy credits, not a local ComfyUI installation.
 - GPU sharing needs a Velorn account. The work runs in ComfyUI on the computer of the person who shares; to share your own GPU you need ComfyUI with the workflow you share.
-- A separately installed local ComfyUI running on the same machine is required for local models, custom workflows and the Generate workflows.
+- A separately installed local ComfyUI running on the same machine is required for local models, custom workflows and the built-in local workflows.
 - Local workflows may require compatible hardware, models, and custom nodes.
 - Partner-node workflows require the appropriate Comfy.org credentials and credits.
 
@@ -293,7 +293,7 @@ Depending on the workflow, users may need:
 
 Velorn 0.2.1+ talks to local ComfyUI without any CORS setup. On older Velorn versions, launch ComfyUI with `--enable-cors-header` if the embedded tab is blank or API calls return 403.
 
-Inside Generate, use the workflow setup and dependency tools when something is missing.
+In the workflow browser, use the workflow setup and dependency tools when something is missing.
 
 ## Run From Source
 
