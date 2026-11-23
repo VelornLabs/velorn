@@ -37,7 +37,7 @@ Velorn은 ComfyUI를 사용하는 크리에이터를 위한 오픈소스 데스�
 
 - 가사, 타이밍, 캐릭터, 키프레임, 비디오 숏, 타임라인 편집으로 뮤직비디오 제작.
 - 편집 가능한 숏 플랜을 갖춘 UGC 스타일 크리에이터 광고와 소상공인 광고 제작.
-- 엄선된 로컬/클라우드 이미지·비디오 워크플로를 하나의 Generate 워크스페이스에서 실행.
+- 엄선된 로컬/클라우드 이미지·비디오 워크플로를 하나의 워크플로 브라우저에서 실행.
 - 커스텀 ComfyUI 이미지, 비디오, 키프레임, 뮤직비디오 워크플로를 앱 안에서 실행.
 - 생성된 클립을 트랙, 트랜지션, 이펙트, 자막, 프록시/캐시 도구, 내보내기로 편집.
 - 생성된 미디어, 프롬프트, 워크플로 출력, 타임라인을 프로젝트 안에서 체계적으로 관리.
@@ -45,7 +45,7 @@ Velorn은 ComfyUI를 사용하는 크리에이터를 위한 오픈소스 데스�
 Velorn은 ComfyUI를 대체하지 않습니다. ComfyUI를 둘러싼 프로덕션 레이어입니다. 작업을 계획하고, 작업을 ComfyUI로 보내고, 출력을 모으고, 편집을 마무리합니다.
 
 <p align="center">
-  <img src="../readme/create-workflows.png" alt="UGC, 비즈니스 광고, 뮤직비디오, 단편 영화 크리에이터가 있는 Velorn Create 워크스페이스" />
+  <img src="../readme/create-workflows.png" alt="UGC, 비즈니스 광고, 뮤직비디오, 단편 영화 크리에이터가 있는 Velorn Director 탭" />
 </p>
 
 ## 다운로드
@@ -65,9 +65,9 @@ Velorn은 ComfyUI를 대체하지 않습니다. ComfyUI를 둘러싼 프로덕�
 
 ## 주요 기능
 
-### Generate(생성)
+### 워크플로 브라우저
 
-Generate는 내장 로컬 워크플로, 클라우드/파트너 워크플로, 커스텀 ComfyUI 워크플로를 실행합니다.
+워크플로 브라우저는 내장 로컬 워크플로, 클라우드/파트너 워크플로, 커스텀 ComfyUI 워크플로를 한 번에 하나씩 실행합니다. 0.4부터는 전용 탭이 없습니다. 에디터 미리보기의 **Extend with AI** 또는 **Starting keyframe for AI**에서 열리며, 에이전트는 MCP로 열 수 있습니다.
 
 - 로컬 이미지, 비디오, 이미지 편집, 오디오, 유틸리티 워크플로.
 - Nano Banana 2, GPT Image 2, Seedance, Kling 등 이용 가능한 파트너 노드 경로의 클라우드 워크플로.
@@ -78,7 +78,7 @@ Generate는 내장 로컬 워크플로, 클라우드/파트너 워크플로, 커
 - Local/Cloud 필터가 있는 Featured / My Workflows / Templates 브라우저. 가져온 커뮤니티 워크플로는 내장 워크플로와 나란히 Featured에 표시됩니다.
 
 <p align="center">
-  <img src="../readme/generate-featured.png" alt="추천 워크플로, Local/Cloud 필터, 의존성 검사기가 있는 Velorn Generate 브라우저" />
+  <img src="../readme/generate-featured.png" alt="추천 워크플로, Local/Cloud 필터, 의존성 검사기가 있는 Velorn 워크플로 브라우저" />
 </p>
 
 Templates 탭에서는 공식 ComfyUI 템플릿 카탈로그(크기와 인기 정보가 있는 500개 이상의 템플릿)를 둘러보고, 어떤 템플릿이든 내장 ComfyUI 탭에서 실행할 수 있습니다.
@@ -87,9 +87,9 @@ Templates 탭에서는 공식 ComfyUI 템플릿 카탈로그(크기와 인기 �
   <img src="../readme/generate-templates.png" alt="카테고리와 필터가 있는 공식 ComfyUI 템플릿 카탈로그를 보여주는 Velorn 템플릿 브라우저" />
 </p>
 
-### Create(제작)
+### Director
 
-Create에는 Velorn의 Director Mode 엔진 위에 구축된 가이드형 크리에이터 워크플로가 있습니다.
+Director 탭에는 가이드형 크리에이터 워크플로가 있습니다.
 
 - **Music Video Creation** - 곡, 가사 타이밍, 캐릭터, 레퍼런스, 연출 스크립트를 키프레임, 비디오 숏, 편집 가능한 타임라인으로 변환합니다.
 - **UGC Creator** - 훅, 대사, 제품 시연, 착용 시연, 후기 등을 갖춘 크리에이터 스타일 소셜 광고를 숏 단위로 편집 가능하게 제작합니다.
@@ -192,7 +192,7 @@ Velorn에는 Codex, Claude Code, Cursor 호환 도구 및 기타 MCP 클라이�
 2. ComfyUI에서 수정합니다.
 3. 필요한 Velorn 엔드포인트 노드를 유지합니다.
 4. Velorn Bridge로 다시 보내거나 API 워크플로 JSON을 수동으로 가져옵니다.
-5. 그 그래프를 크리에이터 플로의 일부로, 또는 Generate에서 Velorn으로 실행합니다.
+5. 그 그래프를 Director 크리에이터 플로의 일부로, 또는 워크플로 브라우저에서 Velorn으로 실행합니다.
 
 자주 쓰는 Velorn 엔드포인트 노드 제목:
 
