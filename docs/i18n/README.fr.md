@@ -37,7 +37,7 @@ Utilisez les workflows locaux et cloud intégrés, apportez votre propre JSON de
 
 - Créer des clips musicaux à partir de paroles, de synchronisation, de personnages, de keyframes, de plans vidéo et de montages sur timeline.
 - Construire des publicités de type UGC pour créateurs et des publicités pour petites entreprises, avec des plans de tournage éditables.
-- Exécuter des workflows image/vidéo sélectionnés, locaux et cloud, depuis un espace Generate unique.
+- Exécuter des workflows image/vidéo sélectionnés, locaux et cloud, depuis un navigateur de workflows unique.
 - Exécuter des workflows ComfyUI personnalisés d'image, de vidéo, de keyframes et de clip musical dans l'application.
 - Monter les clips générés avec pistes, transitions, effets, sous-titres, outils de proxy/cache et export.
 - Garder les médias générés, les prompts, les sorties de workflows et les timelines organisés dans un projet.
@@ -45,7 +45,7 @@ Utilisez les workflows locaux et cloud intégrés, apportez votre propre JSON de
 Velorn ne remplace pas ComfyUI. C'est la couche de production autour de ComfyUI : planifier le travail, envoyer les tâches à ComfyUI, récupérer les sorties et finir le montage.
 
 <p align="center">
-  <img src="../readme/create-workflows.png" alt="Espace Create de Velorn avec créateurs UGC, publicité, clip musical et court-métrage" />
+  <img src="../readme/create-workflows.png" alt="Onglet Director de Velorn avec créateurs UGC, publicité, clip musical et court-métrage" />
 </p>
 
 ## Téléchargement
@@ -65,9 +65,9 @@ Ignorez les archives de code source générées automatiquement par GitHub, sauf
 
 ## Fonctionnalités principales
 
-### Generate
+### Navigateur de workflows
 
-Generate exécute des workflows locaux intégrés, des workflows cloud/partenaires et des workflows ComfyUI personnalisés.
+Le navigateur de workflows exécute un workflow à la fois : workflows locaux intégrés, workflows cloud/partenaires et workflows ComfyUI personnalisés. Depuis la version 0.4, il n’a plus son propre onglet. Il s’ouvre depuis l’aperçu de l’éditeur avec **Extend with AI** ou **Starting keyframe for AI**, et les agents peuvent l’ouvrir via MCP.
 
 - Workflows locaux d'image, de vidéo, d'édition d'image, d'audio et utilitaires.
 - Workflows cloud comme Nano Banana 2, GPT Image 2, Seedance, Kling et d'autres routes de nœuds partenaires lorsque disponibles.
@@ -78,7 +78,7 @@ Generate exécute des workflows locaux intégrés, des workflows cloud/partenair
 - Un navigateur Featured / My Workflows / Templates avec filtres Local et Cloud. Les workflows communautaires importés apparaissent dans Featured à côté des workflows intégrés.
 
 <p align="center">
-  <img src="../readme/generate-featured.png" alt="Navigateur Generate de Velorn avec workflows en vedette, filtres Local et Cloud et vérificateur de dépendances" />
+  <img src="../readme/generate-featured.png" alt="Navigateur de workflows de Velorn avec workflows en vedette, filtres Local et Cloud et vérificateur de dépendances" />
 </p>
 
 L'onglet Templates parcourt le catalogue officiel de modèles ComfyUI (plus de 500 modèles avec taille et popularité) et ouvre n'importe lequel dans l'onglet ComfyUI intégré.
@@ -87,9 +87,9 @@ L'onglet Templates parcourt le catalogue officiel de modèles ComfyUI (plus de 5
   <img src="../readme/generate-templates.png" alt="Navigateur de modèles Velorn affichant le catalogue officiel de modèles ComfyUI avec catégories et filtres" />
 </p>
 
-### Create
+### Director
 
-Create contient des workflows créateurs guidés, construits sur le moteur Director Mode de Velorn.
+L’onglet Director contient les workflows créateurs guidés.
 
 - **Music Video Creation** - transforme une chanson, la synchronisation des paroles, des personnages, des références et un script de réalisation en keyframes, plans vidéo et une timeline éditable.
 - **UGC Creator** - construit des publicités sociales façon créateur avec accroches, dialogues, démos produit, essayages, témoignages et sorties éditables plan par plan.
@@ -192,7 +192,7 @@ Les utilisateurs avancés peuvent :
 2. Le modifier dans ComfyUI.
 3. Conserver les nœuds d'endpoint Velorn requis.
 4. Le renvoyer avec le Velorn Bridge ou importer manuellement le JSON du workflow d'API.
-5. Exécuter ce graphe depuis Velorn dans un flux créateur ou depuis Generate.
+5. Exécuter ce graphe depuis Velorn dans un flux créateur de Director ou depuis le navigateur de workflows.
 
 Les titres courants des nœuds d'endpoint Velorn :
 

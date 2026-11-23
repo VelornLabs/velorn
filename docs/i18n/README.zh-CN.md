@@ -37,7 +37,7 @@ Velorn 是一款面向 ComfyUI 用户的开源桌面 AI 视频工作站。它将
 
 - 基于歌词、时间对齐、角色、关键帧、视频镜头和时间线剪辑制作音乐视频（MV）。
 - 制作 UGC 风格的创作者广告和小型企业广告，镜头方案可编辑。
-- 在统一的 Generate 工作区中运行精选的本地和云端图像/视频工作流。
+- 在统一的工作流浏览器中运行精选的本地和云端图像/视频工作流。
 - 在应用内运行自定义的 ComfyUI 图像、视频、关键帧和音乐视频工作流。
 - 使用轨道、转场、特效、字幕、代理/缓存工具和导出功能剪辑生成的片段。
 - 在项目中统一管理生成的媒体、提示词、工作流输出和时间线。
@@ -45,7 +45,7 @@ Velorn 是一款面向 ComfyUI 用户的开源桌面 AI 视频工作站。它将
 Velorn 不是 ComfyUI 的替代品。它是 ComfyUI 之上的制作层：规划工作、把任务发送给 ComfyUI、收集输出，并完成最终剪辑。
 
 <p align="center">
-  <img src="../readme/create-workflows.png" alt="Velorn Create 工作区：UGC、商业广告、音乐视频和短片创作器" />
+  <img src="../readme/create-workflows.png" alt="Velorn Director 标签页：UGC、商业广告、音乐视频和短片创作器" />
 </p>
 
 ## 下载
@@ -65,9 +65,9 @@ Velorn 不是 ComfyUI 的替代品。它是 ComfyUI 之上的制作层：规划�
 
 ## 主要功能
 
-### Generate（生成）
+### 工作流浏览器
 
-Generate 可运行内置本地工作流、云端/合作伙伴工作流以及自定义 ComfyUI 工作流。
+工作流浏览器一次运行一个工作流：内置本地工作流、云端/合作伙伴工作流以及自定义 ComfyUI 工作流。自 0.4 起，它不再有单独的标签页。可在编辑器预览中通过 **Extend with AI** 或 **Starting keyframe for AI** 打开，智能体也可以通过 MCP 打开。
 
 - 本地图像、视频、图像编辑、音频和实用工具工作流。
 - 云端工作流，如 Nano Banana 2、GPT Image 2、Seedance、Kling 以及其他可用的合作伙伴节点线路。
@@ -78,7 +78,7 @@ Generate 可运行内置本地工作流、云端/合作伙伴工作流以及自�
 - Featured / My Workflows / Templates 浏览器，带 Local 和 Cloud 筛选。导入的社区工作流会出现在 Featured 中，与内置工作流并列。
 
 <p align="center">
-  <img src="../readme/generate-featured.png" alt="Velorn Generate 浏览器：精选工作流、本地和云端筛选以及依赖检查器" />
+  <img src="../readme/generate-featured.png" alt="Velorn 工作流浏览器：精选工作流、本地和云端筛选以及依赖检查器" />
 </p>
 
 Templates 标签页可浏览官方 ComfyUI 模板目录（500 多个模板，含大小和热度信息），并将任意模板在内嵌的 ComfyUI 标签页中打开。
@@ -87,9 +87,9 @@ Templates 标签页可浏览官方 ComfyUI 模板目录（500 多个模板，含
   <img src="../readme/generate-templates.png" alt="Velorn 模板浏览器：官方 ComfyUI 模板目录，含分类和筛选" />
 </p>
 
-### Create（创作）
+### Director
 
-Create 包含基于 Velorn Director Mode 引擎构建的引导式创作工作流。
+Director 标签页包含引导式创作工作流。
 
 - **Music Video Creation** - 将歌曲、歌词时间轴、角色、参考图和导演脚本转化为关键帧、视频镜头和可编辑的时间线。
 - **UGC Creator** - 制作创作者风格的社交广告，包含开场钩子、对白、产品演示、试穿、用户见证，以及可逐镜头编辑的输出。
@@ -192,7 +192,7 @@ Velorn 内置本地 MCP 服务器，提供 100 多个工具，支持 Codex、Cla
 2. 在 ComfyUI 中修改它。
 3. 保留所需的 Velorn 端点节点。
 4. 用 Velorn Bridge 发送回来，或手动导入 API 工作流 JSON。
-5. 在 Velorn 中将该图作为创作流程的一部分或从 Generate 运行。
+5. 在 Velorn 中将该图作为 Director 创作流程的一部分或从工作流浏览器运行。
 
 常用的 Velorn 端点节点标题包括：
 

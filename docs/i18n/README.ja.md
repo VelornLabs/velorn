@@ -37,7 +37,7 @@ Velorn は、ComfyUI を使うクリエイターのためのオープンソー�
 
 - 歌詞、タイミング、キャラクター、キーフレーム、ビデオショット、タイムライン編集からミュージックビデオを制作。
 - 編集可能なショットプランを備えた UGC 風クリエイター広告や中小ビジネス向け広告の制作。
-- 厳選されたローカル/クラウドの画像・動画ワークフローをひとつの Generate ワークスペースから実行。
+- 厳選されたローカル/クラウドの画像・動画ワークフローをひとつのワークフローブラウザから実行。
 - カスタム ComfyUI の画像、動画、キーフレーム、ミュージックビデオワークフローをアプリ内で実行。
 - 生成したクリップを、トラック、トランジション、エフェクト、字幕、プロキシ/キャッシュツール、書き出しで編集。
 - 生成メディア、プロンプト、ワークフロー出力、タイムラインをプロジェクト内で整理。
@@ -45,7 +45,7 @@ Velorn は、ComfyUI を使うクリエイターのためのオープンソー�
 Velorn は ComfyUI の代替ではありません。ComfyUI を取り巻くプロダクション層です。作業を計画し、ジョブを ComfyUI に送り、出力を集め、編集を仕上げます。
 
 <p align="center">
-  <img src="../readme/create-workflows.png" alt="UGC、ビジネス広告、ミュージックビデオ、短編映画のクリエイターを備えた Velorn Create ワークスペース" />
+  <img src="../readme/create-workflows.png" alt="UGC、ビジネス広告、ミュージックビデオ、短編映画のクリエイターを備えた Velorn の Director タブ" />
 </p>
 
 ## ダウンロード
@@ -65,9 +65,9 @@ Velorn は ComfyUI の代替ではありません。ComfyUI を取り巻くプ�
 
 ## 主な機能
 
-### Generate（生成）
+### ワークフローブラウザ
 
-Generate は、内蔵ローカルワークフロー、クラウド/パートナーワークフロー、カスタム ComfyUI ワークフローを実行します。
+ワークフローブラウザは、内蔵ローカルワークフロー、クラウド/パートナーワークフロー、カスタム ComfyUI ワークフローを一度にひとつ実行します。0.4 以降、専用のタブはありません。エディターのプレビューにある **Extend with AI** または **Starting keyframe for AI** から開き、エージェントは MCP 経由で開けます。
 
 - ローカルの画像、動画、画像編集、オーディオ、ユーティリティワークフロー。
 - Nano Banana 2、GPT Image 2、Seedance、Kling などのクラウドワークフローと、利用可能なパートナーノード経路。
@@ -78,7 +78,7 @@ Generate は、内蔵ローカルワークフロー、クラウド/パートナ�
 - Local / Cloud フィルター付きの Featured / My Workflows / Templates ブラウザ。インポートしたコミュニティワークフローは、内蔵ワークフローと並んで Featured に表示されます。
 
 <p align="center">
-  <img src="../readme/generate-featured.png" alt="注目ワークフロー、Local/Cloud フィルター、依存関係チェッカーを備えた Velorn Generate ブラウザ" />
+  <img src="../readme/generate-featured.png" alt="注目ワークフロー、Local/Cloud フィルター、依存関係チェッカーを備えた Velorn のワークフローブラウザ" />
 </p>
 
 Templates タブでは、公式 ComfyUI テンプレートカタログ（サイズと人気情報付きの 500 以上のテンプレート）を閲覧し、任意のテンプレートを内蔵 ComfyUI タブで起動できます。
@@ -87,9 +87,9 @@ Templates タブでは、公式 ComfyUI テンプレートカタログ（サイ�
   <img src="../readme/generate-templates.png" alt="カテゴリーとフィルター付きの公式 ComfyUI テンプレートカタログを表示する Velorn テンプレートブラウザ" />
 </p>
 
-### Create（制作）
+### Director
 
-Create には、Velorn の Director Mode エンジン上に構築されたガイド付きクリエイターワークフローが含まれます。
+Director タブには、ガイド付きクリエイターワークフローがあります。
 
 - **Music Video Creation** - 楽曲、歌詞タイミング、キャラクター、参照画像、演出スクリプトを、キーフレーム、ビデオショット、編集可能なタイムラインに変換します。
 - **UGC Creator** - フック、セリフ、商品デモ、試着、体験談を備えたクリエイター風 SNS 広告を、ショット単位で編集可能な形で制作します。
@@ -192,7 +192,7 @@ Velorn には、Codex、Claude Code、Cursor 互換ツール、その他の MCP 
 2. ComfyUI でそれを編集する。
 3. 必要な Velorn エンドポイントノードを維持する。
 4. Velorn Bridge で送り返すか、API ワークフロー JSON を手動でインポートする。
-5. そのグラフを、クリエイターフローの一部として、または Generate から Velorn で実行する。
+5. そのグラフを、Director のクリエイターフローの一部として、またはワークフローブラウザから Velorn で実行する。
 
 よく使う Velorn エンドポイントノードのタイトル:
 
