@@ -8,6 +8,8 @@
 - `Linux deb`: Debian/Ubuntu package
 - `Workflow Starter Pack` (optional): advanced ComfyUI setup aid for users who want to inspect workflows manually
 
+**On Windows:** you may see a blue box that says "Windows protected your PC". That is normal for a new version. The installer is signed (the box shows Jaime Aguirre as publisher), but Windows shows this for any file that not many people have downloaded yet. Click **More info** if you do not see a button, then **Run anyway**.
+
 Ignore the auto-generated source-code archives unless you plan to build Velorn from source.
 
 ## Highlights
