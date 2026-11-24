@@ -2146,7 +2146,7 @@ export default function MusicVideoEasyMode({
       if (!result.success) { setVeloScript({ status: 'error', shots: 0, message: result.error }); return }
       setYoloMusicScript(result.text)
       setParseStatus('')
-      setVeloScript({ status: 'done', shots: result.shots, message: '' })
+      setVeloScript({ status: 'done', shots: result.shots, message: result.warning || '' })
     } catch (error) {
       setVeloScript({ status: 'error', shots: 0, message: error?.message || 'Velo could not write the script.' })
     } finally {
@@ -2726,8 +2726,11 @@ export default function MusicVideoEasyMode({
                 </p>
               </div>
             )}
-            {veloScript.status === 'done' && (
+            {veloScript.status === 'done' && !veloScript.message && (
               <p className="mt-2 text-xs text-emerald-200">Velo wrote {plural(veloScript.shots, 'shot')}. Read it below, change what you like, then press Use this script.</p>
+            )}
+            {veloScript.status === 'done' && veloScript.message && (
+              <p className="mt-2 text-xs text-amber-200">Velo wrote {plural(veloScript.shots, 'shot')}, which are in the box below. {veloScript.message}</p>
             )}
             {veloScript.status === 'stopped' && (
               <p className="mt-2 text-xs text-sf-text-secondary">Stopped. {yoloMusicScript.trim() ? 'Your script was not changed.' : 'Nothing was written.'} What Velo had already written may still count against your allowance.</p>

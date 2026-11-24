@@ -12,10 +12,11 @@ Ignore the auto-generated source-code archives unless you plan to build Velorn f
 
 ## Highlights
 
-- **A finished result is always saved.** In 0.4.0 a finished video from Visuals could end with "It finished, but couldn't be saved". Velorn now downloads a result from whatever address Comfy gives, as ComfyUI does, and no longer refuses a file for its size or format.
-- If this happened to you: Comfy keeps a result for 24 hours. Install 0.4.1, open the same project and go to Visuals. Velorn picks the job up and saves it, without a new charge.
+- **Write the script works for whole songs.** On Mac and Windows it could stop after about 20 seconds with "The Velo service could not complete this response". Velo now writes the script a few shots at a time and Velorn joins the parts.
+- **Lyrics in the song's own language.** Listening to a song no longer always hears English. Velorn works out the language by itself. Songs in other alphabets (Russian, Greek, Arabic, Japanese and so on) are not handled yet.
+- **Add line below.** In the Song step, add a lyric line the listening missed.
 
-Full notes: [docs/RELEASE_NOTES_0.4.1.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.1.md). Everything new in 0.4.0: [docs/RELEASE_NOTES_0.4.0.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.0.md)
+Full notes: [docs/RELEASE_NOTES_0.4.2.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.2.md). Everything new in 0.4.0: [docs/RELEASE_NOTES_0.4.0.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.0.md)
 
 ## Notes
 
