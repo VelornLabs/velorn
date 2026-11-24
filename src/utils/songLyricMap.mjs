@@ -88,6 +88,31 @@ export function setLineStart(lines, index, seconds) {
   return list
 }
 
+// Adding a line below line `index`, for words the listening missed. It starts
+// where that line ends when there is a gap before the next one, and halfway to
+// the next line otherwise. The lines after it move down one place, so the
+// parts and the "check this one" marks move with them. Its words are typed in
+// next; `at` is where the new line is.
+export function addLineBelow(lines, parts, unsure, index, songLength = 0) {
+  const list = (lines || []).map((line) => ({ ...line }))
+  const line = list[index]
+  if (!line) return { lines: lines || [], parts: parts || [], unsure: unsure || [], at: -1 }
+  const next = list[index + 1]
+  const lineEnd = Math.max(line.start + 0.1, Number(line.end) || 0)
+  const limit = next ? next.start : Math.max(lineEnd + 3, Number(songLength) || 0)
+  let start = limit - lineEnd >= 1 ? lineEnd : (line.start + limit) / 2
+  start = round2(Math.max(line.start + 0.1, next ? Math.min(start, next.start - 0.1) : start))
+  const end = round2(Math.max(start + 0.1, Math.min(start + 3, limit)))
+  if (line.end > start) line.end = start
+  list.splice(index + 1, 0, { start, end, text: '' })
+  return {
+    lines: list,
+    parts: (parts || []).map((part) => (part.firstLine > index ? { ...part, firstLine: part.firstLine + 1 } : part)),
+    unsure: (unsure || []).map((entry) => (entry > index ? entry + 1 : entry)),
+    at: index + 1,
+  }
+}
+
 export function setLineText(lines, index, text) {
   const clean = String(text || '').replace(/\s+/g, ' ').trim()
   if (!clean) return lines

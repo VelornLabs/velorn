@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, Check, Circle, Download, Loader2, MoreHorizontal, Music, Pause, Pencil, Play, Trash2, Upload } from 'lucide-react'
+import { AlertCircle, Check, Circle, Download, Loader2, MoreHorizontal, Music, Pause, Pencil, Play, Plus, Trash2, Upload } from 'lucide-react'
 import {
-  SONG_PART_KINDS, describeSongParts, findLineAt, formatClock, formatClockTenths, formatSrtLines,
+  SONG_PART_KINDS, addLineBelow, describeSongParts, findLineAt, formatClock, formatClockTenths, formatSrtLines,
   guessSongParts, joinPartWithAbove, normalizeSongParts, parseClockInput, parseSrtLines, readLyricFile,
   removeLine, setLineStart, setLineText, setPartKind, shiftAllLines, startPartAtLine,
 } from '../../utils/songLyricMap.mjs'
@@ -184,9 +184,25 @@ export default function SongStep({
     setEditLine(-1)
   }
 
+  // A new, empty line below this one, opened at once to type its words in.
+  const addLine = (index) => {
+    const next = addLineBelow(lines, parts, unsure, index, songLength)
+    if (next.at < 0) return
+    commitLines(next.lines)
+    onSongMapChange?.({ parts: next.parts, unsure: next.unsure, assetId: audioAsset?.id || null })
+    setSelectedLine(next.at)
+    setMoreForLine(false)
+    setEditLine(next.at)
+    setEditText('')
+  }
+
   const startEdit = (index) => { setEditLine(index); setEditText(lines[index].text) }
   const finishEdit = (save) => {
-    if (save && editLine >= 0) commitLines(setLineText(lines, editLine, editText))
+    if (editLine >= 0) {
+      // A line that was added and left without words is taken out again.
+      if (!lines[editLine]?.text && !(save && editText.trim())) deleteLine(editLine)
+      else if (save) commitLines(setLineText(lines, editLine, editText))
+    }
     setEditLine(-1)
   }
 
@@ -601,6 +617,7 @@ export default function SongStep({
                     <input
                       autoFocus
                       value={editText}
+                      placeholder="Type the words of this line"
                       onChange={(event) => setEditText(event.target.value)}
                       onBlur={() => finishEdit(true)}
                       onKeyDown={(event) => {
@@ -639,6 +656,10 @@ export default function SongStep({
                         This line is fine
                       </button>
                     )}
+                    <button type="button" onClick={() => addLine(index)} className={`${smallButton} inline-flex items-center gap-1`}>
+                      <Plus className="h-3 w-3" />
+                      Add line below
+                    </button>
                     <button type="button" onClick={() => setMoreForLine((open) => !open)} aria-expanded={moreForLine} aria-label="More for this line" className={smallButton}>
                       <MoreHorizontal className="h-3 w-3" />
                     </button>

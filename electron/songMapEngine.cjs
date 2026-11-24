@@ -154,7 +154,8 @@ function createSongMapEngine({
       alignerModelPath: pieces.alignerModelPath,
       alignerDictPath: pieces.alignerDictPath,
       threads: Math.max(2, Math.min(8, (os.cpus()?.length || 4) - 2)),
-      language: 'en',
+      // The worker works out which language the song is in.
+      language: 'auto',
       // After the card has let us down once, the worker is told not to try it at all.
       ...(cardGaveUp ? { useCard: false } : {}),
     }

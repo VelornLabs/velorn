@@ -87,6 +87,22 @@ function runWhisper(args, onPercent, { binary = request.whisperCliPath, needsCar
       : code === 0 ? resolve() : reject(new Error('The speech engine stopped: ' + tail.slice(-300)))))
   })
 }
+// Which language the song is sung in, as the speech program hears it in the first half minute of singing.
+// English when it is not sure, or cannot tell (an English-only speech model, or any failure).
+function detectLanguage(file) {
+  return new Promise((resolve) => {
+    let said = ''
+    const done = () => { const match = said.match(/auto-detected language:\s*([a-z]{2,3})\s*\(p\s*=\s*([\d.]+)\)/i); resolve(match && Number(match[2]) >= 0.5 ? match[1].toLowerCase() : 'en') }
+    try {
+      const child = spawn(request.whisperCliPath, ['-m', request.whisperModelPath, '-f', file, '-dl', '-l', 'auto', '-t', String(THREADS)], { cwd: path.dirname(request.whisperCliPath), windowsHide: true })
+      const timer = setTimeout(() => { try { child.kill() } catch { /* Already gone. */ } }, 120000)
+      child.stderr.on('data', (chunk) => { said = (said + chunk.toString()).slice(-4000) })
+      child.stdout.on('data', (chunk) => { said = (said + chunk.toString()).slice(-4000) })
+      child.on('error', () => { clearTimeout(timer); resolve('en') })
+      child.on('close', () => { clearTimeout(timer); done() })
+    } catch { resolve('en') }
+  })
+}
 // Hears the words on the graphics card when Velorn has that version of the speech program, and on the processor
 // otherwise or when the card version fails for any reason. What happened is reported with the result.
 const speech = { used: 'processor' }
@@ -196,7 +212,11 @@ async function separate(stereo, n, modelPath, threads, onProgress) {
 }
 
 // ---------- helpers shared with v2 ----------
-const norm = (t) => t.toLowerCase().normalize('NFKD').replace(/[^\x00-\x7f]/g, '').replace(/[^a-z' ]/g, ' ').split(/\s+/).filter((w) => /[a-z]/.test(w))
+// The word timer only knows the letters a to z. Letters with marks lose the mark (ą becomes a); the few Latin
+// letters that do not come apart that way are swapped by hand, so a word such as 'łódź' is still timed whole.
+// Only the timing uses this: the lyrics keep their own letters.
+const PLAIN_LETTERS = { 'ł': 'l', 'ø': 'o', 'đ': 'd', 'ð': 'd', 'þ': 'th', 'ß': 'ss', 'æ': 'ae', 'œ': 'oe', 'ı': 'i', 'ħ': 'h' }
+const norm = (t) => t.toLowerCase().replace(/[łøđðþßæœıħ]/g, (letter) => PLAIN_LETTERS[letter]).normalize('NFKD').replace(/[^\x00-\x7f]/g, '').replace(/[^a-z' ]/g, ' ').split(/\s+/).filter((w) => /[a-z]/.test(w))
 const ts = (t) => { const ms = Math.round(t * 1000); const p = (n, l = 2) => String(n).padStart(l, '0'); return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}` }
 function writeWav16(file, pcm) {
   const h = Buffer.alloc(44); h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length * 2, 4); h.write('WAVEfmt ', 8); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22)
@@ -261,7 +281,8 @@ const cutFile = path.join(work, 'cut.wav'); writeWav16(cutFile, cut)
 // words
 const ob = path.join(work, 'w')
 progress('words', 0)
-await hearWords(['-m', request.whisperModelPath, '-f', cutFile, '-l', request.language || 'en', '-oj', '-of', ob, '-np', '-pp', '-t', String(THREADS), '-mc', '0'], (f) => progress('words', f), ob + '.json')
+const language = request.language && request.language !== 'auto' ? request.language : await detectLanguage(cutFile)
+await hearWords(['-m', request.whisperModelPath, '-f', cutFile, '-l', language, '-oj', '-of', ob, '-np', '-pp', '-t', String(THREADS), '-mc', '0'], (f) => progress('words', f), ob + '.json')
 T.words = (tick() - t0) / 1000; t0 = tick()
 const segs = []; let dropped = 0
 for (const s of JSON.parse(fs.readFileSync(ob + '.json', 'utf8')).transcription) {
@@ -329,7 +350,7 @@ rows = rows.filter((r) => !(r.conf < 0.1 && r.voice < 0.2))
 T.align = (tick() - t0) / 1000
 
 const voice = merged.map(([a, b]) => [+a.toFixed(2), +b.toFixed(2)])
-send({ type: 'result', speech, models: Object.fromEntries(Object.entries(ranOn).map(([name, state]) => [name, { on: state.on, ...(state.problem ? { problem: state.problem } : {}) }])), duration: +(n / 44100).toFixed(2), rows, voice, droppedStutters: dropped, droppedGhosts: ghosts, seconds: Object.fromEntries(Object.entries(T).map(([k, v]) => [k, +v.toFixed(1)])) })
+send({ type: 'result', speech, language, models: Object.fromEntries(Object.entries(ranOn).map(([name, state]) => [name, { on: state.on, ...(state.problem ? { problem: state.problem } : {}) }])), duration: +(n / 44100).toFixed(2), rows, voice, droppedStutters: dropped, droppedGhosts: ghosts, seconds: Object.fromEntries(Object.entries(T).map(([k, v]) => [k, +v.toFixed(1)])) })
 fs.rmSync(work, { recursive: true, force: true })
 }
 
