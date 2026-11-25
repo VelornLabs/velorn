@@ -165,6 +165,7 @@ import {
   resolveCastMembersFromNameList,
   resolveMusicVideoShotTypeFromText,
   splitCastNameList,
+  findCastNamedInText,
 } from '../config/musicVideoShotConfig'
 import { TOPAZ_VIDEO_UPSCALE_WORKFLOW_ID } from '../config/topazVideoUpscaleConfig'
 import {
@@ -1772,6 +1773,25 @@ function buildMusicVideoPlanFromScript(options = {}) {
           }
         }
       }
+      // People the picture's words name but the Artist line left out. A script
+      // often names only the main person of a shot; the other one would then be
+      // sent without a picture and come out as a stranger.
+      if (!isEnvironmentOrDetailCoverage) {
+        const alsoNamed = findCastNamedInText(scriptShot.keyframePromptRaw || scriptShot.imageBeat, safeCast)
+          .filter((member) => !resolvedMembers.some((m) => m?.id === member?.id))
+        if (alsoNamed.length > 0) {
+          if (resolvedMembers.length === 0) resolvedSource = 'keyframe-words'
+          resolvedMembers = [...resolvedMembers, ...alsoNamed]
+          warnings.push({
+            shotIndex: flatShotIndex,
+            shotLabel: scriptShot.label || `Shot ${flatShotIndex}`,
+            kind: 'artist-added-from-keyframe-words',
+            raw: alsoNamed.map((m) => m?.label || m?.slug).join(', '),
+            message: `Shot ${flatShotIndex}: the picture's words name ${alsoNamed.map((m) => m?.label || m?.slug).join(' and ')}, so their picture is sent too.`,
+            severity: 'info',
+          })
+        }
+      }
       if (resolvedMembers.length === 0 && isVocalAlignedShot && defaultCastMember) {
         resolvedMembers = [defaultCastMember]
         resolvedSource = 'default-cast'
@@ -2423,7 +2443,7 @@ function buildMusicVideoLLMPrompt(options = {}) {
     '  4a. A b_roll shot may include Artist only as a visual/non-singing reference in story_broll or main_sequence coverage. If a band/performance cast member is singing or mouthing lyrics, the shot type MUST be performance or performance_wide, not b_roll.',
     '  4b. Environmental_broll and detail_broll shots MUST omit Artist. They should be places, props, textures, hands, silhouettes, or atmosphere, not assigned performer portraits.',
     '  5. For vocal lines, add "Lyric moment:" quoting the specific lyric line. For instrumentals or b_roll, omit Lyric moment.',
-    '  6. Use "Artist:" to pick which cast member appears only when that person is visibly present. Omit when the shot is b_roll with no performer visible.',
+    '  6. Use "Artist:" to list every cast member who is visibly present in the shot, by slug, separated by commas (at most two, for example "Artist: rose, jake"). If two cast members are in the picture, name both: a person who is not named is drawn as a stranger. Omit when the shot is b_roll with no performer visible.',
     '  7. "Keyframe prompt:" describes the opening still and must include location, subject, wardrobe/props, lighting, color palette, composition, and the subject\'s readable emotional state when a person appears.',
     '  8. "Motion prompt:" describes what moves in the clip: lip-sync/performance action, character movement, camera movement, atmosphere, and any story action. Include camera motion and character blocking/emotion, not just a static description.',
     '  9. Keep wardrobe, location, and lighting consistent across adjacent shots unless the script deliberately calls for a hard cut.',

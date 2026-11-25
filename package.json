@@ -1,6 +1,6 @@
 {
   "name": "velorn",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "AI-native video editing built around real creative timelines, generative workflows, and local agent control.",
   "main": "electron/main.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "check:audio-analysis": "node ./scripts/check-audio-analysis.cjs",
     "test:timeline-hotfixes": "node --test ./src/utils/closeTimelineGap.test.mjs ./src/utils/closeTimelineGapStore.test.mjs ./src/utils/timelineSplitTarget.test.mjs ./src/utils/audioClipSplit.test.js ./src/utils/clipSplit.test.mjs ./src/utils/clipSplitStore.test.mjs ./src/utils/playheadEditsStore.test.mjs ./src/utils/timecodeInput.test.mjs ./src/utils/framePlayhead.test.mjs",
     "check:timeline-hotfixes": "node ./scripts/check-timeline-hotfixes.cjs",
-    "test:create": "node --test tests/songLyricMap.test.mjs tests/resultFetch.test.cjs tests/mobileCompanionCreate.test.cjs tests/mobileCompanionSharedGpu.test.cjs tests/gpuShareSettings.test.cjs tests/gpuNetwork.test.cjs tests/velornNetworkSave.test.mjs tests/generatedFolders.test.mjs tests/velornNetworkJob.test.mjs tests/gpuShareHost.test.cjs tests/gpuShareOwnWorkflows.test.cjs tests/agentPictureReview.test.cjs tests/localVoiceTool.test.mjs tests/phoneCreateSave.test.mjs tests/createModels.test.cjs tests/createRequests.test.cjs tests/comfyRouterCreate.test.cjs tests/comfyRouterCreateCount.test.cjs tests/comfyRouterAudio.test.cjs tests/modelDownloadTarget.test.cjs tests/comfyRouterKeyStore.test.cjs tests/comfyRouter.test.cjs tests/comfyRouterIpc.test.cjs tests/comfyRouterTools.test.cjs tests/comfyRouterImport.test.mjs tests/createFlow.test.mjs tests/soundCloudApproval.test.mjs tests/localVoice.test.cjs tests/voiceText.test.mjs",
+    "test:create": "node --test tests/songLyricMap.test.mjs tests/castNamedInText.test.mjs tests/resultFetch.test.cjs tests/mobileCompanionCreate.test.cjs tests/mobileCompanionSharedGpu.test.cjs tests/gpuShareSettings.test.cjs tests/gpuNetwork.test.cjs tests/velornNetworkSave.test.mjs tests/generatedFolders.test.mjs tests/velornNetworkJob.test.mjs tests/gpuShareHost.test.cjs tests/gpuShareOwnWorkflows.test.cjs tests/agentPictureReview.test.cjs tests/localVoiceTool.test.mjs tests/phoneCreateSave.test.mjs tests/createModels.test.cjs tests/createRequests.test.cjs tests/comfyRouterCreate.test.cjs tests/comfyRouterCreateCount.test.cjs tests/comfyRouterAudio.test.cjs tests/modelDownloadTarget.test.cjs tests/comfyRouterKeyStore.test.cjs tests/comfyRouter.test.cjs tests/comfyRouterIpc.test.cjs tests/comfyRouterTools.test.cjs tests/comfyRouterImport.test.mjs tests/createFlow.test.mjs tests/soundCloudApproval.test.mjs tests/localVoice.test.cjs tests/voiceText.test.mjs",
     "test:comfy-hosted-setup": "node --test tests/comfyHostedSetup.test.cjs tests/comfyHostedSetupPackaged.test.cjs",
     "check:comfy-hosted-setup": "node scripts/check-comfy-hosted-setup.cjs",
     "test:setup-helper": "node --test tests/setupHelper.test.cjs tests/setupHelperPackaged.test.cjs tests/setupInstalledApps.test.cjs tests/agentEntryGuide.test.mjs",

@@ -4775,7 +4775,7 @@ export default function MusicVideoEasyMode({
     <div className="dh-colours" style={{ '--dh-top': `${fixedTopHeight}px` }}>
       <div className="space-y-4">
         {/* The heading, pictures and step bar stay put; only the step below scrolls. */}
-        <div ref={fixedTopRef} className="sticky -top-4 z-30 -mx-5 -mt-4 space-y-4 bg-sf-dark-950 px-5 pb-3 pt-4" style={{ marginBottom: Math.max(0, fullTopHeight - fixedTopHeight) }}>
+        <div ref={fixedTopRef} className="sticky -top-4 z-30 -mx-5 space-y-4 bg-sf-dark-950 px-5 pb-3 pt-4" style={{ marginBottom: Math.max(0, fullTopHeight - fixedTopHeight) }}>
         <DirectorHero small={scrolledDown} />
         <nav aria-label="Steps" className="flex items-start justify-center pb-1">
           {STEPS.map((entry, index) => {

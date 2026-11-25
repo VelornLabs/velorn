@@ -546,6 +546,36 @@ export function resolveCastMembersFromNameList(names, cast = []) {
 }
 
 /**
+ * The cast members a shot's words name, in the order they are named. Used to
+ * send a person's picture when the script describes them in the shot but its
+ * Artist line leaves them out: without the picture the model invents them.
+ *
+ * A name counts only as a whole word that starts with a capital letter, so a
+ * cast member called Rose is not found in "a rose on the table".
+ */
+export function findCastNamedInText(text = '', cast = []) {
+  const source = String(text || '')
+  const found = []
+  for (const entry of Array.isArray(cast) ? cast : []) {
+    const names = [entry?.label, String(entry?.slug || '').replace(/-/g, ' ')]
+      .map((name) => String(name || '').trim())
+      .filter((name) => name.length >= 2)
+    let at = -1
+    for (const name of names) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+      for (const match of source.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu'))) {
+        const first = match[0][0]
+        if (first === first.toLowerCase() && first !== first.toUpperCase()) continue
+        if (at < 0 || match.index < at) at = match.index
+        break
+      }
+    }
+    if (at >= 0 && !found.some((item) => item.entry?.id === entry?.id)) found.push({ entry, at })
+  }
+  return found.sort((a, b) => a.at - b.at).map((item) => item.entry)
+}
+
+/**
  * Common lyric section markers we want to ignore when parsing [...] tags.
  * `[Verse 1]`, `[Chorus]`, `[Bridge]` should NOT be interpreted as artist
  * tags — they're structural. Everything else inside brackets is treated as
