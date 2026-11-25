@@ -14,11 +14,10 @@ Ignore the auto-generated source-code archives unless you plan to build Velorn f
 
 ## Highlights
 
-- **Write the script works for whole songs.** On Mac and Windows it could stop after about 20 seconds with "The Velo service could not complete this response". Velo now writes the script a few shots at a time and Velorn joins the parts.
-- **Lyrics in the song's own language.** Listening to a song no longer always hears English. Velorn works out the language by itself. Songs in other alphabets (Russian, Greek, Arabic, Japanese and so on) are not handled yet.
-- **Add line below.** In the Song step, add a lyric line the listening missed.
+- **Two people in one shot both keep their look.** In Director, a shot with two cast members could draw one of them as a different person each time. Velorn now sends the picture of every cast member the shot's words name.
+- **The Back button in Director is whole again.** The top of the music video screen no longer covers half of it.
 
-Full notes: [docs/RELEASE_NOTES_0.4.2.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.2.md). Everything new in 0.4.0: [docs/RELEASE_NOTES_0.4.0.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.0.md)
+Full notes: [docs/RELEASE_NOTES_0.4.3.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.3.md). Everything new in 0.4.0: [docs/RELEASE_NOTES_0.4.0.md](https://github.com/VelornLabs/velorn/blob/main/docs/RELEASE_NOTES_0.4.0.md)
 
 ## Notes
 
